@@ -15,7 +15,7 @@ const NEWS: &[(&str, &str)] = &[
 
 pub fn welcome_screen(app: &mut App, ui: &mut Ui) {
     ui.add_space(8.0);
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         ui.add_space(24.0);
         ui.heading(egui::RichText::new("TraceDraw").size(26.0));
         ui.add_space(30.0);
@@ -48,8 +48,14 @@ pub fn welcome_screen(app: &mut App, ui: &mut Ui) {
     }
 }
 
-fn big_button(ui: &mut Ui, icon: icons::Action, title: String, subtitle: String) -> bool {
-    let (rect, resp) = ui.allocate_exact_size(egui::vec2(240.0, 64.0), egui::Sense::click());
+fn big_button(
+    ui: &mut Ui,
+    icon: icons::Action,
+    title: String,
+    subtitle: String,
+    width: f32,
+) -> bool {
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, 64.0), egui::Sense::click());
     let bg = if resp.hovered() {
         Tokens::tool_hover()
     } else {
@@ -92,80 +98,103 @@ fn big_button(ui: &mut Ui, icon: icons::Action, title: String, subtitle: String)
 }
 
 fn get_started(app: &mut App, ui: &mut Ui) {
+    // A phone stacks what a wide window puts side by side.
+    let narrow = ui.available_width() < 560.0;
+    if narrow {
+        ui.add_space(4.0);
+        start_buttons(app, ui, ui.available_width() - 16.0, false);
+        ui.add_space(16.0);
+        recent_list(app, ui);
+        return;
+    }
     ui.horizontal_top(|ui| {
         ui.add_space(24.0);
         ui.vertical(|ui| {
             ui.set_width(260.0);
-            if big_button(
-                ui,
-                icons::Action::New,
-                tr("welcome.new_document"),
-                "Ctrl+N".into(),
-            ) {
-                app.request_new_document();
-            }
-            ui.add_space(8.0);
-            if big_button(
-                ui,
-                icons::Action::Welcome,
-                tr("welcome.new_from_template"),
-                String::new(),
-            ) {
-                app.open_template_dialog();
-            }
-            ui.add_space(8.0);
-            if big_button(
-                ui,
-                icons::Action::Open,
-                tr("welcome.open_document"),
-                "Ctrl+O".into(),
-            ) {
-                app.open_dialog();
-                if app.file.is_some() || app.doc().all_layers().any(|l| !l.shapes.is_empty()) {
-                    app.show_welcome = false;
-                }
-            }
-            ui.add_space(20.0);
-            ui.label(
-                egui::RichText::new(tr("welcome.shortcuts_hint"))
-                    .color(Tokens::text_dim())
-                    .size(11.0),
-            );
+            start_buttons(app, ui, 260.0, true);
         });
         // A browser keeps no recent documents.
         if crate::files::WEB {
             return;
         }
         ui.add_space(40.0);
-        ui.vertical(|ui| {
-            ui.strong(tr("welcome.recent_documents"));
-            let recent = app.settings.recent_files.clone();
-            if recent.is_empty() {
-                ui.label(egui::RichText::new(tr("welcome.no_recent")).color(Tokens::text_dim()));
-            }
-            ui.add_space(4.0);
-            for p in recent {
-                if recent_row(app, ui, &p) {
-                    app.open_path(p.clone());
-                    app.show_welcome = false;
-                }
-            }
-            if !app.settings.recent_files.is_empty()
-                && ui.small_button(tr("menu.file.clear_recent")).clicked()
-            {
-                app.settings.recent_files.clear();
-                app.settings.save();
-                crate::thumbnails::clear();
-                app.recent_thumbs.clear();
-            }
-        });
+        ui.vertical(|ui| recent_list(app, ui));
     });
+}
+
+/// New, New from Template and Open, as wide as `width`. `keys` adds the
+/// line of keyboard shortcuts, which a phone has no keyboard for.
+fn start_buttons(app: &mut App, ui: &mut Ui, width: f32, keys: bool) {
+    if big_button(
+        ui,
+        icons::Action::New,
+        tr("welcome.new_document"),
+        "Ctrl+N".into(),
+        width,
+    ) {
+        app.request_new_document();
+    }
+    ui.add_space(8.0);
+    if big_button(
+        ui,
+        icons::Action::Welcome,
+        tr("welcome.new_from_template"),
+        String::new(),
+        width,
+    ) {
+        app.open_template_dialog();
+    }
+    ui.add_space(8.0);
+    if big_button(
+        ui,
+        icons::Action::Open,
+        tr("welcome.open_document"),
+        "Ctrl+O".into(),
+        width,
+    ) {
+        app.open_dialog();
+        if app.file.is_some() || app.doc().all_layers().any(|l| !l.shapes.is_empty()) {
+            app.show_welcome = false;
+        }
+    }
+    if keys {
+        ui.add_space(16.0);
+        ui.label(
+            egui::RichText::new(tr("welcome.shortcuts_hint"))
+                .color(Tokens::text_dim())
+                .size(11.0),
+        );
+    }
+}
+
+/// The drawings opened lately, and the way to forget them.
+fn recent_list(app: &mut App, ui: &mut Ui) {
+    ui.strong(tr("welcome.recent_documents"));
+    let recent = app.settings.recent_files.clone();
+    if recent.is_empty() {
+        ui.label(egui::RichText::new(tr("welcome.no_recent")).color(Tokens::text_dim()));
+    }
+    ui.add_space(4.0);
+    for p in recent {
+        if recent_row(app, ui, &p) {
+            app.open_path(p.clone());
+            app.show_welcome = false;
+        }
+    }
+    if !app.settings.recent_files.is_empty()
+        && ui.small_button(tr("menu.file.clear_recent")).clicked()
+    {
+        app.settings.recent_files.clear();
+        app.settings.save();
+        crate::thumbnails::clear();
+        app.recent_thumbs.clear();
+    }
 }
 
 /// One recent drawing: its thumbnail (a blank page when it has none), its
 /// name and folder. True when clicked; a missing file is greyed out.
 fn recent_row(app: &mut App, ui: &mut Ui, path: &std::path::Path) -> bool {
-    const ROW: egui::Vec2 = egui::vec2(380.0, 56.0);
+    let row = egui::Vec2::new(ui.available_width().min(380.0), 56.0);
     const THUMB: egui::Vec2 = egui::vec2(64.0, 48.0);
     let exists = path.exists();
     let thumb = if exists {
@@ -178,7 +207,7 @@ fn recent_row(app: &mut App, ui: &mut Ui, path: &std::path::Path) -> bool {
     } else {
         egui::Sense::hover()
     };
-    let (rect, resp) = ui.allocate_exact_size(ROW, sense);
+    let (rect, resp) = ui.allocate_exact_size(row, sense);
     let painter = ui.painter();
     if exists && resp.hovered() {
         painter.rect_filled(rect, 2.0, Tokens::tool_hover());

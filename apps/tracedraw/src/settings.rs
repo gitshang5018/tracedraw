@@ -1434,7 +1434,6 @@ impl Default for Settings {
 /// next to the program keeps its preferences there (a USB stick, a copy
 /// that leaves no trace on the computer).
 pub const PORTABLE_DIR: &str = "tracedraw-settings";
-
 /// The portable settings folder next to the program `exe`, when there is
 /// one.
 pub fn portable_dir(exe: &std::path::Path) -> Option<PathBuf> {
@@ -1442,10 +1441,54 @@ pub fn portable_dir(exe: &std::path::Path) -> Option<PathBuf> {
     dir.is_dir().then_some(dir)
 }
 
+/// The folder a phone gives the app for its preferences and logs, handed
+/// over by the activity as it starts.
+#[cfg(target_os = "android")]
+static ANDROID_CONFIG: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// The folder drawings are saved to on a phone, where there is no file
+/// dialog to ask for one (see `files::set_android_documents`).
+#[cfg(target_os = "android")]
+static ANDROID_DOCUMENTS: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// Where the Android build keeps its preferences and its documents.
+#[cfg(target_os = "android")]
+pub fn set_android_folders(config: PathBuf, documents: PathBuf) {
+    let _ = ANDROID_CONFIG.set(config);
+    let _ = ANDROID_DOCUMENTS.set(documents);
+}
+
+/// The folder drawings are saved to on a phone; the preferences folder
+/// when the activity gave none.
+#[cfg(target_os = "android")]
+pub fn android_documents() -> PathBuf {
+    ANDROID_DOCUMENTS
+        .get()
+        .cloned()
+        .or_else(|| ANDROID_CONFIG.get().map(|d| d.join("Documents")))
+        .unwrap_or_else(|| PathBuf::from("/data/local/tmp/Documents"))
+}
+
 pub fn config_dir() -> Option<PathBuf> {
     if let Ok(dir) = std::env::var("TRACEDRAW_CONFIG_DIR") {
         return Some(PathBuf::from(dir));
     }
+    // A phone gives a program one folder of its own and no `HOME`: the
+    // activity hands it over as it starts (see `android_run`).
+    #[cfg(target_os = "android")]
+    {
+        ANDROID_CONFIG.get().cloned()
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        system_config_dir()
+    }
+}
+
+/// The preferences folder the desktop and the browser find for
+/// themselves.
+#[cfg(not(target_os = "android"))]
+fn system_config_dir() -> Option<PathBuf> {
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(dir) = std::env::current_exe().ok().and_then(|e| portable_dir(&e)) {
         return Some(dir);

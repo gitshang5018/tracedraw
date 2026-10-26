@@ -91,7 +91,7 @@ impl OptionsSet {
     ];
 
     /// The set's tab: the name of the menu item that opens it.
-    fn tab_label(self) -> String {
+    pub(crate) fn tab_label(self) -> String {
         let key = match self {
             OptionsSet::App => "menu.tools.options_app",
             OptionsSet::Customization => "menu.tools.options_customization",
@@ -572,7 +572,7 @@ fn page_list(app: &mut App, ui: &mut Ui, rect: egui::Rect, set: OptionsSet) {
     }
 }
 
-fn draw_page(app: &mut App, ui: &mut Ui) {
+pub(crate) fn draw_page(app: &mut App, ui: &mut Ui) {
     use OptionsPage::*;
     // A command waits for its keys only while its page is shown.
     if !matches!(app.options_page, Commands) {
@@ -2967,17 +2967,31 @@ fn global_general_page(app: &mut App, ui: &mut Ui) {
     grid("global").show(ui, |ui| {
         row_label(ui, &tr("options.language"));
         let current = crate::i18n::language();
-        let name = crate::i18n::LANGUAGES
-            .iter()
-            .find(|(c, _)| *c == current)
-            .map(|(_, n)| *n)
-            .unwrap_or("English");
+        // No choice kept is the system's language: the one a phone hands
+        // over, the one the environment names on a desktop.
+        let following = app.settings.language.is_empty();
+        let name = if following {
+            tr("options.language_system")
+        } else {
+            crate::i18n::LANGUAGES
+                .iter()
+                .find(|(c, _)| *c == current)
+                .map(|(_, n)| (*n).to_string())
+                .unwrap_or_else(|| "English".to_string())
+        };
         egui::ComboBox::from_id_salt("opt_lang")
             .selected_text(name)
             .width(200.0)
             .show_ui(ui, |ui| {
+                if ui
+                    .selectable_label(following, tr("options.language_system"))
+                    .clicked()
+                {
+                    app.settings.language.clear();
+                    crate::i18n::set_language(crate::i18n::system_language());
+                }
                 for (code, n) in crate::i18n::LANGUAGES {
-                    if ui.selectable_label(current == code, n).clicked() {
+                    if ui.selectable_label(!following && current == code, n).clicked() {
                         crate::i18n::set_language(code);
                         app.settings.language = code.to_string();
                     }

@@ -20,6 +20,56 @@ const SHORTCUT_PAD: f32 = 28.0;
 const FONT: f32 = 13.0;
 const SEPARATOR_HEIGHT: f32 = 7.0;
 
+/// Whether the menus are drawn for a finger: taller rows, larger text and
+/// submenus that open under their row instead of beside it, because a
+/// touch screen has no pointer to hover with.
+static TOUCH: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Draw the menus for a finger (a phone) or for a mouse (a desktop).
+pub fn set_touch(on: bool) {
+    TOUCH.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+fn touch() -> bool {
+    TOUCH.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// The height of a menu row: 26 px under a mouse, 48 under a finger.
+fn row_height() -> f32 {
+    if touch() {
+        48.0
+    } else {
+        ROW_HEIGHT
+    }
+}
+
+/// The text size of a menu row.
+fn font_size() -> f32 {
+    if touch() {
+        15.0
+    } else {
+        FONT
+    }
+}
+
+/// Where a row's label starts, after the gutter.
+fn label_x() -> f32 {
+    if touch() {
+        46.0
+    } else {
+        LABEL_X
+    }
+}
+
+/// The width a menu asks for: wide enough for a phone's rows.
+fn menu_width() -> f32 {
+    if touch() {
+        320.0
+    } else {
+        MENU_WIDTH
+    }
+}
+
 /// The style of menu pop-ups: white, a one-pixel grey frame, square
 /// corners, rows touching.
 pub(crate) fn menu_popup_style(style: &mut egui::Style) {
@@ -40,7 +90,7 @@ pub(crate) fn menu_popup_style(style: &mut egui::Style) {
         bottom: 2,
     };
     style.spacing.item_spacing.y = 0.0;
-    style.override_font_id = Some(egui::FontId::proportional(FONT));
+    style.override_font_id = Some(egui::FontId::proportional(font_size()));
 }
 
 /// The grey gutter down the left of a menu body, under its rows: reserved
@@ -82,7 +132,7 @@ fn menu_row(
         let l = f
             .layout_no_wrap(
                 label.to_string(),
-                egui::FontId::proportional(FONT),
+                egui::FontId::proportional(font_size()),
                 crate::theme::Tokens::text(),
             )
             .size()
@@ -92,18 +142,18 @@ fn menu_row(
         } else {
             f.layout_no_wrap(
                 shortcut.to_string(),
-                egui::FontId::proportional(FONT),
+                egui::FontId::proportional(font_size()),
                 crate::theme::Tokens::text(),
             )
             .size()
             .x + 32.0
         };
-        LABEL_X + l + s + SHORTCUT_PAD
+        label_x() + l + s + SHORTCUT_PAD
     });
     // As wide as the widest row (remembered by `body` from the last frame).
-    let width = MENU_WIDTH.max(needed).max(ui.min_rect().width());
+    let width = menu_width().max(needed).max(ui.min_rect().width());
     let (rect, resp) = ui.allocate_exact_size(
-        egui::vec2(width, ROW_HEIGHT),
+        egui::vec2(width, row_height()),
         if enabled {
             egui::Sense::click()
         } else {
@@ -112,8 +162,9 @@ fn menu_row(
     );
     let mut resp = resp;
     // The access key: underlined; pressed while this is the innermost
-    // open menu, it works as a click on the row.
-    let access = access::pick(label);
+    // open menu, it works as a click on the row. A phone has no Alt key,
+    // so no letter is picked there.
+    let access = if touch() { None } else { access::pick(label) };
     if let Some((_, c)) = access {
         if enabled && access::pressed(ui, c) {
             resp.flags
@@ -135,7 +186,7 @@ fn menu_row(
     if let Some((at, _)) = access {
         access::underline(
             painter,
-            egui::pos2(rect.left() + LABEL_X, rect.center().y),
+            egui::pos2(rect.left() + label_x(), rect.center().y),
             label,
             at,
             FONT,
@@ -162,10 +213,10 @@ fn menu_row(
         _ => {}
     }
     painter.text(
-        egui::pos2(rect.left() + LABEL_X, rect.center().y),
+        egui::pos2(rect.left() + label_x(), rect.center().y),
         egui::Align2::LEFT_CENTER,
         label,
-        egui::FontId::proportional(FONT),
+        egui::FontId::proportional(font_size()),
         color,
     );
     if !shortcut.is_empty() {
@@ -173,7 +224,7 @@ fn menu_row(
             egui::pos2(rect.right() - SHORTCUT_PAD, rect.center().y),
             egui::Align2::RIGHT_CENTER,
             shortcut,
-            egui::FontId::proportional(FONT),
+            egui::FontId::proportional(font_size()),
             color,
         );
     }
@@ -221,7 +272,7 @@ pub(crate) fn sep(ui: &mut Ui) {
     if invoke::active() {
         return;
     }
-    let width = ui.min_rect().width().max(MENU_WIDTH);
+    let width = ui.min_rect().width().max(menu_width());
     let (rect, _) =
         ui.allocate_exact_size(egui::vec2(width, SEPARATOR_HEIGHT), egui::Sense::hover());
     let y = rect.center().y.round() - 0.5;
@@ -664,6 +715,28 @@ pub(crate) fn sub<R>(ui: &mut Ui, key: &str, add: impl FnOnce(&mut Ui) -> R) {
         let _ = add(ui);
         return;
     }
+    if touch() {
+        // A finger has no hover to open a submenu with: its row opens it
+        // under itself, and closes it again.
+        let id = ui.make_persistent_id(("menu_sub", key));
+        let mut open = ui.data(|d| d.get_temp::<bool>(id)).unwrap_or(false);
+        let (resp, slot) = menu_row(ui, &tr(key), "", true, Mark::Submenu);
+        row_picture(ui, resp.rect, key, true);
+        if marked_new(key) {
+            paint_new_mark(ui, resp.rect.translate(egui::vec2(-14.0, 0.0)));
+        }
+        if resp.clicked() {
+            open = !open;
+            ui.data_mut(|d| d.insert_temp(id, open));
+        }
+        if open {
+            ui.painter().set(slot, highlight(resp.rect));
+            ui.indent(("menu_sub_items", key), |ui| {
+                let _ = add(ui);
+            });
+        }
+        return;
+    }
     let (resp, slot) = menu_row(ui, &tr(key), "", true, Mark::Submenu);
     row_picture(ui, resp.rect, key, true);
     if marked_new(key) {
@@ -677,7 +750,7 @@ pub(crate) fn sub<R>(ui: &mut Ui, key: &str, add: impl FnOnce(&mut Ui) -> R) {
         ui.painter().set(slot, highlight(resp.rect));
     }
     egui::containers::menu::SubMenu::new().show(ui, &resp, |ui| {
-        ui.set_min_width(MENU_WIDTH);
+        ui.set_min_width(menu_width());
         body(ui, add)
     });
 }
@@ -965,7 +1038,7 @@ pub(crate) mod invoke {
 }
 
 /// The menus of the menu bar in order, with their title keys.
-fn all_menus() -> [(&'static str, fn(&mut App, &mut Ui)); 12] {
+pub(crate) fn all_menus() -> [(&'static str, fn(&mut App, &mut Ui)); 12] {
     [
         ("menu.file", file_menu),
         ("menu.edit", edit_menu),
@@ -1529,7 +1602,7 @@ pub fn menu_bar(app: &mut App, ui: &mut Ui) {
                             crate::theme::Tokens::text(),
                         ),
                         |ui| {
-                            ui.set_min_width(MENU_WIDTH);
+                            ui.set_min_width(menu_width());
                             body(ui, |ui| f(ui))
                         },
                     )

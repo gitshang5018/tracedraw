@@ -320,6 +320,9 @@ pub fn is_system_font(path: &Path) -> bool {
         "/usr/share/fonts/",
         "/usr/local/share/fonts/",
         "/usr/x11r6/lib/x11/fonts/",
+        // Android.
+        "/system/fonts/",
+        "/product/fonts/",
     ]
     .iter()
     .any(|d| p.contains(d))

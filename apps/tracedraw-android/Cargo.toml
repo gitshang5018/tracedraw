@@ -1,0 +1,55 @@
+[package]
+name = "tracedraw-android"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "TraceDraw for Android: the editor on a phone screen"
+
+[lib]
+name = "tracedraw_android"
+path = "src/lib.rs"
+crate-type = ["cdylib"]
+
+[dependencies]
+tracedraw = { path = "../tracedraw" }
+log.workspace = true
+
+[target.'cfg(target_os = "android")'.dependencies]
+winit = { version = "0.30", default-features = false, features = ["android-native-activity"] }
+
+[package.metadata.android]
+package = "dev.tracedraw.app"
+apk_name = "tracedraw"
+resources = "res"
+build_targets = ["aarch64-linux-android", "x86_64-linux-android", "armv7-linux-androideabi"]
+
+[package.metadata.android.sdk]
+min_sdk_version = 24
+target_sdk_version = 34
+
+# Drawings live in the phone's own storage, where a file manager reaches
+# them: Android 11 and later grant that with "all files access", which the
+# Files sheet asks for; older systems ask for the storage permission.
+[[package.metadata.android.uses_permission]]
+name = "android.permission.MANAGE_EXTERNAL_STORAGE"
+
+[[package.metadata.android.uses_permission]]
+name = "android.permission.READ_EXTERNAL_STORAGE"
+max_sdk_version = 32
+
+[[package.metadata.android.uses_permission]]
+name = "android.permission.WRITE_EXTERNAL_STORAGE"
+max_sdk_version = 29
+
+[package.metadata.android.application]
+label = "TraceDraw"
+icon = "@mipmap/ic_launcher"
+theme = "@style/Theme.TraceDraw"
+extract_native_libs = true
+
+[package.metadata.android.application.activity]
+orientation = "fullUser"
+config_changes = "orientation|keyboardHidden|screenSize|screenLayout|smallestScreenSize|density|uiMode|fontScale|locale|layoutDirection"

@@ -12,6 +12,12 @@ description = "TraceDraw: an open-source vector illustration editor"
 name = "tracedraw"
 path = "src/main.rs"
 
+# The application as a library: `main.rs` starts the desktop and browser
+# builds, `apps/tracedraw-android` starts the Android one.
+[lib]
+name = "tracedraw"
+path = "src/lib.rs"
+
 [build-dependencies]
 winresource = "0.1"
 
@@ -37,7 +43,6 @@ csv = "1"
 i_overlay = "9"
 eframe.workspace = true
 egui.workspace = true
-rfd.workspace = true
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp", "gif", "webp", "tiff"] }
 log.workspace = true
 env_logger.workspace = true
@@ -46,16 +51,37 @@ web-time = "1"
 # Local dates and times (Time Tracker), with the system time zone.
 jiff = "0.2"
 
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-# The window drawn with wgpu (Direct3D 12, Vulkan or Metal): the graphics
-# card chosen in Options, or its software adapter (#445, #439).
-eframe = { workspace = true, features = ["wgpu"] }
+# The desktop windows: system file dialogs, the system clipboard, and the
+# window drawn with wgpu (Direct3D 12, Vulkan or Metal) on the graphics
+# card chosen in Options, or on its software adapter (#445, #439).
+[target.'cfg(not(any(target_arch = "wasm32", target_os = "android")))'.dependencies]
+rfd.workspace = true
+eframe = { workspace = true, features = ["wgpu", "wayland", "x11"] }
 pollster = "0.4"
 arboard = { version = "3", default-features = false, features = ["wayland-data-control"] }
 # AI Drawing: HTTPS requests to the AI service the user sets up.
 ureq = { version = "3", features = ["platform-verifier"] }
 # Lossy WebP export (libwebp, BSD licence): the pure-Rust encoder writes
 # lossless files only (#592).
+webp = { version = "0.3", default-features = false }
+
+# Android: the same interface in a native activity, drawn with OpenGL ES.
+# File dialogs and the system clipboard come from the interface itself
+# (`files.rs`, `clipboard.rs`); there is no desktop window system.
+[target.'cfg(target_os = "android")'.dependencies]
+eframe = { workspace = true, features = ["wgpu", "android-native-activity"] }
+winit = { version = "0.30", default-features = false, features = ["android-native-activity"] }
+# The system bars' insets, the keyboard and the language of the phone.
+jni = "0.21"
+android-activity = "0.6"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp", "gif", "webp", "tiff"] }
+log.workspace = true
+env_logger.workspace = true
+flate2 = "1"
+web-time = "1"
+jiff = "0.2"
+pollster = "0.4"
+ureq = { version = "3", features = ["platform-verifier"] }
 webp = { version = "0.3", default-features = false }
 
 # The browser build: WebGL canvas, file pickers and downloads through the

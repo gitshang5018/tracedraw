@@ -64,6 +64,7 @@ pub mod line_style;
 pub mod macros_ui;
 pub mod menu_glyphs;
 pub mod menu_pics;
+pub mod mobile;
 pub mod menus;
 pub mod objects_docker;
 pub mod options;
@@ -351,6 +352,38 @@ fn root_frame(app: &mut App, ui: &mut Ui) {
         return;
     }
 
+    // A phone screen gets its own arrangement of the same panels (see
+    // mobile.rs): the Welcome Screen and the page sorter take all of it.
+    // The menus are drawn for a finger there, and for a mouse here.
+    menus::set_touch(mobile::active(&ctx));
+    if mobile::active(&ctx) {
+        if mobile::frame(app, ui) {
+            return;
+        }
+    } else {
+        desktop(app, ui, &ctx);
+    }
+
+    if app.has_document() && !app.show_welcome {
+        symmetry_bar::show(app, &ctx);
+        clip_bar::show(app, &ctx);
+        focus_bar::show(app, &ctx);
+        effect_picker::show(app, &ctx);
+        crate::perspective_draw::show_bar(app, &ctx);
+    }
+    dialogs::show(app, &ctx);
+    // A change this frame made to a master shows on its clones at once.
+    let before = app.engine.revision();
+    app.sync_object_clones();
+    if app.engine.revision() != before {
+        ctx.request_repaint();
+    }
+}
+
+/// The desktop workspace: menu bar, toolbars in rows, the toolbox on a
+/// side, the docker columns, the palette rows and the status bar, around
+/// the drawing.
+fn desktop(app: &mut App, ui: &mut Ui, ctx: &egui::Context) {
     Panel::top("menu_bar")
         .frame(
             Frame::new()
@@ -542,15 +575,15 @@ fn root_frame(app: &mut App, ui: &mut Ui) {
             .show_separator_line(true)
             .show(ui, |ui| ai_bar::ai_bar(app, ui));
     }
-    palette::popups(app, &ctx);
+    palette::popups(app, ctx);
 
     // Floating bars over the window, and a bar being moved; the floating
     // dockers and a docker being moved likewise.
-    bars::floating_bars(app, &ctx);
-    bars::drag_overlay(app, &ctx, 24.0);
-    bar_items::drop_overlay(app, &ctx);
-    dockers::floating_dockers(app, &ctx);
-    dockers::drag_overlay(app, &ctx, 24.0);
+    bars::floating_bars(app, ctx);
+    bars::drag_overlay(app, ctx, 24.0);
+    bar_items::drop_overlay(app, ctx);
+    dockers::floating_dockers(app, ctx);
+    dockers::drag_overlay(app, ctx, 24.0);
 
     // Document tabs above the rulers.
     // The tabs' blue line is the strip's lower edge: no separator and no
@@ -564,14 +597,14 @@ fn root_frame(app: &mut App, ui: &mut Ui) {
         egui::CentralPanel::default()
             .frame(Frame::new().fill(Tokens::panel()))
             .show(ui, |ui| welcome::welcome_screen(app, ui));
-        dialogs::show(app, &ctx);
+        dialogs::show(app, ctx);
         return;
     }
     if app.page_sorter && !app.multipage {
         egui::CentralPanel::default()
             .frame(Frame::new().fill(Tokens::panel()))
             .show(ui, |ui| preview::page_sorter(app, ui));
-        dialogs::show(app, &ctx);
+        dialogs::show(app, ctx);
         return;
     }
 
@@ -586,27 +619,27 @@ fn root_frame(app: &mut App, ui: &mut Ui) {
             }
         });
 
-    if app.has_document() && !app.show_welcome {
-        symmetry_bar::show(app, &ctx);
-        clip_bar::show(app, &ctx);
-        focus_bar::show(app, &ctx);
-        effect_picker::show(app, &ctx);
-        crate::perspective_draw::show_bar(app, &ctx);
-    }
-    dialogs::show(app, &ctx);
-    // A change this frame made to a master shows on its clones at once.
-    let before = app.engine.revision();
-    app.sync_object_clones();
-    if app.engine.revision() != before {
-        ctx.request_repaint();
-    }
 }
 
 /// The active drawing's window in `full`: rulers, the canvas with its
 /// tools, scrollbars, the page tabs and the navigator.
 pub(crate) fn drawing_window(app: &mut App, ui: &mut Ui, full: egui::Rect) {
-    let ruler = if app.show_rulers { Tokens::RULER } else { 0.0 };
-    let sb = window_bars::BAR;
+    canvas_window(app, ui, full, false);
+}
+
+/// The same canvas without the rulers, the scrollbars and the navigator: a
+/// phone pans and zooms with two fingers and has no room for them.
+pub(crate) fn drawing_window_bare(app: &mut App, ui: &mut Ui, full: egui::Rect) {
+    canvas_window(app, ui, full, true);
+}
+
+fn canvas_window(app: &mut App, ui: &mut Ui, full: egui::Rect, bare: bool) {
+    let ruler = if !bare && app.show_rulers {
+        Tokens::RULER
+    } else {
+        0.0
+    };
+    let sb = if bare { 0.0 } else { window_bars::BAR };
     let canvas_rect = egui::Rect::from_min_max(
         full.min + egui::vec2(ruler, ruler),
         full.max - egui::vec2(sb, sb),
@@ -733,9 +766,11 @@ pub(crate) fn drawing_window(app: &mut App, ui: &mut Ui, full: egui::Rect) {
     crate::fill_tool::node_bar(app, ui);
 
     // Scrollbars, document navigator, page tabs, Navigator button.
-    window_bars::window_bars(app, ui, full, canvas_rect, ruler);
+    if !bare {
+        window_bars::window_bars(app, ui, full, canvas_rect, ruler);
+    }
 
-    if app.show_rulers {
+    if !bare && app.show_rulers {
         rulers::rulers(app, ui, full);
     }
 

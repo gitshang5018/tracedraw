@@ -189,12 +189,23 @@ pub fn no_window(reason: &str) {
         .map(|d| log_path(&d).display().to_string())
         .unwrap_or_default();
     let text = crate::i18n::trf("dialog.no_window", &[("reason", reason), ("log", &log)]);
-    let _ = rfd::MessageDialog::new()
-        .set_level(rfd::MessageLevel::Error)
-        .set_title("TraceDraw")
-        .set_description(text)
-        .set_buttons(rfd::MessageButtons::Ok)
-        .show();
+    message(&text);
+}
+
+/// Tell the user in a dialog of the system's; a phone logs it instead,
+/// its screen being too small for a window that says nothing can open.
+fn message(text: &str) {
+    #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
+    {
+        let _ = rfd::MessageDialog::new()
+            .set_level(rfd::MessageLevel::Error)
+            .set_title("TraceDraw")
+            .set_description(text)
+            .set_buttons(rfd::MessageButtons::Ok)
+            .show();
+    }
+    #[cfg(target_os = "android")]
+    log::error!("{text}");
 }
 
 /// Tell the user, who would otherwise see nothing (no console on
@@ -212,12 +223,7 @@ fn show(report: &str, saved: Option<&Path>) {
             p.display()
         ));
     }
-    let _ = rfd::MessageDialog::new()
-        .set_level(rfd::MessageLevel::Error)
-        .set_title("TraceDraw")
-        .set_description(text)
-        .set_buttons(rfd::MessageButtons::Ok)
-        .show();
+    message(&text);
 }
 
 #[cfg(test)]

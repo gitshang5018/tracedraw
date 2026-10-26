@@ -184,7 +184,13 @@ pub fn remove(path: impl AsRef<Path>) -> std::io::Result<()> {
 
 /// Choose a folder (desktop only; `None` when cancelled or in a browser).
 pub fn pick_folder() -> Option<PathBuf> {
-    #[cfg(not(target_arch = "wasm32"))]
+    // A phone has no folder chooser without a system dialog: a folder
+    // feature gets the documents folder, the one it may read.
+    #[cfg(target_os = "android")]
+    {
+        Some(android_documents())
+    }
+    #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
     {
         rfd::FileDialog::new().pick_folder()
     }
@@ -449,6 +455,191 @@ pub fn take_picked(key: &str) -> Option<PathBuf> {
     PICKED.with(|p| p.borrow_mut().remove(key))
 }
 
+// ---------------------------------------------------------------------------
+// A phone has no file dialogs of the system's: a dialog becomes a request
+// the interface answers with its own list (see `ui::mobile::files_sheet`).
+// The asking code is the same as on the desktop: it hands over a closure
+// that runs with the path, and gets it a frame or two later.
+// ---------------------------------------------------------------------------
+
+/// What the interface shows for a file dialog asked on a phone.
+#[cfg(target_os = "android")]
+#[derive(Debug, Clone)]
+pub struct AskInfo {
+    /// The extensions the dialog offers, lower case, empty for any file.
+    pub exts: Vec<String>,
+    /// Whether more than one file may be picked.
+    pub multiple: bool,
+    /// Whether the answer is kept for [`take_picked`] rather than run.
+    pub into: bool,
+}
+
+/// A file dialog waiting for the interface's answer.
+#[cfg(target_os = "android")]
+enum Ask {
+    Open {
+        exts: Vec<String>,
+        then: Job,
+    },
+    Many {
+        exts: Vec<String>,
+        then: Box<dyn FnOnce(&mut App, Vec<PathBuf>)>,
+    },
+    Into {
+        exts: Vec<String>,
+        key: String,
+    },
+}
+
+#[cfg(target_os = "android")]
+thread_local! {
+    static ASK: RefCell<Option<Ask>> = const { RefCell::new(None) };
+    /// The folder the Android build keeps its drawings in.
+    static DOCUMENTS: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
+}
+
+/// The folder drawings are read from and written to on a phone, set once
+/// as the app starts.
+#[cfg(target_os = "android")]
+pub fn set_android_documents(dir: PathBuf) {
+    DOCUMENTS.with(|d| *d.borrow_mut() = Some(dir));
+}
+
+/// Look again for the folder the drawings live in: the shared Documents
+/// folder once the phone lets the app see the storage, the app's own
+/// before that. Called as the Files sheet opens, since the user may have
+/// just granted the access in the system's screen.
+#[cfg(target_os = "android")]
+pub fn refresh_android_documents() {
+    let shared = crate::android_system::phone().and_then(|app| {
+        if !crate::android_system::storage_granted(app) {
+            return None;
+        }
+        let docs = crate::android_system::storage_root(app)?.join("Documents");
+        std::fs::create_dir_all(&docs).ok()?;
+        Some(docs)
+    });
+    let dir = shared.unwrap_or_else(crate::settings::android_documents);
+    let _ = std::fs::create_dir_all(&dir);
+    set_android_documents(dir);
+}
+
+/// The folder drawings are read from and written to on a phone.
+#[cfg(target_os = "android")]
+pub fn android_documents() -> PathBuf {
+    DOCUMENTS
+        .with(|d| d.borrow().clone())
+        .unwrap_or_else(crate::settings::android_documents)
+}
+
+/// The folder the phone layout shows its file list from, in a build that
+/// is not the phone's (the visual checks, `TRACEDRAW_MOBILE=1`): the
+/// folder named by `TRACEDRAW_MOBILE_DIR`, else the working folder.
+#[cfg(not(target_os = "android"))]
+pub fn android_documents() -> PathBuf {
+    std::env::var_os("TRACEDRAW_MOBILE_DIR")
+        .map(PathBuf::from)
+        .or_else(|| std::env::current_dir().ok())
+        .unwrap_or_default()
+}
+
+/// The file dialog waiting for an answer, for the interface to show.
+#[cfg(target_os = "android")]
+pub fn ask() -> Option<AskInfo> {
+    ASK.with(|a| {
+        a.borrow().as_ref().map(|ask| match ask {
+            Ask::Open { exts, .. } => AskInfo {
+                exts: exts.clone(),
+                multiple: false,
+                into: false,
+            },
+            Ask::Many { exts, .. } => AskInfo {
+                exts: exts.clone(),
+                multiple: true,
+                into: false,
+            },
+            Ask::Into { exts, .. } => AskInfo {
+                exts: exts.clone(),
+                multiple: false,
+                into: true,
+            },
+        })
+    })
+}
+
+/// Answer the waiting dialog with `paths`; false when none was waiting.
+#[cfg(target_os = "android")]
+pub fn answer(app: &mut App, paths: Vec<PathBuf>) -> bool {
+    let Some(ask) = ASK.with(|a| a.borrow_mut().take()) else {
+        return false;
+    };
+    match ask {
+        Ask::Open { then, .. } => {
+            if let Some(path) = paths.into_iter().next() {
+                then(app, path);
+            }
+        }
+        Ask::Many { then, .. } => then(app, paths),
+        Ask::Into { key, .. } => {
+            if let Some(path) = paths.into_iter().next() {
+                PICKED.with(|p| {
+                    p.borrow_mut().insert(key, path);
+                });
+            }
+        }
+    }
+    true
+}
+
+/// Drop the waiting dialog, as cancelling it does.
+#[cfg(target_os = "android")]
+pub fn cancel_ask() {
+    ASK.with(|a| *a.borrow_mut() = None);
+}
+
+/// The extensions of a dialog's filters, for the list to sift by.
+#[cfg(target_os = "android")]
+fn ask_exts(filters: &[(String, Vec<String>)]) -> Vec<String> {
+    filters
+        .iter()
+        .flat_map(|(_, e)| e.iter())
+        .map(|e| e.to_ascii_lowercase())
+        .collect()
+}
+
+/// A path in the documents folder for a name, made safe and not taken:
+/// `Drawing (2).tdraw` when the name is already there.
+#[cfg(target_os = "android")]
+fn android_save_path(name: &str) -> PathBuf {
+    let dir = android_documents();
+    let _ = std::fs::create_dir_all(&dir);
+    let safe: String = name
+        .chars()
+        .map(|c| if "/\\:*?\"<>|".contains(c) { '_' } else { c })
+        .collect();
+    let safe = if safe.trim().is_empty() {
+        "Drawing".to_string()
+    } else {
+        safe
+    };
+    let path = PathBuf::from(&safe);
+    let stem = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "Drawing".into());
+    let ext = path
+        .extension()
+        .map(|e| format!(".{}", e.to_string_lossy()))
+        .unwrap_or_default();
+    let mut candidate = dir.join(&safe);
+    let mut n = 2;
+    while candidate.exists() {
+        candidate = dir.join(format!("{stem} ({n}){ext}"));
+        n += 1;
+    }
+    candidate
+}
+
 /// A file dialog description, the same in both builds.
 #[derive(Debug, Clone, Default)]
 pub struct Dialog {
@@ -475,9 +666,19 @@ impl Dialog {
     }
 
     /// Pick a file and run `then` with its path: at once natively, on a
-    /// later frame in a browser.
+    /// later frame in a browser or on a phone.
     pub fn pick_file(self, app: &mut App, then: impl FnOnce(&mut App, PathBuf) + 'static) {
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(target_os = "android")]
+        {
+            let _ = app;
+            ASK.with(|a| {
+                *a.borrow_mut() = Some(Ask::Open {
+                    exts: ask_exts(&self.filters),
+                    then: Box::new(then),
+                })
+            });
+        }
+        #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
         if let Some(path) = self.native_pick() {
             then(app, path);
         }
@@ -491,7 +692,17 @@ impl Dialog {
     /// Pick one or more files and run `then` with their paths (one file in
     /// a browser).
     pub fn pick_files(self, app: &mut App, then: impl FnOnce(&mut App, Vec<PathBuf>) + 'static) {
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(target_os = "android")]
+        {
+            let _ = app;
+            ASK.with(|a| {
+                *a.borrow_mut() = Some(Ask::Many {
+                    exts: ask_exts(&self.filters),
+                    then: Box::new(then),
+                })
+            });
+        }
+        #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
         {
             let mut d = rfd::FileDialog::new();
             for (name, exts) in &self.filters {
@@ -509,7 +720,14 @@ impl Dialog {
     /// Pick a file and keep its path for [`take_picked`]`(key)`.
     pub fn pick_into(self, key: &str) {
         let key = key.to_string();
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(target_os = "android")]
+        ASK.with(|a| {
+            *a.borrow_mut() = Some(Ask::Into {
+                exts: ask_exts(&self.filters),
+                key,
+            })
+        });
+        #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
         if let Some(path) = self.native_pick() {
             PICKED.with(|p| {
                 p.borrow_mut().insert(key, path);
@@ -536,13 +754,19 @@ impl Dialog {
 
     /// The path to save to, or `None` when the user cancels: a save
     /// dialog natively, `/download/<file name>` in a browser (write it with
-    /// [`write`] to download it).
+    /// [`write`] to download it), a name in the documents folder on a
+    /// phone.
     pub fn save_path(self) -> Option<PathBuf> {
         if WEB {
             let name = self.file_name.unwrap_or_else(|| "download".into());
             return Some(PathBuf::from("/download").join(name));
         }
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(target_os = "android")]
+        {
+            let name = self.file_name.unwrap_or_else(|| "Drawing".into());
+            return Some(android_save_path(&name));
+        }
+        #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
         {
             let mut d = rfd::FileDialog::new();
             for (name, exts) in &self.filters {
@@ -558,7 +782,7 @@ impl Dialog {
         None
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
     fn native_pick(&self) -> Option<PathBuf> {
         let mut d = rfd::FileDialog::new();
         for (name, exts) in &self.filters {

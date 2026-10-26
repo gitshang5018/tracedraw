@@ -1119,6 +1119,13 @@ impl FontSystem {
         let mut db = fontdb::Database::new();
         #[cfg(not(target_arch = "wasm32"))]
         db.load_system_fonts();
+        // Android keeps its fonts in /system/fonts, which fontdb does not
+        // scan: without them the interface and the drawings have no text.
+        #[cfg(target_os = "android")]
+        {
+            db.load_fonts_dir("/system/fonts");
+            db.load_fonts_dir("/product/fonts");
+        }
         #[cfg(windows)]
         installed::drop_unregistered(&mut db);
         if let Ok(extra) = EXTRA_FONTS.lock() {

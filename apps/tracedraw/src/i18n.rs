@@ -198,11 +198,29 @@ pub fn trf(key: &str, args: &[(&str, &str)]) -> String {
 
 /// Pick the language from the system locale (`LANG`, `LC_ALL`, or the
 /// platform API later), returning a shipped code.
+/// The locale a system reports other than through the environment: a
+/// phone keeps its language in its configuration and hands it over as the
+/// app starts (see `android_system`).
+static SYSTEM_LOCALE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// The language of the system, as the interface speaks it: the one the
+/// system reported, else the one in the environment.
 pub fn system_language() -> &'static str {
+    if let Some(locale) = SYSTEM_LOCALE.get() {
+        return language_for_locale(locale);
+    }
     let env = std::env::var("LC_ALL")
         .or_else(|_| std::env::var("LANG"))
         .unwrap_or_default();
     language_for_locale(&env)
+}
+
+/// Tell the interface the language the system reported (`zh-CN`, `pt-BR`).
+/// Read by [`system_language`], which the language the user chose empty
+/// falls back to.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub fn set_system_locale(locale: &str) {
+    let _ = SYSTEM_LOCALE.set(locale.to_string());
 }
 
 /// The interface language for a locale such as `pt_BR.UTF-8`, `zh_TW` or
@@ -248,6 +266,12 @@ mod tests {
         assert_eq!(language_for_locale("pt_BR.UTF-8"), "pt-BR");
         assert_eq!(language_for_locale("sv_SE"), "en");
         assert_eq!(language_for_locale(""), "en");
+        // The tags a phone reports (`Locale.toLanguageTag`).
+        assert_eq!(language_for_locale("zh-CN"), "zh-CN");
+        assert_eq!(language_for_locale("zh-Hans-CN"), "zh-CN");
+        assert_eq!(language_for_locale("zh-Hant-TW"), "zh-TW");
+        assert_eq!(language_for_locale("pt-BR"), "pt-BR");
+        assert_eq!(language_for_locale("en-US"), "en");
     }
 
     #[test]
