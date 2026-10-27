@@ -49,14 +49,21 @@ fn combo<T: Copy + PartialEq>(
 /// Black and White (1-bit): conversion method, threshold or intensity,
 /// and the halftone screen.
 pub fn bw_dialog(app: &mut App, ctx: &Context, s: &mut BwSettings, close: &mut bool) {
+    let is_mobile = crate::ui::mobile::phone();
     super::dialogs::window(ctx, tr("dialog.mode_bw")).show(ctx, |ui| {
-        let dpi = crate::ui::bitmap_preview::selected_bitmap(app)
-            .map(|b| b.1)
-            .unwrap_or(300.0);
-        let settings = *s;
-        before_after(ui, app, settings_key(&settings), 220.0, |img, scale| {
-            black_and_white(img, &settings, dpi * scale)
-        });
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            let dpi = crate::ui::bitmap_preview::selected_bitmap(app)
+                .map(|b| b.1)
+                .unwrap_or(300.0);
+            let settings = *s;
+            let preview_h = if is_mobile {
+                (ui.available_width() * 0.5).clamp(140.0, 220.0)
+            } else {
+                220.0
+            };
+            before_after(ui, app, settings_key(&settings), preview_h, |img, scale| {
+                black_and_white(img, &settings, dpi * scale)
+            });
         ui.add_space(6.0);
         egui::Grid::new("bw_grid").num_columns(2).show(ui, |ui| {
             ui.label(tr("dialog.conversion_method"));
@@ -106,12 +113,13 @@ pub fn bw_dialog(app: &mut App, ctx: &Context, s: &mut BwSettings, close: &mut b
                 }
             }
         });
-        if super::dialogs::ok_cancel(ui, close) {
-            let settings = *s;
-            app.apply_to_bitmaps("Black and White", move |img, dpi| {
-                black_and_white(img, &settings, dpi)
-            });
-        }
+            if super::dialogs::ok_cancel(ui, close) {
+                let settings = *s;
+                app.apply_to_bitmaps("Black and White", move |img, dpi| {
+                    black_and_white(img, &settings, dpi)
+                });
+            }
+        });
     });
 }
 
@@ -125,6 +133,94 @@ fn screen_key(s: Screen) -> &'static str {
 
 /// Duotone (8-bit): type, inks with their colours and tone curves, Load
 /// and Save of the ink settings.
+fn duotone_inks_ui(ui: &mut egui::Ui, st: &mut DuotoneState, app: &mut App) {
+    ui.horizontal(|ui| {
+        ui.label(tr("dialog.type"));
+        combo(
+            ui,
+            "duo_type",
+            &mut st.settings.kind,
+            &DuotoneType::ALL,
+            DuotoneType::key,
+        );
+    });
+    let n = st.settings.kind.inks();
+    st.ink = st.ink.min(n - 1);
+    for i in 0..n {
+        ui.horizontal(|ui| {
+            let mut rgb = st.settings.inks[i].rgb;
+            if ui.color_edit_button_srgb(&mut rgb).changed() {
+                st.settings.inks[i].rgb = rgb;
+            }
+            let name = crate::i18n::trf("dialog.ink_n", &[("n", &(i + 1).to_string())]);
+            if ui.selectable_label(st.ink == i, name).clicked() {
+                st.ink = i;
+            }
+        });
+    }
+    ui.checkbox(&mut st.show_all, tr("dialog.show_all"));
+    ui.horizontal(|ui| {
+        if ui.button(tr("dialog.load")).clicked() {
+            crate::files::Dialog::new()
+                .add_filter(tr("dialog.duotone_inks"), &["json"])
+                .pick_into("duotone_inks");
+        }
+        if ui.button(tr("dialog.save")).clicked() {
+            if let Some(path) = crate::files::Dialog::new()
+                .add_filter(tr("dialog.duotone_inks"), &["json"])
+                .set_file_name("inks.json")
+                .save_path()
+            {
+                if let Ok(json) = serde_json::to_string_pretty(&st.settings) {
+                    if let Err(e) = crate::files::write(&path, json) {
+                        app.status = e.to_string();
+                    }
+                }
+            }
+        }
+    });
+}
+
+fn duotone_curve_ui(ui: &mut egui::Ui, st: &mut DuotoneState, is_mobile: bool) {
+    let inks = st.settings.inks.clone();
+    let n = st.settings.kind.inks();
+    let others: Vec<(&crate::bitmap_modes::ToneCurve, Color32)> = if st.show_all {
+        inks.iter()
+            .take(n)
+            .enumerate()
+            .filter(|(i, _)| *i != st.ink)
+            .map(|(_, ink)| (&ink.curve, rgb32(ink.rgb).gamma_multiply(0.6)))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let ink = &mut st.settings.inks[st.ink];
+    let col = if ink.rgb == [255, 255, 255] {
+        Color32::GRAY
+    } else {
+        rgb32(ink.rgb)
+    };
+    let curve_size = if is_mobile {
+        (ui.available_width() - 16.0).clamp(160.0, 260.0)
+    } else {
+        200.0
+    };
+    crate::ui::curve_edit::curve_editor(
+        ui,
+        egui::Id::new("duotone_curve"),
+        &mut ink.curve,
+        curve_size,
+        col,
+        &others,
+        None,
+    );
+    ui.label(
+        egui::RichText::new(tr("dialog.duotone_curve_hint"))
+            .size(11.0)
+            .color(crate::theme::Tokens::text_dim()),
+    );
+}
+
 pub fn duotone_dialog(app: &mut App, ctx: &Context, st: &mut DuotoneState, close: &mut bool) {
     if let Some(path) = crate::files::take_picked("duotone_inks") {
         if let Some(s) = crate::files::read_to_string(&path)
@@ -135,104 +231,41 @@ pub fn duotone_dialog(app: &mut App, ctx: &Context, st: &mut DuotoneState, close
             st.ink = 0;
         }
     }
+    let is_mobile = crate::ui::mobile::phone();
     super::dialogs::window(ctx, tr("dialog.mode_duotone")).show(ctx, |ui| {
-        // Four inks always exist; the type uses the first ones.
-        while st.settings.inks.len() < 4 {
-            let d = DuotoneSettings::default();
-            let i = st.settings.inks.len();
-            st.settings.inks.push(d.inks[i].clone());
-        }
-        let settings = st.settings.clone();
-        ui.horizontal(|ui| {
-            ui.vertical(|ui| {
-                ui.horizontal(|ui| {
-                    ui.label(tr("dialog.type"));
-                    combo(
-                        ui,
-                        "duo_type",
-                        &mut st.settings.kind,
-                        &DuotoneType::ALL,
-                        DuotoneType::key,
-                    );
-                });
-                let n = st.settings.kind.inks();
-                st.ink = st.ink.min(n - 1);
-                for i in 0..n {
-                    ui.horizontal(|ui| {
-                        let mut rgb = st.settings.inks[i].rgb;
-                        if ui.color_edit_button_srgb(&mut rgb).changed() {
-                            st.settings.inks[i].rgb = rgb;
-                        }
-                        let name = crate::i18n::trf("dialog.ink_n", &[("n", &(i + 1).to_string())]);
-                        if ui.selectable_label(st.ink == i, name).clicked() {
-                            st.ink = i;
-                        }
-                    });
-                }
-                ui.checkbox(&mut st.show_all, tr("dialog.show_all"));
-                ui.horizontal(|ui| {
-                    if ui.button(tr("dialog.load")).clicked() {
-                        crate::files::Dialog::new()
-                            .add_filter(tr("dialog.duotone_inks"), &["json"])
-                            .pick_into("duotone_inks");
-                    }
-                    if ui.button(tr("dialog.save")).clicked() {
-                        if let Some(path) = crate::files::Dialog::new()
-                            .add_filter(tr("dialog.duotone_inks"), &["json"])
-                            .set_file_name("inks.json")
-                            .save_path()
-                        {
-                            if let Ok(json) = serde_json::to_string_pretty(&st.settings) {
-                                if let Err(e) = crate::files::write(&path, json) {
-                                    app.status = e.to_string();
-                                }
-                            }
-                        }
-                    }
-                });
-            });
-            ui.vertical(|ui| {
-                let inks = st.settings.inks.clone();
-                let n = st.settings.kind.inks();
-                let others: Vec<(&crate::bitmap_modes::ToneCurve, Color32)> = if st.show_all {
-                    inks.iter()
-                        .take(n)
-                        .enumerate()
-                        .filter(|(i, _)| *i != st.ink)
-                        .map(|(_, ink)| (&ink.curve, rgb32(ink.rgb).gamma_multiply(0.6)))
-                        .collect()
-                } else {
-                    Vec::new()
-                };
-                let ink = &mut st.settings.inks[st.ink];
-                let col = if ink.rgb == [255, 255, 255] {
-                    Color32::GRAY
-                } else {
-                    rgb32(ink.rgb)
-                };
-                crate::ui::curve_edit::curve_editor(
-                    ui,
-                    egui::Id::new("duotone_curve"),
-                    &mut ink.curve,
-                    200.0,
-                    col,
-                    &others,
-                    None,
-                );
-                ui.label(
-                    egui::RichText::new(tr("dialog.duotone_curve_hint"))
-                        .size(11.0)
-                        .color(crate::theme::Tokens::text_dim()),
-                );
-            });
-        });
-        before_after(ui, app, settings_key(&settings), 200.0, |img, _| {
-            duotone(img, &settings)
-        });
-        if super::dialogs::ok_cancel(ui, close) {
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            // Four inks always exist; the type uses the first ones.
+            while st.settings.inks.len() < 4 {
+                let d = DuotoneSettings::default();
+                let i = st.settings.inks.len();
+                st.settings.inks.push(d.inks[i].clone());
+            }
             let settings = st.settings.clone();
-            app.apply_to_bitmaps("Duotone", move |img, _| duotone(img, &settings));
-        }
+            if is_mobile {
+                ui.vertical(|ui| {
+                    duotone_inks_ui(ui, st, app);
+                    ui.add_space(8.0);
+                    duotone_curve_ui(ui, st, is_mobile);
+                });
+            } else {
+                ui.horizontal(|ui| {
+                    ui.vertical(|ui| duotone_inks_ui(ui, st, app));
+                    ui.vertical(|ui| duotone_curve_ui(ui, st, is_mobile));
+                });
+            }
+            let preview_h = if is_mobile {
+                (ui.available_width() * 0.5).clamp(140.0, 200.0)
+            } else {
+                200.0
+            };
+            before_after(ui, app, settings_key(&settings), preview_h, |img, _| {
+                duotone(img, &settings)
+            });
+            if super::dialogs::ok_cancel(ui, close) {
+                let settings = st.settings.clone();
+                app.apply_to_bitmaps("Duotone", move |img, _| duotone(img, &settings));
+            }
+        });
     });
 }
 
@@ -242,11 +275,18 @@ pub fn paletted_dialog(app: &mut App, ctx: &Context, s: &mut PalettedSettings, c
     if s.palette == PaletteType::Custom && s.custom.is_empty() {
         s.custom = app.document_palette_rgb();
     }
+    let is_mobile = crate::ui::mobile::phone();
     super::dialogs::window(ctx, tr("dialog.mode_paletted")).show(ctx, |ui| {
-        let settings = s.clone();
-        let thumb = before_after(ui, app, settings_key(&settings), 220.0, |img, _| {
-            paletted(img, &settings)
-        });
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            let settings = s.clone();
+            let preview_h = if is_mobile {
+                (ui.available_width() * 0.5).clamp(140.0, 220.0)
+            } else {
+                220.0
+            };
+            let thumb = before_after(ui, app, settings_key(&settings), preview_h, |img, _| {
+                paletted(img, &settings)
+            });
         ui.add_space(6.0);
         egui::Grid::new("pal_grid").num_columns(2).show(ui, |ui| {
             ui.label(tr("dialog.palette"));
@@ -306,10 +346,11 @@ pub fn paletted_dialog(app: &mut App, ctx: &Context, s: &mut PalettedSettings, c
                 ui.painter().rect_filled(r, 0.0, rgb32(*c));
             }
         }
-        if super::dialogs::ok_cancel(ui, close) {
-            let settings = s.clone();
-            app.apply_to_bitmaps("Paletted", move |img, _| paletted(img, &settings));
-        }
+            if super::dialogs::ok_cancel(ui, close) {
+                let settings = s.clone();
+                app.apply_to_bitmaps("Paletted", move |img, _| paletted(img, &settings));
+            }
+        });
     });
 }
 
@@ -331,17 +372,24 @@ pub fn remove_background_dialog(
     close: &mut bool,
 ) {
     use crate::bg_remove::remove_background;
+    let is_mobile = crate::ui::mobile::phone();
     super::dialogs::window(ctx, tr("dialog.remove_background_title")).show(ctx, |ui| {
-        let settings = st.settings.clone();
-        let preview = crate::ui::bitmap_preview::before_after_pick(
-            ui,
-            app,
-            &crate::ui::bitmap_preview::Source::Shown,
-            settings_key(&settings),
-            220.0,
-            st.picking,
-            |img, scale| remove_background(img, &settings, scale),
-        );
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            let settings = st.settings.clone();
+            let preview_h = if is_mobile {
+                (ui.available_width() * 0.5).clamp(140.0, 220.0)
+            } else {
+                220.0
+            };
+            let preview = crate::ui::bitmap_preview::before_after_pick(
+                ui,
+                app,
+                &crate::ui::bitmap_preview::Source::Shown,
+                settings_key(&settings),
+                preview_h,
+                st.picking,
+                |img, scale| remove_background(img, &settings, scale),
+            );
         // A click on a picture adds the colour under it (taken from the
         // picture as it was, so a removed pixel can be picked too).
         if let (true, Some(p)) = (st.picking, preview.as_ref()) {
@@ -376,9 +424,10 @@ pub fn remove_background_dialog(
                         ui.label(tr("dialog.bg_colors_auto"));
                     }
                     let mut gone = None;
+                    let swatch_sz = if is_mobile { 28.0 } else { 18.0 };
                     for (i, c) in st.settings.colors.iter().enumerate() {
                         let (rect, resp) =
-                            ui.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::click());
+                            ui.allocate_exact_size(egui::vec2(swatch_sz, swatch_sz), egui::Sense::click());
                         ui.painter().rect_filled(rect, 2.0, rgb32(*c));
                         ui.painter().rect_stroke(
                             rect,
@@ -396,8 +445,9 @@ pub fn remove_background_dialog(
                     if let Some(i) = gone {
                         st.settings.colors.remove(i);
                     }
+                    let eyedropper_sz = if is_mobile { 34.0 } else { 24.0 };
                     let (rect, resp) =
-                        ui.allocate_exact_size(egui::vec2(24.0, 24.0), egui::Sense::click());
+                        ui.allocate_exact_size(egui::vec2(eyedropper_sz, eyedropper_sz), egui::Sense::click());
                     crate::ui::propbar::frame(ui, rect, resp.hovered(), st.picking);
                     crate::ui::icons::draw(
                         ui.painter(),
@@ -440,11 +490,12 @@ pub fn remove_background_dialog(
             st.settings = Default::default();
             st.picking = false;
         }
-        if super::dialogs::ok_cancel(ui, close) {
-            let settings = st.settings.clone();
-            app.apply_to_bitmaps("Remove Background", move |img, _| {
-                remove_background(img, &settings, 1.0)
-            });
-        }
+            if super::dialogs::ok_cancel(ui, close) {
+                let settings = st.settings.clone();
+                app.apply_to_bitmaps("Remove Background", move |img, _| {
+                    remove_background(img, &settings, 1.0)
+                });
+            }
+        });
     });
 }

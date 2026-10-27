@@ -365,11 +365,12 @@ pub fn count_dialog(app: &mut App, ctx: &Context, st: &mut TableCountState, clos
         TableCountKind::SplitCols => ("table.split_cols_title", "dialog.table_columns", None),
     };
     let min = if sides.is_some() { 1 } else { 2 };
+    let field_height = if crate::ui::mobile::phone() { 38.0 } else { 22.0 };
     window(ctx, tr(title)).show(ctx, |ui| {
         ui.horizontal(|ui| {
             ui.label(tr(label));
             ui.add_sized(
-                [90.0, 22.0],
+                [90.0, field_height],
                 crate::ui::field::NumField::new(&mut st.count).range(min..=100),
             );
         });

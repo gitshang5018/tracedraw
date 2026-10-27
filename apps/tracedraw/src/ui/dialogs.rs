@@ -1876,6 +1876,8 @@ pub fn show(app: &mut App, ctx: &Context) {
             height,
         } => {
             let units = app.units;
+            let mobile = crate::ui::mobile::phone();
+            let field_h = if mobile { 38.0 } else { 22.0 };
             let mut help = false;
             window(ctx, tr("dialog.create_table")).show(ctx, |ui| {
                 egui::Grid::new("create_table")
@@ -1892,13 +1894,13 @@ pub fn show(app: &mut App, ctx: &Context) {
                         };
                         label(ui, "dialog.table_rows");
                         ui.add_sized(
-                            [120.0, 22.0],
+                            [120.0, field_h],
                             crate::ui::field::NumField::new(rows).range(1..=200),
                         );
                         ui.end_row();
                         label(ui, "dialog.table_columns");
                         ui.add_sized(
-                            [120.0, 22.0],
+                            [120.0, field_h],
                             crate::ui::field::NumField::new(cols).range(1..=200),
                         );
                         ui.end_row();
@@ -1910,7 +1912,7 @@ pub fn show(app: &mut App, ctx: &Context) {
                             let mut v = units.from_mm(*mm);
                             if ui
                                 .add_sized(
-                                    [120.0, 22.0],
+                                    [120.0, field_h],
                                     crate::ui::field::NumField::new(&mut v)
                                         .speed(0.1)
                                         .max_decimals(3)
@@ -3586,18 +3588,32 @@ fn print_dialog(app: &mut App, ctx: &Context, st: &mut PrintState, close: &mut b
             tr("print.tab_postscript"),
             issues_tab,
         ];
-        ui.horizontal(|ui| {
-            for (i, t) in tabs.iter().enumerate() {
-                if i == 6 && !app.settings.printing.preflight {
-                    continue;
+        let mut render_tabs = |ui: &mut egui::Ui| {
+            ui.horizontal(|ui| {
+                for (i, t) in tabs.iter().enumerate() {
+                    if i == 6 && !app.settings.printing.preflight {
+                        continue;
+                    }
+                    ui.selectable_value(&mut st.tab, i, t.as_str());
                 }
-                ui.selectable_value(&mut st.tab, i, t.as_str());
-            }
-        });
+            });
+        };
+        let mobile = crate::ui::mobile::phone();
+        if mobile {
+            egui::ScrollArea::horizontal()
+                .id_salt("print_tabs_scroll")
+                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+                .show(ui, &mut render_tabs);
+        } else {
+            render_tabs(ui);
+        }
         ui.separator();
-        egui::Frame::new().show(ui, |ui| {
-            ui.set_min_size(egui::vec2(560.0, 380.0));
-            ui.set_max_width(560.0);
+        let width = if mobile { ui.available_width() } else { 560.0 };
+        let mut render_body = |ui: &mut Ui| {
+            ui.set_max_width(width);
+            if !mobile {
+                ui.set_min_size(egui::vec2(560.0, 380.0));
+            }
             match st.tab {
                 1 => print_tab_color(ui, st),
                 2 => print_tab_composite(ui, st),
@@ -3613,7 +3629,21 @@ fn print_dialog(app: &mut App, ctx: &Context, st: &mut PrintState, close: &mut b
                     }
                 }
             }
-        });
+        };
+        if mobile {
+            let max_h = (ctx.content_rect().height() - 180.0).clamp(240.0, 480.0);
+            egui::ScrollArea::vertical()
+                .id_salt("print_body_scroll")
+                .max_height(max_h)
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    ui.vertical(&mut render_body);
+                });
+        } else {
+            egui::Frame::new().show(ui, |ui| {
+                ui.vertical(&mut render_body);
+            });
+        }
         ui.separator();
         ui.horizontal(|ui| {
             if ui.button(tr("menu.file.print_preview")).clicked() {
@@ -4083,8 +4113,10 @@ fn merge_format_has_digits(format: &crate::print_merge::NumberFormat) -> bool {
 
 fn print_merge_dialog(app: &mut App, ctx: &Context, st: &mut PrintMergeState, close: &mut bool) {
     use crate::print_merge::{self as pm, FieldKind};
+    let mobile = crate::ui::mobile::phone();
     window(ctx, tr("dialog.print_merge")).show(ctx, |ui| {
-        ui.set_width(720.0);
+        let width = if mobile { ui.available_width() } else { 720.0 };
+        ui.set_width(width);
         if st.kinds.len() < st.headers.len() {
             st.kinds.resize(st.headers.len(), FieldKind::Text);
         }
@@ -4314,9 +4346,10 @@ fn print_merge_dialog(app: &mut App, ctx: &Context, st: &mut PrintMergeState, cl
             .stroke(egui::Stroke::new(1.0, Tokens::control_border()))
             .inner_margin(4.0)
             .show(ui, |ui| {
-                ui.set_min_size(egui::vec2(700.0, 300.0));
+                let min_w = if mobile { ui.available_width().max(180.0) } else { 700.0 };
+                ui.set_min_size(egui::vec2(min_w, if mobile { 200.0 } else { 300.0 }));
                 egui::ScrollArea::both()
-                    .max_height(300.0)
+                    .max_height(if mobile { 220.0 } else { 300.0 })
                     .id_salt("merge_grid")
                     .show(ui, |ui| {
                         if st.headers.is_empty() {
@@ -4637,25 +4670,32 @@ fn print_merge_dialog(app: &mut App, ctx: &Context, st: &mut PrintMergeState, cl
 }
 
 fn trace_dialog(app: &mut App, ctx: &Context, st: &mut TraceState, close: &mut bool) {
+    let mobile = crate::ui::mobile::phone();
     window(ctx, tr("dialog.trace")).show(ctx, |ui| {
-        // Before and after: the bitmap and its trace, worked out on a small
-        // copy whenever the settings change.
-        let key = {
-            use std::hash::{Hash, Hasher};
-            let mut h = std::collections::hash_map::DefaultHasher::new();
-            format!("{:?}", st.settings).hash(&mut h);
-            h.finish()
-        };
-        let settings = st.settings.clone();
-        crate::ui::bitmap_preview::before_after(ui, app, key, 200.0, |img, _| {
-            let traced = crate::trace::trace(img, &settings);
-            crate::trace::render_traced(
-                &traced,
-                img.width(),
-                img.height(),
-                crate::trace::last_stroke_width_px(),
-            )
-        });
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            // Before and after: the bitmap and its trace, worked out on a small
+            // copy whenever the settings change.
+            let key = {
+                use std::hash::{Hash, Hasher};
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                format!("{:?}", st.settings).hash(&mut h);
+                h.finish()
+            };
+            let settings = st.settings.clone();
+            let preview_h = if mobile {
+                (ui.available_width() * 0.5).clamp(140.0, 200.0)
+            } else {
+                200.0
+            };
+            crate::ui::bitmap_preview::before_after(ui, app, key, preview_h, |img, _| {
+                let traced = crate::trace::trace(img, &settings);
+                crate::trace::render_traced(
+                    &traced,
+                    img.width(),
+                    img.height(),
+                    crate::trace::last_stroke_width_px(),
+                )
+            });
         ui.add_space(4.0);
         ui.horizontal_wrapped(|ui| {
             for p in crate::trace::Preset::ALL {
@@ -4704,11 +4744,12 @@ fn trace_dialog(app: &mut App, ctx: &Context, st: &mut TraceState, close: &mut b
                 ui.label(trf("dialog.trace_preview_n", &[("n", &n.to_string())]));
             }
         });
-        if ok_cancel(ui, close) {
-            let settings = st.settings.clone();
-            app.trace_bitmaps(&settings);
-            app.last_trace = Some((st.preset, settings));
-        }
+            if ok_cancel(ui, close) {
+                let settings = st.settings.clone();
+                app.trace_bitmaps(&settings);
+                app.last_trace = Some((st.preset, settings));
+            }
+        });
     });
 }
 
@@ -4732,12 +4773,14 @@ fn paragraph_dialog(app: &mut App, ctx: &Context, which: &Dialog, close: &mut bo
     window(ctx, title).show(ctx, |ui| {
         match which {
             Dialog::TextTabs => {
+                let mobile = crate::ui::mobile::phone();
                 ui.label(tr("dialog.tab_stops"));
                 let mut remove = None;
+                let btn_sz = if mobile { egui::vec2(28.0, 28.0) } else { egui::vec2(18.0, 18.0) };
                 for (i, t) in p.tabs.iter_mut().enumerate() {
                     ui.horizontal(|ui| {
                         changed |= unit_value(ui, &format!("{}", i + 1), t, u);
-                        if ui.small_button("x").clicked() {
+                        if ui.add_sized(btn_sz, egui::Button::new("x")).clicked() {
                             remove = Some(i);
                         }
                     });
@@ -4746,7 +4789,12 @@ fn paragraph_dialog(app: &mut App, ctx: &Context, which: &Dialog, close: &mut bo
                     p.tabs.remove(i);
                     changed = true;
                 }
-                if ui.button(tr("dialog.add_tab")).clicked() {
+                let add_btn = if mobile {
+                    ui.add_sized(egui::vec2(120.0, 36.0), egui::Button::new(tr("dialog.add_tab")))
+                } else {
+                    ui.button(tr("dialog.add_tab"))
+                };
+                if add_btn.clicked() {
                     let last = p.tabs.last().copied().unwrap_or(0.0);
                     p.tabs.push(last + 12.7);
                     changed = true;
@@ -4762,15 +4810,17 @@ fn paragraph_dialog(app: &mut App, ctx: &Context, which: &Dialog, close: &mut bo
                 changed |= unit_value(ui, &tr("dialog.gutter"), &mut p.gutter, u);
             }
             Dialog::TextBullets => {
+                let mobile = crate::ui::mobile::phone();
                 changed |= ui
                     .checkbox(&mut p.bullets, tr("dialog.use_bullets"))
                     .changed();
                 ui.horizontal(|ui| {
                     ui.label(tr("dialog.bullet_symbol"));
+                    let chip_sz = if mobile { egui::vec2(34.0, 32.0) } else { egui::vec2(22.0, 20.0) };
                     for b in [
                         "\u{2022}", "\u{25E6}", "\u{25AA}", "\u{2013}", "\u{2713}", "\u{27A4}",
                     ] {
-                        if ui.selectable_label(p.bullet_char == b, b).clicked() {
+                        if ui.add_sized(chip_sz, egui::Button::new(b).selected(p.bullet_char == b)).clicked() {
                             p.bullet_char = b.to_string();
                             changed = true;
                         }
@@ -4879,11 +4929,13 @@ fn border_grommet_dialog(
     let area = crate::border_grommet::source_area(app, st.source);
     let mut ok = false;
     let mut help = false;
+    let mobile = crate::ui::mobile::phone();
+    let field_h = if mobile { 38.0 } else { 22.0 };
     let length = |ui: &mut Ui, mm: &mut f64, min: f64| {
         let mut v = units.from_mm(*mm);
         if ui
             .add_sized(
-                [90.0, 22.0],
+                [90.0, field_h],
                 crate::ui::field::NumField::new(&mut v)
                     .speed(0.1)
                     .max_decimals(3)
@@ -4895,11 +4947,10 @@ fn border_grommet_dialog(
         }
     };
     window(ctx, tr("border_grommet.title")).show(ctx, |ui| {
-        ui.horizontal_top(|ui| {
-            border_grommet_preview(ui, st, area, units);
-            ui.vertical(|ui| {
-                ui.set_width(250.0);
-                group(ui, &tr("border_grommet.source"), |ui| {
+        let render_controls = |ui: &mut Ui, st: &mut crate::border_grommet::BorderGrommetState| {
+            let ctrl_w = if mobile { ui.available_width() } else { 250.0 };
+            ui.set_width(ctrl_w);
+            group(ui, &tr("border_grommet.source"), |ui| {
                     ui.horizontal(|ui| {
                         ui.radio_value(
                             &mut st.source,
@@ -4994,8 +5045,26 @@ fn border_grommet_dialog(
                         });
                     });
                 });
+        };
+        if mobile {
+            let max_h = (ctx.content_rect().height() - 160.0).clamp(240.0, 520.0);
+            egui::ScrollArea::vertical()
+                .id_salt("bg_scroll")
+                .max_height(max_h)
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    border_grommet_preview(ui, st, area, units);
+                    ui.add_space(8.0);
+                    render_controls(ui, st);
+                });
+        } else {
+            ui.horizontal_top(|ui| {
+                border_grommet_preview(ui, st, area, units);
+                ui.vertical(|ui| {
+                    render_controls(ui, st);
+                });
             });
-        });
+        }
         ui.add_space(10.0);
         ui.horizontal(|ui| {
             help = ui
@@ -5112,7 +5181,18 @@ fn border_grommet_preview(
     area: Option<Rect>,
     units: Units,
 ) {
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(560.0, 440.0), egui::Sense::hover());
+    let mobile = crate::ui::mobile::phone();
+    let preview_w = if mobile {
+        (ui.available_width() - 8.0).clamp(180.0, 560.0)
+    } else {
+        560.0
+    };
+    let preview_h = if mobile {
+        (preview_w * 0.65).clamp(150.0, 440.0)
+    } else {
+        440.0
+    };
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(preview_w, preview_h), egui::Sense::hover());
     let p = ui.painter_at(rect);
     p.rect(
         rect,
