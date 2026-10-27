@@ -857,7 +857,13 @@ fn view_chips(app: &mut App, ui: &mut Ui, m3: &M3, full: Rect, open: &mut Sheet)
         resp.hovered(),
     );
     if resp.clicked() {
-        app.zoom_to_fit();
+        if !app.selection.is_empty() {
+            app.zoom_to_selection();
+        } else if (app.zoom_percent() - 100.0).abs() < 5.0 {
+            app.zoom_to_fit();
+        } else {
+            app.zoom_to_page();
+        }
     }
 }
 

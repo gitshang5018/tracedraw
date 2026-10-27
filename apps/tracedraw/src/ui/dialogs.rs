@@ -1289,7 +1289,8 @@ pub fn show(app: &mut App, ctx: &Context) {
             window(ctx, tr("dialog.rename_page")).show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(tr("dialog.page_name"));
-                    ui.text_edit_singleline(name);
+                    let w = ui.available_width().min(260.0);
+                    ui.add(egui::TextEdit::singleline(name).desired_width(w));
                 });
                 if ok_cancel(ui, &mut close) {
                     let page = app.page;
@@ -1483,11 +1484,17 @@ pub fn show(app: &mut App, ctx: &Context) {
                 .trim()
                 .to_string();
             window(ctx, title).show(ctx, |ui| {
+                let w = if crate::ui::mobile::phone() {
+                    ui.available_width()
+                } else {
+                    480.0
+                };
+                let rows = if crate::ui::mobile::phone() { 6 } else { 10 };
                 ui.add(
                     egui::TextEdit::multiline(text)
                         .id(egui::Id::new("edit_text_dialog_box"))
-                        .desired_width(480.0)
-                        .desired_rows(10),
+                        .desired_width(w)
+                        .desired_rows(rows),
                 );
                 if ok_cancel(ui, &mut close) {
                     app.set_text_content(*shape, text);

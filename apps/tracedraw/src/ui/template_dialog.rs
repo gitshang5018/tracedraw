@@ -105,54 +105,91 @@ pub fn dialog(app: &mut App, ctx: &Context, st: &mut TemplateState, close: &mut 
     let title = tr("menu.file.new_from_template");
     let title = title.trim_end_matches(['.', '\u{2026}']).to_string();
     let mut open_now: Option<usize> = None;
+    let mobile = crate::ui::mobile::active(ctx);
     crate::ui::chrome::window(title).show(ctx, |ui| {
-        ui.set_width(820.0);
+        let width = if mobile {
+            ui.available_width()
+        } else {
+            820.0
+        };
+        ui.set_width(width);
         // Search and the two lists.
-        ui.horizontal(|ui| {
-            ui.add_sized(
-                [380.0, 24.0],
-                egui::TextEdit::singleline(&mut st.search).hint_text(tr("tpl.search")),
-            );
-            let sources = [
-                (None, tr("tpl.all_templates")),
-                (Some(false), tr("tpl.built_in")),
-                (Some(true), tr("tpl.my_templates")),
-            ];
-            let current = sources
-                .iter()
-                .find(|(m, _)| *m == st.mine)
-                .map(|(_, n)| n.clone())
-                .unwrap_or_default();
-            egui::ComboBox::from_id_salt("tpl_source")
-                .width(190.0)
-                .selected_text(current)
-                .show_ui(ui, |ui| {
-                    for (m, n) in &sources {
-                        ui.selectable_value(&mut st.mine, *m, n);
-                    }
+        let sources = [
+            (None, tr("tpl.all_templates")),
+            (Some(false), tr("tpl.built_in")),
+            (Some(true), tr("tpl.my_templates")),
+        ];
+        let current_source = sources
+            .iter()
+            .find(|(m, _)| *m == st.mine)
+            .map(|(_, n)| n.clone())
+            .unwrap_or_default();
+        let current_cat = st
+            .category
+            .map(|c| tr(c.key()))
+            .unwrap_or_else(|| tr("tpl.all_categories"));
+
+        if mobile {
+            ui.vertical(|ui| {
+                ui.add_sized(
+                    [width, 30.0],
+                    egui::TextEdit::singleline(&mut st.search).hint_text(tr("tpl.search")),
+                );
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    let half = ((width - 12.0) * 0.5).max(100.0);
+                    egui::ComboBox::from_id_salt("tpl_source")
+                        .width(half)
+                        .selected_text(current_source)
+                        .show_ui(ui, |ui| {
+                            for (m, n) in &sources {
+                                ui.selectable_value(&mut st.mine, *m, n);
+                            }
+                        });
+                    egui::ComboBox::from_id_salt("tpl_category")
+                        .width(half)
+                        .selected_text(current_cat)
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut st.category, None, tr("tpl.all_categories"));
+                            for c in Category::ALL {
+                                ui.selectable_value(&mut st.category, Some(c), tr(c.key()));
+                            }
+                        });
                 });
-            let current = st
-                .category
-                .map(|c| tr(c.key()))
-                .unwrap_or_else(|| tr("tpl.all_categories"));
-            egui::ComboBox::from_id_salt("tpl_category")
-                .width(190.0)
-                .selected_text(current)
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut st.category, None, tr("tpl.all_categories"));
-                    for c in Category::ALL {
-                        ui.selectable_value(&mut st.category, Some(c), tr(c.key()));
-                    }
-                });
-        });
+            });
+        } else {
+            ui.horizontal(|ui| {
+                ui.add_sized(
+                    [380.0, 24.0],
+                    egui::TextEdit::singleline(&mut st.search).hint_text(tr("tpl.search")),
+                );
+                egui::ComboBox::from_id_salt("tpl_source")
+                    .width(190.0)
+                    .selected_text(current_source)
+                    .show_ui(ui, |ui| {
+                        for (m, n) in &sources {
+                            ui.selectable_value(&mut st.mine, *m, n);
+                        }
+                    });
+                egui::ComboBox::from_id_salt("tpl_category")
+                    .width(190.0)
+                    .selected_text(current_cat)
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut st.category, None, tr("tpl.all_categories"));
+                        for c in Category::ALL {
+                            ui.selectable_value(&mut st.category, Some(c), tr(c.key()));
+                        }
+                    });
+            });
+        }
         ui.add_space(6.0);
         let shown = st.shown();
         if st.selected.is_some_and(|s| !shown.contains(&s)) {
             st.selected = None;
         }
-        let height = 420.0;
+        let height = if mobile { 280.0 } else { 420.0 };
         ui.horizontal_top(|ui| {
-            let grid_w = if st.details { 540.0 } else { 820.0 };
+            let grid_w = if mobile { width } else if st.details { 540.0 } else { 820.0 };
             egui::Frame::new()
                 .fill(Tokens::panel())
                 .stroke(egui::Stroke::new(1.0, Tokens::border()))

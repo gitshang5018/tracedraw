@@ -340,7 +340,15 @@ pub fn dialog(app: &mut App, ctx: &Context, st: &mut DocPropsState, close: &mut 
     let stats = crate::doc_stats::stats(app.doc());
     let mut ok = false;
     let mut help = false;
-    let size = egui::vec2(430.0, 780.0);
+    let size = if crate::ui::mobile::phone() {
+        let s = ctx.content_rect();
+        egui::vec2(
+            (s.width() - 32.0).clamp(260.0, 420.0),
+            (s.height() - 64.0).clamp(320.0, 560.0),
+        )
+    } else {
+        egui::vec2(430.0, 780.0)
+    };
     let closed = crate::ui::chrome::dialog(
         ctx,
         "document_properties",
@@ -353,6 +361,12 @@ pub fn dialog(app: &mut App, ctx: &Context, st: &mut DocPropsState, close: &mut 
                 egui::pos2(area.max.x - 14.0, area.max.y - 52.0),
             );
             ui.scope_builder(egui::UiBuilder::new().max_rect(inner), |ui| {
+                let mobile = crate::ui::mobile::phone();
+                let scroll_h = if mobile { (inner.height() - 10.0).max(100.0) } else { inner.height() };
+                egui::ScrollArea::vertical()
+                    .id_salt("docprops_scroll")
+                    .max_height(scroll_h)
+                    .show(ui, |ui| {
                 egui::Grid::new("docprops_fields")
                     .num_columns(2)
                     .spacing([8.0, 6.0])
@@ -418,6 +432,7 @@ pub fn dialog(app: &mut App, ctx: &Context, st: &mut DocPropsState, close: &mut 
                             .max_height(ui.available_height() - 8.0)
                             .show(ui, |ui| report(app, ui, &stats));
                     });
+                });
             });
             let buttons = egui::Rect::from_min_size(
                 egui::pos2(area.min.x + 12.0, area.max.y - 42.0),
