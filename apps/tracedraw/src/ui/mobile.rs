@@ -187,6 +187,7 @@ struct Safe {
     bottom: f32,
     left: f32,
     right: f32,
+    status_bar_visible: bool,
 }
 
 #[cfg(target_os = "android")]
@@ -200,35 +201,40 @@ fn system_insets(ctx: &egui::Context) -> Safe {
     let key = Id::new("mobile_insets");
     let size = ctx.content_rect().size() * ppp;
     let px = (size.x.round() as i32, size.y.round() as i32);
-    if let Some((seen, got)) =
-        ctx.data(|d| d.get_temp::<((i32, i32), (f32, f32, f32, f32))>(key))
+    if let Some((seen, got, vis)) =
+        ctx.data(|d| d.get_temp::<((i32, i32), (f32, f32, f32, f32), bool)>(key))
     {
-        if seen == px && got != (0.0, 0.0, 0.0, 0.0) {
+        if seen == px {
             return Safe {
                 top: got.0,
                 bottom: got.1,
                 left: got.2,
                 right: got.3,
+                status_bar_visible: vis,
             };
         }
     }
     let sdk = winit::platform::android::activity::AndroidApp::sdk_version();
-    let got = crate::android_system::read(phone.activity_as_ptr(), phone.vm_as_ptr(), sdk)
-        .map(|i| {
+    let insets = crate::android_system::read(phone.activity_as_ptr(), phone.vm_as_ptr(), sdk);
+    let (got, vis) = match insets {
+        Some(i) => (
             (
                 i.top as f32 / ppp,
                 i.bottom as f32 / ppp,
                 i.left as f32 / ppp,
                 i.right as f32 / ppp,
-            )
-        })
-        .unwrap_or((0.0, 0.0, 0.0, 0.0));
-    ctx.data_mut(|d| d.insert_temp(key, (px, got)));
+            ),
+            i.status_bar_visible,
+        ),
+        None => ((0.0, 0.0, 0.0, 0.0), false),
+    };
+    ctx.data_mut(|d| d.insert_temp(key, (px, got, vis)));
     Safe {
         top: got.0,
         bottom: got.1,
         left: got.2,
         right: got.3,
+        status_bar_visible: vis,
     }
 }
 
@@ -547,11 +553,26 @@ fn touch_style(ctx: &egui::Context) {
 // The bars
 // ---------------------------------------------------------------------------
 
+/// Top padding for the top app bar, drawer, and headers.
+/// In landscape mode, if it is in fullscreen mode (status bar is hidden or no top inset),
+/// no downward shift is applied. If the system status bar is visible, shift down slightly
+/// to clear the status bar. In portrait mode, use natural safe insets.
+fn top_padding(safe: Safe, land: bool) -> f32 {
+    if land {
+        if safe.status_bar_visible && safe.top > 0.0 {
+            safe.top + 6.0
+        } else {
+            safe.top
+        }
+    } else {
+        safe.top
+    }
+}
+
 fn top_bar(app: &mut App, ui: &mut Ui, m3: &M3, safe: Safe, open: &mut Sheet) {
     let screen = ui.ctx().content_rect();
     let land = landscape(screen);
-    // Shift top bar buttons down in landscape mode; in portrait, use natural safe insets.
-    let top_pad = if land { safe.top + 6.0 } else { safe.top };
+    let top_pad = top_padding(safe, land);
     egui::Panel::top("mobile_top")
         .exact_size(TOP_H + top_pad)
         .resizable(false)
@@ -1151,7 +1172,7 @@ fn sheet_ui(
         // drawing and the destinations rail: a wide screen has no room to
         // spare at the bottom, and the rail stays in reach.
         let width = (screen.width() * 0.42).clamp(280.0, 440.0);
-        let top = TOP_H + safe.top + 6.0;
+        let top = TOP_H + top_padding(safe, true);
         let rect = Rect::from_min_max(
             egui::pos2(screen.right() - safe.right - NAV_RAIL_W - width, top),
             egui::pos2(
@@ -1404,7 +1425,7 @@ fn drawer(app: &mut App, ui: &mut Ui, m3: &M3, screen: Rect, open: &mut Sheet) {
     scrim(&ctx, screen, open);
     let safe = system_insets(&ctx);
     let land = landscape(screen);
-    let top_pad = if land { safe.top + 6.0 } else { safe.top };
+    let top_pad = top_padding(safe, land);
     let width = (screen.width() * 0.86).min(320.0 + safe.left);
     let area_id = if land {
         Id::new("mobile_drawer_land")
@@ -1530,7 +1551,7 @@ fn page_ui(
     let ctx = ui.ctx().clone();
     let safe = system_insets(&ctx);
     let land = landscape(screen);
-    let top_pad = if land { safe.top + 6.0 } else { safe.top };
+    let top_pad = top_padding(safe, land);
     let area_id = if land {
         Id::new("mobile_page_land")
     } else {

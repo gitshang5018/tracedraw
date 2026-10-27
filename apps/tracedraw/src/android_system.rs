@@ -38,6 +38,7 @@ pub struct Insets {
     pub bottom: i32,
     pub left: i32,
     pub right: i32,
+    pub status_bar_visible: bool,
 }
 
 /// Run `f` with the activity's JNI environment, on the calling thread.
@@ -208,11 +209,33 @@ pub fn read(activity: *mut c_void, vm: *mut c_void, sdk: i32) -> Option<Insets> 
             }
         }
 
+        let mut status_bar_visible = top > 0;
+        if sdk >= 30 {
+            let status_bar_type = env
+                .call_static_method("android/view/WindowInsets$Type", "statusBars", "()I", &[])
+                .map(|v| v.i().unwrap_or(1))
+                .unwrap_or(1);
+            if let Ok(visible_val) = env.call_method(
+                &insets,
+                "isVisible",
+                "(I)Z",
+                &[JValue::Int(status_bar_type)],
+            ) {
+                if let Ok(vis) = visible_val.z() {
+                    status_bar_visible = vis;
+                }
+            }
+            if env.exception_check().unwrap_or(false) {
+                let _ = env.exception_clear();
+            }
+        }
+
         Some(Insets {
             top,
             bottom,
             left,
             right,
+            status_bar_visible,
         })
     })
 }
@@ -1039,10 +1062,12 @@ fn read_uri(app: &AndroidApp, uri: &str) -> Option<Vec<u8>> {
 /// and bring them back with a swipe from the edge; older systems use the
 /// system UI flags of the view.
 pub fn set_fullscreen(app: &AndroidApp, hidden: bool) {
-    let vm = app.vm_as_ptr();
-    let activity = app.activity_as_ptr();
+    let vm = app.vm_as_ptr() as usize;
+    let activity = app.activity_as_ptr() as usize;
     let sdk = AndroidApp::sdk_version();
-    with_env(vm, |env| {
+    app.run_on_java_main_thread(Box::new(move || {
+        let (vm, activity) = (vm as *mut c_void, activity as *mut c_void);
+        let _ = with_env(vm, |env| {
         let activity = activity_ref(env, activity)?;
         let window = window(env, &activity)?;
         if sdk >= 28 {
@@ -1121,4 +1146,5 @@ pub fn set_fullscreen(app: &AndroidApp, hidden: bool) {
         }
         Some(())
     });
+    }));
 }
