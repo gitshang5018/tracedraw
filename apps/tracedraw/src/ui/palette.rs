@@ -117,6 +117,18 @@ pub fn grid(app: &mut App, ui: &mut Ui, which: Row) {
         let entry = color_index.and_then(|i| colors.get(i));
         swatch(app, ui, &painter, cell, entry, which, index, color_index, false);
     }
+    // A colour carried out of the grid: the chip follows the finger, and
+    // letting go over an object fills it.
+    if let (Some(color), Some(pos)) = (app.palette_drag, ui.ctx().pointer_latest_pos()) {
+        if ui.input(|i| i.pointer.primary_down()) {
+            drag_chip(app, ui.ctx(), color, pos);
+            ui.ctx().request_repaint();
+        } else {
+            app.palette_drag = None;
+            app.drop_color(color, pos);
+            ui.ctx().data_mut(|d| d.remove::<bool>(carried_id()));
+        }
+    }
     // An empty document palette says how a colour gets into it.
     if hint {
         painter.text(
@@ -652,23 +664,39 @@ fn swatch(
         }
     }
 
-    // Click and hold: the colour's shades.
+    // Click and hold: the colour's shades — or, on a phone, the colour
+    // picked up: the finger moving after the hold carries it to an object
+    // to fill, so the shades there wait a little longer.
     if let Some((_, c)) = entry {
         if resp.is_pointer_button_down_on()
             && ui.input(|i| i.pointer.primary_down())
             && app.palette_shades.is_none()
+            && app.palette_drag.is_none()
         {
-            let held = ui.input(|i| {
-                i.pointer
+            let (held, moved) = ui.input(|i| {
+                let held = i
+                    .pointer
                     .press_start_time()
                     .map(|t| i.time - t)
-                    .unwrap_or(0.0)
+                    .unwrap_or(0.0);
+                let moved = match (i.pointer.press_origin(), i.pointer.latest_pos()) {
+                    (Some(from), Some(to)) => (to - from).length(),
+                    _ => 0.0,
+                };
+                (held, moved)
             });
-            if held >= HOLD && !resp.dragged() {
+            if !drag && held >= HOLD && moved > 10.0 {
+                // Carried: the chip follows the finger, and letting go
+                // over an object fills it (see `grid`).
+                app.palette_drag = Some(Some(*c));
+                ui.ctx().data_mut(|d| d.insert_temp(carried_id(), true));
+            }
+            let shades_at = if drag { HOLD } else { HOLD * 2.0 };
+            if held >= shades_at && moved <= 10.0 && !resp.dragged() {
                 app.palette_shades = Some((*c, cell.center_top()));
                 ui.ctx()
                     .data_mut(|d| d.insert_temp(shades_fired_id(), true));
-            } else {
+            } else if held < shades_at {
                 ui.ctx().request_repaint();
             }
         }
@@ -683,7 +711,8 @@ fn swatch(
         return;
     }
 
-    if resp.clicked() {
+    let carried = ui.ctx().data(|d| d.get_temp::<bool>(carried_id())).unwrap_or(false);
+    if resp.clicked() && !carried {
         if which == Row::Document {
             app.doc_palette_current = color_index;
         }
@@ -781,6 +810,12 @@ fn drag_chip(app: &App, ctx: &egui::Context, color: Option<Color>, pos: Pos2) {
         Stroke::new(1.0, Color32::from_gray(0x5A)),
         egui::StrokeKind::Outside,
     );
+}
+
+/// The id of the flag that says a colour is being carried to an object,
+/// so the release that ends the carry does not also apply it.
+fn carried_id() -> egui::Id {
+    egui::Id::new("palette_carried")
 }
 
 fn shades_fired_id() -> egui::Id {

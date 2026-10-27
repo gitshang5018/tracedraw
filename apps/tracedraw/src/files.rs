@@ -523,7 +523,7 @@ pub fn set_android_documents(dir: PathBuf) {
     DOCUMENTS.with(|d| *d.borrow_mut() = Some(dir));
 }
 
-/// Look again for the folder the drawings live in: the shared Documents
+/// Look again for the folder the drawings live in: the shared Download
 /// folder once the phone lets the app see the storage, the app's own
 /// before that. Called as the Files sheet opens, since the user may have
 /// just granted the access in the system's screen.
@@ -533,13 +533,36 @@ pub fn refresh_android_documents() {
         if !crate::android_system::storage_granted(app) {
             return None;
         }
-        let docs = crate::android_system::storage_root(app)?.join("Documents");
-        std::fs::create_dir_all(&docs).ok()?;
-        Some(docs)
+        let downloads = crate::android_system::storage_root(app)?.join("Download");
+        std::fs::create_dir_all(&downloads).ok()?;
+        Some(downloads)
     });
     let dir = shared.unwrap_or_else(crate::settings::android_documents);
     let _ = std::fs::create_dir_all(&dir);
     set_android_documents(dir);
+}
+
+/// The highest folder the phone's file list goes up to: the root of the
+/// shared storage, so the way up stops at `emulated/0` instead of walking
+/// into the system's own folders. Without the storage grant it is the
+/// folder the app keeps its drawings in.
+#[cfg(target_os = "android")]
+pub fn android_root() -> PathBuf {
+    if let Some(phone) = crate::android_system::phone() {
+        if crate::android_system::storage_granted(phone) {
+            if let Some(root) = crate::android_system::storage_root(phone) {
+                if root.is_dir() {
+                    return root;
+                }
+            }
+        }
+    }
+    android_documents()
+}
+
+#[cfg(not(target_os = "android"))]
+pub fn android_root() -> PathBuf {
+    android_documents()
 }
 
 /// The folder drawings are read from and written to on a phone.

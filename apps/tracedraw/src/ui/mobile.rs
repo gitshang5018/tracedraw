@@ -28,11 +28,11 @@ use egui::{Color32, CornerRadius, Frame, Id, Rect, Response, Sense, Stroke, Ui, 
 /// The top app bar: the menu, the drawing's name, undo and redo.
 const TOP_H: f32 = 64.0;
 /// The strip of tools above the navigation bar.
-const TOOLS_H: f32 = 64.0;
+const TOOLS_H: f32 = 72.0;
 /// The navigation bar: four destinations.
 const NAV_H: f32 = 76.0;
 /// The tools rail down the left edge of a phone on its side.
-const RAIL_W: f32 = 64.0;
+const RAIL_W: f32 = 76.0;
 /// The destinations rail down the right edge there.
 const NAV_RAIL_W: f32 = 84.0;
 /// The shortest side a finger aims at.
@@ -1883,10 +1883,13 @@ fn files_sheet(app: &mut App, ui: &mut Ui, m3: &M3) {
     if !dir.is_dir() {
         dir = start.clone();
     }
+    // The way up stops at the root of the shared storage: the folders
+    // above it are the system's, not the user's.
+    let root = crate::files::android_root();
     let up = dir
         .parent()
         .map(|p| p.to_path_buf())
-        .filter(|p| p.components().count() > 1);
+        .filter(|p| p.starts_with(&root) && p != &root);
     ui.horizontal(|ui| {
         match &up {
             Some(up) => {
@@ -2080,21 +2083,41 @@ fn icon_target(ui: &mut Ui, m3: &M3, glyph: Glyph, enabled: bool) -> Response {
 /// A toolbox group's button: a rounded square behind the chosen tool, as a
 /// Material button shows what is chosen.
 fn tool_target(ui: &mut Ui, m3: &M3, tool: crate::tools::Tool, active: bool) -> Response {
-    let (rect, resp) = ui.allocate_exact_size(Vec2::splat(TOUCH), Sense::click());
-    let body = Rect::from_center_size(rect.center(), Vec2::splat(TOUCH - 6.0));
+    // The tool's name under its icon: the icons alone say little to
+    // someone who has not learnt them yet, and a phone has the room.
+    let name = tool.name();
+    let font = egui::FontId::proportional(10.5);
+    let galley = ui
+        .painter()
+        .layout_no_wrap(name, font.clone(), m3.variant);
+    let width = (galley.size().x + 10.0).max(TOUCH);
+    let height = TOOLS_H - 6.0;
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, height), Sense::click());
+    let body = Rect::from_center_size(
+        egui::pos2(rect.center().x, rect.top() + 22.0),
+        Vec2::new(TOUCH - 8.0, 44.0),
+    );
     if active {
         ui.painter().rect_filled(body, 12.0, m3.primary_container);
     } else if resp.hovered() || resp.is_pointer_button_down_on() {
         let fill = mix(m3.on, m3.container, 0.10);
         ui.painter().rect_filled(body, 12.0, fill);
     }
-    let icon = Rect::from_center_size(rect.center(), Vec2::splat(ICON));
+    let icon = Rect::from_center_size(body.center(), Vec2::splat(ICON));
     let color = if active {
         m3.primary
     } else {
         crate::ui::icons::tool_color(tool, m3.on)
     };
     crate::ui::icons::draw(ui.painter(), icon, tool, color);
+    ui.painter().galley(
+        egui::pos2(
+            rect.center().x - galley.size().x / 2.0,
+            rect.top() + 46.0,
+        ),
+        galley,
+        if active { m3.primary } else { m3.variant },
+    );
     resp
 }
 
