@@ -31,36 +31,47 @@ pub fn document_tabs(app: &mut App, ui: &mut Ui) {
     let strip = ui.max_rect();
     // Nothing below the line: the strip ends where it does.
     ui.spacing_mut().item_spacing.y = 0.0;
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 1.0;
-        let welcome = app.show_welcome || !app.has_document();
-        // Shown again, the Welcome Screen has its whole tab back.
-        if welcome && app.settings.welcome_tab_closed {
-            app.settings.welcome_tab_closed = false;
-        }
-        match welcome_tab(
-            ui,
-            welcome,
-            app.settings.welcome_tab_closed,
-            app.has_document(),
-        ) {
-            TabClick::Select => action = Some(Action::Welcome),
-            TabClick::Close => action = Some(Action::CloseWelcome),
-            TabClick::None => {}
-        }
-        for i in 0..app.docs.len() {
-            let title = app.document_tab_title(i);
-            let active = !app.show_welcome && i == app.active_doc;
-            match doc_tab(ui, i, &title, active) {
-                TabClick::Select => action = Some(Action::Switch(i)),
-                TabClick::Close => action = Some(Action::Close(i)),
+    let mobile = crate::ui::mobile::phone();
+    let mut render_tabs = |ui: &mut Ui| {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 1.0;
+            let welcome = app.show_welcome || !app.has_document();
+            // Shown again, the Welcome Screen has its whole tab back.
+            if welcome && app.settings.welcome_tab_closed {
+                app.settings.welcome_tab_closed = false;
+            }
+            match welcome_tab(
+                ui,
+                welcome,
+                app.settings.welcome_tab_closed,
+                app.has_document(),
+            ) {
+                TabClick::Select => action = Some(Action::Welcome),
+                TabClick::Close => action = Some(Action::CloseWelcome),
                 TabClick::None => {}
             }
-        }
-        if new_tab(ui) {
-            action = Some(Action::New);
-        }
-    });
+            for i in 0..app.docs.len() {
+                let title = app.document_tab_title(i);
+                let active = !app.show_welcome && i == app.active_doc;
+                match doc_tab(ui, i, &title, active) {
+                    TabClick::Select => action = Some(Action::Switch(i)),
+                    TabClick::Close => action = Some(Action::Close(i)),
+                    TabClick::None => {}
+                }
+            }
+            if new_tab(ui) {
+                action = Some(Action::New);
+            }
+        });
+    };
+    if mobile {
+        egui::ScrollArea::horizontal()
+            .id_salt("doc_tabs_scroll")
+            .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+            .show(ui, &mut render_tabs);
+    } else {
+        render_tabs(ui);
+    }
     let line_y = strip.top() + TAB_HEIGHT;
     ui.painter().rect_filled(
         Rect::from_min_max(
@@ -149,7 +160,8 @@ fn welcome_tab(ui: &mut Ui, active: bool, closed: bool, closable: bool) -> TabCl
         galley,
         crate::theme::Tokens::text(),
     );
-    if closable && (resp.hovered() || close_hovered) {
+    let mobile = crate::ui::mobile::phone();
+    if closable && (active || resp.hovered() || close_hovered || mobile) {
         close_mark(painter, close_rect, close_hovered);
     }
     if close_resp.is_some_and(|r| r.clicked()) || (closable && resp.middle_clicked()) {
@@ -229,9 +241,11 @@ fn doc_tab(ui: &mut Ui, i: usize, title: &str, active: bool) -> TabClick {
     );
     let width = (PAD + galley.size().x + 6.0 + CLOSE + 8.0).max(116.0);
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, TAB_HEIGHT), Sense::click());
+    let mobile = crate::ui::mobile::phone();
+    let close_sz = if mobile { 18.0 } else { CLOSE };
     let close_rect = Rect::from_center_size(
-        Pos2::new(rect.right() - 8.0 - CLOSE / 2.0, rect.center().y),
-        Vec2::splat(CLOSE),
+        Pos2::new(rect.right() - 8.0 - close_sz / 2.0, rect.center().y),
+        Vec2::splat(close_sz),
     );
     let close_id = ui.id().with(("doc_tab_close", i));
     let close_resp = ui.interact(close_rect, close_id, Sense::click());
@@ -245,7 +259,7 @@ fn doc_tab(ui: &mut Ui, i: usize, title: &str, active: bool) -> TabClick {
         galley,
         crate::theme::Tokens::text(),
     );
-    if resp.hovered() || close_resp.hovered() {
+    if active || resp.hovered() || close_resp.hovered() || mobile {
         close_mark(painter, close_rect, close_resp.hovered());
     }
     let resp = resp.on_hover_text(title);

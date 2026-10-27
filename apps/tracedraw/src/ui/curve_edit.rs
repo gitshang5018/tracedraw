@@ -122,11 +122,13 @@ pub fn curve_editor(
     let drag_id = id.with("drag");
     let mut changed = false;
     let mut points = curve.normalized();
+    let mobile = crate::ui::mobile::phone();
+    let pick_dist = if mobile { 18.0 } else { PICK };
     let nearest = |pts: &[(f32, f32)], p: Pos2| -> Option<usize> {
         pts.iter()
             .enumerate()
             .map(|(i, (x, y))| (i, to_screen(rect, *x, *y).distance(p)))
-            .filter(|(_, d)| *d <= PICK)
+            .filter(|(_, d)| *d <= pick_dist)
             .min_by(|a, b| a.1.total_cmp(&b.1))
             .map(|(i, _)| i)
     };
@@ -183,7 +185,8 @@ pub fn curve_editor(
             resp.interact_pointer_pos(),
         ) {
             // Dragged out of the grid: gone.
-            if i != 0 && i + 1 < points.len() && !rect.expand(10.0).contains(p) {
+            let out_margin = if mobile { 24.0 } else { 10.0 };
+            if i != 0 && i + 1 < points.len() && !rect.expand(out_margin).contains(p) {
                 points.remove(i);
                 changed = true;
             }
@@ -194,9 +197,10 @@ pub fn curve_editor(
         curve.points = points.clone();
     }
     paint_curve(&painter, rect, curve, Stroke::new(1.6, color));
+    let pt_sz = if mobile { 10.0 } else { 6.0 };
     for (x, y) in &points {
         let c = to_screen(rect, *x, *y);
-        let r = Rect::from_center_size(c, Vec2::splat(6.0));
+        let r = Rect::from_center_size(c, Vec2::splat(pt_sz));
         painter.rect_filled(r, 0.0, Color32::WHITE);
         painter.rect_stroke(r, 0.0, Stroke::new(1.0, color), egui::StrokeKind::Inside);
     }
@@ -286,7 +290,8 @@ pub fn gamma_editor(
     let curve = crate::fx::adjust::gamma_curve(*gamma);
     paint_curve(&painter, rect, &curve, Stroke::new(1.6, color));
     let h = to_screen(rect, 128.0, curve.eval(128.0));
-    let r = Rect::from_center_size(h, Vec2::splat(7.0));
+    let pt_sz = if crate::ui::mobile::phone() { 11.0 } else { 7.0 };
+    let r = Rect::from_center_size(h, Vec2::splat(pt_sz));
     painter.rect_filled(r, 0.0, Color32::WHITE);
     painter.rect_stroke(r, 0.0, Stroke::new(1.0, color), egui::StrokeKind::Inside);
     paint_readout(&painter, rect, resp.hover_pos(), &curve);
