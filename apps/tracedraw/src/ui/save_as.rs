@@ -535,20 +535,27 @@ pub fn size_text(bytes: u64) -> String {
 
 pub fn dialog(app: &mut App, ctx: &Context, st: &mut SaveAsState, close: &mut bool) {
     window(ctx, tr("dialog.save_drawing")).show(ctx, |ui| {
-        ui.set_width(WIDTH);
+        let mobile = crate::ui::mobile::phone();
+        let width = if mobile { ui.available_width() } else { WIDTH };
+        ui.set_width(width);
         if !files::WEB {
             folder_bar(ui, st);
             ui.add_space(4.0);
             // The shortcuts and the list keep a fixed height (a vertical
             // separator would take all there is).
-            ui.allocate_ui(egui::vec2(WIDTH, LIST_H), |ui| {
-                ui.set_min_height(LIST_H);
-                ui.set_max_height(LIST_H);
-                ui.horizontal_top(|ui| {
-                    places(ui, st);
-                    ui.separator();
+            let list_h = if mobile { 180.0 } else { LIST_H };
+            ui.allocate_ui(egui::vec2(width, list_h), |ui| {
+                ui.set_min_height(list_h);
+                ui.set_max_height(list_h);
+                if !mobile {
+                    ui.horizontal_top(|ui| {
+                        places(ui, st);
+                        ui.separator();
+                        listing(ui, st);
+                    });
+                } else {
                     listing(ui, st);
-                });
+                }
             });
             ui.add_space(6.0);
         }

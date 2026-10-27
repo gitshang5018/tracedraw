@@ -693,26 +693,40 @@ fn issues_title(n: usize) -> String {
 pub fn dialog(app: &mut App, ctx: &Context, st: &mut PublishState, close: &mut bool) {
     let issues = crate::ui::preflight_dialog::issues_of(app);
     let mut help = false;
+    let mobile = crate::ui::mobile::phone();
     window(ctx, tr("publish.settings_title")).show(ctx, |ui| {
-        ui.horizontal(|ui| {
-            for (tab, title) in [
-                (Tab::General, tr("publish.tab_general")),
-                (Tab::Color, tr("publish.tab_color")),
-                (Tab::Document, tr("publish.tab_document")),
-                (Tab::Objects, tr("publish.tab_objects")),
-                (Tab::Prepress, tr("publish.tab_prepress")),
-                (Tab::Security, tr("publish.tab_security")),
-                (Tab::Issues, issues_title(issues.len())),
-            ] {
-                if ui.selectable_label(st.tab == tab, title).clicked() {
-                    st.tab = tab;
+        let mut render_tabs = |ui: &mut Ui| {
+            ui.horizontal(|ui| {
+                for (tab, title) in [
+                    (Tab::General, tr("publish.tab_general")),
+                    (Tab::Color, tr("publish.tab_color")),
+                    (Tab::Document, tr("publish.tab_document")),
+                    (Tab::Objects, tr("publish.tab_objects")),
+                    (Tab::Prepress, tr("publish.tab_prepress")),
+                    (Tab::Security, tr("publish.tab_security")),
+                    (Tab::Issues, issues_title(issues.len())),
+                ] {
+                    if ui.selectable_label(st.tab == tab, title).clicked() {
+                        st.tab = tab;
+                    }
                 }
-            }
-        });
+            });
+        };
+        if mobile {
+            egui::ScrollArea::horizontal()
+                .id_salt("publish_tabs_scroll")
+                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+                .show(ui, &mut render_tabs);
+        } else {
+            render_tabs(ui);
+        }
         ui.separator();
-        ui.vertical(|ui| {
-            ui.set_width(WIDTH);
-            ui.set_min_height(HEIGHT);
+        let width = if mobile { ui.available_width() } else { WIDTH };
+        let mut render_body = |ui: &mut Ui| {
+            ui.set_width(width);
+            if !mobile {
+                ui.set_min_height(HEIGHT);
+            }
             match st.tab {
                 Tab::General => general(app, ui, st),
                 Tab::Color => color(ui, st),
@@ -722,7 +736,19 @@ pub fn dialog(app: &mut App, ctx: &Context, st: &mut PublishState, close: &mut b
                 Tab::Security => security(ui, st),
                 Tab::Issues => issues_tab(ui, &issues),
             }
-        });
+        };
+        if mobile {
+            let max_h = (ctx.content_rect().height() - 180.0).clamp(240.0, 480.0);
+            egui::ScrollArea::vertical()
+                .id_salt("publish_body_scroll")
+                .max_height(max_h)
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    ui.vertical(&mut render_body);
+                });
+        } else {
+            ui.vertical(&mut render_body);
+        }
         // The line is there even when empty, so the dialog keeps its size.
         let problem = st.problem();
         let message = problem.map(tr).unwrap_or_else(|| " ".into());

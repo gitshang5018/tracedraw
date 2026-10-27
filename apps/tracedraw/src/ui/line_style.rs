@@ -190,28 +190,43 @@ pub fn dialog(app: &mut App, ctx: &Context, st: &mut State, close: &mut bool) {
         ui.label(tr("line_style.help"));
         ui.add_space(6.0);
         // The grid: click a cell to switch it between dash and gap.
-        let cell = 12.0f32;
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 1.0;
-            for i in 0..st.cells.len() {
-                let (rect, resp) = ui.allocate_exact_size(egui::vec2(cell, cell), Sense::click());
-                let fill = if st.cells[i] {
-                    Tokens::text()
-                } else {
-                    Tokens::field()
-                };
-                ui.painter().rect_filled(rect, 0.0, fill);
-                ui.painter().rect_stroke(
-                    rect,
-                    0.0,
-                    egui::Stroke::new(1.0, Tokens::border()),
-                    egui::StrokeKind::Inside,
-                );
-                if resp.clicked() {
-                    st.cells[i] = !st.cells[i];
+        let mobile = crate::ui::mobile::phone();
+        let (cell_w, cell_h) = if mobile {
+            (18.0f32, 28.0f32)
+        } else {
+            (12.0f32, 12.0f32)
+        };
+        let mut render_cells = |ui: &mut Ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 1.0;
+                for i in 0..st.cells.len() {
+                    let (rect, resp) = ui.allocate_exact_size(egui::vec2(cell_w, cell_h), Sense::click());
+                    let fill = if st.cells[i] {
+                        Tokens::text()
+                    } else {
+                        Tokens::field()
+                    };
+                    ui.painter().rect_filled(rect, 0.0, fill);
+                    ui.painter().rect_stroke(
+                        rect,
+                        0.0,
+                        egui::Stroke::new(1.0, Tokens::border()),
+                        egui::StrokeKind::Inside,
+                    );
+                    if resp.clicked() {
+                        st.cells[i] = !st.cells[i];
+                    }
                 }
-            }
-        });
+            });
+        };
+        if mobile {
+            egui::ScrollArea::horizontal()
+                .id_salt("line_style_scroll")
+                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+                .show(ui, &mut render_cells);
+        } else {
+            render_cells(ui);
+        }
         let mut n = st.cells.len();
         ui.horizontal(|ui| {
             ui.label(tr("line_style.length"));

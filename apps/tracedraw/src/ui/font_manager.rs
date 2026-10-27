@@ -584,6 +584,13 @@ pub fn dialog(app: &mut App, ctx: &Context, st: &mut FontManagerState, close: &m
     let mut actions: Vec<Action> = Vec::new();
     let mut open = true;
     let mut prefs = prefs;
+    let mobile = crate::ui::mobile::phone();
+    let min_sz = if mobile {
+        let screen = ctx.content_rect().size() - Vec2::splat(16.0);
+        Vec2::new(screen.x.clamp(240.0, 760.0), screen.y.clamp(320.0, 480.0))
+    } else {
+        Vec2::new(760.0, 480.0)
+    };
     egui::Window::new(tr("font_manager.title"))
         .id(egui::Id::new("font_manager_window"))
         .order(egui::Order::Foreground)
@@ -591,7 +598,7 @@ pub fn dialog(app: &mut App, ctx: &Context, st: &mut FontManagerState, close: &m
         .collapsible(false)
         .resizable(true)
         .default_size([1000.0, 720.0])
-        .min_size([760.0, 480.0])
+        .min_size(min_sz)
         .pivot(egui::Align2::CENTER_CENTER)
         .default_pos(ctx.content_rect().center())
         .show(ctx, |ui| {

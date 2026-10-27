@@ -318,7 +318,16 @@ pub fn dialog(app: &mut App, ctx: &egui::Context, st: &mut TrackerDialog, close:
                 .filter(|&i| i < count)
                 .or(Some(0));
         }
-        table(app, ui, st);
+        if crate::ui::mobile::phone() {
+            egui::ScrollArea::horizontal()
+                .id_salt("tracker_table_scroll")
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    table(app, ui, st);
+                });
+        } else {
+            table(app, ui, st);
+        }
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             if ui.button(tr("tracker.new_task")).clicked() {

@@ -5236,23 +5236,29 @@ fn palette_editor_dialog(
                 ui.text_edit_singleline(&mut pal.name);
             });
         }
-        let cols = 12;
+        let mobile = crate::ui::mobile::phone();
+        let swatch_sz = if mobile { 32.0 } else { 18.0 };
+        let cols = if mobile {
+            (((ui.available_width() - 8.0) / (swatch_sz + 4.0)).floor() as usize).max(4)
+        } else {
+            12
+        };
         egui::ScrollArea::vertical()
-            .max_height(180.0)
+            .max_height(if mobile { 240.0 } else { 180.0 })
             .show(ui, |ui| {
                 egui::Grid::new("pal_grid")
-                    .spacing(egui::vec2(2.0, 2.0))
+                    .spacing(egui::vec2(if mobile { 4.0 } else { 2.0 }, if mobile { 4.0 } else { 2.0 }))
                     .show(ui, |ui| {
                         for (i, (_, c)) in pal.colors.iter().enumerate() {
                             let [r, g, b] = c.to_rgb8();
                             let (rect, resp) = ui
-                                .allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::click());
+                                .allocate_exact_size(egui::vec2(swatch_sz, swatch_sz), egui::Sense::click());
                             ui.painter()
-                                .rect_filled(rect, 2.0, egui::Color32::from_rgb(r, g, b));
+                                .rect_filled(rect, if mobile { 4.0 } else { 2.0 }, egui::Color32::from_rgb(r, g, b));
                             if st.selected == Some(i) {
                                 ui.painter().rect_stroke(
                                     rect,
-                                    2.0,
+                                    if mobile { 4.0 } else { 2.0 },
                                     egui::Stroke::new(2.0, egui::Color32::BLACK),
                                     egui::StrokeKind::Outside,
                                 );

@@ -245,8 +245,16 @@ pub fn dialog(app: &mut App, ctx: &Context, st: &mut ColorManagementState, close
     let mut ok = false;
     let mut help = false;
     let mut load: Option<Space> = None;
-    let body = egui::vec2(660.0, 500.0);
-    let size = egui::vec2(body.x + 30.0, body.y + 110.0);
+    let mobile = crate::ui::mobile::phone();
+    let body = if mobile {
+        let screen = ctx.content_rect();
+        let w = (screen.width() - 32.0).clamp(240.0, 420.0);
+        let h = (screen.height() - 90.0).clamp(320.0, 560.0);
+        egui::vec2(w, h)
+    } else {
+        egui::vec2(660.0, 500.0)
+    };
+    let size = if mobile { body } else { egui::vec2(body.x + 30.0, body.y + 110.0) };
     let closed = crate::ui::chrome::dialog(
         ctx,
         "color_management_settings",
@@ -266,13 +274,21 @@ pub fn dialog(app: &mut App, ctx: &Context, st: &mut ColorManagementState, close
                     &mut st.tab,
                     &[tr("color_mgmt.tab_document"), tr("color_mgmt.tab_default")],
                 );
+                let margin_x = if mobile { 10 } else { 40 };
                 tab_page()
-                    .inner_margin(egui::Margin::symmetric(40, 12))
+                    .inner_margin(egui::Margin::symmetric(margin_x, 12))
                     .show(ui, |ui| {
-                        ui.set_min_size(egui::vec2(inner.width() - 82.0, page_h));
+                        let min_w = if mobile { inner.width() - 24.0 } else { inner.width() - 82.0 };
+                        ui.set_min_size(egui::vec2(min_w, page_h));
                         ui.set_max_height(page_h);
                         if st.tab == 0 {
-                            document_tab(app, ui, st, &mut load);
+                            if mobile {
+                                egui::ScrollArea::vertical()
+                                    .max_height(page_h)
+                                    .show(ui, |ui| document_tab(app, ui, st, &mut load));
+                            } else {
+                                document_tab(app, ui, st, &mut load);
+                            }
                         } else {
                             egui::ScrollArea::vertical()
                                 .max_height(page_h)
