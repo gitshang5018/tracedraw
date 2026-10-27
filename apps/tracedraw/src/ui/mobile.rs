@@ -347,7 +347,7 @@ pub fn frame(app: &mut App, ui: &mut Ui) -> bool {
                 egui::pos2(window.center().x, window.bottom() - 110.0),
                 Vec2::splat(TOUCH),
             );
-            show_tools(&ctx, gi, anchor);
+            show_tools(&ctx, gi, anchor, false);
         }
     }
 
@@ -615,7 +615,7 @@ fn tools_bar(app: &mut App, ui: &mut Ui, m3: &M3) {
                             // Held, the group's other tools come out to be
                             // slid onto: a tap alone never opens a window.
                             if holding(ui, &resp) && group.tools.len() > 1 {
-                                pop = Some((gi, resp.rect));
+                                pop = Some((gi, resp.rect, true));
                             }
                         }
                         ui.add_space(6.0);
@@ -623,18 +623,25 @@ fn tools_bar(app: &mut App, ui: &mut Ui, m3: &M3) {
                 });
             if let Some(tool) = pick {
                 app.set_tool(tool);
+                hide_tools(ui.ctx());
             }
-            if let Some((gi, rect)) = pop {
-                show_tools(ui.ctx(), gi, rect);
+            if let Some((gi, rect, held)) = pop {
+                show_tools(ui.ctx(), gi, rect, held);
             }
         });
 }
 
-/// Remember the group whose tools float over the drawing while its button
-/// is held, and where that button is: letting go over one of them picks
-/// it, as a phone's own tool rows do.
-fn show_tools(ctx: &egui::Context, gi: usize, anchor: Rect) {
-    ctx.data_mut(|d| d.insert_temp(Id::new("mobile_tool_pop"), (gi, anchor)));
+/// Remember the group whose tools float over the drawing, and where its
+/// button is. `held` says the finger is still on that button: letting go
+/// over one of the tools picks it, and letting go anywhere else leaves the
+/// row up to be tapped, as a phone's own tool rows do.
+fn show_tools(ctx: &egui::Context, gi: usize, anchor: Rect, held: bool) {
+    ctx.data_mut(|d| d.insert_temp(Id::new("mobile_tool_pop"), (gi, anchor, held)));
+}
+
+/// Put the row away.
+fn hide_tools(ctx: &egui::Context) {
+    ctx.data_mut(|d| d.remove::<(usize, Rect, bool)>(Id::new("mobile_tool_pop")));
 }
 
 /// The floating row of a group's tools: no window, no scrim — a strip that
@@ -642,10 +649,10 @@ fn show_tools(ctx: &egui::Context, gi: usize, anchor: Rect) {
 /// finger highlighted while it slides.
 fn tool_pop(app: &mut App, ctx: &egui::Context, m3: &M3) {
     let key = Id::new("mobile_tool_pop");
-    let Some((gi, anchor)) = ctx.data(|d| d.get_temp::<(usize, Rect)>(key)) else {
+    let Some((gi, anchor, held)) = ctx.data(|d| d.get_temp::<(usize, Rect, bool)>(key)) else {
         return;
     };
-    let clear = |ctx: &egui::Context| ctx.data_mut(|d| d.remove::<(usize, Rect)>(key));
+    let clear = |ctx: &egui::Context| ctx.data_mut(|d| d.remove::<(usize, Rect, bool)>(key));
     let Some(group) = crate::tools::GROUPS.get(gi).filter(|g| g.tools.len() > 1) else {
         clear(ctx);
         return;
@@ -680,12 +687,14 @@ fn tool_pop(app: &mut App, ctx: &egui::Context, m3: &M3) {
     }
     let pointer = ctx.pointer_latest_pos();
     let mut under = None;
-    egui::Area::new(Id::new("mobile_tool_pop_area"))
+    let mut tapped = None;
+    let row = egui::Area::new(Id::new("mobile_tool_pop_area"))
         .order(egui::Order::Tooltip)
         .fixed_pos(at)
-        // The row takes no input of its own: the press belongs to the
-        // button, and the row only says what is under the finger.
-        .interactable(false)
+        // While the finger holds the button the row takes no input of its
+        // own (the press belongs to the button, and the row only says what
+        // is under the finger); left up, it is tapped like any menu.
+        .interactable(!held)
         .show(ctx, |ui| {
             Frame::new()
                 .fill(m3.high)
@@ -701,9 +710,18 @@ fn tool_pop(app: &mut App, ctx: &egui::Context, m3: &M3) {
                     ui.spacing_mut().item_spacing.x = 0.0;
                     ui.horizontal(|ui| {
                         for (tool, name, w) in &cells {
-                            let (rect, _) =
-                                ui.allocate_exact_size(Vec2::new(*w, cell_h), Sense::hover());
-                            let hot = pointer.is_some_and(|p| rect.contains(p));
+                            let sense = if held {
+                                Sense::hover()
+                            } else {
+                                Sense::click()
+                            };
+                            let (rect, resp) =
+                                ui.allocate_exact_size(Vec2::new(*w, cell_h), sense);
+                            let hot = if held {
+                                pointer.is_some_and(|p| rect.contains(p))
+                            } else {
+                                resp.hovered()
+                            };
                             let body = Rect::from_center_size(
                                 egui::pos2(rect.center().x, rect.top() + 24.0),
                                 Vec2::new(TOUCH - 8.0, 46.0),
@@ -735,17 +753,36 @@ fn tool_pop(app: &mut App, ctx: &egui::Context, m3: &M3) {
                             if hot {
                                 under = Some(*tool);
                             }
+                            if resp.clicked() {
+                                tapped = Some(*tool);
+                            }
                         }
                     });
                 });
         });
-    // Letting go over one of them picks it; letting go anywhere else
-    // just puts the row away.
-    if ctx.input(|i| i.pointer.any_released()) {
-        if let Some(tool) = under {
-            app.set_tool(tool);
+    if held {
+        // Letting go over one of them picks it; letting go anywhere else
+        // leaves the row up, to be tapped without holding the button again.
+        if ctx.input(|i| i.pointer.any_released()) {
+            match under {
+                Some(tool) => {
+                    app.set_tool(tool);
+                    clear(ctx);
+                }
+                None => show_tools(ctx, gi, anchor, false),
+            }
         }
+    } else if let Some(tool) = tapped {
+        app.set_tool(tool);
         clear(ctx);
+    } else if ctx.input(|i| i.pointer.any_pressed()) {
+        // A press anywhere else puts the row away.
+        let outside = ctx
+            .pointer_latest_pos()
+            .is_none_or(|p| !row.response.rect.contains(p));
+        if outside {
+            clear(ctx);
+        }
     }
     // The finger may still be moving over the row.
     ctx.request_repaint();
@@ -926,7 +963,7 @@ fn tools_rail(app: &mut App, ui: &mut Ui, m3: &M3, safe: Safe) {
                             // Held, the group's other tools come out to be
                             // slid onto: a tap alone never opens a window.
                             if holding(ui, &resp) && group.tools.len() > 1 {
-                                pop = Some((gi, resp.rect));
+                                pop = Some((gi, resp.rect, true));
                             }
                         }
                         ui.add_space(6.0);
@@ -934,9 +971,10 @@ fn tools_rail(app: &mut App, ui: &mut Ui, m3: &M3, safe: Safe) {
                 });
             if let Some(tool) = pick {
                 app.set_tool(tool);
+                hide_tools(ui.ctx());
             }
-            if let Some((gi, rect)) = pop {
-                show_tools(ui.ctx(), gi, rect);
+            if let Some((gi, rect, held)) = pop {
+                show_tools(ui.ctx(), gi, rect, held);
             }
             });
         });
