@@ -606,6 +606,10 @@ fn tools_bar(app: &mut App, ui: &mut Ui, m3: &M3) {
         .show(ui, |ui| {
             let mut pick = None;
             let mut pop = None;
+            let was_holding = ui.ctx().data(|d| {
+                d.get_temp::<(usize, Rect, bool)>(Id::new("mobile_tool_pop"))
+                    .map(|(gi, _, held)| (gi, held))
+            });
             egui::ScrollArea::horizontal()
                 .id_salt("mobile_tools_scroll")
                 .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
@@ -620,7 +624,8 @@ fn tools_bar(app: &mut App, ui: &mut Ui, m3: &M3) {
                             let shown = shown_tool(app, gi);
                             let active = group.tools.contains(&app.tool);
                             let resp = tool_target(ui, m3, shown, active);
-                            if resp.clicked() {
+                            let is_held_group = was_holding == Some((gi, true));
+                            if resp.clicked() && !is_held_group {
                                 pick = Some(shown);
                             }
                             // Held, the group's other tools come out to be
@@ -670,7 +675,6 @@ fn tool_pop(app: &mut App, ctx: &egui::Context, m3: &M3) {
     };
     // Each tool with its name under it, as in the strip: the icons alone
     // do not say which is which.
-    let font = egui::FontId::proportional(10.5);
     let cells: Vec<(crate::tools::Tool, String, f32)> = group
         .tools
         .iter()
@@ -687,17 +691,41 @@ fn tool_pop(app: &mut App, ctx: &egui::Context, m3: &M3) {
         .collect();
     let pad = 8.0;
     let cell_h = 62.0;
-    let width = cells.iter().map(|(_, _, w)| w).sum::<f32>() + pad * 2.0;
-    let height = cell_h + pad * 2.0;
+    let raw_w: f32 = cells.iter().map(|(_, _, w)| w).sum();
     let screen = ctx.content_rect();
-    let max_w = (screen.width() - 16.0).max(120.0);
-    let show_w = width.min(max_w);
-    let mut at = egui::pos2(anchor.center().x - show_w / 2.0, anchor.top() - height - 10.0);
-    at.x = at.x.clamp(8.0, (screen.right() - show_w - 8.0).max(8.0));
-    if at.y < 8.0 {
-        // No room above: under the button, over the drawing.
-        at.y = anchor.bottom() + 10.0;
-    }
+    let land = screen.width() > screen.height();
+    let max_avail = (screen.width() - 16.0 - pad * 2.0).max(cells.len() as f32 * 36.0);
+    let scale = if raw_w > max_avail && raw_w > 0.0 {
+        max_avail / raw_w
+    } else {
+        1.0
+    };
+    let width = raw_w * scale + pad * 2.0;
+    let height = cell_h + pad * 2.0;
+    let font = egui::FontId::proportional(if scale < 0.88 {
+        9.0
+    } else if scale < 0.95 {
+        9.8
+    } else {
+        10.5
+    });
+    let (at_x, at_y) = if land && anchor.min.x < 80.0 {
+        // Landscape left rail: float to the right of the button
+        let x = anchor.right() + 8.0;
+        let y = (anchor.center().y - height / 2.0)
+            .clamp(8.0, (screen.bottom() - height - 8.0).max(8.0));
+        (x, y)
+    } else {
+        // Portrait bottom bar (or general): float above the button
+        let mut y = anchor.top() - height - 10.0;
+        if y < 8.0 {
+            y = anchor.bottom() + 10.0;
+        }
+        let x = (anchor.center().x - width / 2.0)
+            .clamp(8.0, (screen.right() - width - 8.0).max(8.0));
+        (x, y)
+    };
+    let at = egui::pos2(at_x, at_y);
     let pointer = ctx.pointer_latest_pos();
     let mut under = None;
     let mut tapped = None;
@@ -720,30 +748,30 @@ fn tool_pop(app: &mut App, ctx: &egui::Context, m3: &M3) {
                 }))
                 .inner_margin(egui::Margin::same(pad as i8))
                 .show(ui, |ui| {
-                    egui::ScrollArea::horizontal()
-                        .id_salt("mobile_tool_pop_scroll")
-                        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
-                        .max_width(show_w - pad * 2.0)
-                        .auto_shrink([true, false])
-                        .show(ui, |ui| {
-                            ui.spacing_mut().item_spacing.x = 0.0;
-                            ui.horizontal(|ui| {
-                        for (tool, name, w) in &cells {
+                    ui.spacing_mut().item_spacing.x = 0.0;
+                    ui.horizontal(|ui| {
+                        for (tool, name, orig_w) in &cells {
+                            let w = *orig_w * scale;
                             let sense = if held {
                                 Sense::hover()
                             } else {
                                 Sense::click()
                             };
                             let (rect, resp) =
-                                ui.allocate_exact_size(Vec2::new(*w, cell_h), sense);
+                                ui.allocate_exact_size(Vec2::new(w, cell_h), sense);
+                            let hit_rect = Rect::from_x_y_ranges(
+                                rect.x_range(),
+                                (rect.top() - 12.0)..=(rect.bottom() + 12.0),
+                            );
                             let hot = if held {
-                                pointer.is_some_and(|p| rect.contains(p))
+                                pointer.is_some_and(|p| hit_rect.contains(p))
                             } else {
                                 resp.hovered()
                             };
+                            let body_w = (rect.width() - 4.0).min(TOUCH - 8.0).max(28.0);
                             let body = Rect::from_center_size(
                                 egui::pos2(rect.center().x, rect.top() + 24.0),
-                                Vec2::new(TOUCH - 8.0, 46.0),
+                                Vec2::new(body_w, 46.0),
                             );
                             if hot {
                                 ui.painter().rect_filled(body, 14.0, m3.primary_container);
@@ -761,7 +789,7 @@ fn tool_pop(app: &mut App, ctx: &egui::Context, m3: &M3) {
                                 font.clone(),
                                 color,
                             );
-                            ui.painter().galley(
+                            ui.painter().with_clip_rect(rect).galley(
                                 egui::pos2(
                                     rect.center().x - galley.size().x / 2.0,
                                     rect.top() + 44.0,
@@ -777,7 +805,6 @@ fn tool_pop(app: &mut App, ctx: &egui::Context, m3: &M3) {
                             }
                         }
                     });
-                });
                 });
         });
     if held {
@@ -969,6 +996,10 @@ fn tools_rail(app: &mut App, ui: &mut Ui, m3: &M3, safe: Safe) {
             ui.scope_builder(egui::UiBuilder::new().max_rect(rail), |ui| {
             let mut pick = None;
             let mut pop = None;
+            let was_holding = ui.ctx().data(|d| {
+                d.get_temp::<(usize, Rect, bool)>(Id::new("mobile_tool_pop"))
+                    .map(|(gi, _, held)| (gi, held))
+            });
             egui::ScrollArea::vertical()
                 .id_salt("mobile_tools_rail")
                 .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
@@ -983,7 +1014,8 @@ fn tools_rail(app: &mut App, ui: &mut Ui, m3: &M3, safe: Safe) {
                             let shown = shown_tool(app, gi);
                             let active = group.tools.contains(&app.tool);
                             let resp = tool_target(ui, m3, shown, active);
-                            if resp.clicked() {
+                            let is_held_group = was_holding == Some((gi, true));
+                            if resp.clicked() && !is_held_group {
                                 pick = Some(shown);
                             }
                             // Held, the group's other tools come out to be
