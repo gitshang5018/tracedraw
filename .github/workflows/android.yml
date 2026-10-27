@@ -150,16 +150,22 @@ jobs:
       - name: Name the APK
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
           mkdir -p dist
-          src="target/${{ matrix.target }}/release/apk/tracedraw.apk"
-          test -f "$src"
+          # cargo-apk writes it beside the profile, not under the triple.
+          src=""
+          for p in "target/release/apk/tracedraw.apk" \
+                   "target/${{ matrix.target }}/release/apk/tracedraw.apk"; do
+            if [[ -f "$p" ]]; then src="$p"; break; fi
+          done
+          if [[ -z "$src" ]]; then
+            echo "No APK was packed:"
+            find target -name '*.apk' | head
+            exit 1
+          fi
           out="dist/tracedraw-${{ steps.ver.outputs.version }}-android-${{ matrix.abi }}.apk"
           cp "$src" "$out"
-          # What the release says the download is: the ABI, the size, and
-          # the certificate it is signed with.
           ls -l "$out"
-          echo "$out" > apk-path.txt
 
       - uses: actions/upload-artifact@v4
         with:
