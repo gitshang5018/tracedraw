@@ -261,6 +261,26 @@ fn system_bar_icons(_ctx: &egui::Context) {}
 // The frame
 // ---------------------------------------------------------------------------
 
+/// Hide the system bars while the phone lies on its side, and bring them
+/// back when it stands: a wide screen has no row to spare for them.
+fn system_bars(ctx: &egui::Context, hidden: bool) {
+    #[cfg(target_os = "android")]
+    {
+        let key = Id::new("mobile_bars_hidden");
+        if ctx.data(|d| d.get_temp::<bool>(key)) == Some(hidden) {
+            return;
+        }
+        ctx.data_mut(|d| d.insert_temp(key, hidden));
+        if let Some(phone) = crate::android_system::phone() {
+            crate::android_system::set_fullscreen(phone, hidden);
+        }
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = (ctx, hidden);
+    }
+}
+
 /// Whether the phone lies on its side: a screen wider than it is tall has
 /// room for a rail on each edge, and the bars move there.
 fn landscape(screen: Rect) -> bool {
@@ -281,7 +301,11 @@ pub fn frame(app: &mut App, ui: &mut Ui) -> bool {
     );
     touch_style(&ctx);
     system_bar_icons(&ctx);
-    let inset = system_insets(&ctx);
+    let land = landscape(window);
+    // A phone lying on its side gives the whole screen to the drawing: the
+    // system bars go, and come back when it stands up again.
+    system_bars(&ctx, land);
+    let inset = if land { Safe::default() } else { system_insets(&ctx) };
 
     let mut open = sheet(&ctx);
     // A file dialog asked anywhere (File > Open, an import) becomes the
@@ -337,7 +361,6 @@ pub fn frame(app: &mut App, ui: &mut Ui) -> bool {
         open = Sheet::None;
     }
 
-    let land = landscape(window);
     top_bar(app, ui, &m3, inset.top, &mut open);
     if land {
         // On its side the phone keeps the tools down the left edge and
@@ -396,7 +419,7 @@ pub fn frame(app: &mut App, ui: &mut Ui) -> bool {
 
     // The bar above the tools, or above the sheet that covers them; on
     // its side the sheet is on the right, so it stays at the bottom.
-    let floor = if open != Sheet::None && !land {
+    let floor = if open != Sheet::None && open != Sheet::Palette && !land {
         window.bottom() - sheet_height(open, window.height())
     } else if land {
         window.bottom() - inset.bottom
@@ -404,7 +427,9 @@ pub fn frame(app: &mut App, ui: &mut Ui) -> bool {
         window.bottom() - inset.bottom - NAV_H - TOOLS_H
     };
     snackbar(app, ui, floor);
-    if open != Sheet::None {
+    if open == Sheet::Palette {
+        palette_float(app, &ctx, window, &m3, &mut open);
+    } else if open != Sheet::None {
         sheet_ui(app, ui, open, &mut open, window, &m3, inset);
     }
     // The prompt windows are the shared dialog system's: the phone layout
@@ -1223,7 +1248,7 @@ fn sheet_body(app: &mut App, ui: &mut Ui, which: Sheet, m3: &M3, open: &mut Shee
     match which {
         Sheet::Properties => properties_sheet(app, ui, m3),
         Sheet::Panels => panels_sheet(app, ui, m3),
-        Sheet::Palette => palette_sheet(app, ui, m3),
+        Sheet::Palette => palette_grids(app, ui),
         Sheet::Files => files_sheet(app, ui, m3),
         Sheet::Drawings => drawings_sheet(app, ui, m3),
         Sheet::Tools(gi) => tools_sheet(app, ui, m3, gi, open),
@@ -1685,12 +1710,76 @@ fn panels_sheet(app: &mut App, ui: &mut Ui, m3: &M3) {
 
 /// The colour palettes as grids of swatches a finger can hit: as many to a
 /// row as fit, the rest under them, swiped rather than scrolled by arrows.
-fn palette_sheet(app: &mut App, ui: &mut Ui, m3: &M3) {
-    let _ = m3;
-    ui.add_space(4.0);
+fn palette_grids(app: &mut App, ui: &mut Ui) {
     crate::ui::palette::grid(app, ui, crate::ui::palette::Row::Main);
     ui.add_space(16.0);
     crate::ui::palette::grid(app, ui, crate::ui::palette::Row::Document);
+}
+
+/// The palettes as a card floating over the drawing, in the corner the
+/// tools are not in: a colour can be picked without losing sight of what
+/// it goes on. No scrim — the drawing stays live behind it.
+fn palette_float(app: &mut App, ctx: &egui::Context, screen: Rect, m3: &M3, open: &mut Sheet) {
+    let land = landscape(screen);
+    let width = (screen.width() * 0.78).clamp(232.0, 360.0);
+    let height = (screen.height() * 0.34).clamp(190.0, 300.0);
+    let pos = if land {
+        // On its side: under the top bar, against the destinations rail.
+        egui::pos2(
+            screen.right() - NAV_RAIL_W - width - 12.0,
+            screen.top() + TOP_H + 12.0,
+        )
+    } else {
+        // Standing: above the tool strip, against the right edge.
+        egui::pos2(
+            screen.right() - width - 12.0,
+            screen.bottom() - NAV_H - TOOLS_H - height - 12.0,
+        )
+    };
+    egui::Area::new(Id::new("mobile_palette_float"))
+        .order(egui::Order::Foreground)
+        .fixed_pos(pos)
+        .show(ctx, |ui| {
+            Frame::new()
+                .fill(m3.surface)
+                .corner_radius(20.0)
+                .shadow(crate::theme::shadow(egui::epaint::Shadow {
+                    offset: [0, 8],
+                    blur: 28,
+                    spread: 2,
+                    color: Color32::from_black_alpha(80),
+                }))
+                .inner_margin(egui::Margin {
+                    left: 0,
+                    right: 0,
+                    top: 0,
+                    bottom: 0,
+                })
+                .show(ui, |ui| {
+                    ui.set_width(width);
+                    ui.set_min_height(height);
+                    if sheet_header(ui, Sheet::Palette, m3) {
+                        *open = Sheet::None;
+                    }
+                    egui::ScrollArea::vertical()
+                        .id_salt("mobile_palette_scroll")
+                        .max_height(height - 56.0)
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            Frame::new()
+                                .inner_margin(egui::Margin {
+                                    left: 14,
+                                    right: 14,
+                                    top: 0,
+                                    bottom: 12,
+                                })
+                                .show(ui, |ui| {
+                                    ui.set_width(ui.available_width());
+                                    palette_grids(app, ui);
+                                });
+                        });
+                });
+        });
 }
 
 /// The other tools of a toolbox group, as a list to choose from.

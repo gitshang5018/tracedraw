@@ -71,10 +71,25 @@ fn menu_width() -> f32 {
 }
 
 /// The style of menu pop-ups: white, a one-pixel grey frame, square
-/// corners, rows touching.
+/// corners, rows touching — and on a phone the floating card Android
+/// opens instead: rounded, lifted off the drawing, its rows apart.
 pub(crate) fn menu_popup_style(style: &mut egui::Style) {
     egui::containers::menu::menu_style(style);
     style.visuals.window_fill = crate::theme::Tokens::menu();
+    style.override_font_id = Some(egui::FontId::proportional(font_size()));
+    if touch() {
+        style.visuals.window_stroke = egui::Stroke::NONE;
+        style.visuals.menu_corner_radius = egui::CornerRadius::same(16);
+        style.visuals.popup_shadow = egui::epaint::Shadow {
+            offset: [0, 8],
+            blur: 28,
+            spread: 2,
+            color: egui::Color32::from_black_alpha(80),
+        };
+        style.spacing.menu_margin = egui::Margin::same(6);
+        style.spacing.item_spacing.y = 0.0;
+        return;
+    }
     style.visuals.window_stroke = egui::Stroke::new(1.0, crate::theme::Tokens::window_border());
     style.visuals.menu_corner_radius = egui::CornerRadius::ZERO;
     style.visuals.popup_shadow = crate::theme::shadow(egui::epaint::Shadow {
@@ -90,7 +105,6 @@ pub(crate) fn menu_popup_style(style: &mut egui::Style) {
         bottom: 2,
     };
     style.spacing.item_spacing.y = 0.0;
-    style.override_font_id = Some(egui::FontId::proportional(font_size()));
 }
 
 /// The grey gutter down the left of a menu body, under its rows: reserved

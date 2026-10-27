@@ -115,7 +115,7 @@ pub fn grid(app: &mut App, ui: &mut Ui, which: Row) {
             Some(index)
         };
         let entry = color_index.and_then(|i| colors.get(i));
-        swatch(app, ui, &painter, cell, entry, which, index, color_index);
+        swatch(app, ui, &painter, cell, entry, which, index, color_index, false);
     }
     // An empty document palette says how a colour gets into it.
     if hint {
@@ -553,7 +553,7 @@ fn row(app: &mut App, ui: &mut Ui, which: Row, vertical: bool) {
             Some(index)
         };
         let entry = color_index.and_then(|i| colors.get(i));
-        swatch(app, ui, &painter, cell, entry, which, index, color_index);
+        swatch(app, ui, &painter, cell, entry, which, index, color_index, true);
     }
     if which == Row::Document && shown < slots && colors.is_empty() && !vertical {
         painter.text(
@@ -577,9 +577,17 @@ fn swatch(
     which: Row,
     index: usize,
     color_index: Option<usize>,
+    drag: bool,
 ) {
     let id = ui.id().with(("swatch", which as u8, index));
-    let resp = ui.interact(cell, id, Sense::click_and_drag());
+    // A swatch of a phone's grid takes a tap only: a drag over it scrolls
+    // the grid, which is how the colours under the finger are reached.
+    let sense = if drag {
+        Sense::click_and_drag()
+    } else {
+        Sense::click()
+    };
+    let resp = ui.interact(cell, id, sense);
     match entry {
         None => {
             painter.rect_filled(cell, 0.0, Color32::WHITE);
@@ -627,18 +635,18 @@ fn swatch(
 
     // Dragging the colour: inside an object it fills it, on its outline
     // it colours the outline, on the document palette it joins it.
-    if resp.drag_started() && app.palette_shades.is_none() {
+    if drag && resp.drag_started() && app.palette_shades.is_none() {
         app.palette_drag = Some(entry.map(|(_, c)| *c));
     }
-    if app.palette_drag.is_some() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+    if drag && app.palette_drag.is_some() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
         app.palette_drag = None;
     }
-    if resp.dragged() {
+    if drag && resp.dragged() {
         if let (Some(color), Some(pos)) = (app.palette_drag, ui.ctx().pointer_latest_pos()) {
             drag_chip(app, ui.ctx(), color, pos);
         }
     }
-    if resp.drag_stopped() {
+    if drag && resp.drag_stopped() {
         if let (Some(color), Some(pos)) = (app.palette_drag.take(), ui.ctx().pointer_latest_pos()) {
             app.drop_color(color, pos);
         }

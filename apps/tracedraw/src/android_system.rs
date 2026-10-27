@@ -878,3 +878,69 @@ fn read_uri(app: &AndroidApp, uri: &str) -> Option<Vec<u8>> {
         env.convert_byte_array(&bytes).ok()
     })
 }
+
+/// Show or hide the system bars: a phone lying on its side is all drawing,
+/// and the status bar over the top of it takes a row of the screen.
+///
+/// Android 11 and later hide them through the window's insets controller,
+/// and bring them back with a swipe from the edge; older systems use the
+/// system UI flags of the view.
+pub fn set_fullscreen(app: &AndroidApp, hidden: bool) {
+    let vm = app.vm_as_ptr();
+    let activity = app.activity_as_ptr();
+    with_env(vm, |env| {
+        let activity = activity_ref(env, activity)?;
+        let window = window(env, &activity)?;
+        let decor = env
+            .call_method(&window, "getDecorView", "()Landroid/view/View;", &[])
+            .ok()?
+            .l()
+            .ok()?;
+        if AndroidApp::sdk_version() >= 30 {
+            let controller = env
+                .call_method(
+                    &decor,
+                    "getWindowInsetsController",
+                    "()Landroid/view/WindowInsetsController;",
+                    &[],
+                )
+                .ok()?
+                .l()
+                .ok()?;
+            if controller.is_null() {
+                return None;
+            }
+            let bars = env
+                .call_static_method("android/view/WindowInsets$Type", "systemBars", "()I", &[])
+                .ok()?
+                .i()
+                .ok()?;
+            if hidden {
+                // BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE: a swipe from the
+                // edge shows them for a moment, and they go again.
+                let _ = env.call_method(
+                    &controller,
+                    "setSystemBarsBehavior",
+                    "(I)V",
+                    &[JValue::Int(2)],
+                );
+                let _ = env.call_method(&controller, "hide", "(I)V", &[JValue::Int(bars)]);
+            } else {
+                let _ = env.call_method(&controller, "show", "(I)V", &[JValue::Int(bars)]);
+            }
+        } else {
+            // LAYOUT_STABLE | LAYOUT_HIDE_NAVIGATION | LAYOUT_FULLSCREEN,
+            // and with them FULLSCREEN | HIDE_NAVIGATION | IMMERSIVE_STICKY.
+            const LAYOUT: i32 = 1 | 512 | 1024;
+            const HIDE: i32 = 4 | 2 | 4096;
+            let flags = if hidden { LAYOUT | HIDE } else { LAYOUT };
+            let _ = env.call_method(
+                &decor,
+                "setSystemUiVisibility",
+                "(I)V",
+                &[JValue::Int(flags)],
+            );
+        }
+        Some(())
+    });
+}
