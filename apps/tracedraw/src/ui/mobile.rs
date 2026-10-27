@@ -347,7 +347,7 @@ pub fn frame(app: &mut App, ui: &mut Ui) -> bool {
                 egui::pos2(window.center().x, window.bottom() - 110.0),
                 Vec2::splat(TOUCH),
             );
-            show_tools(&ctx, gi, anchor, false);
+            show_tools(&ctx, gi, anchor);
         }
     }
 
@@ -606,16 +606,12 @@ fn tools_bar(app: &mut App, ui: &mut Ui, m3: &M3) {
                             let active = group.tools.contains(&app.tool);
                             let resp = tool_target(ui, m3, shown, active);
                             if resp.clicked() {
-                                if group.tools.len() > 1 {
-                                    pop = Some((gi, resp.rect, false));
-                                } else {
-                                    pick = Some(shown);
-                                }
+                                pick = Some(shown);
                             }
-                            // The finger still down after a moment: the
-                            // group's other tools come out to be slid onto.
+                            // Held, the group's other tools come out to be
+                            // slid onto: a tap alone never opens a window.
                             if holding(ui, &resp) && group.tools.len() > 1 {
-                                pop = Some((gi, resp.rect, true));
+                                pop = Some((gi, resp.rect));
                             }
                         }
                         ui.add_space(6.0);
@@ -624,17 +620,17 @@ fn tools_bar(app: &mut App, ui: &mut Ui, m3: &M3) {
             if let Some(tool) = pick {
                 app.set_tool(tool);
             }
-            if let Some((gi, rect, hold)) = pop {
-                show_tools(ui.ctx(), gi, rect, hold);
+            if let Some((gi, rect)) = pop {
+                show_tools(ui.ctx(), gi, rect);
             }
         });
 }
 
-/// Remember the group whose tools float over the drawing, and where its
-/// button is. `hold` says the finger is still on that button: letting go
-/// over one of the floating tools picks it, as a phone's own tool rows do.
-fn show_tools(ctx: &egui::Context, gi: usize, anchor: Rect, hold: bool) {
-    ctx.data_mut(|d| d.insert_temp(Id::new("mobile_tool_pop"), (gi, anchor, hold)));
+/// Remember the group whose tools float over the drawing while its button
+/// is held, and where that button is: letting go over one of them picks
+/// it, as a phone's own tool rows do.
+fn show_tools(ctx: &egui::Context, gi: usize, anchor: Rect) {
+    ctx.data_mut(|d| d.insert_temp(Id::new("mobile_tool_pop"), (gi, anchor)));
 }
 
 /// The floating row of a group's tools: no window, no scrim — a strip that
@@ -642,10 +638,10 @@ fn show_tools(ctx: &egui::Context, gi: usize, anchor: Rect, hold: bool) {
 /// finger highlighted while it slides.
 fn tool_pop(app: &mut App, ctx: &egui::Context, m3: &M3) {
     let key = Id::new("mobile_tool_pop");
-    let Some((gi, anchor, hold)) = ctx.data(|d| d.get_temp::<(usize, Rect, bool)>(key)) else {
+    let Some((gi, anchor)) = ctx.data(|d| d.get_temp::<(usize, Rect)>(key)) else {
         return;
     };
-    let clear = |ctx: &egui::Context| ctx.data_mut(|d| d.remove::<(usize, Rect, bool)>(key));
+    let clear = |ctx: &egui::Context| ctx.data_mut(|d| d.remove::<(usize, Rect)>(key));
     let Some(group) = crate::tools::GROUPS.get(gi).filter(|g| g.tools.len() > 1) else {
         clear(ctx);
         return;
@@ -680,14 +676,12 @@ fn tool_pop(app: &mut App, ctx: &egui::Context, m3: &M3) {
     }
     let pointer = ctx.pointer_latest_pos();
     let mut under = None;
-    let mut tapped = None;
     egui::Area::new(Id::new("mobile_tool_pop_area"))
         .order(egui::Order::Tooltip)
         .fixed_pos(at)
-        // While the finger holds the button the row takes no input: the
-        // press belongs to the button, and the row only says what is under
-        // the finger.
-        .interactable(!hold)
+        // The row takes no input of its own: the press belongs to the
+        // button, and the row only says what is under the finger.
+        .interactable(false)
         .show(ctx, |ui| {
             Frame::new()
                 .fill(m3.high)
@@ -703,18 +697,9 @@ fn tool_pop(app: &mut App, ctx: &egui::Context, m3: &M3) {
                     ui.spacing_mut().item_spacing.x = 0.0;
                     ui.horizontal(|ui| {
                         for (tool, name, w) in &cells {
-                            let sense = if hold {
-                                Sense::hover()
-                            } else {
-                                Sense::click()
-                            };
-                            let (rect, resp) =
-                                ui.allocate_exact_size(Vec2::new(*w, cell_h), sense);
-                            let hot = if hold {
-                                pointer.is_some_and(|p| rect.contains(p))
-                            } else {
-                                resp.hovered()
-                            };
+                            let (rect, _) =
+                                ui.allocate_exact_size(Vec2::new(*w, cell_h), Sense::hover());
+                            let hot = pointer.is_some_and(|p| rect.contains(p));
                             let body = Rect::from_center_size(
                                 egui::pos2(rect.center().x, rect.top() + 24.0),
                                 Vec2::new(TOUCH - 8.0, 46.0),
@@ -746,22 +731,16 @@ fn tool_pop(app: &mut App, ctx: &egui::Context, m3: &M3) {
                             if hot {
                                 under = Some(*tool);
                             }
-                            if resp.clicked() {
-                                tapped = Some(*tool);
-                            }
                         }
                     });
                 });
         });
-    if hold {
-        if ctx.input(|i| i.pointer.any_released()) {
-            if let Some(tool) = under {
-                app.set_tool(tool);
-            }
-            clear(ctx);
+    // Letting go over one of them picks it; letting go anywhere else
+    // just puts the row away.
+    if ctx.input(|i| i.pointer.any_released()) {
+        if let Some(tool) = under {
+            app.set_tool(tool);
         }
-    } else if let Some(tool) = tapped {
-        app.set_tool(tool);
         clear(ctx);
     }
     // The finger may still be moving over the row.
@@ -938,16 +917,12 @@ fn tools_rail(app: &mut App, ui: &mut Ui, m3: &M3, safe: Safe) {
                             let active = group.tools.contains(&app.tool);
                             let resp = tool_target(ui, m3, shown, active);
                             if resp.clicked() {
-                                if group.tools.len() > 1 {
-                                    pop = Some((gi, resp.rect, false));
-                                } else {
-                                    pick = Some(shown);
-                                }
+                                pick = Some(shown);
                             }
-                            // The finger still down after a moment: the
-                            // group's other tools come out to be slid onto.
+                            // Held, the group's other tools come out to be
+                            // slid onto: a tap alone never opens a window.
                             if holding(ui, &resp) && group.tools.len() > 1 {
-                                pop = Some((gi, resp.rect, true));
+                                pop = Some((gi, resp.rect));
                             }
                         }
                         ui.add_space(6.0);
@@ -956,8 +931,8 @@ fn tools_rail(app: &mut App, ui: &mut Ui, m3: &M3, safe: Safe) {
             if let Some(tool) = pick {
                 app.set_tool(tool);
             }
-            if let Some((gi, rect, hold)) = pop {
-                show_tools(ui.ctx(), gi, rect, hold);
+            if let Some((gi, rect)) = pop {
+                show_tools(ui.ctx(), gi, rect);
             }
             });
         });
