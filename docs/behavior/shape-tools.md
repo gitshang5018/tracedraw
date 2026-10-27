@@ -16,8 +16,11 @@ in the colour and width of the default outline, at least one pixel wide
 (the selection colour when new objects get no outline), and over it a
 black hairline on a white line twice as wide, so its edge shows on any
 outline colour and any drawing under it (#670; the 3-point tools'
-preview too). Crop, zoom and
-text frame drags keep a plain rectangle. After the release the new
+preview and their base line too, while it is dragged and while it waits
+for the third click). The zoom and text frame drags, and a
+box tool's rubber band, are a hairline (blue, black for a text frame) on
+a white line twice as wide, so they show over a black fill too (#672).
+Crop keeps a plain rectangle. After the release the new
 object is selected and shows the eight handles and the centre marker
 whatever tool is active.
 
@@ -28,6 +31,9 @@ whatever tool is active.
   while dragging, so it can be pressed or released mid-drag.
 - Snapping applies to the start and current points (see `snapping.md`).
 - A drag shorter than 0.05 mm in either direction creates nothing.
+- 3-point rectangle and 3-point ellipse: Ctrl while dragging the base
+  keeps it to steps of the constrain angle from its start (#934,
+  `pick_drag_tests::ctrl_keeps_the_three_point_base_to_the_constrain_angle`).
 
 ## Rectangle (F6)
 

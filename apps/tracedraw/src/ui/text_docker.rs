@@ -10,8 +10,8 @@
 //! - Character: font, style and size; range kerning and underline; the
 //!   text fill, the characters' background and the text outline, each a
 //!   kind, a colour and "..." for its full settings; the expander shows
-//!   strikethrough, the characters' offsets and angle and the OpenType
-//!   features.
+//!   strikethrough, the characters' offsets and angle, the OpenType
+//!   features and, for a variable font, a slider for each of its axes.
 //! - Paragraph: the six alignments (none, left, centre, right, full and
 //!   forced justification), line spacing in % of the character height,
 //!   points or % of the font size, left, first-line and right indents,
@@ -629,6 +629,80 @@ fn fill_row(
     out
 }
 
+/// The style list: the faces the family has (Regular, SemiBold, Bold
+/// ...), else regular, italic, bold and bold italic. A face of a weight
+/// between is the family named with its weight, so the list shows
+/// "SemiBold" for "Titillium Web SemiBold", never Bold (#892). True when
+/// the style changed.
+fn style_list(app: &mut App, ui: &mut Ui) -> bool {
+    let font = app.text_font.clone();
+    let base = tracedraw_text::split_weight(&font).map_or(font.as_str(), |(b, _)| b);
+    let faces = app
+        .font_previews
+        .info(base)
+        .map(|i| i.faces)
+        .unwrap_or_default();
+    let now = (font.clone(), app.text_bold, app.text_italic);
+    let picks: Vec<(String, (String, bool, bool))> = faces
+        .iter()
+        .map(|f| (f.name.clone(), tracedraw_text::face_family(base, f)))
+        .collect();
+    let shown = style_name(&picks, &now);
+    let mut changed = false;
+    egui::ComboBox::from_id_salt("docker_text_style")
+        .width(110.0)
+        .selected_text(shown)
+        .show_ui(ui, |ui| {
+            let mut chosen = None;
+            if picks.is_empty() {
+                for (b, i, key) in STYLES {
+                    let on = app.text_bold == b && app.text_italic == i;
+                    if ui.selectable_label(on, tr(key)).clicked() {
+                        chosen = Some((font.clone(), b, i));
+                    }
+                }
+            } else {
+                for (name, pick) in &picks {
+                    if ui.selectable_label(*pick == now, name).clicked() {
+                        chosen = Some(pick.clone());
+                    }
+                }
+            }
+            if let Some((family, bold, italic)) = chosen {
+                if family != app.text_font {
+                    app.text_font = family;
+                }
+                app.text_bold = bold;
+                app.text_italic = italic;
+                changed = true;
+            }
+        });
+    changed
+}
+
+/// The style the list shows for the text settings `now` (family, bold,
+/// italic) among a family's faces and the names text gives them: the
+/// face's own name, else the weight a family name ends in ("SemiBold"),
+/// else regular, italic, bold or bold italic.
+fn style_name(picks: &[(String, (String, bool, bool))], now: &(String, bool, bool)) -> String {
+    if let Some((name, _)) = picks.iter().find(|(_, p)| p == now) {
+        return name.clone();
+    }
+    let (family, bold, italic) = now;
+    if let Some(weight) = tracedraw_text::weight_suffix(family).filter(|_| !*bold) {
+        return if *italic {
+            format!("{weight} {}", tr("docker.style_italic"))
+        } else {
+            weight.to_string()
+        };
+    }
+    let idx = STYLES
+        .iter()
+        .position(|(b, i, _)| b == bold && i == italic)
+        .unwrap_or(0);
+    tr(STYLES[idx].2)
+}
+
 fn character(app: &mut App, ui: &mut Ui, first: Option<&tracedraw_core::Shape>) {
     let span = first.and_then(|t| match &t.kind {
         ShapeKind::Text { spans, .. } => spans.first().cloned(),
@@ -646,27 +720,11 @@ fn character(app: &mut App, ui: &mut Ui, first: Option<&tracedraw_core::Shape>) 
         row_check(app, ui, "font");
     });
     ui.horizontal(|ui| {
-        let idx = STYLES
-            .iter()
-            .position(|(b, i, _)| *b == app.text_bold && *i == app.text_italic)
-            .unwrap_or(0);
-        egui::ComboBox::from_id_salt("docker_text_style")
-            .width(110.0)
-            .selected_text(tr(STYLES[idx].2))
-            .show_ui(ui, |ui| {
-                for (b, i, key) in STYLES {
-                    if ui
-                        .selectable_label(app.text_bold == b && app.text_italic == i, tr(key))
-                        .clicked()
-                    {
-                        app.text_bold = b;
-                        app.text_italic = i;
-                        changed = true;
-                    }
-                }
-            });
+        changed |= style_list(app, ui);
         row_check(app, ui, "style");
         changed |= crate::ui::toolbar::text_size_list(app, ui);
+        // The axes of a variable font, beside its size (#870).
+        font_axes_button(app, ui, "docker");
         row_check(app, ui, "size");
     });
     if changed {
@@ -818,11 +876,216 @@ fn character(app: &mut App, ui: &mut Ui, first: Option<&tracedraw_core::Shape>) 
             }
         }
     });
+    font_axes(app, ui, &sp);
     if sc {
         let (strike, features) = (sp.strikethrough, sp.features.clone());
         edit_spans(app, move |s| {
             s.strikethrough = strike;
             s.features = features.clone();
+        });
+    }
+}
+
+/// The axes of a variable font (cached for the fonts as they are now).
+fn axes_of(ctx: &egui::Context, sp: &TextSpan) -> Vec<tracedraw_text::VariationAxis> {
+    let fonts = tracedraw_text::fonts();
+    let id = egui::Id::new((
+        "font_axes",
+        &sp.font_family,
+        sp.bold,
+        sp.italic,
+        fonts.generation(),
+    ));
+    if let Some(axes) = ctx.data(|d| d.get_temp::<Vec<tracedraw_text::VariationAxis>>(id)) {
+        return axes;
+    }
+    let axes: Vec<tracedraw_text::VariationAxis> = fonts
+        .variation_axes(&sp.font_family, sp.bold, sp.italic)
+        .into_iter()
+        .filter(|a| !a.hidden && a.max > a.min)
+        .collect();
+    ctx.data_mut(|d| d.insert_temp(id, axes.clone()));
+    axes
+}
+
+/// An axis's name: the registered axes in the interface language, the
+/// others as the font names them.
+fn axis_name(axis: &tracedraw_text::VariationAxis) -> String {
+    match axis.tag.as_str() {
+        "wght" => tr("docker.axis_wght"),
+        "wdth" => tr("docker.axis_wdth"),
+        "slnt" => tr("docker.axis_slnt"),
+        "ital" => tr("docker.axis_ital"),
+        "opsz" => tr("docker.axis_opsz"),
+        _ => axis.name.clone(),
+    }
+}
+
+/// The axes of the selected text's variable font (#870): a slider for
+/// each (weight, width, slant, optical size and the font's own axes),
+/// showing the value set on the text or, with none set, the one its
+/// weight and slant give. Releasing a slider (or typing a value) sets it
+/// on the selected characters, one undo step; Default axes takes every
+/// value off again. Nothing shows for a static font.
+fn font_axes(app: &mut App, ui: &mut Ui, sp: &TextSpan) {
+    let axes = axes_of(ui.ctx(), sp);
+    if axes.is_empty() {
+        return;
+    }
+    ui.horizontal(|ui| {
+        ui.label(tr("docker.font_axes"))
+            .on_hover_text(tr("docker.font_axes_tip"));
+        if ui
+            .add_enabled(
+                !sp.variations.is_empty(),
+                egui::Button::new(tr("docker.font_axes_reset")).small(),
+            )
+            .clicked()
+        {
+            edit_spans(app, |s| s.variations.clear());
+        }
+    });
+    for axis in &axes {
+        ui.horizontal(|ui| {
+            ui.add_sized([72.0, 18.0], egui::Label::new(axis_name(axis)).truncate())
+                .on_hover_text(&axis.tag);
+            let id = ui.id().with(("font_axis", &axis.tag));
+            let held = sp
+                .variation(&axis.tag)
+                .map_or(axis.auto, |v| v.clamp(axis.min, axis.max));
+            let mut v = ui.data(|d| d.get_temp::<f64>(id)).unwrap_or(held);
+            let step = if axis.max - axis.min > 20.0 { 1.0 } else { 0.1 };
+            ui.spacing_mut().slider_width = (ui.available_width() - 70.0).max(60.0);
+            let r = ui.add(crate::ui::Rail(
+                egui::Slider::new(&mut v, axis.min..=axis.max)
+                    .step_by(step)
+                    .clamping(egui::SliderClamping::Always),
+            ));
+            if r.dragged() {
+                ui.data_mut(|d| d.insert_temp(id, v));
+            }
+            if r.drag_stopped() || r.changed() && !r.dragged() {
+                ui.data_mut(|d| d.remove::<f64>(id));
+                let tag = axis.tag.clone();
+                edit_spans(app, move |s| s.set_variation(&tag, Some(v)));
+            }
+        });
+    }
+}
+
+/// The first span of the selected text, or of the text being edited:
+/// the font whose axes the axes button offers (#870).
+pub(crate) fn selected_text_span(app: &App) -> Option<TextSpan> {
+    app.selected_shapes().iter().find_map(|s| match &s.kind {
+        ShapeKind::Text { spans, .. } => spans.first().cloned(),
+        _ => None,
+    })
+}
+
+/// Where the axes button of the bar or docker `salt` was drawn last, for
+/// tests.
+#[cfg(test)]
+pub(crate) fn font_axes_button_rect(ctx: &egui::Context, salt: &str) -> Option<Rect> {
+    ctx.data(|d| d.get_temp(egui::Id::new(("font_axes_button_rect", salt))))
+}
+
+/// Where the axes popup of the bar or docker `salt` was drawn last, for
+/// tests.
+#[cfg(test)]
+pub(crate) fn font_axes_popup_rect(ctx: &egui::Context, salt: &str) -> Option<Rect> {
+    ctx.data(|d| d.get_temp(egui::Id::new(("font_axes_popup_rect", salt))))
+}
+
+/// The popup of the axes button whose id is `id`.
+fn font_axes_popup_id(id: egui::Id) -> egui::Id {
+    id.with("popup")
+}
+
+/// The button beside the font size that opens the axis sliders of the
+/// selected text's variable font in a small window under it (#870): the
+/// same sliders as the Character section. It is enabled only when that
+/// font has axes; its tip says why when it is not.
+pub(crate) fn font_axes_button(app: &mut App, ui: &mut Ui, salt: &str) {
+    use crate::ui::tips::RichTip;
+    let span = selected_text_span(app);
+    let enabled = span
+        .as_ref()
+        .is_some_and(|sp| !axes_of(ui.ctx(), sp).is_empty());
+    // Salted with the bar's id too: the property bar and the Text
+    // toolbar can both show one.
+    let id = ui.make_persistent_id(("font_axes_button", salt));
+    let popup_id = font_axes_popup_id(id);
+    let ctx = ui.ctx().clone();
+    let open = egui::Popup::is_id_open(&ctx, popup_id);
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(24.0, 22.0), Sense::hover());
+    let sense = if enabled {
+        Sense::click()
+    } else {
+        Sense::hover()
+    };
+    let resp = ui.interact(rect, id, sense);
+    #[cfg(test)]
+    ctx.data_mut(|d| d.insert_temp(egui::Id::new(("font_axes_button_rect", salt)), rect));
+    if ui.is_rect_visible(rect) {
+        let painter = ui.painter();
+        if open {
+            painter.rect_filled(rect, 2.0, Tokens::tool_active());
+        } else if enabled && resp.hovered() {
+            painter.rect_filled(rect, 2.0, Tokens::tool_hover());
+        }
+        let color = if enabled {
+            Tokens::icon()
+        } else {
+            Tokens::text_dim().gamma_multiply(0.6)
+        };
+        // A letter over a slider.
+        painter.text(
+            rect.center() - Vec2::new(0.0, 3.0),
+            egui::Align2::CENTER_CENTER,
+            "A",
+            egui::FontId::proportional(13.0),
+            color,
+        );
+        let y = rect.bottom() - 5.0;
+        painter.line_segment(
+            [
+                egui::pos2(rect.left() + 4.0, y),
+                egui::pos2(rect.right() - 4.0, y),
+            ],
+            Stroke::new(1.0, color),
+        );
+        painter.circle_filled(egui::pos2(rect.center().x + 3.0, y), 2.5, color);
+    }
+    let why = if enabled {
+        "toolbar.font_axes_desc"
+    } else {
+        "toolbar.font_axes_none"
+    };
+    let resp = resp.rich_tip(format!("{}\n{}", tr("toolbar.font_axes"), tr(why)));
+    if resp.clicked() {
+        egui::Popup::toggle_id(&ctx, popup_id);
+    }
+    if !enabled && open {
+        egui::Popup::close_id(&ctx, popup_id);
+    }
+    let Some(sp) = span.filter(|_| enabled) else {
+        return;
+    };
+    let _shown = egui::Popup::new(popup_id, ctx.clone(), resp.rect, ui.layer_id())
+        .open_memory(None)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .width(280.0)
+        .show(|ui| {
+            ui.set_width(280.0);
+            font_axes(app, ui, &sp);
+        });
+    #[cfg(test)]
+    if let Some(r) = _shown {
+        ctx.data_mut(|d| {
+            d.insert_temp(
+                egui::Id::new(("font_axes_popup_rect", salt)),
+                r.response.rect,
+            )
         });
     }
 }
@@ -890,15 +1153,15 @@ fn paragraph(app: &mut App, ui: &mut Ui, first: Option<&tracedraw_core::Shape>) 
     };
     let before = p.clone();
     let mut pc = false;
-    let line_icon = |ui: &mut Ui, text: &str, key: &str| {
-        ui.add_sized(
-            [18.0, 22.0],
-            egui::Label::new(egui::RichText::new(text).size(13.0)),
-        )
-        .on_hover_text(tr(key));
+    let line_icon = |ui: &mut Ui, icon: ParaIcon, key: &str| {
+        let (r, resp) = ui.allocate_exact_size(egui::vec2(18.0, 22.0), egui::Sense::hover());
+        for shape in para_icon_shapes(icon, r, ui.visuals().text_color()) {
+            ui.painter().add(shape);
+        }
+        resp.on_hover_text(tr(key));
     };
     ui.horizontal(|ui| {
-        line_icon(ui, "\u{2195}", "docker.leading");
+        line_icon(ui, ParaIcon::Leading, "docker.leading");
         let (range, suffix) = match p.leading_unit {
             LeadingUnit::Points => (0.0..=2000.0, " pt"),
             _ => (0.0..=2000.0, " %"),
@@ -935,17 +1198,17 @@ fn paragraph(app: &mut App, ui: &mut Ui, first: Option<&tracedraw_core::Shape>) 
         .num_columns(4)
         .spacing([4.0, 4.0])
         .show(ui, |ui| {
-            line_icon(ui, "\u{21E5}", "docker.left_indent");
+            line_icon(ui, ParaIcon::LeftIndent, "docker.left_indent");
             pc |= length(ui, app, &mut p.left_indent);
-            line_icon(ui, "\u{2912}", "docker.space_before");
+            line_icon(ui, ParaIcon::SpaceBefore, "docker.space_before");
             pc |= length(ui, app, &mut p.space_before);
             ui.end_row();
-            line_icon(ui, "\u{21B3}", "docker.first_line_indent");
+            line_icon(ui, ParaIcon::FirstLineIndent, "docker.first_line_indent");
             pc |= length(ui, app, &mut p.first_line_indent);
-            line_icon(ui, "\u{2913}", "docker.space_after");
+            line_icon(ui, ParaIcon::SpaceAfter, "docker.space_after");
             pc |= length(ui, app, &mut p.space_after);
             ui.end_row();
-            line_icon(ui, "\u{21E4}", "docker.right_indent");
+            line_icon(ui, ParaIcon::RightIndent, "docker.right_indent");
             pc |= length(ui, app, &mut p.right_indent);
             ui.end_row();
         });
@@ -1121,9 +1384,125 @@ fn frame(app: &mut App, ui: &mut Ui, first: Option<&tracedraw_core::Shape>) {
     }
 }
 
+/// The small pictures beside the paragraph spacing and indent fields.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ParaIcon {
+    Leading,
+    LeftIndent,
+    RightIndent,
+    FirstLineIndent,
+    SpaceBefore,
+    SpaceAfter,
+}
+
+/// The lines of a paragraph icon in `r`: lines of text with an arrow or a
+/// bar showing what the field sets. Drawn rather than taken from a font,
+/// whose arrows the interface fonts of some systems lack (#863).
+fn para_icon_shapes(icon: ParaIcon, r: egui::Rect, color: egui::Color32) -> Vec<egui::Shape> {
+    let st = egui::Stroke::new(1.0, color);
+    let c = r.center();
+    let (l, rt) = (c.x - 7.0, c.x + 7.0);
+    let line = |x0: f32, x1: f32, y: f32| {
+        egui::Shape::line_segment([egui::pos2(x0, y), egui::pos2(x1, y)], st)
+    };
+    let arrow = |from: egui::Pos2, to: egui::Pos2| {
+        let d = (to - from).normalized() * 3.0;
+        let n = egui::vec2(-d.y, d.x);
+        vec![
+            egui::Shape::line_segment([from, to], st),
+            egui::Shape::line_segment([to, to - d + n], st),
+            egui::Shape::line_segment([to, to - d - n], st),
+        ]
+    };
+    let mut out = Vec::new();
+    match icon {
+        ParaIcon::Leading => {
+            out.push(line(l, rt - 5.0, c.y - 6.0));
+            out.push(line(l, rt - 5.0, c.y + 6.0));
+            out.extend(arrow(
+                egui::pos2(rt - 1.0, c.y),
+                egui::pos2(rt - 1.0, c.y - 6.0),
+            ));
+            out.extend(arrow(
+                egui::pos2(rt - 1.0, c.y),
+                egui::pos2(rt - 1.0, c.y + 6.0),
+            ));
+        }
+        ParaIcon::LeftIndent | ParaIcon::RightIndent => {
+            let left = icon == ParaIcon::LeftIndent;
+            let (x0, x1) = if left { (l + 6.0, rt) } else { (l, rt - 6.0) };
+            for k in -1..=1 {
+                out.push(line(x0, x1, c.y + k as f32 * 4.0));
+            }
+            if left {
+                out.extend(arrow(egui::pos2(l, c.y), egui::pos2(l + 4.0, c.y)));
+            } else {
+                out.extend(arrow(egui::pos2(rt, c.y), egui::pos2(rt - 4.0, c.y)));
+            }
+        }
+        ParaIcon::FirstLineIndent => {
+            out.push(line(l + 6.0, rt, c.y - 4.0));
+            out.push(line(l, rt, c.y));
+            out.push(line(l, rt, c.y + 4.0));
+            out.extend(arrow(
+                egui::pos2(l, c.y - 4.0),
+                egui::pos2(l + 4.0, c.y - 4.0),
+            ));
+        }
+        ParaIcon::SpaceBefore => {
+            out.push(line(l, rt, c.y - 7.0));
+            out.push(line(l, rt, c.y + 3.0));
+            out.push(line(l, rt, c.y + 7.0));
+            out.extend(arrow(
+                egui::pos2(c.x, c.y - 6.0),
+                egui::pos2(c.x, c.y + 1.0),
+            ));
+        }
+        ParaIcon::SpaceAfter => {
+            out.push(line(l, rt, c.y - 7.0));
+            out.push(line(l, rt, c.y - 3.0));
+            out.push(line(l, rt, c.y + 7.0));
+            out.extend(arrow(
+                egui::pos2(c.x, c.y + 6.0),
+                egui::pos2(c.x, c.y - 1.0),
+            ));
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The paragraph icons are drawn lines inside their box, not font
+    /// arrows, which the interface fonts of some systems do not have and
+    /// left the boxes empty (#863).
+    #[test]
+    fn paragraph_icons_are_drawn_lines_inside_their_box() {
+        let r = egui::Rect::from_min_size(egui::pos2(10.0, 20.0), egui::vec2(18.0, 22.0));
+        for icon in [
+            ParaIcon::Leading,
+            ParaIcon::LeftIndent,
+            ParaIcon::RightIndent,
+            ParaIcon::FirstLineIndent,
+            ParaIcon::SpaceBefore,
+            ParaIcon::SpaceAfter,
+        ] {
+            let shapes = para_icon_shapes(icon, r, egui::Color32::BLACK);
+            assert!(shapes.len() >= 4, "{icon:?}");
+            for sh in &shapes {
+                match sh {
+                    egui::Shape::LineSegment { points, .. } => {
+                        for p in points {
+                            assert!(r.expand(0.5).contains(*p), "{icon:?}: {p:?} outside {r:?}");
+                        }
+                    }
+                    other => panic!("{icon:?}: not a line: {other:?}"),
+                }
+            }
+        }
+    }
     use tracedraw_core::{Point, Size, TextSpan};
 
     fn draw(app: &mut App) {
@@ -1137,6 +1516,58 @@ mod tests {
         };
         let mut out = ctx.run_ui(input, |ui| text_docker(app, ui));
         out.textures_delta.clear();
+    }
+
+    /// A text in a variable font shows its axes in the Character section
+    /// (#870); a value set there goes on the text in one undo step and
+    /// Default axes takes it off; a static font shows none.
+    #[test]
+    fn variable_font_axes_show_and_set_on_the_text() {
+        let quicksand = include_bytes!("../../../../crates/text/testdata/Quicksand-VF.ttf");
+        let _ = tracedraw_text::fonts().add_fonts(vec![quicksand.to_vec()]);
+        let mut app = App::headless();
+        let id = app
+            .new_shape(ShapeKind::Text {
+                spans: vec![TextSpan::new("Text", "Quicksand", 24.0)],
+                origin: Point::new(10.0, 10.0),
+                frame: None,
+                align: TextAlign::Left,
+                para: ParagraphStyle::default(),
+                on_path: None,
+            })
+            .expect("text");
+        app.select(vec![id]);
+        let ctx = crate::theme::ui_context();
+        ctx.data_mut(|d| d.insert_temp(egui::Id::new(("text_docker_more", "character")), true));
+        let input = || egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(360.0, 900.0),
+            )),
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input(), |ui| text_docker(&mut app, ui));
+        out.textures_delta.clear();
+        let sp = TextSpan::new("Text", "Quicksand", 24.0);
+        let axes = axes_of(&ctx, &sp);
+        assert_eq!(axes.len(), 1, "{axes:?}");
+        assert_eq!(axes[0].tag, "wght");
+        assert_eq!(axis_name(&axes[0]), tr("docker.axis_wght"));
+        assert!(axes_of(&ctx, &TextSpan::new("Text", "Selawik", 24.0)).is_empty());
+
+        let wght = |app: &App| match app.doc().find_shape(id).map(|s| s.kind.clone()) {
+            Some(ShapeKind::Text { spans, .. }) => spans[0].variation("wght"),
+            _ => panic!("text"),
+        };
+        edit_spans(&mut app, |s| s.set_variation("wght", Some(650.0)));
+        assert_eq!(wght(&app), Some(650.0));
+        // It draws with the value set.
+        let mut out = ctx.run_ui(input(), |ui| text_docker(&mut app, ui));
+        out.textures_delta.clear();
+        edit_spans(&mut app, |s| s.variations.clear());
+        assert_eq!(wght(&app), None);
+        app.undo();
+        assert_eq!(wght(&app), Some(650.0));
     }
 
     #[test]
@@ -1164,6 +1595,66 @@ mod tests {
         }
         draw(&mut app);
         assert_eq!(app.settings.text_sections_closed.len(), 3);
+    }
+
+    /// The style list names a semibold face by its weight, never Bold
+    /// (#892, #624): from the family's faces, and from the family name
+    /// when the faces are not known.
+    #[test]
+    fn the_style_list_shows_a_semibold_face_as_semibold() {
+        let face = |name: &str, weight: u16, italic: bool| tracedraw_text::FaceStyle {
+            name: name.into(),
+            weight,
+            italic,
+        };
+        let faces = [
+            face("Regular", 400, false),
+            face("SemiBold", 600, false),
+            face("Bold", 700, false),
+        ];
+        let picks: Vec<(String, (String, bool, bool))> = faces
+            .iter()
+            .map(|f| {
+                (
+                    f.name.clone(),
+                    tracedraw_text::face_family("Titillium Web", f),
+                )
+            })
+            .collect();
+        let now = |f: &str, b: bool| (f.to_string(), b, false);
+        assert_eq!(
+            style_name(&picks, &now("Titillium Web SemiBold", false)),
+            "SemiBold"
+        );
+        assert_eq!(style_name(&picks, &now("Titillium Web", true)), "Bold");
+        assert_eq!(style_name(&picks, &now("Titillium Web", false)), "Regular");
+        // Faces not known (the family is not installed).
+        assert_eq!(
+            style_name(&[], &now("Titillium Web SemiBold", false)),
+            "SemiBold"
+        );
+        assert_eq!(
+            style_name(&[], &now("Titillium Web", true)),
+            tr("docker.style_bold")
+        );
+        // A .cdr run in the semibold face shows as that face in the docker,
+        // with Bold off.
+        let mut app = App::headless();
+        let id = app
+            .new_shape(ShapeKind::Text {
+                spans: vec![TextSpan::new("Text", "Selawik SemiBold", 11.0)],
+                origin: Point::new(10.0, 10.0),
+                frame: None,
+                align: TextAlign::Left,
+                para: ParagraphStyle::default(),
+                on_path: None,
+            })
+            .expect("text");
+        app.select(vec![id]);
+        app.sync_text_defaults_from(id);
+        draw(&mut app);
+        assert_eq!(app.text_font, "Selawik SemiBold");
+        assert!(!app.text_bold);
     }
 
     /// The vertical alignment a paragraph text takes is kept with it and

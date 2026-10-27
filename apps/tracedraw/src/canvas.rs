@@ -123,6 +123,7 @@ pub fn draw_canvas(app: &App, painter: &Painter, rect: ERect) {
     draw_anchors(app, painter);
     draw_fountain_handles(app, painter);
     draw_shadow_handles(app, painter);
+    draw_blend_controls(app, painter);
 
     // Fit Text to Path waiting for its path: the text on the one near.
     if app.pending_text_path {
@@ -132,9 +133,16 @@ pub fn draw_canvas(app: &App, painter: &Painter, rect: ERect) {
     }
     // 3-point tools: base segment waiting for the third click, previewed to the pointer.
     if let (Some((a, b)), Some(c)) = (app.three_point_base, app.pointer_page) {
-        let stroke = EStroke::new(1.0, Tokens::SELECTION);
-        painter.line_segment([view.to_screen(a), view.to_screen(b)], stroke);
-        let preview = three_point_preview(app.tool, a, b, c);
+        // On a white line, as while it was dragged (#672).
+        haloed_polyline(
+            painter,
+            &[view.to_screen(a), view.to_screen(b)],
+            false,
+            Color32::BLACK,
+        );
+        let mods = painter.ctx().input(|i| i.modifiers);
+        let arc = app.tool == Tool::ThreePointCurve && app.constrain_held(&mods);
+        let preview = three_point_preview(app.tool, a, b, c, arc);
         for (pts, closed) in flatten(&preview, view) {
             if pts.len() > 1 {
                 haloed_polyline(painter, &pts, closed, Color32::BLACK);
@@ -154,8 +162,7 @@ pub fn draw_canvas(app: &App, painter: &Painter, rect: ERect) {
             None => {
                 let page_rect = App::box_rect(*start, *current, *from_center);
                 let r = view.rect_to_screen(page_rect);
-                let stroke = EStroke::new(1.0, Tokens::SELECTION);
-                painter.rect_stroke(r, 0.0, stroke, epaint::StrokeKind::Outside);
+                haloed_rect(painter, r, Tokens::SELECTION);
             }
         },
         Drag::Marquee { start, current, .. } => {
@@ -184,13 +191,14 @@ pub fn draw_canvas(app: &App, painter: &Painter, rect: ERect) {
         }
         Drag::ZoomBox { start, current } => {
             let r = view.rect_to_screen(Rect::from_points(*start, *current));
-            let stroke = EStroke::new(1.0, Tokens::SELECTION);
-            painter.rect_stroke(r, 0.0, stroke, epaint::StrokeKind::Outside);
+            haloed_rect(painter, r, Tokens::SELECTION);
         }
         Drag::ThreePointBase { start, current } => {
-            painter.line_segment(
-                [view.to_screen(*start), view.to_screen(*current)],
-                EStroke::new(1.0, Tokens::SELECTION),
+            haloed_polyline(
+                painter,
+                &[view.to_screen(*start), view.to_screen(*current)],
+                false,
+                Color32::BLACK,
             );
         }
         Drag::Connector {
@@ -204,28 +212,24 @@ pub fn draw_canvas(app: &App, painter: &Painter, rect: ERect) {
                 app.nearest_anchor(*from, *start)
             };
             if let Some(o) = origin {
-                painter.line_segment(
-                    [view.to_screen(o), view.to_screen(*current)],
-                    EStroke::new(1.0, Tokens::SELECTION),
+                haloed_polyline(
+                    painter,
+                    &[view.to_screen(o), view.to_screen(*current)],
+                    false,
+                    Tokens::SELECTION,
                 );
             }
         }
         Drag::TextFrame { start, current } => {
             let r = view.rect_to_screen(Rect::from_points(*start, *current));
-            painter.rect_stroke(
-                r,
-                0.0,
-                EStroke::new(1.0, Tokens::text()),
-                epaint::StrokeKind::Outside,
-            );
+            haloed_rect(painter, r, Color32::BLACK);
         }
         Drag::Freehand { points } => {
+            // A black line on a white one, so the stroke shows over any
+            // colour, a black fill too (#672).
             let pts: Vec<Pos2> = points.iter().map(|p| view.to_screen(*p)).collect();
             if pts.len() > 1 {
-                painter.add(epaint::PathShape::line(
-                    pts,
-                    EStroke::new(1.0, Tokens::text()),
-                ));
+                haloed_polyline(painter, &pts, false, Color32::BLACK);
             }
         }
         Drag::FillGradient { start, current, .. } => {
@@ -257,12 +261,11 @@ pub fn draw_canvas(app: &App, painter: &Painter, rect: ERect) {
         let preview = app.tool == crate::tools::Tool::Pen && app.settings.curves.pen_preview;
         let outline = app.default_stroke().map(|s| to_color32(s.color));
         let look = crate::pen_look::curve_look(c, pointer, preview, outline);
+        // The placed segments in their outline's colour, on a white line
+        // so a black outline shows over a black fill (#672).
         for (pts, _) in flatten(&look.placed, view) {
             if pts.len() > 1 {
-                painter.add(epaint::PathShape::line(
-                    pts,
-                    EStroke::new(1.0, look.placed_color),
-                ));
+                haloed_polyline(painter, &pts, false, look.placed_color);
             }
         }
         if let Some(seg) = &look.preview {
@@ -335,12 +338,11 @@ pub fn draw_canvas(app: &App, painter: &Painter, rect: ERect) {
                 ));
             }
         }
-        for (pts, _) in flatten(&path, view) {
+        // A black line on a white one, as for the shapes being drawn, so
+        // it shows over any colour (#672).
+        for (pts, closed) in flatten(&path, view) {
             if pts.len() > 1 {
-                painter.add(epaint::PathShape::line(
-                    pts,
-                    EStroke::new(1.0, Tokens::SELECTION),
-                ));
+                haloed_polyline(painter, &pts, closed, Color32::BLACK);
             }
         }
         for (p, out) in &c.nodes {
@@ -351,8 +353,17 @@ pub fn draw_canvas(app: &App, painter: &Painter, rect: ERect) {
                 draw_control_handle(painter, sp, so, Tokens::SELECTION);
                 draw_control_handle(painter, sp, mirrored, Tokens::SELECTION);
             }
+            // A white edge round the hollow square, so it shows on a
+            // black fill too (#672).
+            let r = ERect::from_center_size(sp, egui::vec2(6.0, 6.0));
             painter.rect_stroke(
-                ERect::from_center_size(sp, egui::vec2(6.0, 6.0)),
+                r,
+                0.0,
+                EStroke::new(1.0, Color32::WHITE),
+                epaint::StrokeKind::Outside,
+            );
+            painter.rect_stroke(
+                r,
                 0.0,
                 EStroke::new(1.0, Tokens::text()),
                 epaint::StrokeKind::Middle,
@@ -433,8 +444,52 @@ pub(crate) fn ime_at_caret(app: &App, painter: &Painter, top: Pos2, bottom: Pos2
 fn draw_page(app: &App, painter: &Painter, rect: ERect, preview: Option<Affine>) {
     let view = &app.view;
     painter.rect_filled(rect, 0.0, app.desktop_color());
+    // Objects, rasterized with tiny-skia into a texture; the live drag preview
+    // is applied to the selection during the render. Rendered before the
+    // other pages of the Multipage View so their renders know the time
+    // this one took (#903); painted after the page and its grids.
+    let started = web_time::Instant::now();
+    let renders_before = app.raster.borrow().render_count();
+    // Editing a symmetry with Show full preview off: drawn without its
+    // copies (the canvas outlines them in red); a revision of its own so
+    // the picture is not taken for the full one.
+    let without_copies = app.symmetry_without_copies();
+    let doc: &Document = without_copies.as_deref().unwrap_or(app.doc());
+    let revision = app.engine.revision()
+        ^ if without_copies.is_some() {
+            1u64 << 62
+        } else {
+            0
+        };
+    // Paragraph text being resized keeps its letters while the frame
+    // follows the drag (the text flows anew on release).
+    let preview_ids = preview.map(|t| {
+        let ids: Vec<_> = app
+            .selection
+            .iter()
+            .copied()
+            .filter(|id| !app.resizes_text_frame(*id, t))
+            .collect();
+        (ids, t)
+    });
+    let main = app.raster.borrow_mut().texture(
+        painter.ctx(),
+        doc,
+        app.page,
+        view,
+        rect,
+        preview_ids,
+        revision,
+        app.wireframe,
+        app.simulate_overprints,
+        app.rasterize_complex_effects,
+        app.proof_colors,
+        app.render_focus(),
+        (app.view_mode == crate::app::ViewMode::Pixels).then(|| app.document_dpi()),
+    );
+    let main_rendered = app.raster.borrow().render_count() != renders_before;
     if app.multipage {
-        crate::multipage::draw_other_pages(app, painter, rect);
+        crate::multipage::draw_other_pages(app, painter, rect, started, main_rendered);
     }
 
     // Page: a flat grey shadow offset right and down, the white page, a
@@ -506,46 +561,7 @@ fn draw_page(app: &App, painter: &Painter, rect: ERect, preview: Option<Affine>)
         draw_baseline_grid(app, painter, rect, paper);
     }
 
-    // Objects, rasterized with tiny-skia into a texture; the live drag preview
-    // is applied to the selection during the render.
-    // Editing a symmetry with Show full preview off: drawn without its
-    // copies (the canvas outlines them in red); a revision of its own so
-    // the picture is not taken for the full one.
-    let without_copies = app.symmetry_without_copies();
-    let doc: &Document = without_copies.as_deref().unwrap_or(app.doc());
-    let revision = app.engine.revision()
-        ^ if without_copies.is_some() {
-            1u64 << 62
-        } else {
-            0
-        };
-    // Paragraph text being resized keeps its letters while the frame
-    // follows the drag (the text flows anew on release).
-    let preview_ids = preview.map(|t| {
-        let ids: Vec<_> = app
-            .selection
-            .iter()
-            .copied()
-            .filter(|id| !app.resizes_text_frame(*id, t))
-            .collect();
-        (ids, t)
-    });
-    if let Some(tex) = app.raster.borrow_mut().texture(
-        painter.ctx(),
-        doc,
-        app.page,
-        view,
-        rect,
-        preview_ids,
-        revision,
-        app.wireframe,
-        app.simulate_overprints,
-        app.rasterize_complex_effects,
-        app.proof_colors,
-        app.render_focus(),
-        (app.view_mode == crate::app::ViewMode::Pixels).then(|| app.document_dpi()),
-    ) {
-        let (tex, at) = tex;
+    if let Some((tex, at)) = main {
         painter.image(
             tex,
             at,
@@ -752,6 +768,17 @@ fn draw_creation_preview(app: &App, painter: &Painter, path: &BezPath) {
     }
 }
 
+/// The frame `r` as a [`haloed_polyline`] in `inner`.
+fn haloed_rect(painter: &Painter, r: ERect, inner: Color32) {
+    let pts = [
+        r.left_top(),
+        r.right_top(),
+        r.right_bottom(),
+        r.left_bottom(),
+    ];
+    haloed_polyline(painter, &pts, true, inner);
+}
+
 /// The width of the white line under an overlay's coloured one, and of
 /// the coloured one: half of it, as the reference program draws its
 /// overlays (#670).
@@ -759,8 +786,11 @@ pub(crate) const HALO_WIDTH: f32 = 2.0;
 pub(crate) const HALO_INNER: f32 = 1.0;
 
 /// An overlay line that shows on any colour: `inner` on a white line
-/// twice as wide. Plain segments, which cost less than a path shape in
-/// an overlay redrawn every frame.
+/// twice as wide. A short line is plain segments, which cost less than a
+/// path shape in an overlay redrawn every frame (#560); a long one (a
+/// freehand stroke, many placed segments) two path shapes, which cost
+/// less than twice its segments (`frame_times_of_the_pen_preview`, #672).
+/// Either way one call to the painter.
 pub(crate) fn haloed_polyline(painter: &Painter, pts: &[Pos2], closed: bool, inner: Color32) {
     let segs = || {
         pts.windows(2).map(|w| [w[0], w[1]]).chain(
@@ -769,12 +799,34 @@ pub(crate) fn haloed_polyline(painter: &Painter, pts: &[Pos2], closed: bool, inn
                 .filter(|_| pts.len() > 2),
         )
     };
-    for seg in segs() {
-        painter.line_segment(seg, EStroke::new(HALO_WIDTH, Color32::WHITE));
+    if pts.len() > 8 {
+        let shape = |stroke: EStroke| {
+            if closed {
+                epaint::PathShape::closed_line(pts.to_vec(), stroke)
+            } else {
+                epaint::PathShape::line(pts.to_vec(), stroke)
+            }
+        };
+        painter.extend([
+            egui::Shape::Path(shape(EStroke::new(HALO_WIDTH, Color32::WHITE))),
+            egui::Shape::Path(shape(EStroke::new(HALO_INNER, inner))),
+        ]);
+        return;
     }
-    for seg in segs() {
-        painter.line_segment(seg, EStroke::new(HALO_INNER, inner));
-    }
+    // One call for every segment, the white ones first.
+    let white = EStroke::new(HALO_WIDTH, Color32::WHITE);
+    let line = EStroke::new(HALO_INNER, inner);
+    painter.extend(
+        segs()
+            .map(|points| egui::Shape::LineSegment {
+                points,
+                stroke: white,
+            })
+            .chain(segs().map(|points| egui::Shape::LineSegment {
+                points,
+                stroke: line,
+            })),
+    );
 }
 
 fn three_point_preview(
@@ -782,25 +834,16 @@ fn three_point_preview(
     a: Point,
     b: Point,
     c: Point,
+    arc: bool,
 ) -> tracedraw_core::geometry::BezPath {
-    use tracedraw_core::geometry::{BezPath, Vec2};
+    use tracedraw_core::geometry::Vec2;
     let base = b - a;
     let len = base.hypot().max(1e-6);
     let dir = base / len;
     let normal = Vec2::new(-dir.y, dir.x);
     let height = (c - a).dot(normal);
     match tool {
-        Tool::ThreePointCurve => {
-            let ctrl = Point::new(2.0 * c.x - 0.5 * (a.x + b.x), 2.0 * c.y - 0.5 * (a.y + b.y));
-            let mut p = BezPath::new();
-            p.move_to(a);
-            p.curve_to(
-                a + (ctrl - a) * (2.0 / 3.0),
-                b + (ctrl - b) * (2.0 / 3.0),
-                b,
-            );
-            p
-        }
+        Tool::ThreePointCurve => crate::app::three_point_curve(a, b, c, arc),
         _ => {
             let local = Rect::new(0.0, height.min(0.0), len, height.max(0.0));
             let t = Affine::translate(a.to_vec2()) * Affine::rotate(base.atan2());
@@ -1103,6 +1146,64 @@ fn draw_shadow_handles(app: &App, painter: &Painter) {
             egui::StrokeKind::Outside,
         );
     }
+}
+
+/// Blend tool: the selected blend's start and end squares, the line
+/// between them and the object (above) and colour (below) acceleration
+/// sliders on it, plain segments and small shapes (#965).
+fn draw_blend_controls(app: &App, painter: &Painter) {
+    use crate::blend_tool::{screen_normal, BlendHandle, SLIDER_OFFSET_PX};
+    // Not while a new blend is being dragged out.
+    if app.tool != Tool::Blend || matches!(app.drag, Drag::Connector { .. }) {
+        return;
+    }
+    let Some(c) = app.blend_controls() else {
+        return;
+    };
+    let view = &app.view;
+    let (a, z) = (view.to_screen(c.start), view.to_screen(c.end));
+    haloed_polyline(painter, &[a, z], false, Tokens::SELECTION);
+    let n = screen_normal(a, z);
+    if (z - a).length() >= 14.0 {
+        let along = (z - a).normalized();
+        for (h, side) in [(BlendHandle::Objects, 1.0), (BlendHandle::Colors, -1.0)] {
+            let o = view.to_screen(c.slider_point(h));
+            // A triangle pointing at the line from its side.
+            let tip = o + n * side * 1.0;
+            let base = o + n * side * (SLIDER_OFFSET_PX + 5.0);
+            let pts = vec![tip, base + along * 4.5, base - along * 4.5];
+            let fill = if app.blend_handle_drag == Some(h) {
+                Tokens::SELECTION
+            } else {
+                Color32::WHITE
+            };
+            painter.add(egui::Shape::convex_polygon(
+                pts,
+                fill,
+                EStroke::new(1.0, Tokens::SELECTION),
+            ));
+        }
+    }
+    for p in [a, z] {
+        let rect = ERect::from_center_size(p, egui::vec2(9.0, 9.0));
+        painter.rect_filled(rect, 0.0, Color32::WHITE);
+        painter.rect_stroke(
+            rect,
+            0.0,
+            EStroke::new(1.0, Tokens::SELECTION),
+            egui::StrokeKind::Outside,
+        );
+    }
+    // The end square is crossed, as the start one is plain.
+    let r = 3.5;
+    painter.line_segment(
+        [z + egui::vec2(-r, -r), z + egui::vec2(r, r)],
+        EStroke::new(1.0, Tokens::SELECTION),
+    );
+    painter.line_segment(
+        [z + egui::vec2(-r, r), z + egui::vec2(r, -r)],
+        EStroke::new(1.0, Tokens::SELECTION),
+    );
 }
 
 fn draw_anchors(app: &App, painter: &Painter) {

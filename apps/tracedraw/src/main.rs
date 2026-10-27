@@ -8,8 +8,3 @@
 fn main() -> eframe::Result<()> {
     tracedraw::desktop_main()
 }
-
-#[cfg(target_arch = "wasm32")]
-fn main() {
-    tracedraw::web_main();
-}

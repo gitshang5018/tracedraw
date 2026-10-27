@@ -34,7 +34,7 @@ mod tests {
 
     const PAGE: &str = include_str!("../../../web/index.html");
     const BUILD_SCRIPT: &str = include_str!("../../../scripts/web/build.sh");
-    const CI: &str = include_str!("../../../.github/workflows/build.yml");
+    const CI: &str = include_str!("../../../.github/workflows/build.yml.disabled");
 
     /// Ctrl+R is Repeat in the editor, not the browser's reload; the
     /// clipboard keys and the developer tools stay with the browser.

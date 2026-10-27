@@ -2388,20 +2388,63 @@ impl App {
     /// text object. One undo step.
     pub fn apply_text_align(&mut self, a: tracedraw_core::TextAlign) {
         self.text_align = a;
-        let cmds: Vec<Command> = self
+        let doc = self.doc();
+        let mut cmds: Vec<Command> = Vec::new();
+        for s in self
             .selected_shapes()
             .iter()
             .filter(|s| matches!(s.kind, ShapeKind::Text { .. }))
-            .filter_map(|s| {
-                let mut kind = s.kind.clone();
-                tracedraw_core::paragraphs::edit_paragraph_formats(
-                    &mut kind,
-                    self.paragraph_range(s.id),
-                    |f| f.align = a,
-                );
-                (kind != s.kind).then_some(Command::SetShapeKind { shape: s.id, kind })
-            })
-            .collect();
+        {
+            let mut kind = s.kind.clone();
+            // Text typed at a point lines up as a whole; paragraph text
+            // takes the alignment in the paragraphs at the caret.
+            let point_text = matches!(
+                &s.kind,
+                ShapeKind::Text {
+                    frame: None,
+                    on_path: None,
+                    ..
+                }
+            );
+            let range = if point_text {
+                None
+            } else {
+                self.paragraph_range(s.id)
+            };
+            tracedraw_core::paragraphs::edit_paragraph_formats(&mut kind, range, |f| f.align = a);
+            if kind == s.kind {
+                continue;
+            }
+            // Text typed at a point lines up about that point, so a new
+            // alignment would move it: it moves back so the reference
+            // point of the X and Y fields stays where it was. Text in a
+            // frame or on a path keeps its frame or path; its lines
+            // realign inside.
+            let shift = if point_text {
+                let before = s.bounds();
+                let mut after = s.clone();
+                after.kind = kind.clone();
+                let after = after.bounds();
+                let o = self.object_origin;
+                let d = crate::ui::propbar::origin_point(before, o)
+                    - crate::ui::propbar::origin_point(after, o);
+                // The move in the object's parent's space (a group's).
+                let parent = doc.parent_transform(s.id).unwrap_or(Affine::IDENTITY);
+                let inv = parent.inverse();
+                let local = inv * (Point::ZERO + d) - inv * Point::ZERO;
+                (local.hypot() > 1e-9 && local.x.is_finite() && local.y.is_finite())
+                    .then_some(local)
+            } else {
+                None
+            };
+            cmds.push(Command::SetShapeKind { shape: s.id, kind });
+            if let Some(v) = shift {
+                cmds.push(Command::TransformShapes {
+                    shapes: vec![s.id],
+                    transform: Affine::translate(v),
+                });
+            }
+        }
         if !cmds.is_empty() {
             if let Err(e) = self.engine.run_batch("Text Alignment", &cmds) {
                 self.status = e.to_string();
@@ -2798,7 +2841,13 @@ impl App {
 
     pub fn open_palette_file(&mut self) {
         crate::files::Dialog::new()
-            .add_filter(tr("file.palettes"), &["tdpal", "gpl", "ase", "aco", "json"])
+            .add_filter(
+                crate::palette::filter_label(
+                    &tr("file.palettes"),
+                    crate::palette::PALETTE_EXTENSIONS,
+                ),
+                crate::palette::PALETTE_EXTENSIONS,
+            )
             .pick_file(self, |app, path| {
                 match crate::palette::load_palette(&path) {
                     Ok(p) => {
@@ -3305,6 +3354,16 @@ impl App {
 }
 
 impl App {
+    /// Whether text set in `family` draws with an installed or carried
+    /// font of that family. A face named with its weight ("Titillium Web
+    /// SemiBold") is drawn by its family's face of that weight, so it is
+    /// not missing when the family is there (#892).
+    pub fn font_installed(&self, family: &str) -> bool {
+        self.font_families.iter().any(|g| g == family)
+            || tracedraw_text::split_weight(family)
+                .is_some_and(|(base, _)| self.font_families.iter().any(|g| g == base))
+    }
+
     /// Fonts used by the document (in groups, tables and symbols too) that
     /// are neither installed nor carried by a drawing (Font Manager,
     /// missing-font substitution notice).
@@ -3313,7 +3372,7 @@ impl App {
             .doc()
             .font_families_used()
             .into_iter()
-            .filter(|f| !self.font_families.contains(f))
+            .filter(|f| !self.font_installed(f))
             .collect();
         if !missing.is_empty() {
             self.status = trf("status.missing_fonts", &[("f", &with_stand_ins(&missing))]);
@@ -3338,6 +3397,70 @@ pub(crate) fn with_stand_ins(missing: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn symbol_of(app: &mut App, rect: kurbo::Rect) -> ShapeId {
+        let a = app
+            .new_shape(ShapeKind::Rect {
+                rect,
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("rect");
+        app.select(vec![a]);
+        app.create_symbol_from_selection();
+        app.selection[0]
+    }
+
+    fn instance_index(app: &App, id: ShapeId) -> usize {
+        match app.doc().find_shape(id).expect("instance").kind {
+            ShapeKind::SymbolInstance { index } => index,
+            ref k => panic!("{k:?}"),
+        }
+    }
+
+    /// New Symbol is one step to undo: the symbol goes with its instance.
+    #[test]
+    fn undoing_new_symbol_removes_the_symbol() {
+        let mut app = App::headless();
+        symbol_of(&mut app, kurbo::Rect::new(0.0, 0.0, 10.0, 10.0));
+        assert_eq!(app.doc().symbols.len(), 1);
+        app.undo();
+        assert!(app.doc().symbols.is_empty());
+        app.redo();
+        assert_eq!(app.doc().symbols.len(), 1);
+    }
+
+    /// An instance copied in one drawing and pasted in another brings its
+    /// symbol along, and shows the same objects there.
+    #[test]
+    fn an_instance_pasted_in_another_drawing_brings_its_symbol() {
+        let mut app = App::headless();
+        let inst = symbol_of(&mut app, kurbo::Rect::new(0.0, 0.0, 10.0, 10.0));
+        app.select(vec![inst]);
+        app.copy();
+        let expected = app.doc().symbols[0].shape.clone();
+        // The other drawing has a symbol of its own first.
+        app.open_document(
+            tracedraw_core::Document::new("Second", tracedraw_core::Size::new(100.0, 50.0)),
+            None,
+        );
+        symbol_of(&mut app, kurbo::Rect::new(0.0, 0.0, 30.0, 5.0));
+        app.paste();
+        let pasted = app.selection[0];
+        let index = instance_index(&app, pasted);
+        let sym = app.doc().symbols.get(index).expect("the symbol is there");
+        assert_eq!(sym.shape.bounds(), expected.bounds());
+        assert_eq!(app.doc().symbols.len(), 2);
+        // Pasted again: the same symbol, not another copy of it.
+        app.paste();
+        assert_eq!(instance_index(&app, app.selection[0]), index);
+        assert_eq!(app.doc().symbols.len(), 2);
+        // In the drawing it came from, it stays an instance of its symbol.
+        app.switch_document(0);
+        app.paste();
+        assert_eq!(instance_index(&app, app.selection[0]), 0);
+        assert_eq!(app.doc().symbols.len(), 1);
+    }
 
     /// Insert Page Number with a master layer active puts one field on
     /// that layer, which shows each page's own number where pages are

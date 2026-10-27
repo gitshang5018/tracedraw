@@ -708,6 +708,11 @@ pub struct NodePrefs {
     /// control handle to take it (Shape tool, and the curve tools'
     /// nodes).
     pub pick_distance: f32,
+    /// The Shape tool shows a corner widget inside the corners of a curve
+    /// (or of the chosen nodes), dragged to round them (#635). Off by
+    /// default, so it does not get in the way of node editing (#884);
+    /// rectangles keep their own corner rounding either way.
+    pub corner_widgets: bool,
 }
 
 impl Default for NodePrefs {
@@ -722,6 +727,7 @@ impl Default for NodePrefs {
             unselected_filled: true,
             show_direction: false,
             pick_distance: 6.0,
+            corner_widgets: false,
         }
     }
 }
@@ -1942,8 +1948,13 @@ mod tests {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let folder = root.join("packaging/windows/portable").join(PORTABLE_DIR);
         assert!(folder.join("README.txt").is_file(), "{folder:?}");
-        let workflow =
-            std::fs::read_to_string(root.join(".github/workflows/build.yml")).expect("workflow");
+        let path = root.join(".github/workflows/build.yml");
+        let path = if path.exists() {
+            path
+        } else {
+            root.join(".github/workflows/build.yml.disabled")
+        };
+        let workflow = std::fs::read_to_string(path).expect("workflow");
         assert!(workflow.contains(&format!("packaging\\windows\\portable\\{PORTABLE_DIR}")));
         assert!(workflow.contains(&format!("\\{PORTABLE_DIR}\",")));
     }

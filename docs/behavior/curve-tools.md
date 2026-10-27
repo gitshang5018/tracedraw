@@ -16,6 +16,8 @@ meets the start) `Path` objects with the toolbox defaults.
   to the pointer after the first click; Ctrl keeps it to steps of the
   constrain angle (15 degrees by default); Esc drops the first click; a
   drag in between draws freehand instead.
+- While dragging, the stroke shows as a black hairline on a white line
+  twice as wide, so it shows over any colour, a black fill too (#672).
 
 ## Bezier and Pen
 
@@ -111,7 +113,8 @@ meets the start) `Path` objects with the toolbox defaults.
   where the node goes. The same signs show below the nib.
 - While drawing (code: `pen_look.rs`), the segments placed so far are a
   hairline in the colour of the outline new objects get (black without
-  one), as the curve will look; nodes placed before are small hollow
+  one), as the curve will look, on a white line twice as wide so a black
+  outline shows over a black fill (#672); nodes placed before are small hollow
   squares and the last node a filled blue one; the last node's handles
   are blue dashed lines ending in arrow tips (a cusp shows its incoming
   handle as it was frozen). While the first node is dragged to close,
@@ -167,6 +170,10 @@ meets the start) `Path` objects with the toolbox defaults.
   double-click or Enter finishes. 2-point line: the second click
   finishes the segment at once. Ctrl keeps each segment to steps of the
   constrain angle.
+- While drawing, the polyline, line or B-spline (as with the 3-point
+  curve) shows as a black hairline on a white line twice as wide, the
+  segment to the pointer included, and its node squares have a white
+  edge, so they show over a black fill (#672).
 
 ## Continuing the selected curve
 
@@ -213,6 +220,16 @@ finish a curve.
 - Drag the chord, then click the point the curve passes through; the
   curve is the quadratic through the three points (the click at t = 0.5),
   written as a cubic.
+- Ctrl (the curve tools' constrain key) while dragging the chord keeps
+  it to steps of the constrain angle from its start, so a bow drawn with
+  Ctrl stands level or upright (#934,
+  `pick_drag_tests::ctrl_keeps_the_three_point_base_to_the_constrain_angle`).
+- The same key held at the third click (and while the pointer moves
+  before it, in the preview) makes the curve a bow: the arc of the circle
+  through the three points, as cubic pieces of at most a quarter turn,
+  standing evenly on the chord wherever the point is; points in a line
+  or nearly give the quadratic (#934,
+  `pick_drag_tests::ctrl_at_the_third_click_draws_a_bow`).
 - A chord starting on an end node of the selected open curve (within
   the join distance) continues it, and the curve ending on its other
   end node closes it, as the other curve tools do (`curve_join.rs`;
@@ -265,6 +282,10 @@ Medium (first), High, Highest; kept in the preferences
 
 ## Checks
 
+- Given a rectangle with a black fill, while a freehand stroke is
+  dragged, a polyline is drawn or a Bezier segment is placed over it,
+  they are drawn on a white line
+  (`pick_drag_tests::lines_being_drawn_show_on_a_black_fill`).
 - `pick_drag_tests::a_pen_click_after_a_pulled_node_follows_its_handle`
 - `pick_drag_tests::clicking_the_last_node_again_makes_it_a_cusp`
 - `pick_drag_tests::dragging_from_the_first_node_shapes_only_the_closing_segment`

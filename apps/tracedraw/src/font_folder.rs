@@ -219,7 +219,7 @@ mod tests {
         let script = include_str!("../../../web/font_catalog.py");
         assert!(script.contains(CATALOG_HOST));
         assert!(script.contains("catalog.json"));
-        let ci = include_str!("../../../.github/workflows/build.yml");
+        let ci = include_str!("../../../.github/workflows/build.yml.disabled");
         assert!(ci.contains("web/font_catalog.py web/fonts.txt site/fonts"));
     }
 }
