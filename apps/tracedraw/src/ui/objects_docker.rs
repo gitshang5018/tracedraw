@@ -20,12 +20,16 @@ use egui::{Color32, Painter, Pos2, Rect, Sense, Stroke, Ui, Vec2};
 use tracedraw_core::{Command, Layer, LayerId, MasterScope, Page, Shape, ShapeId, ShapeKind};
 
 /// Height of a row.
-const ROW_H: f32 = 22.0;
+fn row_h() -> f32 {
+    if crate::ui::mobile::phone() { 36.0 } else { 22.0 }
+}
 /// Indent per nesting level.
 const INDENT: f32 = 16.0;
 /// Height of the bar with the New Layer, New Master Layer and Delete
 /// buttons.
-const BAR_H: f32 = 30.0;
+fn bar_h() -> f32 {
+    if crate::ui::mobile::phone() { 42.0 } else { 30.0 }
+}
 /// The top sheet of the layer icon: blue for a page's layers, amber for
 /// master layers.
 const LAYER_TOP: Color32 = Color32::from_rgb(0x4A, 0x90, 0xD9);
@@ -374,7 +378,7 @@ fn paint_bin(p: &Painter, r: Rect, on: bool) {
 /// A full-width row; returns its rectangle and its response.
 fn row(ui: &mut Ui, look: Look) -> (Rect, egui::Response) {
     let (rect, resp) =
-        ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_H), Sense::click());
+        ui.allocate_exact_size(Vec2::new(ui.available_width(), row_h()), Sense::click());
     let p = ui.painter();
     match look {
         Look::Object { selected: true } => {
@@ -407,8 +411,14 @@ fn row(ui: &mut Ui, look: Look) -> (Rect, egui::Response) {
 
 /// A clickable square of `size` at `x` in the row `rect`.
 fn hot(ui: &mut Ui, rect: Rect, x: f32, size: f32, id: egui::Id) -> (Rect, egui::Response) {
+    let effective_size = if crate::ui::mobile::phone() {
+        (size * 1.5).max(26.0)
+    } else {
+        size
+    };
     let r = square(rect, x, size);
-    (r, ui.interact(r, id, Sense::click()))
+    let hit_rect = square(rect, x, effective_size);
+    (r, ui.interact(hit_rect, id, Sense::click()))
 }
 
 /// The square of `size` at `x`, centred on the row `rect`.
@@ -421,7 +431,7 @@ fn square(rect: Rect, x: f32, size: f32) -> Rect {
 
 /// The docker: the tree above the bar with its buttons.
 pub fn objects_docker(app: &mut App, ui: &mut Ui) {
-    let content_h = (ui.available_height() - BAR_H - 4.0).max(40.0);
+    let content_h = (ui.available_height() - bar_h() - 4.0).max(40.0);
     egui::ScrollArea::vertical()
         .max_height(content_h)
         .auto_shrink([false, false])
@@ -798,7 +808,7 @@ fn object_rows(app: &App, ui: &mut Ui, s: &Shape, depth: usize, act: &mut Action
 /// The bar under the tree: New Layer and New Master Layer (all pages; its
 /// context menu offers odd or even pages) at the left, Delete at the right.
 fn bottom_bar(app: &mut App, ui: &mut Ui) {
-    let (bar, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), BAR_H), Sense::hover());
+    let (bar, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), bar_h()), Sense::hover());
     ui.painter()
         .hline(bar.x_range(), bar.min.y, Stroke::new(1.0, Tokens::border()));
     let slot =

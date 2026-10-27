@@ -184,7 +184,12 @@ fn picture_button(
     tip: &str,
     draw: impl FnOnce(&egui::Painter, Rect),
 ) -> bool {
-    let (rect, resp) = ui.allocate_exact_size(Vec2::new(28.0, 26.0), Sense::click());
+    let btn_sz = if crate::ui::mobile::phone() {
+        Vec2::new(38.0, 34.0)
+    } else {
+        Vec2::new(28.0, 26.0)
+    };
+    let (rect, resp) = ui.allocate_exact_size(btn_sz, Sense::click());
     if pressed {
         ui.painter().rect_filled(rect, 2.0, Tokens::tool_active());
     } else if resp.hovered() {
@@ -202,8 +207,9 @@ fn picture_button(
 /// second value.
 fn header(app: &mut App, ui: &mut Ui, id: &str, title: &str, gear: bool) -> (bool, bool) {
     let open = is_open(app, id);
+    let h = if crate::ui::mobile::phone() { 36.0 } else { 24.0 };
     let (rect, resp) =
-        ui.allocate_exact_size(Vec2::new(ui.available_width(), 24.0), Sense::click());
+        ui.allocate_exact_size(Vec2::new(ui.available_width(), h), Sense::click());
     let fill = if resp.hovered() {
         Tokens::tool_hover()
     } else {
@@ -273,8 +279,9 @@ fn gear_picture(p: &egui::Painter, r: Rect) {
 fn expander(ui: &mut Ui, id: &str) -> bool {
     let key = egui::Id::new(("text_docker_more", id));
     let mut open = ui.data(|d| d.get_temp::<bool>(key)).unwrap_or(false);
+    let exp_h = if crate::ui::mobile::phone() { 32.0 } else { 14.0 };
     let (rect, resp) =
-        ui.allocate_exact_size(Vec2::new(ui.available_width(), 14.0), Sense::click());
+        ui.allocate_exact_size(Vec2::new(ui.available_width(), exp_h), Sense::click());
     if resp.hovered() {
         ui.painter().rect_filled(rect, 0.0, Tokens::tool_hover());
     } else {

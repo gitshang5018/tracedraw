@@ -230,6 +230,11 @@ pub fn before_after_pick(
     picking: bool,
     f: impl FnOnce(&RgbaImage, f32) -> RgbaImage,
 ) -> Option<Preview> {
+    let side = if crate::ui::mobile::phone() {
+        ((ui.available_width() - 24.0) * 0.5).clamp(110.0, 160.0)
+    } else {
+        side
+    };
     let ctx = ui.ctx().clone();
     let Some(t) = thumb(app, &ctx, src) else {
         ui.label(tr("dialog.no_bitmap_preview"));

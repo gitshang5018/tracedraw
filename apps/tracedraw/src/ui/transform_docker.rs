@@ -403,8 +403,11 @@ const FIELD_W: f32 = 96.0;
 /// The 3 x 3 reference point: nine boxes on a frame, the chosen one
 /// filled. True when another one was chosen.
 fn anchor_grid(ui: &mut Ui, anchor: &mut (u8, u8), direction: bool) -> bool {
-    let cell = 12.0;
-    let step = 22.0;
+    let (cell, step) = if crate::ui::mobile::phone() {
+        (18.0, 32.0)
+    } else {
+        (12.0, 22.0)
+    };
     let size = Vec2::splat(step * 2.0 + cell + 2.0);
     let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
     let resp = resp.on_hover_text(tr(if direction {
@@ -537,7 +540,7 @@ pub fn transformations(app: &mut App, ui: &mut Ui) {
     app.transform.sync(&selection, bounds, origin);
     let has = bounds.is_some();
     ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 2.0;
+        ui.spacing_mut().item_spacing.x = if crate::ui::mobile::phone() { 6.0 } else { 2.0 };
         for tab in TABS {
             let (pic, key, _) = tab_info(tab);
             if pic_button(ui, pic, &tr(key), true, app.transform.tab == tab).clicked() {
@@ -738,9 +741,10 @@ pub fn transformations(app: &mut App, ui: &mut Ui) {
     });
     ui.add_space(8.0);
     let width = ui.available_width();
+    let apply_h = if crate::ui::mobile::phone() { 40.0 } else { 26.0 };
     let clicked = ui
         .add_enabled_ui(has, |ui| {
-            ui.add_sized([width, 26.0], egui::Button::new(tr("docker.apply")))
+            ui.add_sized([width, apply_h], egui::Button::new(tr("docker.apply")))
                 .clicked()
         })
         .inner;

@@ -1491,7 +1491,14 @@ pub fn show(app: &mut App, ctx: &Context) {
                 }
             });
         }
-        Dialog::Options => crate::ui::options::options_dialog(app, ctx, &mut close),
+        Dialog::Options => {
+            if crate::ui::mobile::active(ctx) {
+                crate::ui::mobile::set_sheet(ctx, crate::ui::mobile::Sheet::SettingsPage(app.options_page));
+                close = true;
+            } else {
+                crate::ui::options::options_dialog(app, ctx, &mut close);
+            }
+        }
         Dialog::OutlinePen(st) => crate::ui::outline_pen::dialog(app, ctx, st, &mut close),
         Dialog::EditFill(st) => crate::ui::edit_fill::dialog(app, ctx, st, &mut close),
         Dialog::PdfText(st) => crate::ui::pdf_import_dialog::dialog(app, ctx, st, &mut close),

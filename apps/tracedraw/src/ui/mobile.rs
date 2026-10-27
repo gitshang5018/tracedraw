@@ -86,7 +86,7 @@ fn mix(a: Color32, b: Color32, share: f32) -> Color32 {
 
 /// The sheets and pages over the drawing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Sheet {
+pub enum Sheet {
     None,
     /// The navigation drawer: the menus, and the way into the settings.
     Drawer,
@@ -491,7 +491,7 @@ fn sheet_by_name(name: &str) -> Option<Sheet> {
     })
 }
 
-fn set_sheet(ctx: &egui::Context, s: Sheet) {
+pub fn set_sheet(ctx: &egui::Context, s: Sheet) {
     ctx.data_mut(|d| d.insert_temp(Id::new("mobile_sheet"), s));
 }
 

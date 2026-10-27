@@ -252,8 +252,13 @@ fn paint(p: &Painter, r: Rect, icon: Icon, color: Color32) {
 
 /// A 28 x 26 picture button, shaded while `pressed`.
 fn button(ui: &mut Ui, icon: Icon, tip: &str, enabled: bool, pressed: bool) -> Response {
+    let (btn_sz, icon_sz) = if crate::ui::mobile::phone() {
+        (Vec2::new(38.0, 36.0), 22.0)
+    } else {
+        (Vec2::new(28.0, 26.0), 18.0)
+    };
     let (rect, resp) = ui.allocate_exact_size(
-        Vec2::new(28.0, 26.0),
+        btn_sz,
         if enabled {
             Sense::click()
         } else {
@@ -272,7 +277,7 @@ fn button(ui: &mut Ui, icon: Icon, tip: &str, enabled: bool, pressed: bool) -> R
     }
     paint(
         ui.painter(),
-        Rect::from_center_size(rect.center(), Vec2::splat(18.0)),
+        Rect::from_center_size(rect.center(), Vec2::splat(icon_sz)),
         icon,
         if enabled {
             Tokens::icon()

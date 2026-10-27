@@ -717,6 +717,9 @@ fn canvas_window(app: &mut App, ui: &mut Ui, full: egui::Rect, bare: bool) {
     let two_fingers = ui.input(|i| i.multi_touch());
     if let Some(t) = two_fingers {
         if response.rect.contains(t.center_pos) {
+            if (t.zoom_delta - 1.0).abs() > 1e-4 {
+                app.view.zoom_at(t.center_pos, t.zoom_delta);
+            }
             app.view.pan(t.translation_delta);
         }
         if !matches!(app.drag, crate::app::Drag::None) {
