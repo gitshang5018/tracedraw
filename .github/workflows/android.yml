@@ -184,12 +184,17 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v5
+        with:
+          # Only the changelog is needed, for the notes of a version.
+          sparse-checkout: CHANGELOG.md
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
           merge-multiple: true
       - name: The APKs
         run: ls -l artifacts
+
       # The nightly keeps the name "nightly" while the APK names carry the
       # commit: the ones of the run before are dropped, or they pile up.
       - name: The APKs of the nightly before
@@ -204,12 +209,39 @@ jobs:
             echo "Replacing $asset"
             gh release delete-asset nightly "$asset" --repo "${{ github.repository }}" --yes || true
           done
+
+      - name: Notes
+        shell: bash
+        run: |
+          if [[ -n "$RELEASE_TAG" ]]; then
+            # The version's section of CHANGELOG.md ("## 0.3.0 (date)").
+            v="${RELEASE_TAG#v}"
+            awk -v head="## ${v} " 'index($0, head) == 1 { p = 1; next } /^## / && p { exit } p' \
+              CHANGELOG.md > release-notes.md
+          else
+            echo "The Android app built from ${GITHUB_SHA} on main. Replaced on every push." > release-notes.md
+          fi
+          cat >> release-notes.md <<'NOTES'
+
+          ### Android
+
+          | file | runs on |
+          | --- | --- |
+          | `tracedraw-*-arm64-v8a.apk` | 64-bit phones (nearly all of them) |
+          | `tracedraw-*-armeabi-v7a.apk` | older 32-bit phones |
+          | `tracedraw-*-x86_64.apk` | emulators |
+
+          Tap a drawing in a file manager to open it here: `.cdr` and `.tdraw`
+          are registered. The APK is signed with a debug key, so install it
+          over an older build only after uninstalling that one.
+          NOTES
+          cat release-notes.md
+
       - uses: softprops/action-gh-release@v2
         with:
           files: artifacts/*.apk
           tag_name: ${{ env.RELEASE_TAG != '' && env.RELEASE_TAG || 'nightly' }}
           name: ${{ env.RELEASE_TAG != '' && env.RELEASE_TAG || 'nightly' }}
           prerelease: ${{ env.RELEASE_TAG == '' }}
-          # The desktop workflow writes the notes of a version tag, and
-          # the installers of the nightly: this one leaves them alone.
+          body_path: release-notes.md
           fail_on_unmatched_files: true

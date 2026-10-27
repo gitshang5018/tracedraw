@@ -1,3 +1,9 @@
+# Off: this repository builds and publishes the Android APK only (see
+# android.yml). The desktop installers are built by the project this one
+# came from, igtoth/tracedraw.
+#
+# To build the desktop versions here again, rename this file back to
+# build.yml (a name ending in .yml is a workflow; anything else is not).
 name: build
 
 on:
