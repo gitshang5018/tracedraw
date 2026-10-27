@@ -545,9 +545,16 @@ pub fn refresh_android_documents() {
         if !crate::android_system::storage_granted(app) {
             return None;
         }
-        let downloads = crate::android_system::storage_root(app)?.join("Download");
-        std::fs::create_dir_all(&downloads).ok()?;
-        Some(downloads)
+        let root = crate::android_system::storage_root(app)?;
+        let downloads = root.join("Download");
+        if !downloads.is_dir() {
+            let _ = std::fs::create_dir_all(&downloads);
+        }
+        if downloads.is_dir() {
+            Some(downloads)
+        } else {
+            Some(root)
+        }
     });
     let dir = shared.unwrap_or_else(crate::settings::android_documents);
     let _ = std::fs::create_dir_all(&dir);

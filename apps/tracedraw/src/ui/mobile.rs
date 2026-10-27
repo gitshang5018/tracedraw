@@ -550,8 +550,8 @@ fn touch_style(ctx: &egui::Context) {
 fn top_bar(app: &mut App, ui: &mut Ui, m3: &M3, safe: Safe, open: &mut Sheet) {
     let screen = ui.ctx().content_rect();
     let land = landscape(screen);
-    // Shift top bar buttons down to completely clear the system status bar and camera notch.
-    let top_pad = if land { safe.top + 4.0 } else { safe.top.max(42.0) + 6.0 };
+    // Shift top bar buttons down in landscape mode; in portrait, use natural safe insets.
+    let top_pad = if land { safe.top + 10.0 } else { safe.top };
     egui::Panel::top("mobile_top")
         .exact_size(TOP_H + top_pad)
         .resizable(false)
@@ -1151,7 +1151,7 @@ fn sheet_ui(
         // drawing and the destinations rail: a wide screen has no room to
         // spare at the bottom, and the rail stays in reach.
         let width = (screen.width() * 0.42).clamp(280.0, 440.0);
-        let top = TOP_H + safe.top + 4.0;
+        let top = TOP_H + safe.top + 10.0;
         let rect = Rect::from_min_max(
             egui::pos2(screen.right() - safe.right - NAV_RAIL_W - width, top),
             egui::pos2(
@@ -1404,7 +1404,7 @@ fn drawer(app: &mut App, ui: &mut Ui, m3: &M3, screen: Rect, open: &mut Sheet) {
     scrim(&ctx, screen, open);
     let safe = system_insets(&ctx);
     let land = landscape(screen);
-    let top_pad = if land { safe.top + 4.0 } else { safe.top.max(42.0) + 6.0 };
+    let top_pad = if land { safe.top + 10.0 } else { safe.top };
     let width = (screen.width() * 0.86).min(320.0 + safe.left);
     let area_id = if land {
         Id::new("mobile_drawer_land")
@@ -1530,7 +1530,7 @@ fn page_ui(
     let ctx = ui.ctx().clone();
     let safe = system_insets(&ctx);
     let land = landscape(screen);
-    let top_pad = if land { safe.top + 4.0 } else { safe.top.max(42.0) + 6.0 };
+    let top_pad = if land { safe.top + 10.0 } else { safe.top };
     let area_id = if land {
         Id::new("mobile_page_land")
     } else {

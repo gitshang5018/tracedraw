@@ -51,26 +51,26 @@ theme = "@style/Theme.TraceDraw"
 extract_native_libs = true
 resizeable_activity = true
 
+# Max aspect ratio so modern 20:9 / 21:9 displays do not get letterboxed
+[[package.metadata.android.application.meta_data]]
+name = "android.max_aspect"
+value = "2.6"
+
+# Xiaomi / MIUI / HyperOS: allow drawing into the cutout/notch area in landscape
+[[package.metadata.android.application.meta_data]]
+name = "notch.config"
+value = "portrait|landscape"
+
+# Huawei / Honor: declare notch support to prevent letterboxing
+[[package.metadata.android.application.meta_data]]
+name = "android.notch_support"
+value = "true"
+
 [package.metadata.android.application.activity]
 theme = "@style/Theme.TraceDraw"
 orientation = "fullUser"
 resizeable_activity = true
 config_changes = "orientation|keyboardHidden|screenSize|screenLayout|smallestScreenSize|density|uiMode|fontScale|locale|layoutDirection"
-
-# Max aspect ratio so modern 20:9 / 21:9 displays do not get letterboxed
-[[package.metadata.android.application.activity.meta_data]]
-name = "android.max_aspect"
-value = "2.6"
-
-# Xiaomi / MIUI / HyperOS: allow drawing into the cutout/notch area in landscape
-[[package.metadata.android.application.activity.meta_data]]
-name = "notch.config"
-value = "portrait|landscape"
-
-# Huawei / Honor: declare notch support to prevent letterboxing
-[[package.metadata.android.application.activity.meta_data]]
-name = "android.notch_support"
-value = "true"
 
 # A drawing tapped in a file manager opens in TraceDraw: `.cdr` and
 # `.tdraw` as a path (the systems before Android 7 hand a file over that

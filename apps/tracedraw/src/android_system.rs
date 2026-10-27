@@ -52,7 +52,14 @@ fn with_env<R>(vm_ptr: *mut c_void, f: impl FnOnce(&mut jni::JNIEnv<'_>) -> Opti
         vm => vm,
     };
     let mut env = vm.attach_current_thread().ok()?;
-    f(&mut env)
+    if env.exception_check().unwrap_or(false) {
+        let _ = env.exception_clear();
+    }
+    let res = f(&mut env);
+    if env.exception_check().unwrap_or(false) {
+        let _ = env.exception_clear();
+    }
+    res
 }
 
 /// The activity as a reference of our own: the one the system handed over
@@ -93,6 +100,9 @@ pub fn go_edge_to_edge(activity: *mut c_void, vm: *mut c_void, sdk: i32) {
                 "(Z)V",
                 &[JValue::Bool(0)],
             );
+            if env.exception_check().unwrap_or(false) {
+                let _ = env.exception_clear();
+            }
         }
         // Extend into the cutout areas (short edges / notch) in landscape,
         // eliminating the black letterbox bar on the camera edge.
@@ -115,6 +125,9 @@ pub fn go_edge_to_edge(activity: *mut c_void, vm: *mut c_void, sdk: i32) {
                     );
                 }
             }
+        }
+        if env.exception_check().unwrap_or(false) {
+            let _ = env.exception_clear();
         }
         Some(())
     });
@@ -624,44 +637,67 @@ pub fn storage_granted(app: &AndroidApp) -> bool {
         // a read that fails tells the rest.
         return true;
     }
-    with_env(app.vm_as_ptr(), |env| {
-        env.call_static_method(
+    let is_manager = with_env(app.vm_as_ptr(), |env| {
+        if env.exception_check().unwrap_or(false) {
+            let _ = env.exception_clear();
+        }
+        let val = env.call_static_method(
             "android/os/Environment",
             "isExternalStorageManager",
             "()Z",
             &[],
-        )
-        .ok()?
-        .z()
-        .ok()
+        );
+        if env.exception_check().unwrap_or(false) {
+            let _ = env.exception_clear();
+        }
+        val.ok()?.z().ok()
     })
-    .unwrap_or(false)
+    .unwrap_or(false);
+
+    if is_manager {
+        return true;
+    }
+
+    // Direct filesystem check: if shared storage or Download is already readable,
+    // access is effectively granted regardless of JNI or OEM permission quirks.
+    if let Some(root) = storage_root(app) {
+        if root.join("Download").is_dir() || std::fs::read_dir(&root).is_ok() {
+            return true;
+        }
+    }
+
+    false
 }
 
 /// The folder the phone keeps the user's files in (`/storage/emulated/0`).
 pub fn storage_root(app: &AndroidApp) -> Option<std::path::PathBuf> {
-    with_env(app.vm_as_ptr(), |env| {
+    let from_jni = with_env(app.vm_as_ptr(), |env| {
         let dir = env
             .call_static_method(
                 "android/os/Environment",
                 "getExternalStorageDirectory",
                 "()Ljava/io/File;",
                 &[],
-            )
-            .ok()?
-            .l()
-            .ok()?;
+            );
+        if env.exception_check().unwrap_or(false) {
+            let _ = env.exception_clear();
+        }
+        let dir = dir.ok()?.l().ok()?;
         if dir.is_null() {
             return None;
         }
-        let path = env
-            .call_method(&dir, "getAbsolutePath", "()Ljava/lang/String;", &[])
-            .ok()?
-            .l()
-            .ok()?;
+        let path = env.call_method(&dir, "getAbsolutePath", "()Ljava/lang/String;", &[]);
+        if env.exception_check().unwrap_or(false) {
+            let _ = env.exception_clear();
+        }
+        let path = path.ok()?.l().ok()?;
         let path = JString::from(path);
         let path: String = env.get_string(&path).ok()?.into();
         (!path.is_empty()).then(|| std::path::PathBuf::from(path))
+    });
+    from_jni.or_else(|| {
+        let fallback = std::path::PathBuf::from("/storage/emulated/0");
+        fallback.is_dir().then_some(fallback)
     })
 }
 
@@ -676,41 +712,108 @@ pub fn ask_storage(app: &AndroidApp) {
     let activity = app.activity_as_ptr();
     with_env(vm, |env| {
         let activity = activity_ref(env, activity)?;
-        let name = env
-            .call_method(&activity, "getPackageName", "()Ljava/lang/String;", &[])
-            .ok()?
-            .l()
-            .ok()?;
+        let name = env.call_method(&activity, "getPackageName", "()Ljava/lang/String;", &[]);
+        if env.exception_check().unwrap_or(false) {
+            let _ = env.exception_clear();
+        }
+        let name = name.ok()?.l().ok()?;
         let name = JString::from(name);
         let name: String = env.get_string(&name).ok()?.into();
-        let text: JObject = JObject::from(env.new_string(format!("package:{name}")).ok()?);
-        let uri = env
-            .call_static_method(
+
+        let mut opened = false;
+
+        // 1. Try ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION with package URI
+        if let Ok(text) = env.new_string(format!("package:{name}")) {
+            let text = JObject::from(text);
+            if let Ok(uri_val) = env.call_static_method(
                 "android/net/Uri",
                 "parse",
                 "(Ljava/lang/String;)Landroid/net/Uri;",
                 &[JValue::Object(&text)],
-            )
-            .ok()?
-            .l()
-            .ok()?;
-        let action: JObject = JObject::from(
-            env.new_string("android.settings.MANAGE_APP_ALL_FILES_ACCESS_PERMISSION")
-                .ok()?,
-        );
-        let intent = env
-            .new_object(
-                "android/content/Intent",
-                "(Ljava/lang/String;Landroid/net/Uri;)V",
-                &[JValue::Object(&action), JValue::Object(&uri)],
-            )
-            .ok()?;
-        let _ = env.call_method(
-            &activity,
-            "startActivity",
-            "(Landroid/content/Intent;)V",
-            &[JValue::Object(&intent)],
-        );
+            ) {
+                if let Ok(uri) = uri_val.l() {
+                    if let Ok(action) = env.new_string("android.settings.MANAGE_APP_ALL_FILES_ACCESS_PERMISSION") {
+                        let action = JObject::from(action);
+                        if let Ok(intent) = env.new_object(
+                            "android/content/Intent",
+                            "(Ljava/lang/String;Landroid/net/Uri;)V",
+                            &[JValue::Object(&action), JValue::Object(&uri)],
+                        ) {
+                            if env.call_method(
+                                &activity,
+                                "startActivity",
+                                "(Landroid/content/Intent;)V",
+                                &[JValue::Object(&intent)],
+                            ).is_ok() && !env.exception_check().unwrap_or(false) {
+                                opened = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if env.exception_check().unwrap_or(false) {
+            let _ = env.exception_clear();
+        }
+
+        // 2. If direct package screen failed, try general ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION
+        if !opened {
+            if let Ok(action) = env.new_string("android.settings.MANAGE_ALL_FILES_ACCESS_PERMISSION") {
+                let action = JObject::from(action);
+                if let Ok(intent) = env.new_object(
+                    "android/content/Intent",
+                    "(Ljava/lang/String;)V",
+                    &[JValue::Object(&action)],
+                ) {
+                    if env.call_method(
+                        &activity,
+                        "startActivity",
+                        "(Landroid/content/Intent;)V",
+                        &[JValue::Object(&intent)],
+                    ).is_ok() && !env.exception_check().unwrap_or(false) {
+                        opened = true;
+                    }
+                }
+            }
+            if env.exception_check().unwrap_or(false) {
+                let _ = env.exception_clear();
+            }
+        }
+
+        // 3. Fallback: ACTION_APPLICATION_DETAILS_SETTINGS with package URI
+        if !opened {
+            if let Ok(text) = env.new_string(format!("package:{name}")) {
+                let text = JObject::from(text);
+                if let Ok(uri_val) = env.call_static_method(
+                    "android/net/Uri",
+                    "parse",
+                    "(Ljava/lang/String;)Landroid/net/Uri;",
+                    &[JValue::Object(&text)],
+                ) {
+                    if let Ok(uri) = uri_val.l() {
+                        if let Ok(action) = env.new_string("android.settings.APPLICATION_DETAILS_SETTINGS") {
+                            let action = JObject::from(action);
+                            if let Ok(intent) = env.new_object(
+                                "android/content/Intent",
+                                "(Ljava/lang/String;Landroid/net/Uri;)V",
+                                &[JValue::Object(&action), JValue::Object(&uri)],
+                            ) {
+                                let _ = env.call_method(
+                                    &activity,
+                                    "startActivity",
+                                    "(Landroid/content/Intent;)V",
+                                    &[JValue::Object(&intent)],
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            if env.exception_check().unwrap_or(false) {
+                let _ = env.exception_clear();
+            }
+        }
+
         Some(())
     });
 }
@@ -961,6 +1064,9 @@ pub fn set_fullscreen(app: &AndroidApp, hidden: bool) {
                         );
                     }
                 }
+            }
+            if env.exception_check().unwrap_or(false) {
+                let _ = env.exception_clear();
             }
         }
         let decor = env
