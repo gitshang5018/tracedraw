@@ -34,6 +34,9 @@ env:
 jobs:
   apk:
     runs-on: ubuntu-latest
+    outputs:
+      # How the APK was signed, for the notes of the release.
+      signed: ${{ steps.key.outputs.signed }}
     strategy:
       fail-fast: false
       matrix:
@@ -114,28 +117,41 @@ jobs:
 
       - name: cargo-apk
         run: cargo install cargo-apk --locked
-      # A release is signed with the repository's key when it has one
-      # (ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD and
-      # ANDROID_KEY_ALIAS secrets); without it a key is made for the run,
-      # which installs but cannot update a build signed with another.
+      # A version release is signed with the repository's own key, which
+      # lives in its secrets (ANDROID_KEYSTORE_BASE64, a base64 of the
+      # .jks, and ANDROID_KEYSTORE_PASSWORD): an APK signed with another
+      # key cannot replace an installed one, so a release without it stops
+      # here. A nightly is signed with a key made for the run when the
+      # secrets are not there yet, which is enough to try a build.
       - name: Signing key
+        id: key
         shell: bash
         env:
           KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          RELEASE: ${{ env.RELEASE_TAG != '' }}
         run: |
-          set -e
+          set -euo pipefail
           keystore="$RUNNER_TEMP/release.keystore"
-          if [[ -n "$KEYSTORE_BASE64" ]]; then
+          if [[ -n "${KEYSTORE_BASE64:-}" ]]; then
             echo "$KEYSTORE_BASE64" | base64 -d > "$keystore"
+            if [[ -z "${KEYSTORE_PASSWORD:-}" ]]; then
+              echo "::error::ANDROID_KEYSTORE_BASE64 is set but ANDROID_KEYSTORE_PASSWORD is not."
+              exit 1
+            fi
+            echo "signed=the release key" >> "$GITHUB_OUTPUT"
+            echo "Signed with the repository's release key."
+          elif [[ "$RELEASE" == "true" ]]; then
+            echo "::error::A version release is signed with the release key: add ANDROID_KEYSTORE_BASE64 and ANDROID_KEYSTORE_PASSWORD to Settings > Secrets and variables > Actions."
+            exit 1
           else
             keytool -genkeypair -keystore "$keystore" -alias tracedraw \
               -keyalg RSA -keysize 2048 -validity 10000 \
               -storepass android -keypass android \
               -dname "CN=TraceDraw, O=TraceDraw, C=US"
             KEYSTORE_PASSWORD=android
-            echo "::warning::No ANDROID_KEYSTORE_BASE64 secret: signed with a key made for this run, which cannot update an installed build."
+            echo "signed=a key made for this run" >> "$GITHUB_OUTPUT"
+            echo "::warning::No ANDROID_KEYSTORE_BASE64 secret: this nightly is signed with a key made for the run, which cannot replace an installed build."
           fi
           {
             echo "CARGO_APK_RELEASE_KEYSTORE=$keystore"
@@ -212,6 +228,8 @@ jobs:
 
       - name: Notes
         shell: bash
+        env:
+          SIGNED: ${{ needs.apk.outputs.signed }}
         run: |
           if [[ -n "$RELEASE_TAG" ]]; then
             # The version's section of CHANGELOG.md ("## 0.3.0 (date)").
@@ -232,9 +250,13 @@ jobs:
           | `tracedraw-*-x86_64.apk` | emulators |
 
           Tap a drawing in a file manager to open it here: `.cdr` and `.tdraw`
-          are registered. The APK is signed with a debug key, so install it
-          over an older build only after uninstalling that one.
+          are registered.
           NOTES
+          if [[ "$SIGNED" == "the release key" ]]; then
+            echo "Signed with the project's release key: this APK replaces an installed one." >> release-notes.md
+          else
+            echo "Signed with a key made for this run: uninstall an older build before installing this one." >> release-notes.md
+          fi
           cat release-notes.md
 
       - uses: softprops/action-gh-release@v2
