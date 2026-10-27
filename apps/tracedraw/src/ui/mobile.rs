@@ -899,14 +899,14 @@ fn view_chips(app: &mut App, ui: &mut Ui, m3: &M3, full: Rect, open: &mut Sheet)
         &format!("{:.0}%", app.zoom_percent()),
         resp.hovered(),
     );
-    if resp.clicked() {
-        if !app.selection.is_empty() {
-            app.zoom_to_selection();
-        } else if (app.zoom_percent() - 100.0).abs() < 5.0 {
-            app.zoom_to_fit();
-        } else {
-            app.zoom_to_page();
-        }
+    let chip_key = Id::new("mobile_zoom_held");
+    let is_held = holding(ui, &resp);
+    let was_held: bool = ui.ctx().data(|d| d.get_temp(chip_key)).unwrap_or(false);
+    ui.ctx().data_mut(|d| d.insert_temp(chip_key, is_held));
+    let long_pressed = is_held && !was_held;
+
+    if resp.clicked() || long_pressed {
+        app.zoom_to_fit();
     }
 }
 
