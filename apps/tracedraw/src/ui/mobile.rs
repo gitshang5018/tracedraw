@@ -354,15 +354,22 @@ pub fn frame(app: &mut App, ui: &mut Ui) -> bool {
     // The back gesture of the phone arrives as Escape: it puts away the
     // layer in front — the sheet, or the file list that stands for a
     // dialog — while a prompt window of its own keeps the key.
-    if open != Sheet::None
-        && matches!(app.dialog, crate::ui::dialogs::Dialog::None)
-        && ctx.input(|i| i.key_pressed(egui::Key::Escape))
-    {
-        open = match open {
-            Sheet::MenuPage(_) => Sheet::Drawer,
-            Sheet::SettingsPage(_) => Sheet::Settings,
-            _ => Sheet::None,
-        };
+    if matches!(app.dialog, crate::ui::dialogs::Dialog::None) {
+        if open != Sheet::None
+            && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
+        {
+            open = match open {
+                Sheet::MenuPage(_) => Sheet::Drawer,
+                Sheet::SettingsPage(_) => Sheet::Settings,
+                _ => Sheet::None,
+            };
+        } else if ctx
+            .data(|d| d.get_temp::<(usize, Rect, bool)>(Id::new("mobile_tool_pop")))
+            .is_some()
+            && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
+        {
+            ctx.data_mut(|d| d.remove::<(usize, Rect, bool)>(Id::new("mobile_tool_pop")));
+        }
     }
 
     top_bar(app, ui, &m3, inset.top, &mut open);
@@ -683,8 +690,10 @@ fn tool_pop(app: &mut App, ctx: &egui::Context, m3: &M3) {
     let width = cells.iter().map(|(_, _, w)| w).sum::<f32>() + pad * 2.0;
     let height = cell_h + pad * 2.0;
     let screen = ctx.content_rect();
-    let mut at = egui::pos2(anchor.center().x - width / 2.0, anchor.top() - height - 10.0);
-    at.x = at.x.clamp(8.0, (screen.right() - width - 8.0).max(8.0));
+    let max_w = (screen.width() - 16.0).max(120.0);
+    let show_w = width.min(max_w);
+    let mut at = egui::pos2(anchor.center().x - show_w / 2.0, anchor.top() - height - 10.0);
+    at.x = at.x.clamp(8.0, (screen.right() - show_w - 8.0).max(8.0));
     if at.y < 8.0 {
         // No room above: under the button, over the drawing.
         at.y = anchor.bottom() + 10.0;
@@ -711,8 +720,14 @@ fn tool_pop(app: &mut App, ctx: &egui::Context, m3: &M3) {
                 }))
                 .inner_margin(egui::Margin::same(pad as i8))
                 .show(ui, |ui| {
-                    ui.spacing_mut().item_spacing.x = 0.0;
-                    ui.horizontal(|ui| {
+                    egui::ScrollArea::horizontal()
+                        .id_salt("mobile_tool_pop_scroll")
+                        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+                        .max_width(show_w - pad * 2.0)
+                        .auto_shrink([true, false])
+                        .show(ui, |ui| {
+                            ui.spacing_mut().item_spacing.x = 0.0;
+                            ui.horizontal(|ui| {
                         for (tool, name, w) in &cells {
                             let sense = if held {
                                 Sense::hover()
@@ -762,6 +777,7 @@ fn tool_pop(app: &mut App, ctx: &egui::Context, m3: &M3) {
                             }
                         }
                     });
+                });
                 });
         });
     if held {

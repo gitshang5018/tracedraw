@@ -22,6 +22,22 @@ pub const WIDGET_OFFSET_PX: f32 = 18.0;
 /// The widget's radius and the reach of a press on it, screen pixels.
 pub const WIDGET_RADIUS_PX: f32 = 4.0;
 const WIDGET_PICK_PX: f32 = 7.0;
+
+fn widget_pick_px() -> f32 {
+    if crate::ui::mobile::phone() {
+        18.0
+    } else {
+        WIDGET_PICK_PX
+    }
+}
+
+pub fn widget_radius_px() -> f32 {
+    if crate::ui::mobile::phone() {
+        6.0
+    } else {
+        WIDGET_RADIUS_PX
+    }
+}
 /// A curve with more corners than this shows widgets only on its chosen
 /// nodes (a traced outline would be covered in them).
 const MAX_WIDGETS: usize = 32;
@@ -184,7 +200,7 @@ impl App {
         self.corner_widgets()
             .into_iter()
             .map(|w| (w, (w.at - s).length()))
-            .filter(|(_, d)| *d <= WIDGET_PICK_PX)
+            .filter(|(_, d)| *d <= widget_pick_px())
             .min_by(|a, b| a.1.total_cmp(&b.1))
             .map(|(w, _)| w)
     }
@@ -311,10 +327,21 @@ pub fn draw(app: &App, painter: &egui::Painter, color: egui::Color32) {
     for w in app.corner_widgets() {
         painter.circle(
             w.at,
-            WIDGET_RADIUS_PX,
+            widget_radius_px(),
             egui::Color32::WHITE,
             egui::Stroke::new(1.5, color),
         );
         painter.circle_filled(w.at, 1.5, color);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn widget_dimensions_are_positive_and_usable() {
+        assert!(widget_pick_px() >= 7.0);
+        assert!(widget_radius_px() >= 4.0);
     }
 }

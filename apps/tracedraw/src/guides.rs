@@ -18,6 +18,22 @@ pub const ROTATE_HANDLE_PX: f64 = 70.0;
 /// Screen radius within which a press grabs a rotation handle.
 const HANDLE_PICK_PX: f64 = 7.0;
 
+fn pick_px() -> f64 {
+    if crate::ui::mobile::phone() {
+        12.0
+    } else {
+        PICK_PX
+    }
+}
+
+fn handle_pick_px() -> f64 {
+    if crate::ui::mobile::phone() {
+        20.0
+    } else {
+        HANDLE_PICK_PX
+    }
+}
+
 /// Which preset guidelines Document Options > Guidelines > Presets adds.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum GuidePreset {
@@ -104,7 +120,7 @@ impl App {
         if !self.show_guides {
             return None;
         }
-        let tol = PICK_PX / self.view.zoom.max(1e-6) as f64;
+        let tol = pick_px() / self.view.zoom.max(1e-6) as f64;
         let page = self.doc().page(self.page).ok()?;
         page.guides.iter().rposition(|g| g.distance(p).abs() <= tol)
     }
@@ -692,7 +708,7 @@ impl App {
 
     fn rotate_handle_at(&self, p: Point) -> Option<(usize, Point)> {
         let (index, pivot, handles) = self.guide_rotate_handles()?;
-        let tol = HANDLE_PICK_PX / self.view.zoom.max(1e-6) as f64;
+        let tol = handle_pick_px() / self.view.zoom.max(1e-6) as f64;
         handles
             .iter()
             .any(|h| (*h - p).hypot() <= tol)
@@ -761,6 +777,17 @@ pub fn moved_line(line: GuideLine, d: Vec2) -> GuideLine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn guideline_pick_tolerance_is_positive_and_reaches() {
+        assert!(pick_px() >= 4.0);
+        assert!(handle_pick_px() >= 7.0);
+        let mut app = app();
+        app.add_guide(Guide::horizontal(50.0));
+        assert!(app.guide_at(Point::new(0.0, 50.0)).is_some());
+        assert!(app.guide_at(Point::new(0.0, 50.0 + (pick_px() - 0.5))).is_some());
+        assert!(app.guide_at(Point::new(0.0, 50.0 + (pick_px() + 2.0))).is_none());
+    }
 
     fn app() -> App {
         let mut app = App::headless();

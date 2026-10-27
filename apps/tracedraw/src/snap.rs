@@ -149,7 +149,12 @@ pub struct AlignCache {
 impl App {
     /// The snapping radius (Options > Snapping, screen pixels) in mm.
     pub(crate) fn snap_tolerance(&self) -> f64 {
-        self.settings.snap.threshold_px.clamp(1.0, 100.0) / self.view.zoom.max(1e-6) as f64
+        let px = if crate::ui::mobile::phone() {
+            (self.settings.snap.threshold_px * 1.8).clamp(1.0, 100.0)
+        } else {
+            self.settings.snap.threshold_px.clamp(1.0, 100.0)
+        };
+        px / self.view.zoom.max(1e-6) as f64
     }
 
     /// The pieces of `still` within the snapping radius of `p`: what a
@@ -1065,6 +1070,17 @@ fn circle_crossing(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn snap_tolerance_is_positive_and_scales_with_threshold() {
+        let mut app = app();
+        app.settings.snap.threshold_px = 5.0;
+        let t1 = app.snap_tolerance();
+        assert!(t1 >= 5.0);
+        app.settings.snap.threshold_px = 10.0;
+        let t2 = app.snap_tolerance();
+        assert!(t2 > t1);
+    }
     use crate::snap_points::SnapMode;
     use tracedraw_core::{document::Guide, Command, ShapeKind};
 

@@ -726,6 +726,10 @@ fn canvas_window(app: &mut App, ui: &mut Ui, full: egui::Rect, bare: bool) {
             app.drag = crate::app::Drag::None;
             app.drag_copy = false;
         }
+        if app.curve.as_ref().is_some_and(|c| c.nodes.len() <= 1) {
+            app.curve = None;
+            app.curve_steps.clear();
+        }
     }
 
     // A guideline or the ruler origin dragged out of the rulers
