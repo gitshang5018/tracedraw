@@ -41,13 +41,15 @@ pub fn ai_drawing(app: &mut App, ui: &mut Ui) {
     let ctrl_enter =
         field.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter) && i.modifiers.command);
     ui.horizontal(|ui| {
+        let mobile = crate::ui::mobile::phone();
+        let btn_h = if mobile { 38.0 } else { 22.0 };
         if app.ai.busy() {
             ui.spinner();
-            if ui.button(tr("dialog.cancel")).clicked() {
+            if ui.add_sized(egui::vec2(80.0, btn_h), egui::Button::new(tr("dialog.cancel"))).clicked() {
                 app.ai_cancel();
             }
         } else if ui
-            .add_enabled(app.ai_features_on(), egui::Button::new(tr("ai.draw")))
+            .add_enabled(app.ai_features_on(), egui::Button::new(tr("ai.draw")).min_size(egui::vec2(80.0, btn_h)))
             .clicked()
             || (ctrl_enter && app.ai_features_on())
         {
@@ -56,7 +58,7 @@ pub fn ai_drawing(app: &mut App, ui: &mut Ui) {
         if ui
             .add_enabled(
                 !app.ai.history.is_empty(),
-                egui::Button::new(tr("ai.new_conversation")),
+                egui::Button::new(tr("ai.new_conversation")).min_size(egui::vec2(0.0, btn_h)),
             )
             .clicked()
         {

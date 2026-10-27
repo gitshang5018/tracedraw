@@ -54,11 +54,12 @@ fn library(app: &mut App, ui: &mut Ui) {
     });
     let busy = app.picture_mosaic_job.is_some();
     indented(ui, |ui| {
+        let btn_h = if crate::ui::mobile::phone() { 36.0 } else { 24.0 };
         if ui
             .add_enabled(
                 !busy,
                 egui::Button::new(tr("docker.picture_mosaic_browse"))
-                    .min_size(egui::vec2(100.0, 24.0)),
+                    .min_size(egui::vec2(100.0, btn_h)),
             )
             .on_hover_text(tr("docker.picture_mosaic_browse_tip"))
             .clicked()

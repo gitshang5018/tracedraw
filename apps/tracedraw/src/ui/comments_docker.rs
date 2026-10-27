@@ -25,6 +25,8 @@ pub fn comments_docker(app: &mut App, ui: &mut Ui) {
                 .desired_width(140.0),
         );
     });
+    let mobile = crate::ui::mobile::phone();
+    let tool_btn_h = if mobile { 36.0 } else { 22.0 };
     ui.horizontal_wrapped(|ui| {
         dim(ui, tr("comments.add"));
         for (kind, key, tip) in [
@@ -33,8 +35,9 @@ pub fn comments_docker(app: &mut App, ui: &mut Ui) {
             (MarkKind::Arrow, "comments.arrow", "comments.arrow_tip"),
         ] {
             let on = app.comments.placing == Some(kind);
+            let btn = egui::Button::new(tr(key)).selected(on).min_size(egui::vec2(0.0, tool_btn_h));
             if ui
-                .add_enabled(drawing, egui::Button::new(tr(key)).selected(on))
+                .add_enabled(drawing, btn)
                 .on_hover_text(tr(tip))
                 .clicked()
             {
@@ -170,14 +173,20 @@ pub fn comments_docker(app: &mut App, ui: &mut Ui) {
                     }
                     if picked {
                         ui.horizontal(|ui| {
-                            let r = ui.add(
+                            let reply_btn_w = if mobile { 70.0 } else { 60.0 };
+                            let reply_btn_h = if mobile { 36.0 } else { 22.0 };
+                            let r = ui.add_sized(
+                                egui::vec2(ui.available_width() - reply_btn_w - 6.0, reply_btn_h),
                                 egui::TextEdit::singleline(&mut app.comments.reply)
-                                    .hint_text(tr("comments.reply_hint"))
-                                    .desired_width(ui.available_width() - 60.0),
+                                    .hint_text(tr("comments.reply_hint")),
                             );
                             let enter =
                                 r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                            if (ui.button(tr("comments.reply")).clicked() || enter)
+                            let btn = ui.add_sized(
+                                egui::vec2(reply_btn_w, reply_btn_h),
+                                egui::Button::new(tr("comments.reply")),
+                            );
+                            if (btn.clicked() || enter)
                                 && !app.comments.reply.trim().is_empty()
                             {
                                 reply = Some(c.id);
@@ -190,10 +199,21 @@ pub fn comments_docker(app: &mut App, ui: &mut Ui) {
                         } else {
                             "comments.resolve"
                         };
-                        if ui.small_button(tr(key)).clicked() {
+                        let act_h = if mobile { 34.0 } else { 20.0 };
+                        let res_btn = if mobile {
+                            ui.add_sized(egui::vec2(80.0, act_h), egui::Button::new(tr(key)))
+                        } else {
+                            ui.small_button(tr(key))
+                        };
+                        if res_btn.clicked() {
                             resolve = Some((c.id, !c.resolved));
                         }
-                        if ui.small_button(tr("comments.delete")).clicked() {
+                        let del_btn = if mobile {
+                            ui.add_sized(egui::vec2(60.0, act_h), egui::Button::new(tr("comments.delete")))
+                        } else {
+                            ui.small_button(tr("comments.delete"))
+                        };
+                        if del_btn.clicked() {
                             delete = Some(c.id);
                         }
                     });

@@ -141,10 +141,11 @@ pub fn vector_mosaic(app: &mut App, ui: &mut Ui) {
                     ui.selectable_value(&mut s.shape, t, tr(t.key()));
                 }
             });
+        let btn_h = if crate::ui::mobile::phone() { 36.0 } else { 20.0 };
         select = ui
             .add_enabled(
                 custom && !app.selection.is_empty(),
-                egui::Button::new(tr("docker.vector_mosaic_select")),
+                egui::Button::new(tr("docker.vector_mosaic_select")).min_size(egui::vec2(0.0, btn_h)),
             )
             .on_hover_text(tr("docker.vector_mosaic_select_tip"))
             .clicked();

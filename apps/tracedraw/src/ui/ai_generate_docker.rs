@@ -516,18 +516,22 @@ fn footer(app: &mut App, ui: &mut Ui, mode: Mode, ready: bool) {
             ),
             _ => tr("aigen.in_progress"),
         };
+        let mobile = crate::ui::mobile::phone();
+        let gen_btn_h = if mobile { 40.0 } else { 30.0 };
         ui.horizontal(|ui| {
             let w = (ui.available_width() - 90.0).max(80.0);
             ui.add_enabled(
                 false,
-                egui::Button::new(format!("\u{2726} {label}")).min_size(Vec2::new(w, 30.0)),
+                egui::Button::new(format!("\u{2726} {label}")).min_size(Vec2::new(w, gen_btn_h)),
             );
             ui.spinner();
-            if ui.button(tr("dialog.cancel")).clicked() {
+            if ui.add_sized(egui::vec2(80.0, gen_btn_h), egui::Button::new(tr("dialog.cancel"))).clicked() {
                 app.ai_image_cancel();
             }
         });
     } else {
+        let mobile = crate::ui::mobile::phone();
+        let gen_btn_h = if mobile { 40.0 } else { 30.0 };
         let has_source = app.ai_image.source.is_some() || app.ai_source_bitmap().is_some();
         let can = ready
             && match mode {
@@ -536,7 +540,7 @@ fn footer(app: &mut App, ui: &mut Ui, mode: Mode, ready: bool) {
             };
         let button =
             egui::Button::new(RichText::new(format!("\u{2726} {}", tr("aigen.generate"))).strong())
-                .min_size(Vec2::new(ui.available_width(), 30.0));
+                .min_size(Vec2::new(ui.available_width(), gen_btn_h));
         if ui.add_enabled(can, button).clicked() {
             app.ai_generate();
         }

@@ -63,44 +63,49 @@ pub fn effects_docker(app: &mut App, ui: &mut Ui) {
     }
     let n = stack.len();
     let mut change = None;
+    let mobile = crate::ui::mobile::phone();
+    let row_h = if mobile { 36.0 } else { 22.0 };
+    let btn_sz = if mobile { egui::vec2(32.0, 32.0) } else { egui::vec2(18.0, 18.0) };
     for (i, (effect, on)) in stack.iter().enumerate() {
-        ui.horizontal(|ui| {
-            let mut shown = *on;
-            if ui
-                .checkbox(&mut shown, "")
-                .on_hover_text(tr("effects.toggle"))
-                .changed()
-            {
-                change = Some(Change::Toggle(i));
-            }
-            let name = egui::RichText::new(tr(effect_key(effect)));
-            ui.label(if *on {
-                name
-            } else {
-                name.color(Tokens::text_dim())
-            });
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        ui.allocate_ui(egui::vec2(ui.available_width(), row_h), |ui| {
+            ui.horizontal(|ui| {
+                let mut shown = *on;
                 if ui
-                    .small_button("\u{00D7}")
-                    .on_hover_text(tr("effects.remove"))
-                    .clicked()
+                    .checkbox(&mut shown, "")
+                    .on_hover_text(tr("effects.toggle"))
+                    .changed()
                 {
-                    change = Some(Change::Remove(i));
+                    change = Some(Change::Toggle(i));
                 }
-                if ui
-                    .add_enabled(i + 1 < n, egui::Button::new("\u{25BC}").small())
-                    .on_hover_text(tr("effects.down"))
-                    .clicked()
-                {
-                    change = Some(Change::Down(i));
-                }
-                if ui
-                    .add_enabled(i > 0, egui::Button::new("\u{25B2}").small())
-                    .on_hover_text(tr("effects.up"))
-                    .clicked()
-                {
-                    change = Some(Change::Up(i));
-                }
+                let name = egui::RichText::new(tr(effect_key(effect)));
+                ui.label(if *on {
+                    name
+                } else {
+                    name.color(Tokens::text_dim())
+                });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .add_sized(btn_sz, egui::Button::new("\u{00D7}"))
+                        .on_hover_text(tr("effects.remove"))
+                        .clicked()
+                    {
+                        change = Some(Change::Remove(i));
+                    }
+                    if ui
+                        .add_enabled(i + 1 < n, egui::Button::new("\u{25BC}").min_size(btn_sz))
+                        .on_hover_text(tr("effects.down"))
+                        .clicked()
+                    {
+                        change = Some(Change::Down(i));
+                    }
+                    if ui
+                        .add_enabled(i > 0, egui::Button::new("\u{25B2}").min_size(btn_sz))
+                        .on_hover_text(tr("effects.up"))
+                        .clicked()
+                    {
+                        change = Some(Change::Up(i));
+                    }
+                });
             });
         });
     }

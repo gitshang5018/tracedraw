@@ -266,7 +266,9 @@ fn cell(
     size: f32,
     has_alternates: bool,
 ) -> (egui::Response, Option<egui::Response>) {
-    let (rect, resp) = ui.allocate_exact_size(Vec2::new(size, size + 6.0), Sense::click());
+    let mobile = crate::ui::mobile::phone();
+    let pad_bottom = if mobile { 10.0 } else { 6.0 };
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(size, size + pad_bottom), Sense::click());
     if resp.hovered() {
         ui.painter().rect_filled(rect, 2.0, Tokens::tool_hover());
     }
@@ -298,16 +300,19 @@ fn cell(
         }
     }
     let arrow = has_alternates.then(|| {
+        let (arrow_w, arrow_h): (f32, f32) = if mobile { (24.0, 14.0) } else { (12.0, 6.0) };
         let a = egui::Rect::from_center_size(
-            egui::pos2(rect.center().x, rect.bottom() - 3.0),
-            Vec2::new(12.0, 6.0),
+            egui::pos2(rect.center().x, rect.bottom() - (arrow_h / 2.0).max(3.0)),
+            Vec2::new(arrow_w, arrow_h),
         );
         let c = a.center();
+        let tri_dx = if mobile { 4.0 } else { 3.0 };
+        let tri_dy = if mobile { 2.5 } else { 1.5 };
         ui.painter().add(egui::epaint::PathShape::convex_polygon(
             vec![
-                c + Vec2::new(-3.0, -1.5),
-                c + Vec2::new(3.0, -1.5),
-                c + Vec2::new(0.0, 2.0),
+                c + Vec2::new(-tri_dx, -tri_dy),
+                c + Vec2::new(tri_dx, -tri_dy),
+                c + Vec2::new(0.0, tri_dy + 0.5),
             ],
             Tokens::text_dim(),
             egui::Stroke::NONE,
@@ -348,11 +353,12 @@ pub fn glyphs(app: &mut App, ui: &mut Ui) {
             } else {
                 ui.horizontal_wrapped(|ui| {
                     ui.spacing_mut().item_spacing = Vec2::splat(1.0);
+                    let recent_sz = if crate::ui::mobile::phone() { 38.0 } else { 34.0 };
                     for (font, c) in app.settings.recent_glyphs.clone() {
                         let Some(ch) = c.chars().next() else {
                             continue;
                         };
-                        let (r, _) = cell(ui, &mut app.font_previews, ch, &font, 34.0, false);
+                        let (r, _) = cell(ui, &mut app.font_previews, ch, &font, recent_sz, false);
                         if r.clicked() {
                             insert = Some((font.clone(), ch, None));
                         }
@@ -401,12 +407,14 @@ pub fn glyphs(app: &mut App, ui: &mut Ui) {
     if chars.is_empty() {
         ui.label(egui::RichText::new(tr("glyphs.none")).color(Tokens::text_dim()));
     }
-    let size = 44.0;
+    let mobile = crate::ui::mobile::phone();
+    let size = if mobile { 50.0 } else { 44.0 };
+    let row_height = size + if mobile { 11.0 } else { 7.0 };
     let per_row = ((ui.available_width() / (size + 1.0)).floor() as usize).max(1);
     let rows = chars.len().div_ceil(per_row);
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
-        .show_rows(ui, size + 7.0, rows, |ui, range| {
+        .show_rows(ui, row_height, rows, |ui, range| {
             for row in range {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing = Vec2::splat(1.0);
@@ -431,13 +439,13 @@ pub fn glyphs(app: &mut App, ui: &mut Ui) {
                                 .id(egui::Id::new(("glyph_alts", ch as u32)))
                                 .show(|ui| {
                                     for f in alts.iter() {
-                                        if ui
-                                            .button(format!(
-                                                "{ch}  {}",
-                                                tr(&format!("glyphs.feature_{f}"))
-                                            ))
-                                            .clicked()
-                                        {
+                                        let text = format!("{ch}  {}", tr(&format!("glyphs.feature_{f}")));
+                                        let btn = if mobile {
+                                            ui.add_sized(egui::vec2(160.0, 36.0), egui::Button::new(text))
+                                        } else {
+                                            ui.button(text)
+                                        };
+                                        if btn.clicked() {
                                             insert = Some((family.clone(), ch, Some(f.clone())));
                                             ui.close();
                                         }
