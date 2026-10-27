@@ -429,8 +429,12 @@ pub fn frame(app: &mut App, ui: &mut Ui) -> bool {
     snackbar(app, ui, floor);
     if open == Sheet::Palette {
         palette_float(app, &ctx, window, &m3, &mut open);
-    } else if open != Sheet::None {
-        sheet_ui(app, ui, open, &mut open, window, &m3, inset);
+    } else {
+        // The card is not the one in front: the next opening starts over.
+        ctx.data_mut(|d| d.remove::<u64>(Id::new("mobile_palette_since")));
+        if open != Sheet::None {
+            sheet_ui(app, ui, open, &mut open, window, &m3, inset);
+        }
     }
     // The prompt windows are the shared dialog system's: the phone layout
     // draws them itself only when it takes the whole screen (the Welcome
@@ -1763,7 +1767,7 @@ fn palette_float(app: &mut App, ctx: &egui::Context, screen: Rect, m3: &M3, open
             screen.bottom() - NAV_H - TOOLS_H - height - 12.0,
         )
     };
-    egui::Area::new(Id::new("mobile_palette_float"))
+    let card = egui::Area::new(Id::new("mobile_palette_float"))
         .order(egui::Order::Foreground)
         .fixed_pos(pos)
         .show(ctx, |ui| {
@@ -1785,12 +1789,19 @@ fn palette_float(app: &mut App, ctx: &egui::Context, screen: Rect, m3: &M3, open
                 .show(ui, |ui| {
                     ui.set_width(width);
                     ui.set_min_height(height);
-                    if sheet_header(ui, Sheet::Palette, m3) {
-                        *open = Sheet::None;
-                    }
+                    // No close button: a tap anywhere else puts it away.
+                    let (row, _) =
+                        ui.allocate_exact_size(Vec2::new(width, 44.0), Sense::hover());
+                    ui.painter().text(
+                        egui::pos2(row.left() + 16.0, row.center().y),
+                        egui::Align2::LEFT_CENTER,
+                        sheet_title(Sheet::Palette),
+                        crate::theme::bold(16.0),
+                        m3.on,
+                    );
                     egui::ScrollArea::vertical()
                         .id_salt("mobile_palette_scroll")
-                        .max_height(height - 56.0)
+                        .max_height(height - 44.0)
                         .auto_shrink([false, false])
                         .show(ui, |ui| {
                             Frame::new()
@@ -1807,6 +1818,25 @@ fn palette_float(app: &mut App, ctx: &egui::Context, screen: Rect, m3: &M3, open
                         });
                 });
         });
+    // A press outside the card puts it away: it floats over the drawing,
+    // so there is nothing else to tap. Not the press that opened it,
+    // though — that one is on the bar under the card.
+    let since_id = Id::new("mobile_palette_since");
+    let since = match ctx.data(|d| d.get_temp::<u64>(since_id)) {
+        Some(frame) => frame,
+        None => {
+            let frame = ctx.cumulative_frame_nr();
+            ctx.data_mut(|d| d.insert_temp(since_id, frame));
+            frame
+        }
+    };
+    if ctx.cumulative_frame_nr() > since && ctx.input(|i| i.pointer.any_pressed()) {
+        if let Some(at) = ctx.pointer_latest_pos() {
+            if !card.response.rect.contains(at) {
+                *open = Sheet::None;
+            }
+        }
+    }
 }
 
 /// The other tools of a toolbox group, as a list to choose from.
