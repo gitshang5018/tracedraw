@@ -187,6 +187,22 @@ mod web;
 mod web_page;
 mod workspace_file;
 
+/// Read the system fonts on a worker thread, so that this takes place
+/// while the window opens. Whoever needs the fonts first waits for the
+/// same read (`tracedraw_text::fonts` starts once), so nothing is read
+/// twice and a failed thread costs nothing but the overlap.
+#[cfg(not(target_arch = "wasm32"))]
+fn warm_up_fonts() {
+    if let Err(e) = std::thread::Builder::new()
+        .name("tracedraw-font-scan".into())
+        .spawn(|| {
+            tracedraw_text::fonts();
+        })
+    {
+        log::warn!("font scan thread: {e}");
+    }
+}
+
 #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 pub fn desktop_main() -> eframe::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -222,6 +238,10 @@ pub fn desktop_main() -> eframe::Result<()> {
         mcp_link::bridge();
         return Ok(());
     }
+    // The system font list is read while the window and the graphics
+    // driver start up, not after them: the editor needs it (the font
+    // lists, the text in drawings) and used to wait for it alone.
+    warm_up_fonts();
     // `--no-splash` or TRACEDRAW_NO_SPLASH (automation, the visual
     // checks): straight into a plain window at the default size.
     let plain = args.iter().any(|a| a == "--no-splash")
@@ -442,10 +462,7 @@ pub fn android_run(android_app: winit::platform::android::activity::AndroidApp) 
     eframe::run_native(
         "TraceDraw",
         options,
-        Box::new(move |cc| {
-            theme::install_fonts(&cc.egui_ctx);
-            Ok(Box::new(Shell::new(cc, shared)))
-        }),
+        Box::new(move |cc| Ok(Box::new(Shell::new(cc, shared)))),
     )
 }
 
@@ -479,6 +496,10 @@ pub struct Shell {
     /// counting at `splash::SETTLE_FRAMES`).
     #[cfg(not(target_arch = "wasm32"))]
     check_frames: u32,
+    /// The interface fonts still being read; the window draws with the
+    /// bundled ones until they are in.
+    #[cfg(not(target_arch = "wasm32"))]
+    fonts: theme::FontLoad,
 }
 
 /// Where the check of the OpenGL renderer stands (`Shell::check_renderer`).
@@ -497,7 +518,10 @@ enum RendererCheck {
 impl Shell {
     /// The editor at once (the browser build, or no splash screen).
     fn new(cc: &eframe::CreationContext<'_>, open: Option<std::path::PathBuf>) -> Self {
+        #[cfg(target_arch = "wasm32")]
         theme::install_fonts(&cc.egui_ctx);
+        #[cfg(not(target_arch = "wasm32"))]
+        let fonts = theme::install_fonts_in_background(&cc.egui_ctx);
         Shell {
             app: Some(app::App::new(&cc.egui_ctx, open)),
             #[cfg(not(target_arch = "wasm32"))]
@@ -516,6 +540,8 @@ impl Shell {
             blind_reads: 0,
             #[cfg(not(target_arch = "wasm32"))]
             check_frames: 0,
+            #[cfg(not(target_arch = "wasm32"))]
+            fonts,
         }
     }
 
@@ -532,6 +558,7 @@ impl Shell {
             renderer_check: RendererCheck::At(gpu::CHECKED_FRAME),
             blind_reads: 0,
             check_frames: 0,
+            fonts: theme::FontLoad::default(),
         }
     }
 
@@ -668,8 +695,15 @@ impl eframe::App for Shell {
                 return;
             }
             let reset = splash.reset_requested;
+            // Fonts not read yet are installed once they are.
+            self.fonts = splash.take_fonts();
             self.splash = None;
+            let built = web_time::Instant::now();
             let mut app = app::App::new(ui.ctx(), self.open.take());
+            log::info!(
+                "the editor was built in {:.0} ms",
+                built.elapsed().as_secs_f64() * 1000.0
+            );
             splash::open_main_window(ui.ctx(), &app.settings);
             // F8 held while TraceDraw started: ask before resetting.
             if reset {
@@ -691,6 +725,12 @@ impl eframe::App for Shell {
         // level (#616).
         #[cfg(not(target_arch = "wasm32"))]
         let began = frame_stats::begin(ui.ctx());
+        // The system fonts of the interface, read while the editor came up.
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.fonts.poll(ui.ctx()) {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(50));
+        }
         // Fonts text asked for (browser build), and fonts that arrived.
         #[cfg(target_arch = "wasm32")]
         web::sync_ui_fonts(ui.ctx());

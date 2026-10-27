@@ -97,7 +97,13 @@ mod tests {
             "data-wasm-size=\"0\"",
             "import init from \"./tracedraw.js\"",
             "tracedraw_bg.wasm",
-            "init({ module_or_path: bytes })",
+            "init({ module_or_path: response })",
+            // The module is compiled while it downloads, and fetched
+            // together with the script.
+            "new Response(counted",
+            "application/wasm",
+            "rel=\"modulepreload\"",
+            "rel=\"preload\"",
         ] {
             assert!(PAGE.contains(needed), "the page lacks {needed:?}");
         }

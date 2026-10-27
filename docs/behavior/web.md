@@ -34,7 +34,13 @@ screen on the grey of the drawing window: the same artwork (`splash.rs`,
 and the version for `@VERSION@`; without the size the page counts the
 megabytes and the bar creeps towards 90 %). The download fills the bar
 to 90 %, "Preparing the workspace..." the rest while the browser
-compiles the module; the splash goes when the editor is up. Under the
+finishes compiling the module; the splash goes when the editor is up.
+The page starts the download of the module together with its script
+(`modulepreload` and `preload`) and hands the bytes to the browser as they
+arrive, in a response of the type `application/wasm`, so the browser
+compiles the module while it downloads, not after: the wait after the
+last byte is what is left of the compiling, and a server that sends the
+module with another type makes no difference. Under the
 splash, small: "TraceDraw (alpha): open-source vector editor that opens
 .cdr files. Written in Rust, free under the MIT or Apache-2.0 license.",
 which screens it suits (a desktop browser with a mouse and keyboard; on
