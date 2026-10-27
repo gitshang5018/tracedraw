@@ -126,7 +126,6 @@ pub fn grid(app: &mut App, ui: &mut Ui, which: Row) {
         } else {
             app.palette_drag = None;
             app.drop_color(color, pos);
-            ui.ctx().data_mut(|d| d.remove::<bool>(carried_id()));
         }
     }
     // An empty document palette says how a colour gets into it.
@@ -689,7 +688,6 @@ fn swatch(
                 // Carried: the chip follows the finger, and letting go
                 // over an object fills it (see `grid`).
                 app.palette_drag = Some(Some(*c));
-                ui.ctx().data_mut(|d| d.insert_temp(carried_id(), true));
             }
             let shades_at = if drag { HOLD } else { HOLD * 2.0 };
             if held >= shades_at && moved <= 10.0 && !resp.dragged() {
@@ -711,7 +709,9 @@ fn swatch(
         return;
     }
 
-    let carried = ui.ctx().data(|d| d.get_temp::<bool>(carried_id())).unwrap_or(false);
+    // A tap is not applied while a colour is being carried: the release
+    // that ends the carry is not a tap.
+    let carried = app.palette_drag.is_some();
     if resp.clicked() && !carried {
         if which == Row::Document {
             app.doc_palette_current = color_index;
@@ -810,12 +810,6 @@ fn drag_chip(app: &App, ctx: &egui::Context, color: Option<Color>, pos: Pos2) {
         Stroke::new(1.0, Color32::from_gray(0x5A)),
         egui::StrokeKind::Outside,
     );
-}
-
-/// The id of the flag that says a colour is being carried to an object,
-/// so the release that ends the carry does not also apply it.
-fn carried_id() -> egui::Id {
-    egui::Id::new("palette_carried")
 }
 
 fn shades_fired_id() -> egui::Id {

@@ -612,9 +612,9 @@ fn tools_bar(app: &mut App, ui: &mut Ui, m3: &M3) {
                                     pick = Some(shown);
                                 }
                             }
-                            // Held, the group's other tools float over the drawing:/n                            // the finger slides onto one and the release picks it (a
-                            // phone has no room for a menu window).
-                            if resp.long_touched() && group.tools.len() > 1 {
+                            // The finger still down after a moment: the
+                            // group's other tools come out to be slid onto.
+                            if holding(ui, &resp) && group.tools.len() > 1 {
                                 pop = Some((gi, resp.rect, true));
                             }
                         }
@@ -650,10 +650,26 @@ fn tool_pop(app: &mut App, ctx: &egui::Context, m3: &M3) {
         clear(ctx);
         return;
     };
-    let side = TOUCH;
+    // Each tool with its name under it, as in the strip: the icons alone
+    // do not say which is which.
+    let font = egui::FontId::proportional(10.5);
+    let cells: Vec<(crate::tools::Tool, String, f32)> = group
+        .tools
+        .iter()
+        .map(|tool| {
+            let name = tool.name();
+            let text = ctx.fonts(|f| {
+                f.layout_no_wrap(name.clone(), font.clone(), m3.variant)
+                    .size()
+                    .x
+            });
+            (*tool, name, (text + 14.0).max(TOUCH))
+        })
+        .collect();
     let pad = 8.0;
-    let width = group.tools.len() as f32 * side + pad * 2.0;
-    let height = side + pad * 2.0;
+    let cell_h = 62.0;
+    let width = cells.iter().map(|(_, _, w)| w).sum::<f32>() + pad * 2.0;
+    let height = cell_h + pad * 2.0;
     let screen = ctx.content_rect();
     let mut at = egui::pos2(anchor.center().x - width / 2.0, anchor.top() - height - 10.0);
     at.x = at.x.clamp(8.0, (screen.right() - width - 8.0).max(8.0));
@@ -685,27 +701,46 @@ fn tool_pop(app: &mut App, ctx: &egui::Context, m3: &M3) {
                 .show(ui, |ui| {
                     ui.spacing_mut().item_spacing.x = 0.0;
                     ui.horizontal(|ui| {
-                        for tool in group.tools {
+                        for (tool, name, w) in &cells {
                             let sense = if hold {
                                 Sense::hover()
                             } else {
                                 Sense::click()
                             };
-                            let (rect, resp) = ui.allocate_exact_size(Vec2::splat(side), sense);
+                            let (rect, resp) =
+                                ui.allocate_exact_size(Vec2::new(*w, cell_h), sense);
                             let hot = if hold {
                                 pointer.is_some_and(|p| rect.contains(p))
                             } else {
                                 resp.hovered()
                             };
+                            let body = Rect::from_center_size(
+                                egui::pos2(rect.center().x, rect.top() + 24.0),
+                                Vec2::new(TOUCH - 8.0, 46.0),
+                            );
                             if hot {
-                                ui.painter().rect_filled(rect, 16.0, m3.primary_container);
+                                ui.painter().rect_filled(body, 14.0, m3.primary_container);
                             }
-                            let icon = Rect::from_center_size(rect.center(), Vec2::splat(ICON));
+                            let icon = Rect::from_center_size(body.center(), Vec2::splat(ICON));
                             crate::ui::icons::draw(
                                 ui.painter(),
                                 icon,
                                 *tool,
                                 if hot { m3.primary } else { m3.on },
+                            );
+                            let color = if hot { m3.primary } else { m3.variant };
+                            let galley = ui.painter().layout_no_wrap(
+                                name.clone(),
+                                font.clone(),
+                                color,
+                            );
+                            ui.painter().galley(
+                                egui::pos2(
+                                    rect.center().x - galley.size().x / 2.0,
+                                    rect.top() + 44.0,
+                                ),
+                                galley,
+                                color,
                             );
                             if hot {
                                 under = Some(*tool);
@@ -730,6 +765,22 @@ fn tool_pop(app: &mut App, ctx: &egui::Context, m3: &M3) {
     }
     // The finger may still be moving over the row.
     ctx.request_repaint();
+}
+
+/// Whether a button is being held, with the finger still on it: the
+/// long press of a phone, which egui reports as `long_touched` only once
+/// the finger has left the screen.
+fn holding(ui: &Ui, resp: &Response) -> bool {
+    const HOLD: f64 = 0.4;
+    resp.is_pointer_button_down_on()
+        && ui.input(|i| {
+            i.pointer.primary_down()
+                && i.pointer
+                    .press_start_time()
+                    .map(|t| i.time - t)
+                    .unwrap_or(0.0)
+                    >= HOLD
+        })
 }
 
 /// The tool a group's button shows: the active one, else the last used
@@ -892,9 +943,9 @@ fn tools_rail(app: &mut App, ui: &mut Ui, m3: &M3, safe: Safe) {
                                     pick = Some(shown);
                                 }
                             }
-                            // Held, the group's other tools float over the drawing:/n                            // the finger slides onto one and the release picks it (a
-                            // phone has no room for a menu window).
-                            if resp.long_touched() && group.tools.len() > 1 {
+                            // The finger still down after a moment: the
+                            // group's other tools come out to be slid onto.
+                            if holding(ui, &resp) && group.tools.len() > 1 {
                                 pop = Some((gi, resp.rect, true));
                             }
                         }
