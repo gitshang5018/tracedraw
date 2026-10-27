@@ -79,7 +79,13 @@ fn preview(
     size: Vec2,
     crop: Option<Vec2>,
 ) {
-    let (area, resp) = ui.allocate_exact_size(VIEW, Sense::click_and_drag());
+    let view_size = if crate::ui::mobile::phone() {
+        let w = (ui.available_width() - 8.0).max(200.0);
+        Vec2::new(w, (w * 0.65).clamp(160.0, 240.0))
+    } else {
+        VIEW
+    };
+    let (area, resp) = ui.allocate_exact_size(view_size, Sense::click_and_drag());
     let painter = ui.painter_at(area);
     painter.rect_filled(area, 0.0, Color32::from_gray(0xC8));
     let fit = (area.width() / size.x.max(1.0)).min(area.height() / size.y.max(1.0));
@@ -200,8 +206,8 @@ pub fn straighten_dialog(app: &mut App, ctx: &Context, st: &mut StraightenState,
             let k = st.s.clamped().crop_scale(w, h);
             Vec2::new(w * k, h * k)
         });
-        ui.horizontal_top(|ui| {
-            ui.vertical(|ui| {
+        let mobile = crate::ui::mobile::phone();
+        let show_preview_col = |ui: &mut Ui, st: &mut StraightenState| {
                 ui.horizontal(|ui| {
                     for (tool, key) in [
                         (ViewTool::ZoomIn, "dialog.lab_zoom_in"),
@@ -279,11 +285,18 @@ pub fn straighten_dialog(app: &mut App, ctx: &Context, st: &mut StraightenState,
                     }
                 });
                 preview(ui, st, tex.id(), size, crop);
-            });
-            ui.add_space(8.0);
-            ui.vertical(|ui| {
-                ui.set_width(250.0);
-                ui.spacing_mut().slider_width = 150.0;
+        };
+        let show_controls_col = |ui: &mut Ui, st: &mut StraightenState| {
+                if !mobile {
+                    ui.set_width(250.0);
+                } else {
+                    ui.set_width(ui.available_width());
+                }
+                ui.spacing_mut().slider_width = if mobile {
+                    (ui.available_width() - 110.0).clamp(110.0, 160.0)
+                } else {
+                    150.0
+                };
                 let slider = |ui: &mut Ui,
                               key: &str,
                               v: &mut f32,
@@ -346,8 +359,31 @@ pub fn straighten_dialog(app: &mut App, ctx: &Context, st: &mut StraightenState,
                     st.zoom = None;
                     st.centre = None;
                 }
+        };
+        if mobile {
+            let screen = ctx.content_rect();
+            let max_h = (screen.height() - 110.0).clamp(320.0, 580.0);
+            egui::ScrollArea::vertical()
+                .id_salt("straighten_scroll")
+                .max_height(max_h)
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    show_preview_col(ui, st);
+                    ui.add_space(8.0);
+                    ui.separator();
+                    show_controls_col(ui, st);
+                });
+        } else {
+            ui.horizontal_top(|ui| {
+                ui.vertical(|ui| {
+                    show_preview_col(ui, st);
+                });
+                ui.add_space(8.0);
+                ui.vertical(|ui| {
+                    show_controls_col(ui, st);
+                });
             });
-        });
+        }
         if super::dialogs::ok_cancel(ui, close) {
             let s = st.s;
             app.straighten_image(&s);

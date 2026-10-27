@@ -63,24 +63,43 @@ pub fn dialog(app: &mut App, ctx: &Context, st: &mut BarcodeState, close: &mut b
     let mut finish = false;
     let mut help = false;
     window(ctx, tr("barcode.title")).show(ctx, |ui| {
-        ui.horizontal_top(|ui| {
-            picture(ui, st.step);
-            ui.add_space(12.0);
-            ui.vertical(|ui| {
+        let mobile = crate::ui::mobile::phone();
+        let show_form = |ui: &mut Ui, st: &mut BarcodeState| {
+            if !mobile {
                 ui.set_width(FORM_W);
-                match st.step {
-                    0 => step_standard(ui, st),
-                    1 => step_printer(ui, st),
-                    _ => step_text(ui, st),
-                }
-                ui.add_space(8.0);
-                ui.label(tr("barcode.sample_preview"));
-                preview(ui, &st.spec);
-                if !st.error.is_empty() {
-                    ui.colored_label(Color32::from_rgb(0xC4, 0x2B, 0x1C), &st.error);
-                }
+            } else {
+                ui.set_width(ui.available_width());
+            }
+            match st.step {
+                0 => step_standard(ui, st),
+                1 => step_printer(ui, st),
+                _ => step_text(ui, st),
+            }
+            ui.add_space(8.0);
+            ui.label(tr("barcode.sample_preview"));
+            preview(ui, &st.spec);
+            if !st.error.is_empty() {
+                ui.colored_label(Color32::from_rgb(0xC4, 0x2B, 0x1C), &st.error);
+            }
+        };
+        if mobile {
+            egui::ScrollArea::vertical()
+                .id_salt("barcode_scroll")
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    picture(ui, st.step);
+                    ui.add_space(8.0);
+                    show_form(ui, st);
+                });
+        } else {
+            ui.horizontal_top(|ui| {
+                picture(ui, st.step);
+                ui.add_space(12.0);
+                ui.vertical(|ui| {
+                    show_form(ui, st);
+                });
             });
-        });
+        }
         ui.add_space(6.0);
         ui.separator();
         ui.horizontal(|ui| {
@@ -154,7 +173,7 @@ fn step_standard(ui: &mut Ui, st: &mut BarcodeState) {
     ui.add_space(10.0);
     ui.label(tr(st.spec.symbology.hint_key()));
     if ui
-        .add(egui::TextEdit::singleline(&mut st.spec.data).desired_width(FORM_W))
+        .add(egui::TextEdit::singleline(&mut st.spec.data).desired_width(if crate::ui::mobile::phone() { ui.available_width() } else { FORM_W }))
         .changed()
     {
         st.error.clear();
@@ -455,7 +474,12 @@ fn picture(ui: &mut Ui, step: u8) {
 
 /// The sample preview: the symbol scaled to fit, with its text.
 fn preview(ui: &mut Ui, spec: &BarcodeSpec) {
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(FORM_W, 96.0), egui::Sense::hover());
+    let w = if crate::ui::mobile::phone() {
+        ui.available_width()
+    } else {
+        FORM_W
+    };
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(w, 96.0), egui::Sense::hover());
     let p = ui.painter_at(rect);
     p.rect(
         rect,

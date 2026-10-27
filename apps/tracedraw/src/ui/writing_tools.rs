@@ -162,7 +162,11 @@ fn status_box(ui: &mut Ui, text: &str) {
 pub fn dialog(app: &mut App, ctx: &Context, st: &mut WritingToolsState, close: &mut bool) {
     let mut help = false;
     window(ctx, tr("writing.title")).show(ctx, |ui| {
-        ui.set_min_width(700.0);
+        if !crate::ui::mobile::phone() {
+            ui.set_min_width(700.0);
+        } else {
+            ui.set_width(ui.available_width());
+        }
         ui.horizontal(|ui| {
             for (i, key) in [
                 "writing.spell_checker",
@@ -922,7 +926,11 @@ pub fn custom_hyphens_dialog(
     let mut apply = false;
     let mut help = false;
     window(ctx, tr("hyphens.title")).show(ctx, |ui| {
-        ui.set_min_width(420.0);
+        if !crate::ui::mobile::phone() {
+            ui.set_min_width(420.0);
+        } else {
+            ui.set_width(ui.available_width());
+        }
         ui.label(tr("hyphens.auto_insert"));
         ui.checkbox(&mut st.when_typing, tr("hyphens.when_typing"));
         ui.checkbox(&mut st.when_pasting, tr("hyphens.when_pasting"));

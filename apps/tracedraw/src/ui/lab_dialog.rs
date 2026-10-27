@@ -489,7 +489,13 @@ fn preview(
     before_tex: egui::TextureId,
     after_tex: egui::TextureId,
 ) {
-    let (area, resp) = ui.allocate_exact_size(VIEW, Sense::click_and_drag());
+    let view_size = if crate::ui::mobile::phone() {
+        let w = (ui.available_width() - 8.0).max(200.0);
+        Vec2::new(w, (w * 0.65).clamp(160.0, 260.0))
+    } else {
+        VIEW
+    };
+    let (area, resp) = ui.allocate_exact_size(view_size, Sense::click_and_drag());
     let painter = ui.painter_at(area);
     painter.rect_filled(area, 0.0, Color32::from_gray(0xC8));
     let (w, h) = before.dimensions();
@@ -684,8 +690,8 @@ pub fn lab_dialog(app: &mut App, ctx: &Context, st: &mut EffectState, close: &mu
         let (after_tex, after) = cached(ctx, "lab_after", key, || {
             crate::fx::apply_effect(&copy.img, &lab_effect(&params))
         });
-        ui.horizontal_top(|ui| {
-            ui.vertical(|ui| {
+        let mobile = crate::ui::mobile::phone();
+        let show_preview_col = |ui: &mut Ui, st: &mut EffectState| {
                 ui.horizontal(|ui| {
                     let lab = &mut st.lab;
                     if icon_button(ui, &tr("dialog.lab_rotate_left"), true, false, |p, r, c| {
@@ -797,10 +803,13 @@ pub fn lab_dialog(app: &mut App, ctx: &Context, st: &mut EffectState, close: &mu
                     }
                 });
                 snapshots(ui, app, ctx, st, &src);
-            });
-            ui.add_space(8.0);
-            ui.vertical(|ui| {
-                ui.set_width(300.0);
+        };
+        let show_controls_col = |ui: &mut Ui, st: &mut EffectState| {
+                if !mobile {
+                    ui.set_width(300.0);
+                } else {
+                    ui.set_width(ui.available_width());
+                }
                 ui.horizontal(|ui| {
                     if ui.button(tr("dialog.lab_auto_adjust")).clicked() {
                         let (bp, wp) = auto_points(&copy.img);
@@ -820,7 +829,11 @@ pub fn lab_dialog(app: &mut App, ctx: &Context, st: &mut EffectState, close: &mu
                     }
                 });
                 ui.add_space(6.0);
-                ui.spacing_mut().slider_width = 170.0;
+                ui.spacing_mut().slider_width = if mobile {
+                    (ui.available_width() - 110.0).clamp(110.0, 180.0)
+                } else {
+                    170.0
+                };
                 // One grid, so every slider lines up; a rule between groups.
                 egui::Grid::new("lab_sliders")
                     .num_columns(2)
@@ -843,9 +856,37 @@ pub fn lab_dialog(app: &mut App, ctx: &Context, st: &mut EffectState, close: &mu
                 ui.separator();
                 ui.label(tr("dialog.lab_histogram"));
                 let hist = histogram(&after);
-                draw_histogram(ui, &hist, Vec2::new(290.0, 96.0));
+                let hist_w = if mobile {
+                    (ui.available_width() - 8.0).clamp(200.0, 320.0)
+                } else {
+                    290.0
+                };
+                draw_histogram(ui, &hist, Vec2::new(hist_w, 96.0));
+        };
+        if mobile {
+            let screen = ctx.content_rect();
+            let max_h = (screen.height() - 110.0).clamp(320.0, 580.0);
+            egui::ScrollArea::vertical()
+                .id_salt("lab_dialog_scroll")
+                .max_height(max_h)
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    show_preview_col(ui, st);
+                    ui.add_space(10.0);
+                    ui.separator();
+                    show_controls_col(ui, st);
+                });
+        } else {
+            ui.horizontal_top(|ui| {
+                ui.vertical(|ui| {
+                    show_preview_col(ui, st);
+                });
+                ui.add_space(8.0);
+                ui.vertical(|ui| {
+                    show_controls_col(ui, st);
+                });
             });
-        });
+        }
         if super::dialogs::ok_cancel(ui, close) {
             let e = lab_effect(&st.effect.params);
             match st.edit {

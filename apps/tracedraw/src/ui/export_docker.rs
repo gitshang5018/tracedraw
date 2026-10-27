@@ -188,13 +188,13 @@ pub fn export_docker(app: &mut App, ui: &mut Ui) {
         .iter()
         .filter(|a| a.checked)
         .count();
-    if ui
-        .add_enabled(
-            count > 0,
-            egui::Button::new(trf("export_docker.export", &[("n", &count.to_string())])),
-        )
-        .clicked()
-    {
+    let text = trf("export_docker.export", &[("n", &count.to_string())]);
+    let clicked = if crate::ui::mobile::phone() {
+        crate::ui::docker_form::wide_button(ui, &text, count > 0)
+    } else {
+        ui.add_enabled(count > 0, egui::Button::new(text)).clicked()
+    };
+    if clicked {
         app.export_assets();
     }
 }

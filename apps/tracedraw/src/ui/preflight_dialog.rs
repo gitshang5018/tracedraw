@@ -177,7 +177,16 @@ pub fn dialog(app: &mut App, ctx: &egui::Context, st: &mut PreflightState, close
             ui.label(RichText::new(summary(&st.issues)).strong());
         });
         ui.add_space(2.0);
-        issue_table(app, ui, st);
+        if crate::ui::mobile::phone() {
+            egui::ScrollArea::horizontal()
+                .id_salt("preflight_table_scroll")
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    issue_table(app, ui, st);
+                });
+        } else {
+            issue_table(app, ui, st);
+        }
         // The hint for the picked issue.
         let check = match st.selected {
             Some(Row::Group(c)) => Some(c),
@@ -187,8 +196,13 @@ pub fn dialog(app: &mut App, ctx: &egui::Context, st: &mut PreflightState, close
         let hint = check
             .map(|c| tr(&format!("preflight.hint.{}", c.id())))
             .unwrap_or_else(|| tr("preflight.pick_hint"));
+        let hint_w = if crate::ui::mobile::phone() {
+            ui.available_width()
+        } else {
+            COLS.iter().sum::<f32>()
+        };
         ui.allocate_ui_with_layout(
-            vec2(COLS.iter().sum::<f32>(), 34.0),
+            vec2(hint_w, 34.0),
             egui::Layout::left_to_right(egui::Align::TOP).with_main_wrap(true),
             |ui| {
                 ui.set_min_height(34.0);
