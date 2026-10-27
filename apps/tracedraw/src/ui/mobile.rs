@@ -548,13 +548,17 @@ fn touch_style(ctx: &egui::Context) {
 // ---------------------------------------------------------------------------
 
 fn top_bar(app: &mut App, ui: &mut Ui, m3: &M3, safe: Safe, open: &mut Sheet) {
+    let screen = ui.ctx().content_rect();
+    let land = landscape(screen);
+    // Shift top bar buttons down to completely clear the system status bar and camera notch.
+    let top_pad = if land { safe.top + 4.0 } else { safe.top.max(42.0) + 6.0 };
     egui::Panel::top("mobile_top")
-        .exact_size(TOP_H + safe.top)
+        .exact_size(TOP_H + top_pad)
         .resizable(false)
         .show_separator_line(false)
         .frame(Frame::new().fill(m3.surface))
         .show(ui, |ui| {
-            ui.add_space(safe.top);
+            ui.add_space(top_pad);
             ui.horizontal_centered(|ui| {
                 ui.add_space(4.0 + safe.left);
                 if icon_target(ui, m3, Glyph::Menu, true).clicked() {
@@ -1147,7 +1151,7 @@ fn sheet_ui(
         // drawing and the destinations rail: a wide screen has no room to
         // spare at the bottom, and the rail stays in reach.
         let width = (screen.width() * 0.42).clamp(280.0, 440.0);
-        let top = TOP_H + safe.top;
+        let top = TOP_H + safe.top + 4.0;
         let rect = Rect::from_min_max(
             egui::pos2(screen.right() - safe.right - NAV_RAIL_W - width, top),
             egui::pos2(
@@ -1156,7 +1160,7 @@ fn sheet_ui(
             ),
         );
         let height = rect.height();
-        egui::Area::new(Id::new("mobile_sheet"))
+        egui::Area::new(Id::new("mobile_sheet_land"))
             .order(egui::Order::Foreground)
             .fixed_pos(rect.min)
             .show(&ctx, |ui| {
@@ -1182,7 +1186,7 @@ fn sheet_ui(
             });
     } else {
         let height = sheet_height(which, screen.height());
-        egui::Area::new(Id::new("mobile_sheet"))
+        egui::Area::new(Id::new("mobile_sheet_port"))
             .order(egui::Order::Foreground)
             .fixed_pos(egui::pos2(screen.left(), screen.bottom() - height))
             .show(&ctx, |ui| {
@@ -1399,11 +1403,22 @@ fn drawer(app: &mut App, ui: &mut Ui, m3: &M3, screen: Rect, open: &mut Sheet) {
     let ctx = ui.ctx().clone();
     scrim(&ctx, screen, open);
     let safe = system_insets(&ctx);
+    let land = landscape(screen);
+    let top_pad = if land { safe.top + 4.0 } else { safe.top.max(42.0) + 6.0 };
     let width = (screen.width() * 0.86).min(320.0 + safe.left);
-    egui::Area::new(Id::new("mobile_drawer"))
+    let area_id = if land {
+        Id::new("mobile_drawer_land")
+    } else {
+        Id::new("mobile_drawer_port")
+    };
+    egui::Area::new(area_id)
         .order(egui::Order::Foreground)
         .fixed_pos(screen.min)
+        .constrain_to(screen)
         .show(&ctx, |ui| {
+            ui.set_width(width);
+            ui.set_max_width(width);
+            ui.set_max_height(screen.height());
             Frame::new()
                 .fill(m3.surface)
                 .corner_radius(CornerRadius {
@@ -1414,9 +1429,10 @@ fn drawer(app: &mut App, ui: &mut Ui, m3: &M3, screen: Rect, open: &mut Sheet) {
                 })
                 .show(ui, |ui| {
                     ui.set_width(width);
-                    ui.set_min_height(screen.height());
+                    ui.set_max_width(width);
+                    ui.set_max_height(screen.height());
                     // Clear of the status bar, as the top bar is.
-                    ui.add_space(safe.top);
+                    ui.add_space(top_pad);
                     Frame::new()
                         .fill(m3.container)
                         .inner_margin(egui::Margin {
@@ -1439,8 +1455,10 @@ fn drawer(app: &mut App, ui: &mut Ui, m3: &M3, screen: Rect, open: &mut Sheet) {
                                     .color(m3.variant),
                             );
                         });
+                    let scroll_max_h = (screen.height() - (ui.cursor().top() - screen.top()) - safe.bottom).max(80.0);
                     egui::ScrollArea::vertical()
                         .id_salt("mobile_drawer_scroll")
+                        .max_height(scroll_max_h)
                         .auto_shrink([false, false])
                         .show(ui, |ui| {
                             ui.add_space(8.0);
@@ -1511,15 +1529,26 @@ fn page_ui(
 ) {
     let ctx = ui.ctx().clone();
     let safe = system_insets(&ctx);
-    let top = safe.top;
-    egui::Area::new(Id::new("mobile_page"))
+    let land = landscape(screen);
+    let top_pad = if land { safe.top + 4.0 } else { safe.top.max(42.0) + 6.0 };
+    let area_id = if land {
+        Id::new("mobile_page_land")
+    } else {
+        Id::new("mobile_page_port")
+    };
+    egui::Area::new(area_id)
         .order(egui::Order::Foreground)
         .fixed_pos(screen.min)
+        .constrain_to(screen)
         .show(&ctx, |ui| {
+            ui.set_width(screen.width());
+            ui.set_max_width(screen.width());
+            ui.set_max_height(screen.height());
             Frame::new().fill(m3.surface).show(ui, |ui| {
                 ui.set_width(screen.width());
-                ui.set_min_height(screen.height());
-                ui.add_space(top);
+                ui.set_max_width(screen.width());
+                ui.set_max_height(screen.height());
+                ui.add_space(top_pad);
                 // The bar takes a row of its own at the top: a centred row
                 // would sit in the middle of the page.
                 ui.allocate_ui_with_layout(
@@ -1537,6 +1566,7 @@ fn page_ui(
                         );
                     },
                 );
+                let scroll_max_h = (screen.height() - (ui.cursor().top() - screen.top()) - safe.bottom).max(80.0);
                 let scroll = if wide {
                     egui::ScrollArea::both()
                 } else {
@@ -1544,6 +1574,7 @@ fn page_ui(
                 };
                 scroll
                     .id_salt(("mobile_page_scroll", title))
+                    .max_height(scroll_max_h)
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
                         Frame::new()
