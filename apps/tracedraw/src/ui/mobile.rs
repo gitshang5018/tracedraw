@@ -358,7 +358,11 @@ pub fn frame(app: &mut App, ui: &mut Ui) -> bool {
         && matches!(app.dialog, crate::ui::dialogs::Dialog::None)
         && ctx.input(|i| i.key_pressed(egui::Key::Escape))
     {
-        open = Sheet::None;
+        open = match open {
+            Sheet::MenuPage(_) => Sheet::Drawer,
+            Sheet::SettingsPage(_) => Sheet::Settings,
+            _ => Sheet::None,
+        };
     }
 
     top_bar(app, ui, &m3, inset.top, &mut open);
@@ -1588,13 +1592,14 @@ fn properties_sheet(app: &mut App, ui: &mut Ui, m3: &M3) {
         page_properties(app, ui, m3);
         return;
     }
+    let width = ui.available_width();
     ui.add_space(4.0);
     Frame::new()
         .fill(m3.container)
         .corner_radius(16.0)
         .inner_margin(egui::Margin::symmetric(8, 6))
         .show(ui, |ui| {
-            ui.set_width(ui.available_width());
+            ui.set_width(width);
             egui::ScrollArea::horizontal()
                 .id_salt("mobile_property_strip")
                 .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
@@ -1602,6 +1607,186 @@ fn properties_sheet(app: &mut App, ui: &mut Ui, m3: &M3) {
                     crate::ui::toolbar::property_bar(app, ui);
                 });
         });
+
+    ui.add_space(8.0);
+    selection_actions(app, ui, m3);
+    ui.add_space(8.0);
+    object_geometry(app, ui, m3, width);
+    ui.add_space(8.0);
+    object_stroke_presets(app, ui, m3);
+}
+
+fn action_chip(ui: &mut Ui, m3: &M3, label: &str) -> Response {
+    let text = egui::RichText::new(label).size(13.0).color(m3.on);
+    let button = egui::Button::new(text)
+        .corner_radius(12.0)
+        .fill(m3.container)
+        .stroke(Stroke::new(1.0, m3.outline))
+        .min_size(Vec2::new(0.0, 36.0));
+    ui.add(button)
+}
+
+fn selection_actions(app: &mut App, ui: &mut Ui, m3: &M3) {
+    property_label(ui, m3, &tr("toolbar.actions"));
+    egui::ScrollArea::horizontal()
+        .id_salt("mobile_sel_actions_scroll")
+        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                if action_chip(ui, m3, &tr("menu.edit.delete")).clicked() {
+                    app.delete_selection();
+                }
+                if action_chip(ui, m3, &tr("menu.edit.duplicate")).clicked() {
+                    app.duplicate();
+                }
+                if app.selection.len() > 1 && action_chip(ui, m3, &tr("menu.object.group_group")).clicked() {
+                    app.group_selection();
+                }
+                if (app.selection.len() == 1 || app.selection_nested())
+                    && action_chip(ui, m3, &tr("menu.object.group_ungroup")).clicked()
+                {
+                    app.ungroup_selection();
+                }
+                if action_chip(ui, m3, &tr("menu.object.to_front_of_page")).clicked() {
+                    app.order(0);
+                }
+                if action_chip(ui, m3, &tr("menu.object.to_back_of_page")).clicked() {
+                    app.order(3);
+                }
+                if action_chip(ui, m3, &tr("toolbar.mirror_h_short")).clicked() {
+                    app.mirror(true);
+                }
+                if action_chip(ui, m3, &tr("toolbar.mirror_v_short")).clicked() {
+                    app.mirror(false);
+                }
+                if action_chip(ui, m3, &tr("toolbar.rotate_90")).clicked() {
+                    if let Some(b) = app.selection_bounds() {
+                        app.transform_selection(tracedraw_core::Affine::rotate_about(
+                            std::f64::consts::FRAC_PI_2,
+                            b.center(),
+                        ));
+                    }
+                }
+                if action_chip(ui, m3, &tr("menu.object.convert_to_curves")).clicked() {
+                    app.convert_to_curves();
+                }
+            });
+        });
+}
+
+fn object_geometry(app: &mut App, ui: &mut Ui, m3: &M3, width: f32) {
+    let Some(b) = app.selection_bounds() else {
+        return;
+    };
+    let units = app.units;
+    let o = app.ruler_origin();
+    let refp = b.center();
+    let half_w = ((width - 12.0) * 0.5).max(100.0);
+
+    property_label(ui, m3, &tr("toolbar.position"));
+    ui.horizontal(|ui| {
+        let r_x = property_row(ui, half_w, 42.0);
+        if let Some(vx) = crate::ui::chrome::spin_field(
+            ui,
+            "mobile_sel_x",
+            r_x,
+            units.from_mm(b.x0 - o.x),
+            1,
+            units.short(),
+            0.5,
+            -1.0e7..=1.0e7,
+        ) {
+            let target_x = units.to_mm(vx) + o.x;
+            let dx = target_x - b.x0;
+            app.transform_selection(tracedraw_core::Affine::translate(
+                tracedraw_core::geometry::Vec2::new(dx, 0.0),
+            ));
+        }
+        let r_y = property_row(ui, half_w, 42.0);
+        if let Some(vy) = crate::ui::chrome::spin_field(
+            ui,
+            "mobile_sel_y",
+            r_y,
+            units.from_mm(b.y0 - o.y),
+            1,
+            units.short(),
+            0.5,
+            -1.0e7..=1.0e7,
+        ) {
+            let target_y = units.to_mm(vy) + o.y;
+            let dy = target_y - b.y0;
+            app.transform_selection(tracedraw_core::Affine::translate(
+                tracedraw_core::geometry::Vec2::new(0.0, dy),
+            ));
+        }
+    });
+
+    property_label(ui, m3, &tr("toolbar.object_size"));
+    ui.horizontal(|ui| {
+        let cur_w = b.width();
+        let r_w = property_row(ui, half_w, 42.0);
+        if let Some(vw) = crate::ui::chrome::spin_field(
+            ui,
+            "mobile_sel_w",
+            r_w,
+            units.from_mm(cur_w),
+            1,
+            units.short(),
+            0.5,
+            0.01..=1.0e7,
+        ) {
+            let target_w = units.to_mm(vw).max(0.01);
+            if cur_w > 1e-6 {
+                let sx = target_w / cur_w;
+                let t = tracedraw_core::Affine::translate((refp.x, refp.y))
+                    * tracedraw_core::Affine::scale_non_uniform(sx, 1.0)
+                    * tracedraw_core::Affine::translate((-refp.x, -refp.y));
+                app.transform_selection(t);
+            }
+        }
+        let cur_h = b.height();
+        let r_h = property_row(ui, half_w, 42.0);
+        if let Some(vh) = crate::ui::chrome::spin_field(
+            ui,
+            "mobile_sel_h",
+            r_h,
+            units.from_mm(cur_h),
+            1,
+            units.short(),
+            0.5,
+            0.01..=1.0e7,
+        ) {
+            let target_h = units.to_mm(vh).max(0.01);
+            if cur_h > 1e-6 {
+                let sy = target_h / cur_h;
+                let t = tracedraw_core::Affine::translate((refp.x, refp.y))
+                    * tracedraw_core::Affine::scale_non_uniform(1.0, sy)
+                    * tracedraw_core::Affine::translate((-refp.x, -refp.y));
+                app.transform_selection(t);
+            }
+        }
+    });
+}
+
+fn object_stroke_presets(app: &mut App, ui: &mut Ui, m3: &M3) {
+    property_label(ui, m3, &tr("toolbar.outline_width"));
+    ui.horizontal_wrapped(|ui| {
+        for (label, w_mm) in [
+            (tr("toolbar.outline_none"), 0.0),
+            (tr("toolbar.outline_hairline"), 0.0762),
+            ("0.5 mm".into(), 0.5),
+            ("1.0 mm".into(), 1.0),
+            ("2.0 mm".into(), 2.0),
+            ("4.0 mm".into(), 4.0),
+        ] {
+            if action_chip(ui, m3, &label).clicked() {
+                app.apply_outline_width(w_mm);
+            }
+        }
+        if action_chip(ui, m3, &format!("{}...", tr("outline_pen.title"))).clicked() {
+            app.open_outline_editor();
+        }
+    });
 }
 
 /// The name of a field of the page form.
@@ -1964,6 +2149,9 @@ fn files_sheet(app: &mut App, ui: &mut Ui, m3: &M3) {
             }
             if tonal_button(ui, m3, &plain(&tr("menu.file.save_as")), has).clicked() {
                 save_drawing(app, true);
+            }
+            if tonal_button(ui, m3, &plain(&tr("menu.file.export")), has).clicked() {
+                app.dialog = crate::ui::dialogs::Dialog::Export(crate::ui::dialogs::ExportState::default());
             }
         });
         ui.add_space(12.0);

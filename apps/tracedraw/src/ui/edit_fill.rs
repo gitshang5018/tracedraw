@@ -214,17 +214,31 @@ pub fn dialog(app: &mut App, ctx: &egui::Context, st: &mut EditFillState, close:
 /// The chosen kind's settings in a box of [`PAGE`] size.
 fn page(ui: &mut Ui, st: &mut EditFillState) {
     let kind = tracedraw_core::patch::fill_kind(&st.fill);
-    ui.allocate_ui_with_layout(PAGE, egui::Layout::top_down(egui::Align::Min), |ui| {
-        ui.set_min_size(PAGE);
-        // Both ways: a page too wide would widen a scroll area that only
-        // scrolls up and down, and the window with it.
+    let mobile = crate::ui::mobile::active(ui.ctx());
+    if mobile {
+        let max_w = ui.available_width();
+        let max_h = ui.available_height().min(420.0);
         egui::ScrollArea::both()
-            .id_salt(("edit_fill_page", kind))
-            .max_width(PAGE.x)
-            .max_height(PAGE.y)
-            .auto_shrink([false, false])
-            .show(ui, |ui| page_contents(ui, st));
-    });
+            .id_salt(("edit_fill_page_mobile", kind))
+            .max_width(max_w)
+            .max_height(max_h)
+            .show(ui, |ui| {
+                ui.set_width(max_w);
+                page_contents(ui, st);
+            });
+    } else {
+        ui.allocate_ui_with_layout(PAGE, egui::Layout::top_down(egui::Align::Min), |ui| {
+            ui.set_min_size(PAGE);
+            // Both ways: a page too wide would widen a scroll area that only
+            // scrolls up and down, and the window with it.
+            egui::ScrollArea::both()
+                .id_salt(("edit_fill_page", kind))
+                .max_width(PAGE.x)
+                .max_height(PAGE.y)
+                .auto_shrink([false, false])
+                .show(ui, |ui| page_contents(ui, st));
+        });
+    }
 }
 
 /// The settings of the fill's kind (what [`page`] boxes).
@@ -236,16 +250,30 @@ fn page_contents(ui: &mut Ui, st: &mut EditFillState) {
         Fill::Solid(_) => uniform(ui, st),
         Fill::Fountain(_) => fountain(ui, st),
         Fill::Pattern(p) => {
-            ui.horizontal_top(|ui| {
+            let mobile = crate::ui::mobile::active(ui.ctx());
+            if mobile {
                 preview(ui, &Fill::Pattern(p.clone()));
+                ui.add_space(8.0);
                 ui.vertical(|ui| crate::ui::dockers::pattern_editor(ui, p));
-            });
+            } else {
+                ui.horizontal_top(|ui| {
+                    preview(ui, &Fill::Pattern(p.clone()));
+                    ui.vertical(|ui| crate::ui::dockers::pattern_editor(ui, p));
+                });
+            }
         }
         Fill::Texture(t) => {
-            ui.horizontal_top(|ui| {
+            let mobile = crate::ui::mobile::active(ui.ctx());
+            if mobile {
                 preview(ui, &Fill::Texture(t.clone()));
+                ui.add_space(8.0);
                 ui.vertical(|ui| crate::ui::dockers::texture_editor(ui, t));
-            });
+            } else {
+                ui.horizontal_top(|ui| {
+                    preview(ui, &Fill::Texture(t.clone()));
+                    ui.vertical(|ui| crate::ui::dockers::texture_editor(ui, t));
+                });
+            }
         }
         Fill::Mesh(_) => {
             ui.label(egui::RichText::new(tr("docker.mesh_hint")).color(Tokens::text_dim()));

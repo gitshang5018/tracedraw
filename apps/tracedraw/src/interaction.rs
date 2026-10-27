@@ -222,11 +222,19 @@ impl App {
 
     /// The topmost visible object at `p` (on a visible, unlocked layer)
     /// when that object is locked: what a right click there unlocks.
+    fn pick_tolerance_px(&self) -> f64 {
+        if crate::ui::mobile::phone() {
+            10.0
+        } else {
+            3.0
+        }
+    }
+
     pub fn locked_at(&self, p: Point) -> Option<ShapeId> {
         if self.focus_shape_on_page().is_some() {
             return None;
         }
-        let tol = 3.0 / self.view.zoom as f64;
+        let tol = self.pick_tolerance_px() / self.view.zoom as f64;
         self.page_layers()
             .into_iter()
             .rev()
@@ -245,7 +253,7 @@ impl App {
         if self.focus_shape_on_page().is_some() {
             return self.hit_test(p);
         }
-        let tol = 3.0 / self.view.zoom as f64;
+        let tol = self.pick_tolerance_px() / self.view.zoom as f64;
         self.page_layers()
             .into_iter()
             .rev()
@@ -262,7 +270,7 @@ impl App {
     pub fn leaf_to_read(&self, p: Point) -> Option<tracedraw_core::Shape> {
         let id = self.hit_test_to_read(p)?;
         let (_, s) = self.doc().shape(id).ok()?;
-        let tol = 3.0 / self.view.zoom as f64;
+        let tol = self.pick_tolerance_px() / self.view.zoom as f64;
         Some(self.leaf_at(s, p, tol).unwrap_or_else(|| s.clone()))
     }
 
@@ -295,7 +303,7 @@ impl App {
 
     /// The topmost object at `p` that `skip` does not rule out.
     pub fn hit_test_where(&self, p: Point, skip: impl Fn(ShapeId) -> bool) -> Option<ShapeId> {
-        let tol = 3.0 / self.view.zoom as f64;
+        let tol = self.pick_tolerance_px() / self.view.zoom as f64;
         // Focus mode: only the parts of the object in focus (or itself).
         if let Some(f) = self.focus_shape_on_page() {
             return match &f.kind {
@@ -956,7 +964,13 @@ impl App {
 
     pub(crate) fn handle_at(&self, screen: egui::Pos2) -> Option<Handle> {
         let b = self.selection_bounds()?;
-        let reach = if self.rotate_mode {
+        let reach = if crate::ui::mobile::phone() {
+            if self.rotate_mode {
+                ROTATE_HANDLE_PX * 2.2
+            } else {
+                HANDLE_PX * 2.5
+            }
+        } else if self.rotate_mode {
             ROTATE_HANDLE_PX
         } else {
             HANDLE_PX
@@ -1068,9 +1082,27 @@ impl App {
             self.view.zoom_at(screen, 0.5);
             return;
         }
-        // Right click: context menu (drawn by the UI at this position);
+        // Right click or mobile long-press: context menu (drawn by the UI at this position);
         // none while a transform is dragged.
-        if response.secondary_clicked()
+        let is_context_trigger = response.secondary_clicked()
+            || (crate::ui::mobile::phone()
+                && self.context_menu.is_none()
+                && !self.transforming()
+                && (response.long_touched()
+                    || (response.is_pointer_button_down_on()
+                        && response.ctx.input(|i| {
+                            i.pointer.primary_down()
+                                && i.pointer
+                                    .press_start_time()
+                                    .map(|t| i.time - t)
+                                    .unwrap_or(0.0)
+                                    >= 0.5
+                                && i.pointer.is_still()
+                        }))));
+        if crate::ui::mobile::phone() && response.is_pointer_button_down_on() {
+            response.ctx.request_repaint();
+        }
+        if is_context_trigger
             && !self.pending_clip_frame
             && self.pending_text_link.is_none()
             && !self.transforming()

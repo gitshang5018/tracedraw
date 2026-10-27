@@ -2990,21 +2990,9 @@ pub(crate) fn presets_for(
     all.iter().filter(|p| preset_fits(p, st)).cloned().collect()
 }
 
-fn export_dialog(app: &mut App, ctx: &Context, st: &mut ExportState, close: &mut bool) {
-    window(
-        ctx,
-        if st.web {
-            tr("menu.file.export_for_web")
-        } else {
-            tr("dialog.export")
-        },
-    )
-    .show(ctx, |ui| {
-        ui.horizontal_top(|ui| {
-            let estimate = export_preview_box(app, ui, st, egui::vec2(260.0, 300.0));
-            ui.add_space(14.0);
-            ui.vertical(|ui| {
-                ui.set_width(300.0);
+fn export_options(app: &mut App, ui: &mut Ui, st: &mut ExportState, estimate: Option<usize>) {
+    let w = ui.available_width().min(300.0);
+    ui.set_width(w);
                 export_presets_row(app, ui, st);
                 ui.horizontal(|ui| {
                     ui.label(tr("dialog.format"));
@@ -3212,18 +3200,50 @@ fn export_dialog(app: &mut App, ctx: &Context, st: &mut ExportState, close: &mut
                         ui.end_row();
                     });
                 }
-                if let Some(bytes) = estimate.filter(|_| !scripted) {
-                    ui.add_space(6.0);
-                    ui.label(
-                        egui::RichText::new(trf(
-                            "dialog.export_estimate",
-                            &[("size", &crate::export::human_size(bytes))],
-                        ))
-                        .color(Tokens::text_dim()),
-                    );
-                }
+    if let Some(bytes) = estimate.filter(|_| !scripted) {
+        ui.add_space(6.0);
+        ui.label(
+            egui::RichText::new(trf(
+                "dialog.export_estimate",
+                &[("size", &crate::export::human_size(bytes))],
+            ))
+            .color(Tokens::text_dim()),
+        );
+    }
+}
+
+fn export_dialog(app: &mut App, ctx: &Context, st: &mut ExportState, close: &mut bool) {
+    let mobile = crate::ui::mobile::active(ctx);
+    window(
+        ctx,
+        if st.web {
+            tr("menu.file.export_for_web")
+        } else {
+            tr("dialog.export")
+        },
+    )
+    .show(ctx, |ui| {
+        if mobile {
+            egui::ScrollArea::vertical()
+                .id_salt("mobile_export_scroll")
+                .max_height(ui.available_height().min(480.0))
+                .show(ui, |ui| {
+                    let avail_w = ui.available_width();
+                    let preview_sz = egui::vec2(avail_w.min(260.0), 160.0);
+                    let estimate = export_preview_box(app, ui, st, preview_sz);
+                    ui.add_space(8.0);
+                    export_options(app, ui, st, estimate);
+                });
+        } else {
+            ui.horizontal_top(|ui| {
+                let estimate = export_preview_box(app, ui, st, egui::vec2(260.0, 300.0));
+                ui.add_space(14.0);
+                ui.vertical(|ui| {
+                    ui.set_width(300.0);
+                    export_options(app, ui, st, estimate);
+                });
             });
-        });
+        }
         if ok_cancel(ui, close) {
             let filter = st.script.as_ref().and_then(|n| {
                 app.settings

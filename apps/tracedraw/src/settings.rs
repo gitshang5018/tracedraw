@@ -741,7 +741,12 @@ impl NodePrefs {
         } else {
             6.0
         };
-        f64::from(set.max(self.size.px() / 2.0 + 1.0))
+        let base = f64::from(set.max(self.size.px() / 2.0 + 1.0));
+        if crate::ui::mobile::phone() {
+            base * 2.5
+        } else {
+            base
+        }
     }
 }
 

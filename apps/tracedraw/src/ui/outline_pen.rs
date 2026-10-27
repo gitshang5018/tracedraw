@@ -172,25 +172,42 @@ pub fn dialog(app: &mut App, ctx: &egui::Context, st: &mut OutlinePenState, clos
     let lib = crate::ui::line_style::OutlineLib::of(app);
     let mut ok = false;
     let mut help = false;
+    let mobile = crate::ui::mobile::active(ctx);
     crate::ui::dialogs::window(ctx, tr("outline_pen.title")).show(ctx, |ui| {
-        ui.set_min_width(640.0);
-        ui.horizontal_top(|ui| {
-            ui.vertical(|ui| {
-                ui.set_width(330.0);
-                group(ui, &tr("outline_pen.general"), |ui| general(ui, st, &lib));
-            });
-            ui.add_space(8.0);
-            ui.vertical(|ui| {
-                ui.set_width(290.0);
-                group(ui, &tr("outline_pen.arrowheads"), |ui| {
-                    arrowheads(ui, st, &lib)
+        if mobile {
+            egui::ScrollArea::vertical()
+                .id_salt("mobile_outline_pen_scroll")
+                .max_height(ui.available_height().min(480.0))
+                .show(ui, |ui| {
+                    group(ui, &tr("outline_pen.general"), |ui| general(ui, st, &lib));
+                    group(ui, &tr("outline_pen.arrowheads"), |ui| {
+                        arrowheads(ui, st, &lib)
+                    });
+                    group(ui, &tr("outline_pen.calligraphy"), |ui| calligraphy(ui, st));
+                    group(ui, &tr("outline_pen.variable_outline"), |ui| {
+                        variable(ui, st, &lib)
+                    });
                 });
-                group(ui, &tr("outline_pen.calligraphy"), |ui| calligraphy(ui, st));
+        } else {
+            ui.set_min_width(640.0);
+            ui.horizontal_top(|ui| {
+                ui.vertical(|ui| {
+                    ui.set_width(330.0);
+                    group(ui, &tr("outline_pen.general"), |ui| general(ui, st, &lib));
+                });
+                ui.add_space(8.0);
+                ui.vertical(|ui| {
+                    ui.set_width(290.0);
+                    group(ui, &tr("outline_pen.arrowheads"), |ui| {
+                        arrowheads(ui, st, &lib)
+                    });
+                    group(ui, &tr("outline_pen.calligraphy"), |ui| calligraphy(ui, st));
+                });
             });
-        });
-        group(ui, &tr("outline_pen.variable_outline"), |ui| {
-            variable(ui, st, &lib)
-        });
+            group(ui, &tr("outline_pen.variable_outline"), |ui| {
+                variable(ui, st, &lib)
+            });
+        }
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             help = ui
