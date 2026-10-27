@@ -305,7 +305,7 @@ pub fn frame(app: &mut App, ui: &mut Ui) -> bool {
     // A phone lying on its side gives the whole screen to the drawing: the
     // system bars go, and come back when it stands up again.
     system_bars(&ctx, land);
-    let inset = if land { Safe::default() } else { system_insets(&ctx) };
+    let inset = system_insets(&ctx);
 
     let mut open = sheet(&ctx);
     // A file dialog asked anywhere (File > Open, an import) becomes the
@@ -372,7 +372,7 @@ pub fn frame(app: &mut App, ui: &mut Ui) -> bool {
         }
     }
 
-    top_bar(app, ui, &m3, inset.top, &mut open);
+    top_bar(app, ui, &m3, inset, &mut open);
     if land {
         // On its side the phone keeps the tools down the left edge and
         // the destinations down the right one, out of the drawing's way.
@@ -547,16 +547,16 @@ fn touch_style(ctx: &egui::Context) {
 // The bars
 // ---------------------------------------------------------------------------
 
-fn top_bar(app: &mut App, ui: &mut Ui, m3: &M3, top: f32, open: &mut Sheet) {
+fn top_bar(app: &mut App, ui: &mut Ui, m3: &M3, safe: Safe, open: &mut Sheet) {
     egui::Panel::top("mobile_top")
-        .exact_size(TOP_H + top)
+        .exact_size(TOP_H + safe.top)
         .resizable(false)
         .show_separator_line(false)
         .frame(Frame::new().fill(m3.surface))
         .show(ui, |ui| {
-            ui.add_space(top);
+            ui.add_space(safe.top);
             ui.horizontal_centered(|ui| {
-                ui.add_space(4.0);
+                ui.add_space(4.0 + safe.left);
                 if icon_target(ui, m3, Glyph::Menu, true).clicked() {
                     *open = if *open == Sheet::Drawer {
                         Sheet::None
@@ -574,7 +574,7 @@ fn top_bar(app: &mut App, ui: &mut Ui, m3: &M3, top: f32, open: &mut Sheet) {
                     tr("welcome.title")
                 };
                 let gap = ui.spacing().item_spacing.x;
-                let room = (ui.available_width() - 2.0 * (TOUCH + gap) - 4.0).max(48.0);
+                let room = (ui.available_width() - 2.0 * (TOUCH + gap) - 4.0 - safe.right).max(48.0);
                 let (rect, title) = ui.allocate_exact_size(Vec2::new(room, TOUCH), Sense::click());
                 ui.painter().text(
                     egui::pos2(rect.left() + 4.0, rect.center().y),
@@ -591,6 +591,9 @@ fn top_bar(app: &mut App, ui: &mut Ui, m3: &M3, top: f32, open: &mut Sheet) {
                 }
                 if icon_target(ui, m3, Glyph::Redo, redo).clicked() && redo {
                     app.redo();
+                }
+                if safe.right > 0.0 {
+                    ui.add_space(safe.right);
                 }
             });
         });
@@ -709,7 +712,7 @@ fn tool_pop(app: &mut App, ctx: &egui::Context, m3: &M3) {
     } else {
         10.5
     });
-    let (at_x, at_y) = if land && anchor.min.x < 80.0 {
+    let (at_x, at_y) = if land && anchor.center().x < screen.width() * 0.5 {
         // Landscape left rail: float to the right of the button
         let x = anchor.right() + 8.0;
         let y = (anchor.center().y - height / 2.0)
@@ -1395,7 +1398,8 @@ fn drawer(app: &mut App, ui: &mut Ui, m3: &M3, screen: Rect, open: &mut Sheet) {
     let _ = app;
     let ctx = ui.ctx().clone();
     scrim(&ctx, screen, open);
-    let width = (screen.width() * 0.86).min(320.0);
+    let safe = system_insets(&ctx);
+    let width = (screen.width() * 0.86).min(320.0 + safe.left);
     egui::Area::new(Id::new("mobile_drawer"))
         .order(egui::Order::Foreground)
         .fixed_pos(screen.min)
@@ -1412,17 +1416,17 @@ fn drawer(app: &mut App, ui: &mut Ui, m3: &M3, screen: Rect, open: &mut Sheet) {
                     ui.set_width(width);
                     ui.set_min_height(screen.height());
                     // Clear of the status bar, as the top bar is.
-                    ui.add_space(system_insets(&ctx).top);
+                    ui.add_space(safe.top);
                     Frame::new()
                         .fill(m3.container)
                         .inner_margin(egui::Margin {
-                            left: 20,
+                            left: (20.0 + safe.left) as i8,
                             right: 20,
                             top: 26,
                             bottom: 20,
                         })
                         .show(ui, |ui| {
-                            ui.set_width(width - 40.0);
+                            ui.set_width(width - 40.0 - safe.left);
                             ui.label(
                                 egui::RichText::new("TraceDraw")
                                     .size(22.0)
@@ -1441,33 +1445,33 @@ fn drawer(app: &mut App, ui: &mut Ui, m3: &M3, screen: Rect, open: &mut Sheet) {
                         .show(ui, |ui| {
                             ui.add_space(8.0);
                             for (i, (key, _)) in crate::ui::menus::all_menus().iter().enumerate() {
-                                if drawer_row(ui, m3, &tr(key), None).clicked() {
+                                if drawer_row(ui, m3, &tr(key), None, safe.left).clicked() {
                                     *open = Sheet::MenuPage(i);
                                 }
                             }
                             ui.add_space(8.0);
                             ui.separator();
                             ui.add_space(4.0);
-                            if drawer_row(ui, m3, &tr("mobile.settings"), Some(Glyph::Gear))
+                            if drawer_row(ui, m3, &tr("mobile.settings"), Some(Glyph::Gear), safe.left)
                                 .clicked()
                             {
                                 *open = Sheet::Settings;
                             }
-                            ui.add_space(12.0);
+                            ui.add_space(12.0 + safe.bottom);
                         });
                 });
         });
 }
 
 /// A row of the drawer or of the settings: the whole width, a finger high.
-fn drawer_row(ui: &mut Ui, m3: &M3, label: &str, glyph: Option<Glyph>) -> Response {
+fn drawer_row(ui: &mut Ui, m3: &M3, label: &str, glyph: Option<Glyph>, left_pad: f32) -> Response {
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 52.0), Sense::click());
     if resp.hovered() || resp.is_pointer_button_down_on() {
         let fill = mix(m3.on, m3.surface, 0.08);
         ui.painter()
             .rect_filled(rect.shrink2(Vec2::new(8.0, 2.0)), 26.0, fill);
     }
-    let mut left = rect.left() + 20.0;
+    let mut left = rect.left() + 20.0 + left_pad;
     if let Some(glyph) = glyph {
         draw_glyph(
             ui,
@@ -1506,7 +1510,8 @@ fn page_ui(
     body: impl FnOnce(&mut App, &mut Ui),
 ) {
     let ctx = ui.ctx().clone();
-    let top = system_insets(&ctx).top;
+    let safe = system_insets(&ctx);
+    let top = safe.top;
     egui::Area::new(Id::new("mobile_page"))
         .order(egui::Order::Foreground)
         .fixed_pos(screen.min)
@@ -1521,7 +1526,7 @@ fn page_ui(
                     Vec2::new(screen.width(), TOUCH),
                     egui::Layout::left_to_right(egui::Align::Center),
                     |ui| {
-                        ui.add_space(4.0);
+                        ui.add_space(4.0 + safe.left);
                         if icon_target(ui, m3, Glyph::Back, true).clicked() {
                             *open = back;
                         }
@@ -1543,10 +1548,10 @@ fn page_ui(
                     .show(ui, |ui| {
                         Frame::new()
                             .inner_margin(egui::Margin {
-                                left: 16,
-                                right: 16,
+                                left: (16.0 + safe.left) as i8,
+                                right: (16.0 + safe.right) as i8,
                                 top: 4,
-                                bottom: 28,
+                                bottom: (28.0 + safe.bottom) as i8,
                             })
                             .show(ui, |ui| {
                                 ui.set_width(ui.available_width());
@@ -1596,7 +1601,7 @@ fn settings_list(app: &mut App, ui: &mut Ui, m3: &M3, screen: Rect, open: &mut S
                         .color(m3.primary),
                 );
                 for page in set.pages() {
-                    if drawer_row(ui, m3, &tr(page.key()), None).clicked() {
+                    if drawer_row(ui, m3, &tr(page.key()), None, 0.0).clicked() {
                         app.options_page = *page;
                         chosen.set(Sheet::SettingsPage(*page));
                     }

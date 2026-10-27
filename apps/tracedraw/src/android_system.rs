@@ -78,20 +78,43 @@ fn window<'a>(env: &mut jni::JNIEnv<'a>, activity: &JObject<'a>) -> Option<JObje
 /// Ask the window to take the whole screen, so the interface may draw its
 /// own background behind the system bars (once per start).
 pub fn go_edge_to_edge(activity: *mut c_void, vm: *mut c_void, sdk: i32) {
-    if sdk < 30 {
+    if sdk < 28 {
         return;
     }
     with_env(vm, |env| {
         let activity = activity_ref(env, activity)?;
         let window = window(env, &activity)?;
-        // false: the decor lays nothing out around the system bars; the app
-        // does it itself with the insets.
-        let _ = env.call_method(
+        if sdk >= 30 {
+            // false: the decor lays nothing out around the system bars; the app
+            // does it itself with the insets.
+            let _ = env.call_method(
+                &window,
+                "setDecorFitsSystemWindows",
+                "(Z)V",
+                &[JValue::Bool(0)],
+            );
+        }
+        // Extend into the cutout areas (short edges / notch) in landscape,
+        // eliminating the black letterbox bar on the camera edge.
+        let mode = if sdk >= 30 { 3 } else { 1 };
+        if let Ok(val) = env.call_method(
             &window,
-            "setDecorFitsSystemWindows",
-            "(Z)V",
-            &[JValue::Bool(0)],
-        );
+            "getAttributes",
+            "()Landroid/view/WindowManager$LayoutParams;",
+            &[],
+        ) {
+            if let Ok(params) = val.l() {
+                if !params.is_null() {
+                    let _ = env.set_field(&params, "layoutInDisplayCutoutMode", "I", JValue::Int(mode));
+                    let _ = env.call_method(
+                        &window,
+                        "setAttributes",
+                        "(Landroid/view/WindowManager$LayoutParams;)V",
+                        &[JValue::Object(&params)],
+                    );
+                }
+            }
+        }
         Some(())
     });
 }
@@ -99,7 +122,7 @@ pub fn go_edge_to_edge(activity: *mut c_void, vm: *mut c_void, sdk: i32) {
 /// The insets the window reports now, in pixels; `None` when the window is
 /// not attached yet, or on a system older than Android 11.
 pub fn read(activity: *mut c_void, vm: *mut c_void, sdk: i32) -> Option<Insets> {
-    if sdk < 30 {
+    if sdk < 28 {
         return None;
     }
     with_env(vm, |env| {
@@ -123,28 +146,54 @@ pub fn read(activity: *mut c_void, vm: *mut c_void, sdk: i32) -> Option<Insets> 
         if insets.is_null() {
             return None;
         }
-        // The bars of the system: status, navigation and caption.
-        let types = env
-            .call_static_method("android/view/WindowInsets$Type", "systemBars", "()I", &[])
-            .ok()?
-            .i()
-            .ok()?;
-        let bars = env
-            .call_method(
+
+        let mut top = 0;
+        let mut bottom = 0;
+        let mut left = 0;
+        let mut right = 0;
+
+        if sdk >= 30 {
+            let sys_bars = env
+                .call_static_method("android/view/WindowInsets$Type", "systemBars", "()I", &[])
+                .map(|v| v.i().unwrap_or(7))
+                .unwrap_or(7);
+            let cutout = env
+                .call_static_method("android/view/WindowInsets$Type", "displayCutout", "()I", &[])
+                .map(|v| v.i().unwrap_or(128))
+                .unwrap_or(128);
+            if let Ok(val) = env.call_method(
                 &insets,
                 "getInsets",
                 "(I)Landroid/graphics/Insets;",
-                &[JValue::Int(types)],
-            )
-            .ok()?
-            .l()
-            .ok()?;
-        let top = env.get_field(&bars, "top", "I").ok()?.i().ok()?;
-        let bottom = env.get_field(&bars, "bottom", "I").ok()?.i().ok()?;
-        // With the phone on its side the gesture bar is at an edge
-        // rather than at the bottom.
-        let left = env.get_field(&bars, "left", "I").ok()?.i().ok()?;
-        let right = env.get_field(&bars, "right", "I").ok()?.i().ok()?;
+                &[JValue::Int(sys_bars | cutout)],
+            ) {
+                if let Ok(bars) = val.l() {
+                    if !bars.is_null() {
+                        top = env.get_field(&bars, "top", "I").ok().and_then(|v| v.i().ok()).unwrap_or(0);
+                        bottom = env.get_field(&bars, "bottom", "I").ok().and_then(|v| v.i().ok()).unwrap_or(0);
+                        left = env.get_field(&bars, "left", "I").ok().and_then(|v| v.i().ok()).unwrap_or(0);
+                        right = env.get_field(&bars, "right", "I").ok().and_then(|v| v.i().ok()).unwrap_or(0);
+                    }
+                }
+            }
+        }
+
+        // Measure DisplayCutout safely across API 28+
+        if let Ok(val) = env.call_method(&insets, "getDisplayCutout", "()Landroid/view/DisplayCutout;", &[]) {
+            if let Ok(cutout_obj) = val.l() {
+                if !cutout_obj.is_null() {
+                    let cl = env.call_method(&cutout_obj, "getSafeInsetLeft", "()I", &[]).ok().and_then(|v| v.i().ok()).unwrap_or(0);
+                    let ct = env.call_method(&cutout_obj, "getSafeInsetTop", "()I", &[]).ok().and_then(|v| v.i().ok()).unwrap_or(0);
+                    let cr = env.call_method(&cutout_obj, "getSafeInsetRight", "()I", &[]).ok().and_then(|v| v.i().ok()).unwrap_or(0);
+                    let cb = env.call_method(&cutout_obj, "getSafeInsetBottom", "()I", &[]).ok().and_then(|v| v.i().ok()).unwrap_or(0);
+                    left = left.max(cl);
+                    top = top.max(ct);
+                    right = right.max(cr);
+                    bottom = bottom.max(cb);
+                }
+            }
+        }
+
         Some(Insets {
             top,
             bottom,
