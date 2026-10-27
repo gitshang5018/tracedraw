@@ -96,7 +96,8 @@ pub fn go_edge_to_edge(activity: *mut c_void, vm: *mut c_void, sdk: i32) {
         }
         // Extend into the cutout areas (short edges / notch) in landscape,
         // eliminating the black letterbox bar on the camera edge.
-        let mode = if sdk >= 30 { 3 } else { 1 };
+        // Constant 1 is LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES across API 28+.
+        const SHORT_EDGES: i32 = 1;
         if let Ok(val) = env.call_method(
             &window,
             "getAttributes",
@@ -105,7 +106,7 @@ pub fn go_edge_to_edge(activity: *mut c_void, vm: *mut c_void, sdk: i32) {
         ) {
             if let Ok(params) = val.l() {
                 if !params.is_null() {
-                    let _ = env.set_field(&params, "layoutInDisplayCutoutMode", "I", JValue::Int(mode));
+                    let _ = env.set_field(&params, "layoutInDisplayCutoutMode", "I", JValue::Int(SHORT_EDGES));
                     let _ = env.call_method(
                         &window,
                         "setAttributes",
@@ -937,15 +938,37 @@ fn read_uri(app: &AndroidApp, uri: &str) -> Option<Vec<u8>> {
 pub fn set_fullscreen(app: &AndroidApp, hidden: bool) {
     let vm = app.vm_as_ptr();
     let activity = app.activity_as_ptr();
+    let sdk = AndroidApp::sdk_version();
     with_env(vm, |env| {
         let activity = activity_ref(env, activity)?;
         let window = window(env, &activity)?;
+        if sdk >= 28 {
+            const SHORT_EDGES: i32 = 1;
+            if let Ok(val) = env.call_method(
+                &window,
+                "getAttributes",
+                "()Landroid/view/WindowManager$LayoutParams;",
+                &[],
+            ) {
+                if let Ok(params) = val.l() {
+                    if !params.is_null() {
+                        let _ = env.set_field(&params, "layoutInDisplayCutoutMode", "I", JValue::Int(SHORT_EDGES));
+                        let _ = env.call_method(
+                            &window,
+                            "setAttributes",
+                            "(Landroid/view/WindowManager$LayoutParams;)V",
+                            &[JValue::Object(&params)],
+                        );
+                    }
+                }
+            }
+        }
         let decor = env
             .call_method(&window, "getDecorView", "()Landroid/view/View;", &[])
             .ok()?
             .l()
             .ok()?;
-        if AndroidApp::sdk_version() >= 30 {
+        if sdk >= 30 {
             let controller = env
                 .call_method(
                     &decor,
@@ -978,9 +1001,9 @@ pub fn set_fullscreen(app: &AndroidApp, hidden: bool) {
                 let _ = env.call_method(&controller, "show", "(I)V", &[JValue::Int(bars)]);
             }
         } else {
-            // LAYOUT_STABLE | LAYOUT_HIDE_NAVIGATION | LAYOUT_FULLSCREEN,
-            // and with them FULLSCREEN | HIDE_NAVIGATION | IMMERSIVE_STICKY.
-            const LAYOUT: i32 = 1 | 512 | 1024;
+            // LAYOUT_STABLE (256) | LAYOUT_HIDE_NAVIGATION (512) | LAYOUT_FULLSCREEN (1024),
+            // and with them FULLSCREEN (4) | HIDE_NAVIGATION (2) | IMMERSIVE_STICKY (4096).
+            const LAYOUT: i32 = 256 | 512 | 1024;
             const HIDE: i32 = 4 | 2 | 4096;
             let flags = if hidden { LAYOUT | HIDE } else { LAYOUT };
             let _ = env.call_method(
