@@ -658,12 +658,13 @@ fn tool_pop(app: &mut App, ctx: &egui::Context, m3: &M3) {
         .iter()
         .map(|tool| {
             let name = tool.name();
-            let text = ctx.fonts(|f| {
-                f.layout_no_wrap(name.clone(), font.clone(), m3.variant)
-                    .size()
-                    .x
-            });
-            (*tool, name, (text + 14.0).max(TOUCH))
+            // Enough room for the name at 10.5 points, measured before the
+            // row is laid out (the width places the row on the screen).
+            let text: f32 = name
+                .chars()
+                .map(|c| if c.is_ascii() { 5.9 } else { 10.6 })
+                .sum();
+            (*tool, name, (text + 16.0).max(TOUCH))
         })
         .collect();
     let pad = 8.0;
