@@ -1415,6 +1415,9 @@ pub fn show(app: &mut App, ctx: &Context) {
                 let u = app.units;
                 unit_value(ui, &tr("dialog.width"), width, u);
                 unit_value(ui, &tr("dialog.height"), height, u);
+                if crate::ui::mobile::phone() {
+                    ui.spacing_mut().button_padding = egui::vec2(10.0, 7.0);
+                }
                 ui.horizontal_wrapped(|ui| {
                     for (n, s) in paper_presets() {
                         if ui.button(n).clicked() {

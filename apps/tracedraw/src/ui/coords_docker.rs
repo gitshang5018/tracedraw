@@ -16,7 +16,9 @@ use tracedraw_core::geometry::{
     complex_star_max_sharpness, BezPath, Point, COMPLEX_STAR_MIN_POINTS,
 };
 
-const BTN: f32 = 28.0;
+fn btn_size() -> f32 {
+    if crate::ui::mobile::phone() { 36.0 } else { 28.0 }
+}
 const FIELD_W: f32 = 84.0;
 
 /// The picture of an object button.
@@ -59,7 +61,7 @@ fn draw_kind(painter: &egui::Painter, r: Rect, kind: CoordKind, color: Color32) 
 /// An object button: pressed while it is the docker's object; a flyout
 /// button has a small triangle in its corner.
 fn kind_button(ui: &mut Ui, kind: CoordKind, pressed: bool, flyout: bool) -> egui::Response {
-    let (rect, resp) = ui.allocate_exact_size(Vec2::splat(BTN), Sense::click());
+    let (rect, resp) = ui.allocate_exact_size(Vec2::splat(btn_size()), Sense::click());
     if pressed {
         ui.painter()
             .rect_filled(rect, 0.0, crate::theme::Tokens::field());
@@ -561,8 +563,9 @@ pub fn coordinates(app: &mut App, ui: &mut Ui) {
     ui.add_space(10.0);
     let can = app.coords.shape_kind().is_some();
     ui.horizontal(|ui| {
+        let btn_h = if crate::ui::mobile::phone() { 38.0 } else { 22.0 };
         if ui
-            .add_enabled(can, egui::Button::new(tr("coords.create")))
+            .add_enabled(can, egui::Button::new(tr("coords.create")).min_size(Vec2::new(90.0, btn_h)))
             .clicked()
         {
             app.create_from_coords();
@@ -570,7 +573,7 @@ pub fn coordinates(app: &mut App, ui: &mut Ui) {
         if ui
             .add_enabled(
                 can && app.coords_target().is_some(),
-                egui::Button::new(tr("coords.replace")),
+                egui::Button::new(tr("coords.replace")).min_size(Vec2::new(90.0, btn_h)),
             )
             .clicked()
         {

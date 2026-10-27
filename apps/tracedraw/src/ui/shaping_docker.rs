@@ -68,7 +68,7 @@ pub fn apply(app: &mut App) {
 /// Draw the docker.
 pub fn shaping(app: &mut App, ui: &mut Ui) {
     ui.horizontal_wrapped(|ui| {
-        ui.spacing_mut().item_spacing.x = 2.0;
+        ui.spacing_mut().item_spacing.x = if crate::ui::mobile::phone() { 6.0 } else { 2.0 };
         for op in Shaping::ALL {
             let (pic, key, _) = info(op);
             if pic_button(ui, pic, &tr(key), true, app.shaping_op == op).clicked() {
@@ -126,10 +126,15 @@ pub fn shaping(app: &mut App, ui: &mut Ui) {
         ui.add_space(6.0);
     }
     let enough = op.ready(app.selection.len());
-    let width = ui.available_width().min(240.0);
+    let width = if crate::ui::mobile::phone() {
+        ui.available_width()
+    } else {
+        ui.available_width().min(240.0)
+    };
+    let btn_h = if crate::ui::mobile::phone() { 40.0 } else { 26.0 };
     let clicked = ui
         .add_enabled_ui(enough, |ui| {
-            ui.add_sized([width, 26.0], egui::Button::new(tr(key)))
+            ui.add_sized([width, btn_h], egui::Button::new(tr(key)))
                 .clicked()
         })
         .inner;

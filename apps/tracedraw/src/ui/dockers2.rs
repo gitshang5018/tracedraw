@@ -108,7 +108,7 @@ fn step_and_repeat(app: &mut App, ui: &mut Ui) {
     }
     let has = !app.selection.is_empty();
     if ui
-        .add_enabled(has, egui::Button::new(tr("docker.apply")))
+        .add_enabled(has, egui::Button::new(tr("docker.apply")).min_size(egui::vec2(ui.available_width(), if crate::ui::mobile::phone() { 40.0 } else { 26.0 })))
         .clicked()
     {
         app.step_and_repeat_apply();

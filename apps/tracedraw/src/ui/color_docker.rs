@@ -85,13 +85,18 @@ fn set_color(app: &mut App, c: Color) {
 
 /// A 28 x 26 picture button, shaded while `on`.
 fn view_button(ui: &mut Ui, view: View, tip: &str, on: bool) -> Response {
-    let (rect, resp) = ui.allocate_exact_size(Vec2::new(28.0, 26.0), Sense::click());
+    let (btn_sz, icon_sz) = if crate::ui::mobile::phone() {
+        (Vec2::new(38.0, 36.0), 22.0)
+    } else {
+        (Vec2::new(28.0, 26.0), 16.0)
+    };
+    let (rect, resp) = ui.allocate_exact_size(btn_sz, Sense::click());
     if on {
         ui.painter().rect_filled(rect, 2.0, Tokens::tool_active());
     } else if resp.hovered() {
         ui.painter().rect_filled(rect, 2.0, Tokens::tool_hover());
     }
-    let r = Rect::from_center_size(rect.center(), Vec2::splat(16.0));
+    let r = Rect::from_center_size(rect.center(), Vec2::splat(icon_sz));
     let p = ui.painter();
     match view {
         View::Viewer => {
@@ -565,19 +570,20 @@ pub fn color(app: &mut App, ui: &mut Ui) {
     }
     ui.horizontal(|ui| {
         let has = !app.selection.is_empty();
+        let btn_h = if crate::ui::mobile::phone() { 38.0 } else { 22.0 };
         if ui
-            .add_enabled(has, egui::Button::new(tr("docker.fill")))
+            .add_enabled(has, egui::Button::new(tr("docker.fill")).min_size(Vec2::new(60.0, btn_h)))
             .clicked()
         {
             app.apply_fill(Fill::Solid(c));
         }
         if ui
-            .add_enabled(has, egui::Button::new(tr("docker.outline")))
+            .add_enabled(has, egui::Button::new(tr("docker.outline")).min_size(Vec2::new(60.0, btn_h)))
             .clicked()
         {
             app.apply_outline_color(Some(c));
         }
-        if ui.button(tr("docker.add_to_palette")).clicked() {
+        if ui.add(egui::Button::new(tr("docker.add_to_palette")).min_size(Vec2::new(0.0, btn_h))).clicked() {
             let mut colors = app.doc().palette.clone();
             if !colors.contains(&c) {
                 colors.push(c);

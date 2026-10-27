@@ -652,7 +652,12 @@ impl CurvePrefs {
     /// The simplification tolerance of a freehand stroke in screen
     /// pixels: 0.2 at no smoothing, 1.3 at the default 50, 2.4 at 100.
     pub fn freehand_tolerance_px(&self) -> f64 {
-        0.2 + f64::from(self.smoothing.min(100)) / 100.0 * 2.2
+        let base = 0.2 + f64::from(self.smoothing.min(100)) / 100.0 * 2.2;
+        if crate::ui::mobile::phone() {
+            base * 1.8
+        } else {
+            base
+        }
     }
 }
 

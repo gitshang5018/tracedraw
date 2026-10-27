@@ -50,9 +50,10 @@ pub fn indented<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
 pub fn wide_button(ui: &mut Ui, text: &str, enabled: bool) -> bool {
     ui.add_space(6.0);
     let w = ui.available_width();
+    let h = if crate::ui::mobile::phone() { 40.0 } else { 26.0 };
     ui.add_enabled(
         enabled,
-        egui::Button::new(text).min_size(Vec2::new(w, 26.0)),
+        egui::Button::new(text).min_size(Vec2::new(w, h)),
     )
     .clicked()
 }
