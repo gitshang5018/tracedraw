@@ -249,8 +249,8 @@ fn phone_sorter(app: &mut App, ui: &mut Ui) {
             while i < pages.len() {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = gap;
-                    for k in i..(i + cols).min(pages.len()) {
-                        let (id, name, size) = &pages[k];
+                    for (k, (id, name, size)) in pages.iter().enumerate().skip(i).take(cols) {
+
                         let active = *id == app.page;
                         let thumb_h = (tile_w * 1.2).min(300.0);
                         let (rect, resp) = ui.allocate_exact_size(

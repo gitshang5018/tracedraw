@@ -342,7 +342,7 @@ pub fn frame(app: &mut App, ui: &mut Ui) -> bool {
     if land {
         // On its side the phone keeps the tools down the left edge and
         // the destinations down the right one, out of the drawing's way.
-        tools_rail(app, ui, &m3);
+        tools_rail(app, ui, &m3, inset);
         nav_rail(app, ui, &m3, inset, &mut open);
     } else {
         nav_bar(app, ui, &m3, inset.bottom, &mut open);
@@ -831,13 +831,19 @@ fn destinations() -> [(Sheet, Glyph, String); 4] {
 
 /// The tools down the left edge, for a phone on its side: the same round
 /// targets the strip carries, one under the next.
-fn tools_rail(app: &mut App, ui: &mut Ui, m3: &M3) {
+fn tools_rail(app: &mut App, ui: &mut Ui, m3: &M3, safe: Safe) {
     egui::Panel::left("mobile_tools")
-        .exact_size(RAIL_W)
+        .exact_size(RAIL_W + safe.left)
         .resizable(false)
         .show_separator_line(false)
         .frame(Frame::new().fill(m3.container))
         .show(ui, |ui| {
+            // The gesture bar of a phone on its side takes the edge.
+            let rail = Rect::from_min_max(
+                ui.max_rect().min + Vec2::new(safe.left, 0.0),
+                ui.max_rect().max,
+            );
+            ui.scope_builder(egui::UiBuilder::new().max_rect(rail), |ui| {
             let mut pick = None;
             let mut pop = None;
             egui::ScrollArea::vertical()
@@ -876,6 +882,7 @@ fn tools_rail(app: &mut App, ui: &mut Ui, m3: &M3) {
             if let Some((gi, rect, hold)) = pop {
                 show_tools(ui.ctx(), gi, rect, hold);
             }
+            });
         });
 }
 
@@ -1171,13 +1178,12 @@ fn sheet_header(ui: &mut Ui, which: Sheet, m3: &M3) -> bool {
     if !picking {
         // The cross is drawn, not typed: the bundled font has no
         // multiplication sign, and a missing glyph shows as a box.
-        let c = target.center();
-        let d = 8.0;
-        let s = Stroke::new(2.0, m3.on);
-        ui.painter()
-            .line_segment([c + Vec2::new(-d, -d), c + Vec2::new(d, d)], s);
-        ui.painter()
-            .line_segment([c + Vec2::new(d, -d), c + Vec2::new(-d, d)], s);
+        draw_glyph(
+            ui,
+            Rect::from_center_size(target.center(), Vec2::splat(ICON)),
+            Glyph::Close,
+            m3.on,
+        );
     }
     resp.clicked()
 }
