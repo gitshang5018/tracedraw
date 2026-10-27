@@ -190,6 +190,20 @@ jobs:
           merge-multiple: true
       - name: The APKs
         run: ls -l artifacts
+      # The nightly keeps the name "nightly" while the APK names carry the
+      # commit: the ones of the run before are dropped, or they pile up.
+      - name: The APKs of the nightly before
+        if: env.RELEASE_TAG == ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          old=$(gh release view nightly --repo "${{ github.repository }}" \
+                  --json assets --jq '.assets[].name' 2>/dev/null || true)
+          for asset in $(printf '%s\n' "$old" | grep -E '^tracedraw-.*-android-.*[.]apk$' || true); do
+            echo "Replacing $asset"
+            gh release delete-asset nightly "$asset" --repo "${{ github.repository }}" --yes || true
+          done
       - uses: softprops/action-gh-release@v2
         with:
           files: artifacts/*.apk
