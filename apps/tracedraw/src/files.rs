@@ -494,8 +494,26 @@ enum Ask {
 #[cfg(target_os = "android")]
 thread_local! {
     static ASK: RefCell<Option<Ask>> = const { RefCell::new(None) };
+    /// How many dialogs have been asked since the app started: a new
+    /// number means a new dialog, which the interface opens its list for
+    /// once (a number that stayed the same is the one already shown, and
+    /// the list must be free to close over it).
+    static ASK_SEQ: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     /// The folder the Android build keeps its drawings in.
     static DOCUMENTS: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
+}
+
+/// A number that changes with every file dialog asked on a phone.
+#[cfg(target_os = "android")]
+pub fn ask_generation() -> u64 {
+    ASK_SEQ.with(|s| s.get())
+}
+
+/// Keep the dialog asked, and count it as a new one.
+#[cfg(target_os = "android")]
+fn set_ask(ask: Ask) {
+    ASK.with(|a| *a.borrow_mut() = Some(ask));
+    ASK_SEQ.with(|s| s.set(s.get().wrapping_add(1)));
 }
 
 /// The folder drawings are read from and written to on a phone, set once
@@ -671,11 +689,9 @@ impl Dialog {
         #[cfg(target_os = "android")]
         {
             let _ = app;
-            ASK.with(|a| {
-                *a.borrow_mut() = Some(Ask::Open {
-                    exts: ask_exts(&self.filters),
-                    then: Box::new(then),
-                })
+            set_ask(Ask::Open {
+                exts: ask_exts(&self.filters),
+                then: Box::new(then),
             });
         }
         #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
@@ -695,11 +711,9 @@ impl Dialog {
         #[cfg(target_os = "android")]
         {
             let _ = app;
-            ASK.with(|a| {
-                *a.borrow_mut() = Some(Ask::Many {
-                    exts: ask_exts(&self.filters),
-                    then: Box::new(then),
-                })
+            set_ask(Ask::Many {
+                exts: ask_exts(&self.filters),
+                then: Box::new(then),
             });
         }
         #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
@@ -721,11 +735,9 @@ impl Dialog {
     pub fn pick_into(self, key: &str) {
         let key = key.to_string();
         #[cfg(target_os = "android")]
-        ASK.with(|a| {
-            *a.borrow_mut() = Some(Ask::Into {
-                exts: ask_exts(&self.filters),
-                key,
-            })
+        set_ask(Ask::Into {
+            exts: ask_exts(&self.filters),
+            key,
         });
         #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
         if let Some(path) = self.native_pick() {

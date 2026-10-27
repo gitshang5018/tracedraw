@@ -31,6 +31,10 @@ const TOP_H: f32 = 64.0;
 const TOOLS_H: f32 = 64.0;
 /// The navigation bar: four destinations.
 const NAV_H: f32 = 76.0;
+/// The tools rail down the left edge of a phone on its side.
+const RAIL_W: f32 = 64.0;
+/// The destinations rail down the right edge there.
+const NAV_RAIL_W: f32 = 84.0;
 /// The shortest side a finger aims at.
 const TOUCH: f32 = 48.0;
 /// The side of an icon inside a target.
@@ -38,27 +42,27 @@ const ICON: f32 = 24.0;
 
 /// The colours of the interface, in the roles Material gives them: the
 /// theme's own panels and text, so the phone follows the desktop theme.
-struct M3 {
+pub(crate) struct M3 {
     /// The background of the bars and of a sheet.
-    surface: Color32,
+    pub(crate) surface: Color32,
     /// A step up from the surface: the tool strip and the navigation bar.
-    container: Color32,
+    pub(crate) container: Color32,
     /// A step up again: fields and chips.
-    high: Color32,
+    pub(crate) high: Color32,
     /// Text and icons on the surface.
-    on: Color32,
+    pub(crate) on: Color32,
     /// Text and icons that say less.
-    variant: Color32,
+    pub(crate) variant: Color32,
     /// The accent: the chosen tool, the chosen destination.
-    primary: Color32,
+    pub(crate) primary: Color32,
     /// A light wash of the accent, behind what is chosen.
-    primary_container: Color32,
+    pub(crate) primary_container: Color32,
     /// The frames of fields and chips.
-    outline: Color32,
+    pub(crate) outline: Color32,
 }
 
 impl M3 {
-    fn of() -> Self {
+    pub(crate) fn of() -> Self {
         let surface = Tokens::panel();
         let primary = Tokens::ACCENT;
         Self {
@@ -105,6 +109,12 @@ enum Sheet {
 /// build, and in any build started with `TRACEDRAW_MOBILE=1` (the visual
 /// checks and a narrow window on a desktop).
 pub fn active(_ctx: &egui::Context) -> bool {
+    phone()
+}
+
+/// [`active`] for the drawing code that has no context at hand: the
+/// palette's swatches, a finger wide.
+pub fn phone() -> bool {
     #[cfg(target_os = "android")]
     {
         true
@@ -168,11 +178,21 @@ pub fn set_android_app(app: winit::platform::android::activity::AndroidApp) {
     crate::android_system::set_phone(app);
 }
 
-/// How much of the screen the system bars take, in points.
+/// How much of the screen the system bars take, in points: the status bar
+/// at the top, the gesture bar at the bottom — or, with the phone on its
+/// side, at one of the edges.
+#[derive(Debug, Clone, Copy, Default)]
+struct Safe {
+    top: f32,
+    bottom: f32,
+    left: f32,
+    right: f32,
+}
+
 #[cfg(target_os = "android")]
-fn system_insets(ctx: &egui::Context) -> Vec2 {
+fn system_insets(ctx: &egui::Context) -> Safe {
     let Some(phone) = crate::android_system::phone() else {
-        return Vec2::ZERO;
+        return Safe::default();
     };
     let ppp = ctx.pixels_per_point().max(0.1);
     // The insets change with the window (a rotation, the keyboard), not
@@ -180,22 +200,41 @@ fn system_insets(ctx: &egui::Context) -> Vec2 {
     let key = Id::new("mobile_insets");
     let size = ctx.content_rect().size() * ppp;
     let px = (size.x.round() as i32, size.y.round() as i32);
-    if let Some((seen, got)) = ctx.data(|d| d.get_temp::<((i32, i32), (f32, f32))>(key)) {
-        if seen == px && got != (0.0, 0.0) {
-            return Vec2::new(got.0, got.1);
+    if let Some((seen, got)) =
+        ctx.data(|d| d.get_temp::<((i32, i32), (f32, f32, f32, f32))>(key))
+    {
+        if seen == px && got != (0.0, 0.0, 0.0, 0.0) {
+            return Safe {
+                top: got.0,
+                bottom: got.1,
+                left: got.2,
+                right: got.3,
+            };
         }
     }
     let sdk = winit::platform::android::activity::AndroidApp::sdk_version();
     let got = crate::android_system::read(phone.activity_as_ptr(), phone.vm_as_ptr(), sdk)
-        .map(|i| (i.top as f32 / ppp, i.bottom as f32 / ppp))
-        .unwrap_or((0.0, 0.0));
+        .map(|i| {
+            (
+                i.top as f32 / ppp,
+                i.bottom as f32 / ppp,
+                i.left as f32 / ppp,
+                i.right as f32 / ppp,
+            )
+        })
+        .unwrap_or((0.0, 0.0, 0.0, 0.0));
     ctx.data_mut(|d| d.insert_temp(key, (px, got)));
-    Vec2::new(got.0, got.1)
+    Safe {
+        top: got.0,
+        bottom: got.1,
+        left: got.2,
+        right: got.3,
+    }
 }
 
 #[cfg(not(target_os = "android"))]
-fn system_insets(_ctx: &egui::Context) -> Vec2 {
-    Vec2::ZERO
+fn system_insets(_ctx: &egui::Context) -> Safe {
+    Safe::default()
 }
 
 /// Dark icons on the system bars when the interface is light, light ones
@@ -222,6 +261,12 @@ fn system_bar_icons(_ctx: &egui::Context) {}
 // The frame
 // ---------------------------------------------------------------------------
 
+/// Whether the phone lies on its side: a screen wider than it is tall has
+/// room for a rail on each edge, and the bars move there.
+fn landscape(screen: Rect) -> bool {
+    screen.width() > screen.height() * 1.15
+}
+
 /// Draw the phone layout; true when it took the whole screen (the Welcome
 /// Screen and the page sorter do, as on the desktop).
 pub fn frame(app: &mut App, ui: &mut Ui) -> bool {
@@ -240,15 +285,72 @@ pub fn frame(app: &mut App, ui: &mut Ui) -> bool {
 
     let mut open = sheet(&ctx);
     // A file dialog asked anywhere (File > Open, an import) becomes the
-    // file sheet: a phone has no dialog of the system's to show.
+    // file sheet: a phone has no dialog of the system's to show. It is
+    // opened once for each request, not held open: the sheet is the
+    // dialog, so closing the sheet cancels the request (see the end of
+    // this function), and a request already shown must not bring it back.
     #[cfg(target_os = "android")]
-    if crate::files::ask().is_some() {
-        open = Sheet::Files;
+    {
+        let asked = crate::files::ask_generation();
+        let seen: u64 = ctx
+            .data(|d| d.get_temp(Id::new("mobile_ask_seen")))
+            .unwrap_or(0);
+        if asked != seen && crate::files::ask().is_some() {
+            ctx.data_mut(|d| d.insert_temp(Id::new("mobile_ask_seen"), asked));
+            open = Sheet::Files;
+        }
     }
 
-    top_bar(app, ui, &m3, inset.x, &mut open);
-    nav_bar(app, ui, &m3, inset.y, &mut open);
-    tools_bar(app, ui, &m3, &mut open);
+    // The visual checks name the sheet they want to see, so a screenshot
+    // needs no pointer at all: TRACEDRAW_MOBILE_SHEET=properties (see
+    // scripts/visual/mobile_shot.ps1). A build on a phone never reads it.
+    #[cfg(not(target_os = "android"))]
+    if !ctx.data(|d| d.get_temp::<bool>(Id::new("mobile_sheet_hook")).unwrap_or(false)) {
+        ctx.data_mut(|d| d.insert_temp(Id::new("mobile_sheet_hook"), true));
+        if let Some(which) = std::env::var("TRACEDRAW_MOBILE_SHEET")
+            .ok()
+            .as_deref()
+            .and_then(sheet_by_name)
+        {
+            open = which;
+        }
+        // The floating tools of a group, for the same checks.
+        if let Some(gi) = std::env::var("TRACEDRAW_MOBILE_TOOLS")
+            .ok()
+            .and_then(|n| n.parse::<usize>().ok())
+        {
+            let anchor = Rect::from_center_size(
+                egui::pos2(window.center().x, window.bottom() - 110.0),
+                Vec2::splat(TOUCH),
+            );
+            show_tools(&ctx, gi, anchor, false);
+        }
+    }
+
+    // The back gesture of the phone arrives as Escape: it puts away the
+    // layer in front — the sheet, or the file list that stands for a
+    // dialog — while a prompt window of its own keeps the key.
+    if open != Sheet::None
+        && matches!(app.dialog, crate::ui::dialogs::Dialog::None)
+        && ctx.input(|i| i.key_pressed(egui::Key::Escape))
+    {
+        open = Sheet::None;
+    }
+
+    let land = landscape(window);
+    top_bar(app, ui, &m3, inset.top, &mut open);
+    if land {
+        // On its side the phone keeps the tools down the left edge and
+        // the destinations down the right one, out of the drawing's way.
+        tools_rail(app, ui, &m3);
+        nav_rail(app, ui, &m3, inset, &mut open);
+    } else {
+        nav_bar(app, ui, &m3, inset.bottom, &mut open);
+        tools_bar(app, ui, &m3);
+    }
+    // A group whose button was tapped or held floats its other tools over
+    // the drawing, above the bars.
+    tool_pop(app, &ctx, &m3);
 
     let welcome = app.show_welcome;
     let sorter = app.page_sorter && !app.multipage;
@@ -257,13 +359,28 @@ pub fn frame(app: &mut App, ui: &mut Ui) -> bool {
             .frame(Frame::new().fill(m3.surface))
             .show(ui, |ui| {
                 egui::ScrollArea::both()
+                    .id_salt("mobile_welcome")
                     .auto_shrink([false, false])
-                    .show(ui, |ui| crate::ui::welcome::welcome_screen(app, ui));
+                    .show(ui, |ui| {
+                        Frame::new()
+                            .inner_margin(egui::Margin::symmetric(16, 4))
+                            .show(ui, |ui| {
+                                ui.set_width(ui.available_width());
+                                crate::ui::welcome::welcome_screen(app, ui);
+                            });
+                    });
             });
     } else if sorter {
         egui::CentralPanel::default()
             .frame(Frame::new().fill(m3.surface))
-            .show(ui, |ui| crate::ui::preview::page_sorter(app, ui));
+            .show(ui, |ui| {
+                Frame::new()
+                    .inner_margin(egui::Margin::symmetric(16, 8))
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        crate::ui::preview::page_sorter(app, ui);
+                    });
+            });
     } else {
         egui::CentralPanel::default()
             .frame(Frame::NONE)
@@ -277,12 +394,38 @@ pub fn frame(app: &mut App, ui: &mut Ui) -> bool {
             });
     }
 
-    snackbar(app, ui, inset.y);
+    // The bar above the tools, or above the sheet that covers them; on
+    // its side the sheet is on the right, so it stays at the bottom.
+    let floor = if open != Sheet::None && !land {
+        window.bottom() - sheet_height(open, window.height())
+    } else if land {
+        window.bottom() - inset.bottom
+    } else {
+        window.bottom() - inset.bottom - NAV_H - TOOLS_H
+    };
+    snackbar(app, ui, floor);
     if open != Sheet::None {
-        sheet_ui(app, ui, open, &mut open, window, &m3);
+        sheet_ui(app, ui, open, &mut open, window, &m3, inset);
     }
-    crate::ui::dialogs::show(app, &ctx);
-    if open != sheet(&ctx) {
+    // The prompt windows are the shared dialog system's: the phone layout
+    // draws them itself only when it takes the whole screen (the Welcome
+    // Screen and the page sorter return early, before `ui::mod`'s own
+    // call), and never twice.
+    if welcome || sorter {
+        crate::ui::dialogs::show(app, &ctx);
+    }
+    let before = sheet(&ctx);
+    if open != before {
+        // The file list is the file dialog on a phone: closing the list
+        // cancels the request, so nothing is left waiting for a file that
+        // can never come (and the list stays closed).
+        #[cfg(target_os = "android")]
+        if before == Sheet::Files
+            && open != Sheet::Files
+            && matches!(app.dialog, crate::ui::dialogs::Dialog::None)
+        {
+            crate::files::cancel_ask();
+        }
         set_sheet(&ctx, open);
         ctx.request_repaint();
     }
@@ -294,21 +437,68 @@ fn sheet(ctx: &egui::Context) -> Sheet {
         .unwrap_or(Sheet::None)
 }
 
+/// The sheet a name stands for, for the visual checks.
+fn sheet_by_name(name: &str) -> Option<Sheet> {
+    let name = name.trim().to_ascii_lowercase();
+    if let Some(n) = name.strip_prefix("menu") {
+        return n.parse().ok().map(Sheet::MenuPage);
+    }
+    if let Some(n) = name.strip_prefix("tools") {
+        return n.parse().ok().map(Sheet::Tools);
+    }
+    Some(match name.as_str() {
+        "drawer" => Sheet::Drawer,
+        "settings" => Sheet::Settings,
+        "properties" => Sheet::Properties,
+        "panels" => Sheet::Panels,
+        "palette" => Sheet::Palette,
+        "files" => Sheet::Files,
+        "drawings" => Sheet::Drawings,
+        _ => return None,
+    })
+}
+
 fn set_sheet(ctx: &egui::Context, s: Sheet) {
     ctx.data_mut(|d| d.insert_temp(Id::new("mobile_sheet"), s));
 }
 
-/// Room to hit things, and text that reads on a phone.
+/// Room to hit things, text that reads on a phone, and the rounded
+/// controls a Material app draws: the same widgets the desktop uses, in
+/// the shape Android gives them.
 fn touch_style(ctx: &egui::Context) {
     let want = Vec2::new(TOUCH + 4.0, TOUCH);
     let spacing = &ctx.global_style().spacing;
-    if spacing.interact_size != want || spacing.item_spacing != Vec2::new(8.0, 6.0) {
+    let corners = ctx.global_style().visuals.widgets.inactive.corner_radius;
+    if spacing.interact_size != want
+        || spacing.item_spacing != Vec2::new(8.0, 6.0)
+        || corners.nw < 10
+    {
         ctx.all_styles_mut(|s| {
             s.spacing.interact_size = want;
             s.spacing.item_spacing = Vec2::new(8.0, 6.0);
             s.spacing.button_padding = Vec2::new(12.0, 8.0);
             s.spacing.slider_width = 120.0;
             s.spacing.scroll.bar_width = 6.0;
+            // Fields, buttons, lists and pop-ups rounded, as every Android
+            // control is; menus and windows rounder still.
+            let round = CornerRadius::same(10);
+            for w in [
+                &mut s.visuals.widgets.noninteractive,
+                &mut s.visuals.widgets.inactive,
+                &mut s.visuals.widgets.hovered,
+                &mut s.visuals.widgets.active,
+                &mut s.visuals.widgets.open,
+            ] {
+                w.corner_radius = round;
+            }
+            s.visuals.window_corner_radius = CornerRadius::same(28);
+            s.visuals.menu_corner_radius = CornerRadius::same(16);
+            s.visuals.popup_shadow = egui::epaint::Shadow {
+                offset: [0, 6],
+                blur: 24,
+                spread: 0,
+                color: Color32::from_black_alpha(60),
+            };
         });
     }
 }
@@ -367,7 +557,7 @@ fn top_bar(app: &mut App, ui: &mut Ui, m3: &M3, top: f32, open: &mut Sheet) {
 }
 
 /// The tools as a strip of round targets, over the navigation bar.
-fn tools_bar(app: &mut App, ui: &mut Ui, m3: &M3, open: &mut Sheet) {
+fn tools_bar(app: &mut App, ui: &mut Ui, m3: &M3) {
     egui::Panel::bottom("mobile_tools")
         .exact_size(TOOLS_H)
         .resizable(false)
@@ -375,7 +565,7 @@ fn tools_bar(app: &mut App, ui: &mut Ui, m3: &M3, open: &mut Sheet) {
         .frame(Frame::new().fill(m3.container))
         .show(ui, |ui| {
             let mut pick = None;
-            let mut more = None;
+            let mut pop = None;
             egui::ScrollArea::horizontal()
                 .id_salt("mobile_tools_scroll")
                 .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
@@ -391,14 +581,16 @@ fn tools_bar(app: &mut App, ui: &mut Ui, m3: &M3, open: &mut Sheet) {
                             let active = group.tools.contains(&app.tool);
                             let resp = tool_target(ui, m3, shown, active);
                             if resp.clicked() {
-                                if active && group.tools.len() > 1 {
-                                    more = Some(gi);
+                                if group.tools.len() > 1 {
+                                    pop = Some((gi, resp.rect, false));
                                 } else {
                                     pick = Some(shown);
                                 }
                             }
+                            // Held, the group's other tools float over the drawing:/n                            // the finger slides onto one and the release picks it (a
+                            // phone has no room for a menu window).
                             if resp.long_touched() && group.tools.len() > 1 {
-                                more = Some(gi);
+                                pop = Some((gi, resp.rect, true));
                             }
                         }
                         ui.add_space(6.0);
@@ -407,16 +599,117 @@ fn tools_bar(app: &mut App, ui: &mut Ui, m3: &M3, open: &mut Sheet) {
             if let Some(tool) = pick {
                 app.set_tool(tool);
             }
-            if let Some(gi) = more {
-                *open = Sheet::Tools(gi);
+            if let Some((gi, rect, hold)) = pop {
+                show_tools(ui.ctx(), gi, rect, hold);
             }
         });
 }
 
+/// Remember the group whose tools float over the drawing, and where its
+/// button is. `hold` says the finger is still on that button: letting go
+/// over one of the floating tools picks it, as a phone's own tool rows do.
+fn show_tools(ctx: &egui::Context, gi: usize, anchor: Rect, hold: bool) {
+    ctx.data_mut(|d| d.insert_temp(Id::new("mobile_tool_pop"), (gi, anchor, hold)));
+}
+
+/// The floating row of a group's tools: no window, no scrim — a strip that
+/// appears over the drawing beside the button, and the tool under the
+/// finger highlighted while it slides.
+fn tool_pop(app: &mut App, ctx: &egui::Context, m3: &M3) {
+    let key = Id::new("mobile_tool_pop");
+    let Some((gi, anchor, hold)) = ctx.data(|d| d.get_temp::<(usize, Rect, bool)>(key)) else {
+        return;
+    };
+    let clear = |ctx: &egui::Context| ctx.data_mut(|d| d.remove::<(usize, Rect, bool)>(key));
+    let Some(group) = crate::tools::GROUPS.get(gi).filter(|g| g.tools.len() > 1) else {
+        clear(ctx);
+        return;
+    };
+    let side = TOUCH;
+    let pad = 8.0;
+    let width = group.tools.len() as f32 * side + pad * 2.0;
+    let height = side + pad * 2.0;
+    let screen = ctx.content_rect();
+    let mut at = egui::pos2(anchor.center().x - width / 2.0, anchor.top() - height - 10.0);
+    at.x = at.x.clamp(8.0, (screen.right() - width - 8.0).max(8.0));
+    if at.y < 8.0 {
+        // No room above: under the button, over the drawing.
+        at.y = anchor.bottom() + 10.0;
+    }
+    let pointer = ctx.pointer_latest_pos();
+    let mut under = None;
+    let mut tapped = None;
+    egui::Area::new(Id::new("mobile_tool_pop_area"))
+        .order(egui::Order::Tooltip)
+        .fixed_pos(at)
+        // While the finger holds the button the row takes no input: the
+        // press belongs to the button, and the row only says what is under
+        // the finger.
+        .interactable(!hold)
+        .show(ctx, |ui| {
+            Frame::new()
+                .fill(m3.high)
+                .corner_radius(20.0)
+                .shadow(crate::theme::shadow(egui::epaint::Shadow {
+                    offset: [0, 6],
+                    blur: 24,
+                    spread: 0,
+                    color: Color32::from_black_alpha(70),
+                }))
+                .inner_margin(egui::Margin::same(pad as i8))
+                .show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.x = 0.0;
+                    ui.horizontal(|ui| {
+                        for tool in group.tools {
+                            let sense = if hold {
+                                Sense::hover()
+                            } else {
+                                Sense::click()
+                            };
+                            let (rect, resp) = ui.allocate_exact_size(Vec2::splat(side), sense);
+                            let hot = if hold {
+                                pointer.is_some_and(|p| rect.contains(p))
+                            } else {
+                                resp.hovered()
+                            };
+                            if hot {
+                                ui.painter().rect_filled(rect, 16.0, m3.primary_container);
+                            }
+                            let icon = Rect::from_center_size(rect.center(), Vec2::splat(ICON));
+                            crate::ui::icons::draw(
+                                ui.painter(),
+                                icon,
+                                *tool,
+                                if hot { m3.primary } else { m3.on },
+                            );
+                            if hot {
+                                under = Some(*tool);
+                            }
+                            if resp.clicked() {
+                                tapped = Some(*tool);
+                            }
+                        }
+                    });
+                });
+        });
+    if hold {
+        if ctx.input(|i| i.pointer.any_released()) {
+            if let Some(tool) = under {
+                app.set_tool(tool);
+            }
+            clear(ctx);
+        }
+    } else if let Some(tool) = tapped {
+        app.set_tool(tool);
+        clear(ctx);
+    }
+    // The finger may still be moving over the row.
+    ctx.request_repaint();
+}
+
 /// The tool a group's button shows: the active one, else the last used
 /// from it, else its first.
-fn shown_tool(app: &App, gi: usize) -> crate::tools::Tool {
-    let Some(group) = crate::tools::GROUPS.get(gi) else {
+fn shown_tool(app: &App, gi: usize) -> crate::tools::Tool {    let Some(group) = crate::tools::GROUPS.get(gi) else {
         return crate::tools::Tool::Pick;
     };
     if group.tools.contains(&app.tool) {
@@ -512,16 +805,11 @@ fn nav_bar(app: &mut App, ui: &mut Ui, m3: &M3, bottom: f32, open: &mut Sheet) {
         .frame(Frame::new().fill(m3.container))
         .show(ui, |ui| {
             ui.horizontal_centered(|ui| {
-                let items = [
-                    (Sheet::Properties, Glyph::Sliders, tr("mobile.properties")),
-                    (Sheet::Panels, Glyph::Panels, tr("mobile.panels")),
-                    (Sheet::Palette, Glyph::Palette, tr("mobile.palette")),
-                    (Sheet::Files, Glyph::Files, tr("mobile.files")),
-                ];
+                let items = destinations();
                 let each = ui.available_width() / items.len() as f32;
                 for (which, glyph, label) in items {
                     let active = *open == which;
-                    if nav_item(ui, m3, glyph, &label, active, each).clicked() {
+                    if nav_item(ui, m3, glyph, &label, active, each, NAV_H).clicked() {
                         *open = if active { Sheet::None } else { which };
                     }
                 }
@@ -530,9 +818,95 @@ fn nav_bar(app: &mut App, ui: &mut Ui, m3: &M3, bottom: f32, open: &mut Sheet) {
         });
 }
 
+/// The panels the desktop keeps beside the drawing, as the four
+/// destinations of the bar (or the rail, on its side).
+fn destinations() -> [(Sheet, Glyph, String); 4] {
+    [
+        (Sheet::Properties, Glyph::Sliders, tr("mobile.properties")),
+        (Sheet::Panels, Glyph::Panels, tr("mobile.panels")),
+        (Sheet::Palette, Glyph::Palette, tr("mobile.palette")),
+        (Sheet::Files, Glyph::Files, tr("mobile.files")),
+    ]
+}
+
+/// The tools down the left edge, for a phone on its side: the same round
+/// targets the strip carries, one under the next.
+fn tools_rail(app: &mut App, ui: &mut Ui, m3: &M3) {
+    egui::Panel::left("mobile_tools")
+        .exact_size(RAIL_W)
+        .resizable(false)
+        .show_separator_line(false)
+        .frame(Frame::new().fill(m3.container))
+        .show(ui, |ui| {
+            let mut pick = None;
+            let mut pop = None;
+            egui::ScrollArea::vertical()
+                .id_salt("mobile_tools_rail")
+                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+                .auto_shrink([true, false])
+                .show(ui, |ui| {
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(6.0);
+                        for (gi, group) in crate::tools::GROUPS.iter().enumerate() {
+                            if !crate::ui::toolbox::group_visible(app, gi) {
+                                continue;
+                            }
+                            let shown = shown_tool(app, gi);
+                            let active = group.tools.contains(&app.tool);
+                            let resp = tool_target(ui, m3, shown, active);
+                            if resp.clicked() {
+                                if group.tools.len() > 1 {
+                                    pop = Some((gi, resp.rect, false));
+                                } else {
+                                    pick = Some(shown);
+                                }
+                            }
+                            // Held, the group's other tools float over the drawing:/n                            // the finger slides onto one and the release picks it (a
+                            // phone has no room for a menu window).
+                            if resp.long_touched() && group.tools.len() > 1 {
+                                pop = Some((gi, resp.rect, true));
+                            }
+                        }
+                        ui.add_space(6.0);
+                    });
+                });
+            if let Some(tool) = pick {
+                app.set_tool(tool);
+            }
+            if let Some((gi, rect, hold)) = pop {
+                show_tools(ui.ctx(), gi, rect, hold);
+            }
+        });
+}
+
+/// The destinations down the right edge, for a phone on its side.
+fn nav_rail(app: &mut App, ui: &mut Ui, m3: &M3, safe: Safe, open: &mut Sheet) {
+    let _ = app;
+    egui::Panel::right("mobile_nav")
+        .exact_size(NAV_RAIL_W + safe.right)
+        .resizable(false)
+        .show_separator_line(false)
+        .frame(Frame::new().fill(m3.container))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.vertical_centered(|ui| {
+                    ui.add_space(6.0);
+                    for (which, glyph, label) in destinations() {
+                        let active = *open == which;
+                        if nav_item(ui, m3, glyph, &label, active, NAV_RAIL_W, NAV_H).clicked() {
+                            *open = if active { Sheet::None } else { which };
+                        }
+                    }
+                });
+                // The gesture bar of a phone on its side.
+                ui.add_space(safe.right);
+            });
+        });
+}
+
 /// What the last command said, in a snackbar over the bars: it goes away
 /// on its own after a few seconds.
-fn snackbar(app: &App, ui: &mut Ui, bottom: f32) {
+fn snackbar(app: &App, ui: &mut Ui, floor: f32) {
     if app.status.is_empty() {
         return;
     }
@@ -557,7 +931,8 @@ fn snackbar(app: &App, ui: &mut Ui, bottom: f32) {
     let screen = ui.max_rect();
     let width = (screen.width() - 32.0).min(560.0);
     let height = 48.0;
-    let y = screen.bottom() - bottom - NAV_H - TOOLS_H - height - 12.0;
+    // Above the sheet that is open, or above the tool strip.
+    let y = floor - height - 12.0;
     let rect = Rect::from_min_size(
         egui::pos2(screen.center().x - width / 2.0, y),
         Vec2::new(width, height),
@@ -586,7 +961,15 @@ fn snackbar(app: &App, ui: &mut Ui, bottom: f32) {
 // The sheets and the pages
 // ---------------------------------------------------------------------------
 
-fn sheet_ui(app: &mut App, ui: &mut Ui, which: Sheet, open: &mut Sheet, screen: Rect, m3: &M3) {
+fn sheet_ui(
+    app: &mut App,
+    ui: &mut Ui,
+    which: Sheet,
+    open: &mut Sheet,
+    screen: Rect,
+    m3: &M3,
+    safe: Safe,
+) {
     match which {
         Sheet::Drawer => return drawer(app, ui, m3, screen, open),
         Sheet::MenuPage(index) => return menu_page(app, ui, m3, screen, open, index),
@@ -595,66 +978,121 @@ fn sheet_ui(app: &mut App, ui: &mut Ui, which: Sheet, open: &mut Sheet, screen: 
         _ => {}
     }
     let ctx = ui.ctx().clone();
-    let height = sheet_height(which, screen.height());
     scrim(&ctx, screen, open);
 
-    egui::Area::new(Id::new("mobile_sheet"))
-        .order(egui::Order::Foreground)
-        .fixed_pos(egui::pos2(screen.left(), screen.bottom() - height))
-        .show(&ctx, |ui| {
-            Frame::new()
-                .fill(m3.surface)
-                .corner_radius(CornerRadius {
-                    nw: 28,
-                    ne: 28,
-                    sw: 0,
-                    se: 0,
-                })
-                .inner_margin(egui::Margin {
-                    left: 0,
-                    right: 0,
-                    top: 8,
-                    bottom: 0,
-                })
-                .show(ui, |ui| {
-                    ui.set_width(screen.width());
-                    ui.set_min_height(height - 8.0);
-                    // The drag handle of a Material bottom sheet.
-                    let (bar, _) = ui.allocate_exact_size(Vec2::new(32.0, 4.0), Sense::hover());
-                    let handle = Rect::from_center_size(
-                        egui::pos2(ui.max_rect().center().x, bar.center().y),
-                        Vec2::new(32.0, 4.0),
-                    );
-                    ui.painter().rect_filled(handle, 2.0, m3.variant);
-                    ui.add_space(10.0);
-                    if sheet_header(ui, which, m3) {
-                        *open = Sheet::None;
-                    }
-                    egui::ScrollArea::vertical()
-                        .id_salt(("mobile_sheet_scroll", sheet_title(which)))
-                        .max_height(height - 92.0)
-                        .auto_shrink([false, false])
-                        .show(ui, |ui| {
-                            Frame::new()
-                                .inner_margin(egui::Margin {
-                                    left: 16,
-                                    right: 16,
-                                    top: 0,
-                                    bottom: 16,
-                                })
-                                .show(ui, |ui| {
-                                    ui.set_width(ui.available_width());
-                                    sheet_body(app, ui, which, m3, open);
-                                });
-                        });
-                });
-        });
+    if landscape(screen) {
+        // A phone on its side docks the sheet on the right, between the
+        // drawing and the destinations rail: a wide screen has no room to
+        // spare at the bottom, and the rail stays in reach.
+        let width = (screen.width() * 0.42).clamp(280.0, 440.0);
+        let top = TOP_H + safe.top;
+        let rect = Rect::from_min_max(
+            egui::pos2(screen.right() - safe.right - NAV_RAIL_W - width, top),
+            egui::pos2(
+                screen.right() - safe.right - NAV_RAIL_W,
+                screen.bottom() - safe.bottom,
+            ),
+        );
+        let height = rect.height();
+        egui::Area::new(Id::new("mobile_sheet"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(rect.min)
+            .show(&ctx, |ui| {
+                Frame::new()
+                    .fill(m3.surface)
+                    .corner_radius(CornerRadius {
+                        nw: 28,
+                        ne: 0,
+                        sw: 28,
+                        se: 0,
+                    })
+                    .inner_margin(egui::Margin {
+                        left: 0,
+                        right: 0,
+                        top: 8,
+                        bottom: 0,
+                    })
+                    .show(ui, |ui| {
+                        ui.set_width(width);
+                        ui.set_min_height(height - 8.0);
+                        sheet_content(app, ui, which, open, m3, height, false);
+                    });
+            });
+    } else {
+        let height = sheet_height(which, screen.height());
+        egui::Area::new(Id::new("mobile_sheet"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(egui::pos2(screen.left(), screen.bottom() - height))
+            .show(&ctx, |ui| {
+                Frame::new()
+                    .fill(m3.surface)
+                    .corner_radius(CornerRadius {
+                        nw: 28,
+                        ne: 28,
+                        sw: 0,
+                        se: 0,
+                    })
+                    .inner_margin(egui::Margin {
+                        left: 0,
+                        right: 0,
+                        top: 8,
+                        bottom: 0,
+                    })
+                    .show(ui, |ui| {
+                        ui.set_width(screen.width());
+                        ui.set_min_height(height - 8.0);
+                        sheet_content(app, ui, which, open, m3, height, true);
+                    });
+            });
+    }
 
     // A command that opens a dialog of its own (Options, Save As...) takes
     // the screen: the sheet has done its part.
     if !matches!(app.dialog, crate::ui::dialogs::Dialog::None) {
         *open = Sheet::None;
     }
+}
+
+/// What a sheet holds, wherever it is drawn: the drag handle of a bottom
+/// sheet, the name and the close button, then the body.
+fn sheet_content(
+    app: &mut App,
+    ui: &mut Ui,
+    which: Sheet,
+    open: &mut Sheet,
+    m3: &M3,
+    height: f32,
+    handle: bool,
+) {
+    if handle {
+        let (bar, _) = ui.allocate_exact_size(Vec2::new(32.0, 4.0), Sense::hover());
+        let grab = Rect::from_center_size(
+            egui::pos2(ui.max_rect().center().x, bar.center().y),
+            Vec2::new(32.0, 4.0),
+        );
+        ui.painter().rect_filled(grab, 2.0, m3.variant);
+        ui.add_space(10.0);
+    }
+    if sheet_header(ui, which, m3) {
+        *open = Sheet::None;
+    }
+    egui::ScrollArea::vertical()
+        .id_salt(("mobile_sheet_scroll", sheet_title(which)))
+        .max_height(height - 92.0)
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            Frame::new()
+                .inner_margin(egui::Margin {
+                    left: 16,
+                    right: 16,
+                    top: 0,
+                    bottom: 16,
+                })
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    sheet_body(app, ui, which, m3, open);
+                });
+        });
 }
 
 /// The dimmed drawing behind a sheet, a drawer or a page: a tap there puts
@@ -674,13 +1112,14 @@ fn scrim(ctx: &egui::Context, screen: Rect, open: &mut Sheet) {
 }
 
 /// How much of the screen a sheet takes: a list of menus needs more of it
-/// than a row of page fields.
+/// than a row of page fields. The two short ones — the property bar and the
+/// palettes — take only what their cards need.
 fn sheet_height(which: Sheet, screen: f32) -> f32 {
     let share = match which {
         Sheet::Panels | Sheet::Tools(_) => 0.62,
         Sheet::Files | Sheet::Drawings => 0.52,
-        Sheet::Properties => 0.34,
-        Sheet::Palette => 0.38,
+        Sheet::Properties => 0.46,
+        Sheet::Palette => 0.24,
         Sheet::None | Sheet::Drawer | Sheet::MenuPage(_) | Sheet::Settings | Sheet::SettingsPage(_) => 0.0,
     };
     (screen * share).clamp(180.0, (screen - TOP_H - 40.0).max(180.0))
@@ -688,23 +1127,71 @@ fn sheet_height(which: Sheet, screen: f32) -> f32 {
 
 /// The sheet's name and its close button; true when the button was hit.
 fn sheet_header(ui: &mut Ui, which: Sheet, m3: &M3) -> bool {
-    let mut close = false;
-    ui.horizontal(|ui| {
-        ui.add_space(16.0);
-        ui.label(
-            egui::RichText::new(sheet_title(which))
-                .size(16.0)
-                .strong()
-                .color(m3.on),
-        );
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.add_space(8.0);
-            if icon_target(ui, m3, Glyph::Close, true).clicked() {
-                close = true;
-            }
-        });
-    });
-    close
+    // A file list standing in for a file dialog says what it is asking
+    // for, and offers the Cancel every dialog has.
+    let picking = matches!(which, Sheet::Files) && asking();
+    let title = if picking {
+        plain(&tr("menu.file.open"))
+    } else {
+        sheet_title(which)
+    };
+    // The row is laid out by hand: the target of the close button is a
+    // rectangle of its own at the right end, so a finger always finds it
+    // (a row of nested layouts put it out of reach of the pointer).
+    let (row, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 56.0), Sense::hover());
+    ui.painter().text(
+        egui::pos2(row.left() + 16.0, row.center().y),
+        egui::Align2::LEFT_CENTER,
+        title,
+        crate::theme::bold(18.0),
+        m3.on,
+    );
+    let target = if picking {
+        Rect::from_min_max(
+            egui::pos2(row.right() - 104.0, row.top() + 4.0),
+            egui::pos2(row.right() - 8.0, row.bottom() - 4.0),
+        )
+    } else {
+        Rect::from_center_size(
+            egui::pos2(row.right() - 28.0, row.center().y),
+            Vec2::splat(48.0),
+        )
+    };
+    let resp = ui.put(
+        target,
+        egui::Button::new(
+            egui::RichText::new(if picking { tr("dialog.cancel") } else { String::new() })
+                .size(14.0)
+                .color(m3.primary),
+        )
+        .fill(Color32::TRANSPARENT)
+        .corner_radius(22.0)
+        .min_size(target.size()),
+    );
+    if !picking {
+        // The cross is drawn, not typed: the bundled font has no
+        // multiplication sign, and a missing glyph shows as a box.
+        let c = target.center();
+        let d = 8.0;
+        let s = Stroke::new(2.0, m3.on);
+        ui.painter()
+            .line_segment([c + Vec2::new(-d, -d), c + Vec2::new(d, d)], s);
+        ui.painter()
+            .line_segment([c + Vec2::new(d, -d), c + Vec2::new(-d, d)], s);
+    }
+    resp.clicked()
+}
+
+/// Whether a file dialog is waiting for the interface's answer.
+fn asking() -> bool {
+    #[cfg(target_os = "android")]
+    {
+        crate::files::ask().is_some()
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        false
+    }
 }
 
 fn sheet_title(which: Sheet) -> String {
@@ -728,9 +1215,9 @@ fn sheet_title(which: Sheet) -> String {
 
 fn sheet_body(app: &mut App, ui: &mut Ui, which: Sheet, m3: &M3, open: &mut Sheet) {
     match which {
-        Sheet::Properties => properties_sheet(app, ui),
+        Sheet::Properties => properties_sheet(app, ui, m3),
         Sheet::Panels => panels_sheet(app, ui, m3),
-        Sheet::Palette => palette_sheet(app, ui),
+        Sheet::Palette => palette_sheet(app, ui, m3),
         Sheet::Files => files_sheet(app, ui, m3),
         Sheet::Drawings => drawings_sheet(app, ui, m3),
         Sheet::Tools(gi) => tools_sheet(app, ui, m3, gi, open),
@@ -767,7 +1254,7 @@ fn drawer(app: &mut App, ui: &mut Ui, m3: &M3, screen: Rect, open: &mut Sheet) {
                     ui.set_width(width);
                     ui.set_min_height(screen.height());
                     // Clear of the status bar, as the top bar is.
-                    ui.add_space(system_insets(&ctx).x);
+                    ui.add_space(system_insets(&ctx).top);
                     Frame::new()
                         .fill(m3.container)
                         .inner_margin(egui::Margin {
@@ -861,7 +1348,7 @@ fn page_ui(
     body: impl FnOnce(&mut App, &mut Ui),
 ) {
     let ctx = ui.ctx().clone();
-    let top = system_insets(&ctx).x;
+    let top = system_insets(&ctx).top;
     egui::Area::new(Id::new("mobile_page"))
         .order(egui::Order::Foreground)
         .fixed_pos(screen.min)
@@ -992,12 +1479,168 @@ fn settings_page(
 
 // ----- The bottom sheets ----------------------------------------------------
 
-/// The property bar of the selection, in the sheet's width: it slides
-/// sideways, as it does in a narrow toolbar row.
-fn properties_sheet(app: &mut App, ui: &mut Ui) {
-    crate::ui::overflow::row(ui, "mobile_property", |ui| {
-        crate::ui::toolbar::property_bar(app, ui)
+/// The properties of what is selected, in the sheet's width. With nothing
+/// selected they are the page's, and a phone shows them as a form of its
+/// own; with something selected they are the property bar's, in a strip a
+/// finger swipes sideways.
+fn properties_sheet(app: &mut App, ui: &mut Ui, m3: &M3) {
+    if app.selection.is_empty() {
+        page_properties(app, ui, m3);
+        return;
+    }
+    ui.add_space(4.0);
+    Frame::new()
+        .fill(m3.container)
+        .corner_radius(16.0)
+        .inner_margin(egui::Margin::symmetric(8, 6))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            egui::ScrollArea::horizontal()
+                .id_salt("mobile_property_strip")
+                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+                .show(ui, |ui| {
+                    crate::ui::toolbar::property_bar(app, ui);
+                });
+        });
+}
+
+/// The name of a field of the page form.
+fn property_label(ui: &mut Ui, m3: &M3, text: &str) {
+    ui.add_space(2.0);
+    ui.label(egui::RichText::new(text).size(12.5).color(m3.variant));
+}
+
+/// Room for one row of the page form.
+fn property_row(ui: &mut Ui, width: f32, height: f32) -> Rect {
+    ui.allocate_exact_size(Vec2::new(width, height), Sense::hover())
+        .0
+}
+
+/// A choice of two states (portrait and landscape), the chosen one washed
+/// with the accent.
+fn toggle_button(ui: &mut Ui, m3: &M3, label: &str, chosen: bool, width: f32) -> Response {
+    let text = egui::RichText::new(label)
+        .size(14.0)
+        .color(if chosen { m3.primary } else { m3.on });
+    let mut button = egui::Button::new(text)
+        .corner_radius(12.0)
+        .min_size(Vec2::new(width, 46.0));
+    button = if chosen {
+        button.fill(m3.primary_container)
+    } else {
+        button
+            .fill(m3.high)
+            .stroke(Stroke::new(1.0, m3.outline))
+    };
+    ui.add(button)
+}
+
+/// The page's own properties as a phone form: the size, the width and the
+/// height, the way round it lies and the button that fits it to the
+/// drawing — one control to a row, a finger high.
+fn page_properties(app: &mut App, ui: &mut Ui, m3: &M3) {
+    let width = ui.available_width();
+    let units = app.units;
+    let size = app.page_size();
+    let presets = crate::ui::dialogs::paper_presets();
+    let current = presets
+        .iter()
+        .find(|(_, s)| {
+            ((s.width - size.width).abs() < 0.05 && (s.height - size.height).abs() < 0.05)
+                || ((s.height - size.width).abs() < 0.05 && (s.width - size.height).abs() < 0.05)
+        })
+        .map(|(n, _)| n.to_string())
+        .unwrap_or_else(|| tr("toolbar.custom"));
+
+    // The page size, by name.
+    property_label(ui, m3, &tr("newdoc.page_size"));
+    let r = property_row(ui, width, 46.0);
+    let mut chosen = None;
+    crate::ui::chrome::combo(ui, "mobile_page_size", r, current.clone(), |ui| {
+        for (n, s) in &presets {
+            if ui.selectable_label(*n == current, *n).clicked() {
+                chosen = Some(*s);
+            }
+        }
     });
+    if let Some(s) = chosen {
+        // The page keeps the way round it already lies.
+        let landscape = size.width > size.height;
+        let s = if landscape {
+            tracedraw_core::geometry::Size::new(s.height.max(s.width), s.height.min(s.width))
+        } else {
+            tracedraw_core::geometry::Size::new(s.width.min(s.height), s.width.max(s.height))
+        };
+        crate::ui::propbar::resize_pages(app, s);
+        app.fit_pending = true;
+    }
+
+    // Its width and its height, in the drawing's units.
+    let mut new_size = None;
+    property_label(ui, m3, &tr("newdoc.width"));
+    let r = property_row(ui, width, 46.0);
+    if let Some(v) = crate::ui::chrome::spin_field(
+        ui,
+        "mobile_page_width",
+        r,
+        units.from_mm(size.width),
+        1,
+        units.short(),
+        0.1,
+        0.1..=1.0e7,
+    ) {
+        new_size = Some(tracedraw_core::geometry::Size::new(
+            units.to_mm(v).max(0.1),
+            size.height,
+        ));
+    }
+    property_label(ui, m3, &tr("newdoc.height"));
+    let r = property_row(ui, width, 46.0);
+    if let Some(v) = crate::ui::chrome::spin_field(
+        ui,
+        "mobile_page_height",
+        r,
+        units.from_mm(size.height),
+        1,
+        units.short(),
+        0.1,
+        0.1..=1.0e7,
+    ) {
+        new_size = Some(tracedraw_core::geometry::Size::new(
+            size.width,
+            units.to_mm(v).max(0.1),
+        ));
+    }
+    if let Some(s) = new_size {
+        crate::ui::propbar::resize_pages(app, s);
+        app.fit_pending = true;
+    }
+
+    // Portrait or landscape, then the page fitted to what is on it.
+    ui.add_space(8.0);
+    let portrait = size.height >= size.width;
+    let half = (width - 8.0) / 2.0;
+    ui.horizontal(|ui| {
+        if toggle_button(ui, m3, &tr("dialog.portrait"), portrait, half).clicked() && !portrait {
+            crate::ui::propbar::resize_pages(
+                app,
+                tracedraw_core::geometry::Size::new(size.height, size.width),
+            );
+            app.fit_pending = true;
+        }
+        if toggle_button(ui, m3, &tr("dialog.landscape"), !portrait, half).clicked() && portrait {
+            crate::ui::propbar::resize_pages(
+                app,
+                tracedraw_core::geometry::Size::new(size.height, size.width),
+            );
+            app.fit_pending = true;
+        }
+    });
+    ui.add_space(10.0);
+    if tonal_button(ui, m3, &tr("toolbar.autofit_page"), true).clicked() {
+        app.fit_page_to_drawing_with_margin(app.settings.fit_page_margin);
+        app.fit_pending = true;
+    }
 }
 
 /// The docker column: a row of chips naming its panels, the one in front
@@ -1034,11 +1677,14 @@ fn panels_sheet(app: &mut App, ui: &mut Ui, m3: &M3) {
     });
 }
 
-/// The colour palette, with swatches a finger can hit.
-fn palette_sheet(app: &mut App, ui: &mut Ui) {
-    crate::ui::palette::palette_row(app, ui);
-    ui.add_space(12.0);
-    crate::ui::palette::document_palette_row(app, ui);
+/// The colour palettes as grids of swatches a finger can hit: as many to a
+/// row as fit, the rest under them, swiped rather than scrolled by arrows.
+fn palette_sheet(app: &mut App, ui: &mut Ui, m3: &M3) {
+    let _ = m3;
+    ui.add_space(4.0);
+    crate::ui::palette::grid(app, ui, crate::ui::palette::Row::Main);
+    ui.add_space(16.0);
+    crate::ui::palette::grid(app, ui, crate::ui::palette::Row::Document);
 }
 
 /// The other tools of a toolbox group, as a list to choose from.
@@ -1359,10 +2005,18 @@ fn tool_target(ui: &mut Ui, m3: &M3, tool: crate::tools::Tool, active: bool) -> 
 
 /// A destination of the navigation bar: the icon in a pill that fills when
 /// chosen, its name under it.
-fn nav_item(ui: &mut Ui, m3: &M3, glyph: Glyph, label: &str, active: bool, width: f32) -> Response {
-    let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, NAV_H), Sense::click());
+fn nav_item(
+    ui: &mut Ui,
+    m3: &M3,
+    glyph: Glyph,
+    label: &str,
+    active: bool,
+    width: f32,
+    height: f32,
+) -> Response {
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, height), Sense::click());
     let pill = Rect::from_center_size(
-        egui::pos2(rect.center().x, rect.top() + 26.0),
+        egui::pos2(rect.center().x, rect.top() + height * 0.34),
         Vec2::new(56.0, 32.0),
     );
     if active {
@@ -1374,7 +2028,7 @@ fn nav_item(ui: &mut Ui, m3: &M3, glyph: Glyph, label: &str, active: bool, width
     let icon = Rect::from_center_size(pill.center(), Vec2::splat(ICON));
     draw_glyph(ui, icon, glyph, if active { m3.primary } else { m3.variant });
     ui.painter().text(
-        egui::pos2(rect.center().x, rect.top() + 52.0),
+        egui::pos2(rect.center().x, rect.top() + height * 0.72),
         egui::Align2::CENTER_CENTER,
         label,
         egui::FontId::proportional(12.0),
@@ -1399,7 +2053,7 @@ fn chip(ui: &mut Ui, m3: &M3, label: &str, chosen: bool) -> Response {
 }
 
 /// A filled button: the one action a sheet offers first.
-fn filled_button(ui: &mut Ui, m3: &M3, label: &str) -> Response {
+pub(crate) fn filled_button(ui: &mut Ui, m3: &M3, label: &str) -> Response {
     ui.add(
         egui::Button::new(egui::RichText::new(label).size(14.0).color(Color32::WHITE))
             .fill(m3.primary)
@@ -1421,6 +2075,22 @@ fn tonal_button(ui: &mut Ui, m3: &M3, label: &str, enabled: bool) -> Response {
             .fill(if enabled { m3.primary_container } else { m3.high })
             .corner_radius(20.0)
             .min_size(Vec2::new(0.0, 40.0)),
+    )
+}
+
+/// A text button: the plain, capitalised action a Material dialog ends
+/// with, and the one a sheet header puts beside its title.
+pub(crate) fn text_button(ui: &mut Ui, m3: &M3, label: &str) -> Response {
+    ui.add(
+        egui::Button::new(
+            egui::RichText::new(label)
+                .size(14.0)
+                .strong()
+                .color(m3.primary),
+        )
+        .fill(Color32::TRANSPARENT)
+        .corner_radius(20.0)
+        .min_size(Vec2::new(64.0, 40.0)),
     )
 }
 

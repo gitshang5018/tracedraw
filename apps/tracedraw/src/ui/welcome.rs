@@ -14,18 +14,18 @@ const NEWS: &[(&str, &str)] = &[
 ];
 
 pub fn welcome_screen(app: &mut App, ui: &mut Ui) {
+    // A phone opens the way an Android app does: a row of chips for the
+    // pages, two wide buttons for the way in, and the drawings opened
+    // lately as a list (see `ui::mobile`).
+    if crate::ui::mobile::active(ui.ctx()) {
+        return phone_welcome(app, ui);
+    }
     ui.add_space(8.0);
     ui.horizontal_wrapped(|ui| {
         ui.add_space(24.0);
         ui.heading(egui::RichText::new("TraceDraw").size(26.0));
         ui.add_space(30.0);
-        for (tab, key) in [
-            (WelcomeTab::GetStarted, "welcome.get_started"),
-            (WelcomeTab::Workspace, "welcome.workspace"),
-            (WelcomeTab::News, "welcome.whats_new"),
-            (WelcomeTab::Learn, "welcome.learn"),
-            (WelcomeTab::Templates, "welcome.templates"),
-        ] {
+        for (tab, key) in welcome_tabs() {
             if ui
                 .selectable_label(
                     app.welcome_tab == tab,
@@ -46,6 +46,318 @@ pub fn welcome_screen(app: &mut App, ui: &mut Ui) {
         WelcomeTab::Learn => learn(ui),
         WelcomeTab::Templates => templates(app, ui),
     }
+}
+
+/// The pages of the Welcome Screen, in the order the bar lists them.
+fn welcome_tabs() -> [(WelcomeTab, &'static str); 5] {
+    [
+        (WelcomeTab::GetStarted, "welcome.get_started"),
+        (WelcomeTab::Workspace, "welcome.workspace"),
+        (WelcomeTab::News, "welcome.whats_new"),
+        (WelcomeTab::Learn, "welcome.learn"),
+        (WelcomeTab::Templates, "welcome.templates"),
+    ]
+}
+
+// ---------------------------------------------------------------------------
+// The phone's Welcome Screen
+// ---------------------------------------------------------------------------
+
+fn phone_welcome(app: &mut App, ui: &mut Ui) {
+    let m3 = crate::ui::mobile::M3::of();
+    ui.add_space(6.0);
+    egui::ScrollArea::horizontal()
+        .id_salt("welcome_tabs")
+        .max_height(52.0)
+        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+        .show(ui, |ui| {
+            ui.horizontal_centered(|ui| {
+                ui.add_space(2.0);
+                for (tab, key) in welcome_tabs() {
+                    if phone_chip(ui, &m3, &tr(key), app.welcome_tab == tab).clicked() {
+                        app.welcome_tab = tab;
+                    }
+                }
+            });
+        });
+    ui.add_space(16.0);
+    match app.welcome_tab {
+        WelcomeTab::GetStarted => phone_start(app, ui, &m3),
+        WelcomeTab::Workspace => phone_workspace(app, ui, &m3),
+        WelcomeTab::News => news(ui),
+        WelcomeTab::Learn => learn(ui),
+        WelcomeTab::Templates => templates(app, ui),
+    }
+}
+
+/// A page of the Welcome Screen as a chip of the row that names them: a
+/// filled pill for the page in front, an outlined one for the others.
+fn phone_chip(ui: &mut Ui, m3: &crate::ui::mobile::M3, label: &str, chosen: bool) -> egui::Response {
+    let mut button = egui::Button::new(
+        egui::RichText::new(label)
+            .size(14.0)
+            .color(if chosen { m3.primary } else { m3.on }),
+    )
+    .corner_radius(10.0)
+    .min_size(egui::vec2(0.0, 38.0));
+    button = if chosen {
+        button.fill(m3.primary_container)
+    } else {
+        button
+            .fill(egui::Color32::TRANSPARENT)
+            .stroke(egui::Stroke::new(1.0, m3.outline))
+    };
+    ui.add(button)
+}
+
+/// One of the ways in, as wide as the screen: the first action filled,
+/// the others tonal, the icon before the name.
+fn phone_action(
+    ui: &mut Ui,
+    m3: &crate::ui::mobile::M3,
+    icon: icons::Action,
+    label: &str,
+    first: bool,
+) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), 56.0),
+        egui::Sense::click(),
+    );
+    let body = if first {
+        m3.primary
+    } else if resp.hovered() || resp.is_pointer_button_down_on() {
+        m3.high
+    } else {
+        m3.primary_container
+    };
+    let painter = ui.painter();
+    painter.rect_filled(rect, 16.0, body);
+    let color = if first { egui::Color32::WHITE } else { m3.primary };
+    icons::draw_action(
+        painter,
+        egui::Rect::from_center_size(
+            egui::pos2(rect.left() + 34.0, rect.center().y),
+            egui::vec2(24.0, 24.0),
+        ),
+        icon,
+        color,
+    );
+    painter.text(
+        egui::pos2(rect.left() + 62.0, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        label,
+        egui::FontId::proportional(16.0),
+        color,
+    );
+    resp
+}
+
+fn phone_start(app: &mut App, ui: &mut Ui, m3: &crate::ui::mobile::M3) {
+    if phone_action(ui, m3, icons::Action::New, &tr("welcome.new_document"), true).clicked() {
+        app.request_new_document();
+    }
+    ui.add_space(10.0);
+    if phone_action(
+        ui,
+        m3,
+        icons::Action::Welcome,
+        &tr("welcome.new_from_template"),
+        false,
+    )
+    .clicked()
+    {
+        app.open_template_dialog();
+    }
+    ui.add_space(10.0);
+    if phone_action(ui, m3, icons::Action::Open, &tr("welcome.open_document"), false).clicked() {
+        app.open_dialog();
+        if app.file.is_some() || app.doc().all_layers().any(|l| !l.shapes.is_empty()) {
+            app.show_welcome = false;
+        }
+    }
+    // A browser keeps no recent documents.
+    if crate::files::WEB {
+        return;
+    }
+    ui.add_space(24.0);
+    ui.label(
+        egui::RichText::new(tr("welcome.recent_documents"))
+            .size(14.0)
+            .strong()
+            .color(m3.on),
+    );
+    ui.add_space(6.0);
+    let recent = app.settings.recent_files.clone();
+    if recent.is_empty() {
+        ui.label(
+            egui::RichText::new(tr("welcome.no_recent"))
+                .size(14.0)
+                .color(m3.variant),
+        );
+    }
+    for p in recent {
+        if phone_recent_row(app, ui, m3, &p) {
+            app.open_path(p.clone());
+            app.show_welcome = false;
+        }
+    }
+    if !app.settings.recent_files.is_empty()
+        && ui
+            .add(
+                egui::Button::new(
+                    egui::RichText::new(tr("menu.file.clear_recent"))
+                        .size(14.0)
+                        .color(m3.primary),
+                )
+                .frame(false)
+                .min_size(egui::vec2(0.0, 44.0)),
+            )
+            .clicked()
+    {
+        app.settings.recent_files.clear();
+        app.settings.save();
+        crate::thumbnails::clear();
+        app.recent_thumbs.clear();
+    }
+}
+
+/// A drawing opened lately, as a row of the phone's list: its thumbnail,
+/// its name and the folder it is in.
+fn phone_recent_row(
+    app: &mut App,
+    ui: &mut Ui,
+    m3: &crate::ui::mobile::M3,
+    path: &std::path::Path,
+) -> bool {
+    let exists = path.exists();
+    let sense = if exists {
+        egui::Sense::click()
+    } else {
+        egui::Sense::hover()
+    };
+    let (rect, resp) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), 68.0),
+        sense,
+    );
+    if exists && (resp.hovered() || resp.is_pointer_button_down_on()) {
+        ui.painter().rect_filled(rect, 12.0, m3.high);
+    }
+    const THUMB: egui::Vec2 = egui::vec2(56.0, 44.0);
+    let frame = egui::Rect::from_center_size(
+        egui::pos2(rect.left() + 8.0 + THUMB.x / 2.0, rect.center().y),
+        THUMB,
+    );
+    let painter = ui.painter();
+    painter.rect_filled(frame, 4.0, egui::Color32::WHITE);
+    if exists {
+        if let Some(t) = app.recent_thumbnail(ui.ctx(), path) {
+            let size = t.size_vec2();
+            let scale = (THUMB.x / size.x.max(1.0)).min(THUMB.y / size.y.max(1.0));
+            painter.image(
+                t.id(),
+                egui::Rect::from_center_size(frame.center(), size * scale),
+                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                egui::Color32::WHITE,
+            );
+        }
+    }
+    painter.rect_stroke(
+        frame,
+        4.0,
+        egui::Stroke::new(1.0, m3.outline),
+        egui::StrokeKind::Inside,
+    );
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let folder = path
+        .parent()
+        .map(|d| d.display().to_string())
+        .unwrap_or_default();
+    let text_x = frame.right() + 14.0;
+    let color = if exists { m3.on } else { m3.variant };
+    painter.text(
+        egui::pos2(text_x, rect.center().y - 10.0),
+        egui::Align2::LEFT_CENTER,
+        name,
+        egui::FontId::proportional(16.0),
+        color,
+    );
+    painter.text(
+        egui::pos2(text_x, rect.center().y + 10.0),
+        egui::Align2::LEFT_CENTER,
+        folder,
+        egui::FontId::proportional(12.0),
+        m3.variant,
+    );
+    resp.clicked()
+}
+
+/// Workspaces and languages, as lists of rows a finger picks from.
+fn phone_workspace(app: &mut App, ui: &mut Ui, m3: &crate::ui::mobile::M3) {
+    ui.label(
+        egui::RichText::new(tr("welcome.choose_workspace"))
+            .size(14.0)
+            .strong()
+            .color(m3.on),
+    );
+    ui.add_space(4.0);
+    for (ws, key) in [
+        (crate::app::Workspace::Default, "menu.window.workspace_default"),
+        (crate::app::Workspace::Lite, "menu.window.workspace_lite"),
+        (
+            crate::app::Workspace::Classic,
+            "menu.window.workspace_classic",
+        ),
+        (
+            crate::app::Workspace::Illustration,
+            "menu.window.workspace_illustration",
+        ),
+        (
+            crate::app::Workspace::PageLayout,
+            "menu.window.workspace_page_layout",
+        ),
+        (crate::app::Workspace::Touch, "menu.window.workspace_touch"),
+    ] {
+        let chosen = app.workspace == ws;
+        let (rect, resp) =
+            ui.allocate_exact_size(egui::vec2(ui.available_width(), 52.0), egui::Sense::click());
+        if chosen {
+            ui.painter().rect_filled(rect, 12.0, m3.primary_container);
+        } else if resp.hovered() {
+            ui.painter().rect_filled(rect, 12.0, m3.high);
+        }
+        ui.painter().text(
+            egui::pos2(rect.left() + 12.0, rect.center().y),
+            egui::Align2::LEFT_CENTER,
+            tr(key),
+            egui::FontId::proportional(16.0),
+            if chosen { m3.primary } else { m3.on },
+        );
+        if resp.clicked() {
+            app.set_workspace(ws);
+            app.save_settings();
+        }
+    }
+    ui.add_space(18.0);
+    ui.label(
+        egui::RichText::new(tr("options.language"))
+            .size(14.0)
+            .strong()
+            .color(m3.on),
+    );
+    ui.add_space(4.0);
+    let current = crate::i18n::language();
+    ui.horizontal_wrapped(|ui| {
+        for (code, name) in crate::i18n::LANGUAGES {
+            if phone_chip(ui, m3, name, current == code).clicked() {
+                crate::i18n::set_language(code);
+                app.settings.language = code.to_string();
+                app.settings.save();
+            }
+        }
+    });
 }
 
 fn big_button(

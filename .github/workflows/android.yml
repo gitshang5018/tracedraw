@@ -1,0 +1,175 @@
+name: android
+
+# The Android APK: built on every push to main, on a version tag, and when
+# run by hand. A tag (or a version asked for by hand) publishes the APKs in
+# that release; a push to main refreshes the "nightly" pre-release, as the
+# desktop workflow does with the installers.
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  # Run by hand (Actions > android > Run workflow): with a version, the run
+  # makes the tag and the release itself, with the APKs attached.
+  workflow_dispatch:
+    inputs:
+      release:
+        description: "Version to release, like 0.3.0 (empty: build only)"
+        required: false
+        default: ""
+
+# One run per branch or tag at a time: a newer push to main cancels the run
+# still going, so two runs never replace the nightly release at once.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  # The NDK the APK is built against (the one the release notes name).
+  NDK_VERSION: 27.0.12077973
+  # The tag this run releases ("v0.3.0"): a version tag pushed, or the
+  # version asked for when run by hand; empty for every other run.
+  RELEASE_TAG: ${{ (github.event_name == 'workflow_dispatch' && inputs.release != '') && format('v{0}', inputs.release) || (startsWith(github.ref, 'refs/tags/v') && github.ref_name || '') }}
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The phones, then the emulators.
+          - target: aarch64-linux-android
+            abi: arm64-v8a
+          - target: armv7-linux-androideabi
+            abi: armeabi-v7a
+          - target: x86_64-linux-android
+            abi: x86_64
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: android-${{ matrix.target }}
+
+      - name: Version
+        id: ver
+        shell: bash
+        run: |
+          if [[ -n "$RELEASE_TAG" ]]; then
+            echo "version=${RELEASE_TAG#v}" >> "$GITHUB_OUTPUT"
+          else
+            # The workspace version from Cargo.toml, then the commit.
+            base=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+            echo "version=${base}-dev.${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          fi
+
+      # The runners carry the Android SDK but not every NDK: the one the
+      # build asks for is installed here (with a retry — the download
+      # sometimes ends early).
+      - name: NDK
+        shell: bash
+        run: |
+          set -e
+          export ANDROID_HOME="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          if [[ -d "$ANDROID_HOME/ndk/$NDK_VERSION" ]]; then
+            echo "ANDROID_NDK_ROOT=$ANDROID_HOME/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          sdkmanager="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          for i in 1 2 3; do
+            if yes | "$sdkmanager" --sdk_root="$ANDROID_HOME" --install "ndk;$NDK_VERSION"; then
+              break
+            fi
+            echo "::warning::NDK download failed (try $i), again"
+            rm -rf "$ANDROID_HOME/ndk/$NDK_VERSION"
+          done
+          test -d "$ANDROID_HOME/ndk/$NDK_VERSION"
+          echo "ANDROID_NDK_ROOT=$ANDROID_HOME/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
+
+      - name: cargo-apk
+        run: cargo install cargo-apk --locked
+
+      # A release is signed with the repository's key when it has one
+      # (ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD and
+      # ANDROID_KEY_ALIAS secrets); without it a key is made for the run,
+      # which installs but cannot update a build signed with another.
+      - name: Signing key
+        shell: bash
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          set -e
+          keystore="$RUNNER_TEMP/release.keystore"
+          if [[ -n "$KEYSTORE_BASE64" ]]; then
+            echo "$KEYSTORE_BASE64" | base64 -d > "$keystore"
+          else
+            keytool -genkeypair -keystore "$keystore" -alias tracedraw \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -storepass android -keypass android \
+              -dname "CN=TraceDraw, O=TraceDraw, C=US"
+            KEYSTORE_PASSWORD=android
+            echo "::warning::No ANDROID_KEYSTORE_BASE64 secret: signed with a key made for this run, which cannot update an installed build."
+          fi
+          {
+            echo "CARGO_APK_RELEASE_KEYSTORE=$keystore"
+            echo "CARGO_APK_RELEASE_KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD"
+          } >> "$GITHUB_ENV"
+
+      - name: Build
+        run: |
+          cargo apk build --manifest-path apps/tracedraw-android/Cargo.toml --lib \
+            --release --target ${{ matrix.target }}
+
+      - name: Name the APK
+        shell: bash
+        run: |
+          set -e
+          mkdir -p dist
+          src="target/${{ matrix.target }}/release/apk/tracedraw.apk"
+          test -f "$src"
+          out="dist/tracedraw-${{ steps.ver.outputs.version }}-android-${{ matrix.abi }}.apk"
+          cp "$src" "$out"
+          # What the release says the download is: the ABI, the size, and
+          # the certificate it is signed with.
+          ls -l "$out"
+          echo "$out" > apk-path.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tracedraw-android-${{ matrix.abi }}
+          path: dist/*.apk
+          if-no-files-found: error
+
+  # Version tags publish a release; every push to main refreshes the
+  # "nightly" pre-release with the APKs of that commit. The release and its
+  # notes are the desktop workflow's (build.yml); this job only adds the
+  # APKs to it, and makes it when it is not there yet.
+  release:
+    if: (github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main')) || (github.event_name == 'workflow_dispatch' && inputs.release != '')
+    needs: apk
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: The APKs
+        run: ls -l artifacts
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*.apk
+          tag_name: ${{ env.RELEASE_TAG != '' && env.RELEASE_TAG || 'nightly' }}
+          name: ${{ env.RELEASE_TAG != '' && env.RELEASE_TAG || 'nightly' }}
+          prerelease: ${{ env.RELEASE_TAG == '' }}
+          # The desktop workflow writes the notes of a version tag, and
+          # the installers of the nightly: this one leaves them alone.
+          fail_on_unmatched_files: true

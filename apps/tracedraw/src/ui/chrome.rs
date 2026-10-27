@@ -6,6 +6,7 @@
 //! with a grey border (blue while typing), spin fields, push buttons.
 
 use crate::theme::Tokens;
+use crate::ui::mobile::M3;
 use egui::{
     Align2, Color32, Context, CornerRadius, FontId, Frame, Margin, Pos2, Rect, Sense, Stroke, Ui,
     Vec2,
@@ -13,6 +14,9 @@ use egui::{
 
 /// Height of the title bar (under the top border).
 pub const TITLE_BAR: f32 = 31.0;
+/// Height of the headline a dialog wears on a phone, in place of the
+/// title bar.
+const HEAD_H: f32 = 64.0;
 /// The white frame round the body.
 pub const EDGE: f32 = 5.0;
 /// Height of fields, lists and buttons.
@@ -26,17 +30,41 @@ pub const FIELD_FOCUS: Color32 = Color32::from_rgb(0x00, 0xAD, 0xFE);
 const CLOSE_HOVER: Color32 = Color32::from_rgb(0xE8, 0x11, 0x23);
 const TITLE_FONT: f32 = 13.0;
 
+/// The Material colours of a dialog, when the interface is laid out for a
+/// phone: every prompt window is then the card Android draws, not the
+/// desktop's framed window with its 31 px title bar.
+fn material(ctx: &Context) -> Option<M3> {
+    crate::ui::mobile::active(ctx).then(M3::of)
+}
+
+/// The shadow under a Material dialog: a soft, wide lift off the drawing.
+fn dialog_shadow() -> egui::epaint::Shadow {
+    crate::theme::shadow(egui::epaint::Shadow {
+        offset: [0, 6],
+        blur: 28,
+        spread: 2,
+        color: Color32::from_black_alpha(70),
+    })
+}
+
 /// A modal-looking window of `size` (borders and title bar included)
 /// centred on the screen. `add` draws the body, whose rect starts under
 /// the title bar at the window's left edge. Returns true when the close
 /// button was clicked or Escape pressed.
 pub fn dialog(ctx: &Context, id: &str, title: &str, size: Vec2, add: impl FnOnce(&mut Ui)) -> bool {
     let mut closed = false;
+    let m3 = material(ctx);
+    // A phone wears a Material headline instead of the 31 px title bar;
+    // the body keeps the size the dialog asks for, under it.
+    let head = if m3.is_some() { HEAD_H } else { TITLE_BAR };
+    let body_h = size.y - TITLE_BAR;
+    let want = Vec2::new(size.x, head + body_h);
     // On a screen smaller than the dialog, the window takes what there
     // is and its body scrolls (both ways) over the dialog's full layout.
-    let room = (ctx.content_rect().size() - Vec2::splat(16.0)).max(Vec2::splat(200.0));
-    let shown = size.min(room);
-    if shown != size {
+    let edge = if m3.is_some() { 24.0 } else { 16.0 };
+    let room = (ctx.content_rect().size() - Vec2::splat(edge)).max(Vec2::splat(200.0));
+    let shown = want.min(room);
+    if shown != want {
         let w = egui::Window::new(id)
             .id(egui::Id::new(id))
             .order(egui::Order::Foreground)
@@ -45,38 +73,23 @@ pub fn dialog(ctx: &Context, id: &str, title: &str, size: Vec2, add: impl FnOnce
             .resizable(false)
             .fixed_size(shown);
         placed(w, ctx, egui::Id::new(id))
-            .frame(
-                Frame::new()
-                    .fill(crate::theme::Tokens::title_bar())
-                    .stroke(Stroke::new(1.0, crate::theme::Tokens::window_border()))
-                    .inner_margin(Margin::ZERO),
-            )
+            .frame(dialog_frame(&m3))
             .show(ctx, |ui| {
                 ui.set_min_size(shown);
-                let (bar, _) =
-                    ui.allocate_exact_size(Vec2::new(shown.x, TITLE_BAR), Sense::hover());
-                if title_bar(ui, bar, title, id) {
+                let (bar, _) = ui.allocate_exact_size(Vec2::new(shown.x, head), Sense::hover());
+                if head_bar(ui, bar, title, id, &m3) {
                     closed = true;
                 }
                 egui::ScrollArea::both()
                     .id_salt((id, "scroll"))
                     .max_width(shown.x)
-                    .max_height(shown.y - TITLE_BAR)
+                    .max_height(shown.y - head)
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
-                        let (r, _) = ui.allocate_exact_size(
-                            Vec2::new(size.x, size.y - TITLE_BAR),
-                            Sense::hover(),
-                        );
+                        let (r, _) =
+                            ui.allocate_exact_size(Vec2::new(size.x, body_h), Sense::hover());
                         let body = Rect::from_min_max(Pos2::new(r.left() - 1.0, r.top()), r.max);
-                        ui.painter().rect_filled(
-                            Rect::from_min_max(
-                                body.min + Vec2::new(EDGE, 0.0),
-                                body.max - Vec2::new(EDGE, EDGE),
-                            ),
-                            0.0,
-                            Tokens::panel(),
-                        );
+                        body_backdrop(ui, body, &m3);
                         ui.scope_builder(egui::UiBuilder::new().max_rect(body), |ui| {
                             form_style(ui);
                             add(ui)
@@ -94,40 +107,22 @@ pub fn dialog(ctx: &Context, id: &str, title: &str, size: Vec2, add: impl FnOnce
         .title_bar(false)
         .collapsible(false)
         .resizable(false)
-        .fixed_size(size);
+        .fixed_size(shown);
     placed(w, ctx, egui::Id::new(id))
-        .frame(
-            Frame::new()
-                .fill(crate::theme::Tokens::title_bar())
-                .stroke(Stroke::new(1.0, crate::theme::Tokens::window_border()))
-                .shadow(crate::theme::shadow(egui::epaint::Shadow {
-                    offset: [0, 4],
-                    blur: 16,
-                    spread: 0,
-                    color: Color32::from_black_alpha(60),
-                }))
-                .inner_margin(Margin::ZERO),
-        )
+        .frame(dialog_frame(&m3))
         .show(ctx, |ui| {
-            ui.set_min_size(size);
-            let (bar, _) = ui.allocate_exact_size(Vec2::new(size.x, TITLE_BAR), Sense::hover());
-            if title_bar(ui, bar, title, id) {
+            ui.set_min_size(shown);
+            let (bar, _) = ui.allocate_exact_size(Vec2::new(shown.x, head), Sense::hover());
+            if head_bar(ui, bar, title, id, &m3) {
                 closed = true;
             }
             // Body coordinates: x from the window's outer edge, y from
             // under the title bar.
             let body = Rect::from_min_max(
                 Pos2::new(bar.left() - 1.0, bar.bottom()),
-                Pos2::new(bar.right(), bar.top() + size.y),
+                Pos2::new(bar.right(), bar.top() + shown.y),
             );
-            ui.painter().rect_filled(
-                Rect::from_min_max(
-                    body.min + Vec2::new(EDGE, 0.0),
-                    body.max - Vec2::new(EDGE, EDGE),
-                ),
-                0.0,
-                Tokens::panel(),
-            );
+            body_backdrop(ui, body, &m3);
             ui.scope_builder(egui::UiBuilder::new().max_rect(body), |ui| {
                 form_style(ui);
                 add(ui)
@@ -137,6 +132,44 @@ pub fn dialog(ctx: &Context, id: &str, title: &str, size: Vec2, add: impl FnOnce
         closed = true;
     }
     closed
+}
+
+/// The frame of a fixed-size dialog: the desktop's white window, or the
+/// rounded card of a Material dialog.
+fn dialog_frame(m3: &Option<M3>) -> Frame {
+    match m3 {
+        Some(m3) => Frame::new()
+            .fill(m3.surface)
+            .corner_radius(CornerRadius::same(28))
+            .shadow(dialog_shadow())
+            .inner_margin(Margin::ZERO),
+        None => Frame::new()
+            .fill(crate::theme::Tokens::title_bar())
+            .stroke(Stroke::new(1.0, crate::theme::Tokens::window_border()))
+            .shadow(crate::theme::shadow(egui::epaint::Shadow {
+                offset: [0, 4],
+                blur: 16,
+                spread: 0,
+                color: Color32::from_black_alpha(60),
+            }))
+            .inner_margin(Margin::ZERO),
+    }
+}
+
+/// The body's background: the panel colour inset by the white edge on the
+/// desktop, the card itself on a phone.
+fn body_backdrop(ui: &Ui, body: Rect, m3: &Option<M3>) {
+    if m3.is_some() {
+        return;
+    }
+    ui.painter().rect_filled(
+        Rect::from_min_max(
+            body.min + Vec2::new(EDGE, 0.0),
+            body.max - Vec2::new(EDGE, EDGE),
+        ),
+        0.0,
+        Tokens::panel(),
+    );
 }
 
 /// Place a dialog window `id`: it can always be dragged by its title bar.
@@ -190,6 +223,129 @@ fn title_width(ui: &Ui, title: &str) -> f32 {
 impl Window {
     /// Draw the window with `add` as its body. Returns what `add` returned.
     pub fn show<R>(self, ctx: &Context, add: impl FnOnce(&mut Ui) -> R) -> Option<R> {
+        self.show_with_footer(ctx, add, |_| {})
+    }
+
+    /// A window whose actions stay put: `footer` is drawn under the body,
+    /// outside the part that scrolls, so OK and Cancel are always in
+    /// reach — the way a phone's dialog keeps its buttons at the bottom
+    /// of the card.
+    pub fn show_with_footer<R, F>(
+        self,
+        ctx: &Context,
+        add: impl FnOnce(&mut Ui) -> R,
+        footer: F,
+    ) -> Option<R>
+    where
+        F: FnOnce(&mut Ui),
+    {
+        match material(ctx) {
+            Some(m3) => self.show_material(ctx, &m3, add, footer),
+            None => self.show_desktop(ctx, add, footer),
+        }
+    }
+
+    /// The dialog of the phone: a rounded card in the middle of the
+    /// screen, its name as a Material headline, a round close button, and
+    /// the body under them — the shape every Android app's prompt has.
+    fn show_material<R, F>(
+        self,
+        ctx: &Context,
+        m3: &M3,
+        add: impl FnOnce(&mut Ui) -> R,
+        footer: F,
+    ) -> Option<R>
+    where
+        F: FnOnce(&mut Ui),
+    {
+        let screen = ctx.content_rect();
+        let width = (screen.width() - 32.0).clamp(240.0, 420.0);
+        let mut out = None;
+        let mut closed = false;
+        egui::Window::new(&self.title)
+            .id(self.id)
+            .order(egui::Order::Foreground)
+            .title_bar(false)
+            .collapsible(false)
+            .resizable(false)
+            .movable(false)
+            .pivot(Align2::CENTER_CENTER)
+            .fixed_pos(screen.center())
+            .frame(
+                Frame::new()
+                    .fill(m3.surface)
+                    .corner_radius(CornerRadius::same(28))
+                    .shadow(dialog_shadow()),
+            )
+            .show(ctx, |ui| {
+                ui.set_width(width);
+                ui.spacing_mut().item_spacing.y = 8.0;
+                // The headline, and the way out of the dialog.
+                let (head, _) = ui.allocate_exact_size(Vec2::new(width, HEAD_H), Sense::hover());
+                ui.painter().text(
+                    Pos2::new(head.left() + 24.0, head.center().y),
+                    Align2::LEFT_CENTER,
+                    elide(&self.title, width - 24.0 - 56.0, 22.0),
+                    crate::theme::bold(22.0),
+                    m3.on,
+                );
+                if close_target(ui, head.right_center() - Vec2::new(36.0, 0.0), m3, &format!("{:?}", self.id)) {
+                    closed = true;
+                }
+                // The body scrolls when the phone is short: a dialog that
+                // cannot be scrolled is a dialog with no way out.
+                let max_h = (screen.height() * 0.58).max(140.0);
+                let body = egui::ScrollArea::vertical()
+                    .id_salt("dialog_body")
+                    .max_height(max_h)
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        Frame::new()
+                            .inner_margin(Margin {
+                                left: 24,
+                                right: 24,
+                                top: 0,
+                                bottom: 8,
+                            })
+                            .show(ui, |ui| {
+                                ui.set_width(width - 48.0);
+                                form_style(ui);
+                                add(ui)
+                            })
+                            .inner
+                    });
+                out = Some(body.inner);
+                // The actions stay at the bottom of the card while the
+                // body above them scrolls.
+                ui.add_space(8.0);
+                Frame::new()
+                    .inner_margin(Margin {
+                        left: 24,
+                        right: 24,
+                        top: 0,
+                        bottom: 16,
+                    })
+                    .show(ui, |ui| {
+                        ui.set_width(width - 48.0);
+                        form_style(ui);
+                        footer(ui);
+                    });
+            });
+        if closed || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            request_close(ctx);
+        }
+        out
+    }
+
+    fn show_desktop<R, F>(
+        self,
+        ctx: &Context,
+        add: impl FnOnce(&mut Ui) -> R,
+        footer: F,
+    ) -> Option<R>
+    where
+        F: FnOnce(&mut Ui),
+    {
         let mut out = None;
         let mut closed = false;
         let window = egui::Window::new(&self.title)
@@ -227,12 +383,16 @@ impl Window {
                     let max_h = (ui.ctx().content_rect().height() - TITLE_BAR - 60.0).max(150.0);
                     // The window starts from the size it had last frame, so
                     // the body may grow up to `max_h` before it scrolls.
-                    egui::ScrollArea::vertical()
+                    let r = egui::ScrollArea::vertical()
                         .id_salt("dialog_body")
                         .max_height(max_h)
                         .min_scrolled_height(max_h)
                         .show(ui, |ui| add(ui))
-                        .inner
+                        .inner;
+                    // The desktop's dialogs put their buttons in the body;
+                    // a footer drawn here would follow the scroll.
+                    footer(ui);
+                    r
                 });
             out = Some(inner.inner);
             let width = ui.min_rect().width().max(min_w);
@@ -465,27 +625,41 @@ fn access_label(text: &str) -> egui::WidgetText {
 /// the index of the button picked this frame.
 pub fn button_row(ui: &mut Ui, labels: &[&str], access_keys: bool) -> Option<usize> {
     let mut picked = None;
-    let spacing = 8.0;
-    let total = labels.len() as f32 * 100.0 + (labels.len().saturating_sub(1)) as f32 * spacing;
+    let m3 = material(ui.ctx());
+    // A phone's dialog ends in text buttons: no frames, capitalised, a
+    // finger high, the confirming one first.
+    let (w, h, spacing) = if m3.is_some() {
+        (88.0, 40.0, 4.0)
+    } else {
+        (100.0, 27.0, 8.0)
+    };
+    let total = labels.len() as f32 * w + (labels.len().saturating_sub(1)) as f32 * spacing;
     let left = (ui.min_rect().width() - total).max(0.0);
-    ui.add_space(10.0);
+    ui.add_space(if m3.is_some() { 6.0 } else { 10.0 });
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = spacing;
         ui.add_space(left);
         for (i, label) in labels.iter().enumerate() {
-            let text: egui::WidgetText = if access_keys {
-                access_label(label)
-            } else {
-                (*label).into()
-            };
             let resp = ui
                 .scope(|ui| {
+                    if let Some(m3) = m3.as_ref() {
+                        let text = egui::RichText::new(*label)
+                            .size(14.0)
+                            .strong()
+                            .color(m3.primary);
+                        return ui.add_sized([w, h], egui::Button::new(text).frame(false));
+                    }
+                    let text: egui::WidgetText = if access_keys {
+                        access_label(label)
+                    } else {
+                        (*label).into()
+                    };
                     if i == 0 {
                         let w = &mut ui.visuals_mut().widgets;
                         w.inactive.bg_stroke = Stroke::new(1.0, Tokens::ACCENT);
                         w.inactive.weak_bg_fill = crate::theme::Tokens::tool_hover();
                     }
-                    ui.add_sized([100.0, 27.0], egui::Button::new(text))
+                    ui.add_sized([w, h], egui::Button::new(text))
                 })
                 .inner;
             if resp.clicked() {
@@ -555,8 +729,13 @@ fn message_box_with(
 ) -> Option<usize> {
     let mut picked = None;
     let before = take_close_request(ctx);
+    // A phone's dialog takes the width it is given: the card is already
+    // nearly as wide as the screen.
+    let phone = material(ctx).is_some();
     window("TraceDraw").show(ctx, |ui| {
-        ui.set_min_width(360.0);
+        if !phone {
+            ui.set_min_width(360.0);
+        }
         ui.horizontal(|ui| {
             ui.add_space(4.0);
             let (rect, _) = ui.allocate_exact_size(Vec2::splat(32.0), Sense::hover());
@@ -564,7 +743,7 @@ fn message_box_with(
             ui.add_space(12.0);
             ui.vertical(|ui| {
                 ui.add_space(6.0);
-                ui.set_max_width(380.0);
+                ui.set_max_width(if phone { 300.0 } else { 380.0 });
                 let mut rich = egui::RichText::new(text).size(13.5);
                 if icon == MessageIcon::Busy {
                     rich = rich.strong();
@@ -586,6 +765,56 @@ fn message_box_with(
         picked = Some(buttons.len().saturating_sub(1));
     }
     picked
+}
+
+/// The head of a dialog: the desktop's title bar, or the Material
+/// headline a phone's dialog opens with. Returns true when it was closed.
+fn head_bar(ui: &mut Ui, bar: Rect, title: &str, id: &str, m3: &Option<M3>) -> bool {
+    let Some(m3) = m3 else {
+        return title_bar(ui, bar, title, id);
+    };
+    let room = (bar.width() - 24.0 - 56.0).max(40.0);
+    ui.painter().text(
+        Pos2::new(bar.left() + 24.0, bar.center().y),
+        Align2::LEFT_CENTER,
+        elide(title, room, 22.0),
+        crate::theme::bold(22.0),
+        m3.on,
+    );
+    close_target(ui, bar.right_center() - Vec2::new(36.0, 0.0), m3, id)
+}
+
+/// The round close button a Material dialog wears at the top right.
+fn close_target(ui: &mut Ui, center: Pos2, m3: &M3, id: &str) -> bool {
+    let rect = Rect::from_center_size(center, Vec2::splat(44.0));
+    let resp = ui.interact(rect, egui::Id::new((id, "close")), Sense::click());
+    if resp.hovered() || resp.is_pointer_button_down_on() {
+        ui.painter().circle_filled(center, 22.0, m3.primary_container);
+    }
+    let d = 9.0;
+    let s = Stroke::new(2.0, m3.on);
+    ui.painter()
+        .line_segment([center + Vec2::new(-d, -d), center + Vec2::new(d, d)], s);
+    ui.painter()
+        .line_segment([center + Vec2::new(d, -d), center + Vec2::new(-d, d)], s);
+    resp.clicked()
+}
+
+/// `text` cut to `room` points at `size`, with a mark that it was cut.
+fn elide(text: &str, room: f32, size: f32) -> String {
+    let chars = text.chars().count();
+    if chars <= 2 {
+        return text.to_string();
+    }
+    // About half the size per character, which is close enough for a
+    // title: the exact width needs the font, which the painter has.
+    let fits = (room / (size * 0.52)).floor().max(2.0) as usize;
+    if chars <= fits {
+        return text.to_string();
+    }
+    let mut out: String = text.chars().take(fits.saturating_sub(1)).collect();
+    out.push('\u{2026}');
+    out
 }
 
 /// The white title bar: title at the left, the close button at the right.
@@ -622,8 +851,15 @@ fn title_bar(ui: &mut Ui, bar: Rect, title: &str, id: &str) -> bool {
 }
 
 /// Controls inside a dialog body: square corners, grey borders, the blue
-/// border while typing, grey lists and buttons.
+/// border while typing, grey lists and buttons. On a phone they are the
+/// rounded controls of a Material dialog instead.
 pub fn form_style(ui: &mut Ui) {
+    let m3 = material(ui.ctx());
+    let round = if m3.is_some() {
+        CornerRadius::same(10)
+    } else {
+        CornerRadius::ZERO
+    };
     let v = ui.visuals_mut();
     for w in [
         &mut v.widgets.inactive,
@@ -631,7 +867,7 @@ pub fn form_style(ui: &mut Ui) {
         &mut v.widgets.active,
         &mut v.widgets.open,
     ] {
-        w.corner_radius = CornerRadius::ZERO;
+        w.corner_radius = round;
         w.expansion = 0.0;
     }
     v.widgets.inactive.bg_stroke = Stroke::new(1.0, crate::theme::Tokens::control_border());
@@ -646,6 +882,23 @@ pub fn form_style(ui: &mut Ui) {
     v.text_edit_bg_color = Some(crate::theme::Tokens::field());
     // A chosen radio button shows a large black dot, as on the desktop.
     ui.spacing_mut().icon_width_inner = 12.0;
+    if let Some(m3) = m3 {
+        // Fields, lists and buttons as a phone draws them: a soft fill,
+        // a hairline, and the accent where the desktop shows a frame.
+        let v = ui.visuals_mut();
+        v.widgets.inactive.bg_stroke = Stroke::new(1.0, m3.outline);
+        v.widgets.inactive.weak_bg_fill = m3.high;
+        v.widgets.inactive.bg_fill = m3.high;
+        v.widgets.hovered.bg_fill = m3.primary_container;
+        v.widgets.hovered.weak_bg_fill = m3.primary_container;
+        v.widgets.hovered.bg_stroke = Stroke::new(1.0, m3.primary);
+        v.widgets.active.bg_stroke = Stroke::new(1.0, m3.primary);
+        v.widgets.open.bg_stroke = Stroke::new(1.0, m3.primary);
+        v.selection.bg_fill = m3.primary_container;
+        v.selection.stroke = Stroke::new(1.0, m3.primary);
+        v.extreme_bg_color = m3.high;
+        v.text_edit_bg_color = Some(m3.high);
+    }
 }
 
 /// A white panel with a light border, for lists and page frames.

@@ -368,6 +368,9 @@ pub fn android_run(android_app: winit::platform::android::activity::AndroidApp) 
         .unwrap_or_else(|| std::path::PathBuf::from("/data/local/tmp"));
     let documents = external.unwrap_or_else(|| config.clone()).join("Documents");
     let _ = std::fs::create_dir_all(&documents);
+    // A drawing the system handed the app to open — a .cdr or a .tdraw
+    // tapped in a file manager — is copied in here and opened at once.
+    let shared = android_system::shared_drawing(&android_app, &documents);
     settings::set_android_folders(config, documents.clone());
     files::set_android_documents(documents);
     // The system bars, the keyboard and the language are read through the
@@ -394,9 +397,9 @@ pub fn android_run(android_app: winit::platform::android::activity::AndroidApp) 
     eframe::run_native(
         "TraceDraw",
         options,
-        Box::new(|cc| {
+        Box::new(move |cc| {
             theme::install_fonts(&cc.egui_ctx);
-            Ok(Box::new(Shell::new(cc, None)))
+            Ok(Box::new(Shell::new(cc, shared)))
         }),
     )
 }

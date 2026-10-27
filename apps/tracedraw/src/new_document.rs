@@ -305,6 +305,14 @@ pub fn new_document_dialog(app: &mut App, ctx: &Context, st: &mut NewDocState, c
     // Pixel sizes in the dialog are at the dialog's resolution.
     let outer_dpi = crate::app::pixel_dpi();
     crate::app::set_pixel_dpi(st.settings.values.dpi);
+    // A phone stacks the form in one column of wide fields (see
+    // `phone_dialog`): the desktop's two-column layout is wider than a
+    // phone screen and its 28 px fields are too small for a finger.
+    if crate::ui::mobile::active(ctx) {
+        phone_dialog(app, ctx, st, close);
+        crate::app::set_pixel_dpi(outer_dpi);
+        return;
+    }
     let mut ok = false;
     let extra = if st.color_settings_open {
         COLOR_ROWS * ROW_PITCH
@@ -505,10 +513,382 @@ pub fn new_document_dialog(app: &mut App, ctx: &Context, st: &mut NewDocState, c
     }
 }
 
+// ---------------------------------------------------------------------------
+// The phone's dialog
+// ---------------------------------------------------------------------------
+
+/// A heading of the form, in the accent colour: General, Dimensions.
+fn phone_section(ui: &mut Ui, m3: &crate::ui::mobile::M3, text: &str) {
+    ui.add_space(12.0);
+    ui.label(
+        egui::RichText::new(text)
+            .size(13.0)
+            .strong()
+            .color(m3.primary),
+    );
+    ui.add_space(2.0);
+}
+
+/// The name of a field, above it, small and quiet.
+fn phone_label(ui: &mut Ui, m3: &crate::ui::mobile::M3, text: &str) {
+    ui.add_space(2.0);
+    ui.label(
+        egui::RichText::new(text)
+            .size(12.5)
+            .color(m3.variant),
+    );
+}
+
+/// Room for one row of the form.
+fn phone_row(ui: &mut Ui, width: f32, height: f32) -> egui::Rect {
+    ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover())
+        .0
+}
+
+/// The Create a New Document dialog as Android draws it: one column of
+/// full-width fields, each under its own label, the sections the desktop
+/// groups them in, and the actions as two wide buttons at the bottom.
+fn phone_dialog(app: &mut App, ctx: &Context, st: &mut NewDocState, close: &mut bool) {
+    use crate::ui::chrome;
+    let m3 = crate::ui::mobile::M3::of();
+    // The card is the screen less its margins and the body's padding.
+    let width = (ctx.content_rect().width() - 32.0).clamp(240.0, 420.0) - 48.0;
+    const ROW: f32 = 46.0;
+    let mut ok = false;
+    let mut cancel = false;
+    // The card's own close button asks the dialog system to close the
+    // dialog (see `chrome::request_close`), as every dialog's does.
+    let mut dont_show = st.dont_show;
+    chrome::window(tr("dialog.create_new_document"))
+        .show_with_footer(
+            ctx,
+            |ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(8.0, 4.0);
+            ui.style_mut()
+                .text_styles
+                .insert(egui::TextStyle::Body, egui::FontId::proportional(15.0));
+            ui.style_mut()
+                .text_styles
+                .insert(egui::TextStyle::Button, egui::FontId::proportional(15.0));
+
+            // ----- General -----
+            phone_section(ui, &m3, &tr("newdoc.general"));
+            phone_label(ui, &m3, &tr("dialog.name"));
+            let r = phone_row(ui, width, ROW);
+            chrome::text_field(ui, r, &mut st.name);
+
+            phone_label(ui, &m3, &tr("newdoc.preset"));
+            let r = phone_row(ui, width - 44.0, ROW);
+            preset_row(ui, st, r, egui::pos2(r.right() + 10.0, r.top() + 9.0));
+            if st.saving_preset.is_some() {
+                phone_label(ui, &m3, &tr("newdoc.preset_name"));
+                let r = phone_row(ui, width, ROW);
+                let name_r =
+                    egui::Rect::from_min_size(r.min, egui::vec2(width - 80.0, ROW));
+                let ok_r = egui::Rect::from_min_size(
+                    egui::pos2(r.left() + width - 72.0, r.top() + 2.0),
+                    egui::vec2(72.0, ROW - 4.0),
+                );
+                let mut done = None;
+                if let Some(name) = &mut st.saving_preset {
+                    chrome::text_field(ui, name_r, name);
+                    if chrome::button_at(ui, ok_r, &tr("dialog.ok")).clicked()
+                        && !name.trim().is_empty()
+                    {
+                        done = Some(name.trim().to_string());
+                    }
+                }
+                if let Some(n) = done {
+                    let values = st.settings.values.clone();
+                    st.settings.saved_presets.retain(|p| p.name != n);
+                    st.settings.saved_presets.push(SavedPreset {
+                        name: n.clone(),
+                        values,
+                    });
+                    st.settings.preset = n;
+                    st.saving_preset = None;
+                }
+            }
+
+            phone_label(ui, &m3, &tr("newdoc.pages"));
+            let r = phone_row(ui, 120.0, ROW);
+            if let Some(v) = chrome::spin_field(
+                ui,
+                "newdoc_pages",
+                r,
+                st.settings.pages as f64,
+                0,
+                "",
+                1.0,
+                1.0..=999.0,
+            ) {
+                st.settings.pages = v.round() as u32;
+            }
+
+            phone_label(ui, &m3, &tr("newdoc.color_mode"));
+            let r = phone_row(ui, width, 44.0);
+            ui.scope_builder(egui::UiBuilder::new().max_rect(r), |ui| {
+                ui.horizontal_centered(|ui| {
+                    ui.spacing_mut().item_spacing.x = 24.0;
+                    let v = &mut st.settings.values;
+                    let mut rgb = v.rgb;
+                    ui.radio_value(&mut rgb, false, "CMYK");
+                    ui.radio_value(&mut rgb, true, "RGB");
+                    if rgb != v.rgb {
+                        v.rgb = rgb;
+                        st.settings.refresh_preset();
+                    }
+                });
+            });
+
+            // ----- Dimensions -----
+            phone_section(ui, &m3, &tr("newdoc.dimensions"));
+            phone_label(ui, &m3, &tr("newdoc.page_size"));
+            let r = phone_row(ui, width, ROW);
+            let mut pick = None;
+            let shown = if st.settings.values.page_size == CUSTOM {
+                tr("newdoc.preset_custom")
+            } else {
+                st.settings.values.page_size.clone()
+            };
+            chrome::combo(ui, "newdoc_page_size", r, shown, |ui| {
+                for (n, s) in crate::ui::dialogs::paper_presets() {
+                    if ui
+                        .selectable_label(st.settings.values.page_size == n, n)
+                        .clicked()
+                    {
+                        pick = Some((n, s));
+                    }
+                }
+            });
+            if let Some((n, s)) = pick {
+                st.set_page_size(n, s);
+            }
+
+            let units = st.units();
+            let half = (width * 0.44).floor();
+            phone_label(ui, &m3, &tr("newdoc.width"));
+            let r = phone_row(ui, width, ROW);
+            let field = egui::Rect::from_min_size(r.min, egui::vec2(half, ROW));
+            let units_r = egui::Rect::from_min_size(
+                egui::pos2(r.left() + half + 8.0, r.top()),
+                egui::vec2(width - half - 8.0, ROW),
+            );
+            if length(
+                ui,
+                "newdoc_width",
+                field,
+                &mut st.settings.values.width_mm,
+                units,
+            ) {
+                st.match_page_size();
+            }
+            let mut u = units;
+            chrome::combo(ui, "newdoc_units", units_r, u.label(), |ui| {
+                for x in Units::ALL {
+                    ui.selectable_value(&mut u, x, x.label());
+                }
+            });
+            if u != units {
+                st.settings.values.units = u.id().into();
+                st.settings.refresh_preset();
+            }
+
+            phone_label(ui, &m3, &tr("newdoc.height"));
+            let r = phone_row(ui, width, ROW);
+            let field = egui::Rect::from_min_size(r.min, egui::vec2(half, ROW));
+            if length(
+                ui,
+                "newdoc_height",
+                field,
+                &mut st.settings.values.height_mm,
+                units,
+            ) {
+                st.match_page_size();
+            }
+
+            phone_label(ui, &m3, &tr("newdoc.orientation"));
+            let r = phone_row(ui, width, ROW);
+            let v = &mut st.settings.values;
+            let landscape = v.width_mm > v.height_mm;
+            let portrait_r = egui::Rect::from_min_size(r.min, egui::vec2(ROW, ROW));
+            let landscape_r = egui::Rect::from_min_size(
+                egui::pos2(r.left() + ROW + 8.0, r.top()),
+                egui::vec2(ROW, ROW),
+            );
+            if orientation_button(ui, portrait_r, false, !landscape)
+                .on_hover_text(tr("dialog.portrait"))
+                .clicked()
+                && landscape
+            {
+                std::mem::swap(&mut v.width_mm, &mut v.height_mm);
+                st.settings.refresh_preset();
+            }
+            let v = &mut st.settings.values;
+            if orientation_button(ui, landscape_r, true, landscape)
+                .on_hover_text(tr("dialog.landscape"))
+                .clicked()
+                && !landscape
+            {
+                std::mem::swap(&mut v.width_mm, &mut v.height_mm);
+                st.settings.refresh_preset();
+            }
+
+            phone_label(ui, &m3, &tr("newdoc.resolution"));
+            let r = phone_row(ui, width, ROW);
+            let v = &mut st.settings.values;
+            let mut dpi = v.dpi;
+            let num_r = egui::Rect::from_min_size(r.min, egui::vec2(half - 26.0, ROW));
+            let list_r = egui::Rect::from_min_size(
+                egui::pos2(num_r.right(), r.top()),
+                egui::vec2(26.0, ROW),
+            );
+            if let Some(d) = chrome::number_field(
+                ui,
+                "newdoc_dpi",
+                num_r,
+                dpi,
+                0,
+                "",
+                36.0..=10000.0,
+            ) {
+                dpi = d;
+            }
+            chrome::combo(ui, "newdoc_dpi_list", list_r, "", |ui| {
+                for res in RESOLUTIONS {
+                    ui.selectable_value(&mut dpi, res, format!("{}", res as i64));
+                }
+            });
+            chrome::label_at(
+                ui,
+                egui::pos2(list_r.right() + 8.0, r.center().y),
+                &tr("newdoc.dpi"),
+            );
+            if dpi != v.dpi && dpi > 0.0 {
+                if units == Units::Pixels {
+                    v.width_mm *= v.dpi / dpi;
+                    v.height_mm *= v.dpi / dpi;
+                }
+                v.dpi = dpi;
+                crate::app::set_pixel_dpi(dpi);
+                st.settings.refresh_preset();
+            }
+
+            // ----- Colour settings, folded away until asked for -----
+            ui.add_space(10.0);
+            let r = phone_row(ui, width, 48.0);
+            let head = ui.interact(
+                r,
+                egui::Id::new("newdoc_color_header_mobile"),
+                egui::Sense::click(),
+            );
+            let tri = egui::pos2(r.left() + 8.0, r.center().y);
+            let pts = if st.color_settings_open {
+                vec![
+                    tri + egui::vec2(-5.0, -2.0),
+                    tri + egui::vec2(5.0, -2.0),
+                    tri + egui::vec2(0.0, 4.0),
+                ]
+            } else {
+                vec![
+                    tri + egui::vec2(-2.0, -5.0),
+                    tri + egui::vec2(4.0, 0.0),
+                    tri + egui::vec2(-2.0, 5.0),
+                ]
+            };
+            ui.painter().add(egui::epaint::PathShape::convex_polygon(
+                pts,
+                m3.variant,
+                egui::Stroke::NONE,
+            ));
+            ui.painter().text(
+                egui::pos2(r.left() + 22.0, r.center().y),
+                egui::Align2::LEFT_CENTER,
+                tr("newdoc.color_settings"),
+                crate::theme::bold(14.0),
+                m3.on,
+            );
+            if head.clicked() {
+                st.color_settings_open = !st.color_settings_open;
+            }
+            if st.color_settings_open {
+                let s = &mut st.settings;
+                let rgb = [s.rgb_profile.clone(), "sRGB IEC61966-2.1".to_string()];
+                let cmyk = [s.cmyk_profile.clone(), "Generic CMYK (open)".to_string()];
+                let gray = GRAY_PROFILES.map(String::from);
+                let intents = INTENTS.map(String::from);
+                let rows: [(&str, &str, &mut String, &[String]); 4] = [
+                    ("newdoc_rgb", "newdoc.rgb_profile", &mut s.rgb_profile, &rgb),
+                    (
+                        "newdoc_cmyk",
+                        "newdoc.cmyk_profile",
+                        &mut s.cmyk_profile,
+                        &cmyk,
+                    ),
+                    (
+                        "newdoc_gray",
+                        "newdoc.gray_profile",
+                        &mut s.gray_profile,
+                        &gray,
+                    ),
+                    ("newdoc_intent", "newdoc.intent", &mut s.intent, &intents),
+                ];
+                for (id, key, value, options) in rows.into_iter() {
+                    phone_label(ui, &m3, &tr(key));
+                    let r = phone_row(ui, width, ROW);
+                    chrome::combo(ui, id, r, value.clone(), |ui| {
+                        let mut seen: Vec<&String> = Vec::new();
+                        for o in options {
+                            if seen.contains(&o) {
+                                continue;
+                            }
+                            seen.push(o);
+                            ui.selectable_value(value, o.clone(), o);
+                        }
+                    });
+                }
+            }
+
+            // ----- The actions -----
+            ui.add_space(8.0);
+            if crate::ui::mobile::text_button(ui, &m3, "?").clicked() {
+                app.open_dialog_help();
+            }
+        },
+            |ui| {
+                ui.horizontal(|ui| {
+                    ui.checkbox(
+                        &mut dont_show,
+                        egui::RichText::new(tr("newdoc.dont_show")).size(13.0),
+                    );
+                });
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if crate::ui::mobile::filled_button(ui, &m3, &tr("dialog.ok")).clicked() {
+                            ok = true;
+                        }
+                        if crate::ui::mobile::text_button(ui, &m3, &tr("dialog.cancel")).clicked() {
+                            cancel = true;
+                        }
+                    });
+                });
+            },
+        );
+    st.dont_show = dont_show;
+    if cancel {
+        *close = true;
+    }
+    if ok {
+        *close = true;
+        create(app, st);
+        app.save_settings();
+    }
+}
+
 /// OK: open the drawing and keep the settings for next time (the caller
 /// writes them to disk).
-pub fn create(app: &mut App, st: &NewDocState) {
-    let name = if st.name.trim().is_empty() {
+pub fn create(app: &mut App, st: &NewDocState) {    let name = if st.name.trim().is_empty() {
         app.peek_untitled_name()
     } else {
         st.name.trim().to_string()

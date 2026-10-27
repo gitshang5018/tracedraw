@@ -21,6 +21,30 @@ use tracedraw_core::{Color, Command, Fill};
 pub const ROW_H: f32 = 25.0;
 const SWATCH: f32 = 20.0;
 const STRIDE: f32 = 21.0;
+
+/// The side of a swatch: 20 px, and 34 on a phone, where a colour is
+/// picked with a finger rather than a mouse.
+pub fn swatch_side() -> f32 {
+    if crate::ui::mobile::phone() {
+        34.0
+    } else {
+        SWATCH
+    }
+}
+
+/// From one swatch's left edge to the next.
+pub fn stride_len() -> f32 {
+    if crate::ui::mobile::phone() {
+        swatch_side() + 1.0
+    } else {
+        STRIDE
+    }
+}
+
+/// The height of a palette row, its swatches and the space round them.
+pub fn row_h() -> f32 {
+    swatch_side() + 5.0
+}
 /// From a row's left edge to the frame of the first swatch.
 const LEAD: f32 = 77.0;
 /// Room for the scroll and expand buttons at the right.
@@ -48,6 +72,61 @@ pub fn palette_row(app: &mut App, ui: &mut Ui) {
 /// The document palette row.
 pub fn document_palette_row(app: &mut App, ui: &mut Ui) {
     row(app, ui, Row::Document, false);
+}
+
+/// A palette as a grid of swatches, for a phone: as many to a row as fit,
+/// one row under the next, the whole list swiped rather than scrolled by
+/// arrows. The first well is No Color, as in a row.
+pub fn grid(app: &mut App, ui: &mut Ui, which: Row) {
+    // Nothing to colour on the Welcome Screen: the swatches show pale and
+    // take no clicks (#482).
+    if !app.drawing_shown() {
+        ui.disable();
+        ui.multiply_opacity(0.4);
+    }
+    let colors = colors_of(app, which);
+    let no_color = app.settings.palette.show_no_color;
+    let count = colors.len() + usize::from(no_color);
+    let side = swatch_side();
+    let gap = 6.0;
+    let width = ui.available_width();
+    let cols = (((width + gap) / (side + gap)).floor() as usize).max(1);
+    let rows = count.div_ceil(cols).max(1);
+    // An empty document palette says how a colour gets into it.
+    let hint = which == Row::Document && colors.is_empty();
+    let hint_h = if hint { 20.0 } else { 0.0 };
+    let (rect, _) = ui.allocate_exact_size(
+        vec2(width, rows as f32 * (side + gap) - gap + hint_h),
+        Sense::hover(),
+    );
+    let painter = ui.painter_at(rect);
+    for index in 0..count {
+        let cell = Rect::from_min_size(
+            rect.min
+                + vec2(
+                    (index % cols) as f32 * (side + gap),
+                    (index / cols) as f32 * (side + gap),
+                ),
+            vec2(side, side),
+        );
+        let color_index = if no_color {
+            index.checked_sub(1)
+        } else {
+            Some(index)
+        };
+        let entry = color_index.and_then(|i| colors.get(i));
+        swatch(app, ui, &painter, cell, entry, which, index, color_index);
+    }
+    // An empty document palette says how a colour gets into it.
+    if hint {
+        painter.text(
+            rect.min + vec2(0.0, side + gap + 4.0),
+            Align2::LEFT_TOP,
+            tr("palette.document_hint"),
+            FontId::proportional(11.0),
+            Tokens::text_dim(),
+        );
+    }
 }
 
 /// The default palette as a column (docked on the left or the right).
@@ -202,7 +281,7 @@ fn scroll_of(app: &mut App, which: Row) -> &mut usize {
 /// How thick the strip of `which` is: one row of swatches, and for the
 /// default palette one more swatch for each further row (#610).
 pub fn thickness(app: &App, which: Row) -> f32 {
-    ROW_H + (lines_of(app, which) - 1) as f32 * STRIDE
+    row_h() + (lines_of(app, which) - 1) as f32 * stride_len()
 }
 
 /// Rows of swatches in the strip of `which` (the document palette has one).
@@ -216,7 +295,7 @@ fn lines_of(app: &App, which: Row) -> usize {
 /// How many swatches fit in a row of this width (the No Color well
 /// counts as one).
 pub fn visible_slots(width: f32) -> usize {
-    ((width - LEAD - TAIL - 1.0) / STRIDE).floor().max(1.0) as usize
+    ((width - LEAD - TAIL - 1.0) / stride_len()).floor().max(1.0) as usize
 }
 
 fn row(app: &mut App, ui: &mut Ui, which: Row, vertical: bool) {
@@ -427,9 +506,9 @@ fn row(app: &mut App, ui: &mut Ui, which: Row, vertical: bool) {
         px.rect(
             ax.rect(
                 LEAD,
-                EDGE + line as f32 * STRIDE,
-                n as f32 * STRIDE + 1.0,
-                STRIDE + 1.0,
+                EDGE + line as f32 * stride_len(),
+                n as f32 * stride_len() + 1.0,
+                stride_len() + 1.0,
             ),
             FRAME,
         );
@@ -463,10 +542,10 @@ fn row(app: &mut App, ui: &mut Ui, which: Row, vertical: bool) {
     for slot in 0..shown {
         let index = scroll + slot;
         let cell = ax.rect(
-            LEAD + 1.0 + (slot % cols) as f32 * STRIDE,
-            EDGE + 1.0 + (slot / cols) as f32 * STRIDE,
-            SWATCH,
-            SWATCH,
+            LEAD + 1.0 + (slot % cols) as f32 * stride_len(),
+            EDGE + 1.0 + (slot / cols) as f32 * stride_len(),
+            swatch_side(),
+            swatch_side(),
         );
         let color_index = if no_color {
             index.checked_sub(1)
@@ -478,7 +557,7 @@ fn row(app: &mut App, ui: &mut Ui, which: Row, vertical: bool) {
     }
     if which == Row::Document && shown < slots && colors.is_empty() && !vertical {
         painter.text(
-            ax.point(LEAD + shown as f32 * STRIDE + 9.0, EDGE + 11.0),
+            ax.point(LEAD + shown as f32 * stride_len() + 9.0, EDGE + 11.0),
             Align2::LEFT_CENTER,
             tr("palette.document_hint"),
             FontId::proportional(11.0),
@@ -866,13 +945,13 @@ pub fn popups(app: &mut App, ctx: &egui::Context) {
     if let Some((color, anchor)) = app.palette_shades {
         let id = egui::Id::new("palette_shades");
         let grid = shades(color);
-        let side = 5.0 * STRIDE + 1.0;
+        let side = 5.0 * stride_len() + 1.0;
         let screen = ctx.content_rect();
         // Above the swatch, kept on the screen (a palette docked at the
         // top or on a side has no room above some swatches).
         let mut pos = pos2(anchor.x - side / 2.0, anchor.y - side - 6.0);
         if pos.y < screen.top() {
-            pos.y = anchor.y + SWATCH + 6.0;
+            pos.y = anchor.y + swatch_side() + 6.0;
         }
         pos.x = pos.x.clamp(
             screen.left(),
@@ -889,8 +968,8 @@ pub fn popups(app: &mut App, ctx: &egui::Context) {
                 for (i, c) in grid.iter().enumerate() {
                     let (col, row) = ((i % 5) as f32, (i / 5) as f32);
                     let cell = Rect::from_min_size(
-                        r.min + vec2(1.0 + col * STRIDE, 1.0 + row * STRIDE),
-                        vec2(SWATCH, SWATCH),
+                        r.min + vec2(1.0 + col * stride_len(), 1.0 + row * stride_len()),
+                        vec2(swatch_side(), swatch_side()),
                     );
                     painter.rect_filled(cell, 0.0, crate::canvas::to_color32(*c));
                     let resp = ui
@@ -930,7 +1009,7 @@ pub fn popups(app: &mut App, ctx: &egui::Context) {
         // Above the row, from its first swatch.
         let strip = ctx
             .data(|d| d.get_temp::<Pos2>(egui::Id::new(("palette_strip", which as u8))))
-            .unwrap_or(pos2(screen.left() + LEAD, screen.bottom() - 3.0 * ROW_H));
+            .unwrap_or(pos2(screen.left() + LEAD, screen.bottom() - 3.0 * row_h()));
         let vertical = ctx
             .data(|d| d.get_temp::<bool>(egui::Id::new(("palette_strip_vertical", which as u8))))
             .unwrap_or(false);
@@ -938,11 +1017,11 @@ pub fn popups(app: &mut App, ctx: &egui::Context) {
             // Beside a column: towards the middle of the window.
             let cols = 12usize;
             let rows = colors.len().div_ceil(cols).max(1);
-            let size = vec2(cols as f32 * STRIDE + 1.0, rows as f32 * STRIDE + 1.0);
+            let size = vec2(cols as f32 * stride_len() + 1.0, rows as f32 * stride_len() + 1.0);
             let x = if strip.x > screen.center().x {
                 strip.x - size.x - 24.0
             } else {
-                strip.x + ROW_H + 8.0
+                strip.x + row_h() + 8.0
             };
             let y = strip
                 .y
@@ -950,13 +1029,13 @@ pub fn popups(app: &mut App, ctx: &egui::Context) {
                 .max(screen.top());
             (cols, size, pos2(x, y))
         } else {
-            let cols = (((screen.right() - strip.x - 24.0) / STRIDE).floor() as usize).clamp(1, 33);
+            let cols = (((screen.right() - strip.x - 24.0) / stride_len()).floor() as usize).clamp(1, 33);
             let rows = colors.len().div_ceil(cols).max(1);
-            let size = vec2(cols as f32 * STRIDE + 1.0, rows as f32 * STRIDE + 1.0);
+            let size = vec2(cols as f32 * stride_len() + 1.0, rows as f32 * stride_len() + 1.0);
             // Above the row, or below it when it is docked at the top.
             let above = strip.y - size.y - 16.0;
             let y = if above < screen.top() {
-                strip.y + ROW_H + 8.0
+                strip.y + row_h() + 8.0
             } else {
                 above
             };
@@ -974,8 +1053,8 @@ pub fn popups(app: &mut App, ctx: &egui::Context) {
                     for (i, (name, c)) in colors.iter().enumerate() {
                         let (col, row) = ((i % cols) as f32, (i / cols) as f32);
                         let cell = Rect::from_min_size(
-                            r.min + vec2(1.0 + col * STRIDE, 1.0 + row * STRIDE),
-                            vec2(SWATCH, SWATCH),
+                            r.min + vec2(1.0 + col * stride_len(), 1.0 + row * stride_len()),
+                            vec2(swatch_side(), swatch_side()),
                         );
                         painter.rect_filled(cell, 0.0, crate::canvas::to_color32(*c));
                         let resp = ui
@@ -1327,14 +1406,14 @@ mod tests {
         let fill = |app: &App| app.doc().find_shape(id).expect("shape").fill.clone();
         let before = fill(&app);
         // The first column, one swatch down.
-        let x = LEAD + 1.0 + SWATCH / 2.0;
-        let second_line = egui::pos2(x, 3.0 + STRIDE + SWATCH / 2.0);
+        let x = LEAD + 1.0 + swatch_side() / 2.0;
+        let second_line = egui::pos2(x, 3.0 + stride_len() + swatch_side() / 2.0);
         click(&mut app, second_line);
         assert_eq!(fill(&app), before, "one row: nothing there");
-        assert_eq!(thickness(&app, Row::Main), ROW_H);
+        assert_eq!(thickness(&app, Row::Main), row_h());
         app.settings.palette.rows = 2;
-        assert_eq!(thickness(&app, Row::Main), ROW_H + STRIDE);
-        assert_eq!(thickness(&app, Row::Document), ROW_H);
+        assert_eq!(thickness(&app, Row::Main), row_h() + stride_len());
+        assert_eq!(thickness(&app, Row::Document), row_h());
         click(&mut app, second_line);
         let solid = |app: &App| match fill(app) {
             Fill::Solid(c) => c,
@@ -1344,20 +1423,20 @@ mod tests {
         // last (the No Color well takes the first slot).
         let cols = visible_slots(800.0);
         assert_eq!(solid(&app), app.palette[cols - 1].1);
-        assert!(height.get() >= ROW_H + STRIDE, "{}", height.get());
-        click(&mut app, egui::pos2(x + STRIDE, 3.0 + SWATCH / 2.0));
+        assert!(height.get() >= row_h() + stride_len(), "{}", height.get());
+        click(&mut app, egui::pos2(x + stride_len(), 3.0 + swatch_side() / 2.0));
         assert_eq!(solid(&app), Color::cmyk_pct(0.0, 0.0, 0.0, 100.0));
-        click(&mut app, egui::pos2(x + 2.0 * STRIDE, 3.0 + SWATCH / 2.0));
+        click(&mut app, egui::pos2(x + 2.0 * stride_len(), 3.0 + swatch_side() / 2.0));
         assert_eq!(solid(&app), Color::cmyk_pct(0.0, 0.0, 0.0, 90.0));
         // The scroll arrow moves one swatch: Black comes under the pointer
         // of the first swatch.
         click(&mut app, egui::pos2(800.0 - 49.0 + 8.0, 12.0));
         assert_eq!(app.palette_scroll, 1);
-        click(&mut app, egui::pos2(x, 3.0 + SWATCH / 2.0));
+        click(&mut app, egui::pos2(x, 3.0 + swatch_side() / 2.0));
         assert_eq!(solid(&app), Color::cmyk_pct(0.0, 0.0, 0.0, 100.0));
         // More than three rows is not kept.
         app.settings.palette.rows = 9;
-        assert_eq!(thickness(&app, Row::Main), ROW_H + 2.0 * STRIDE);
+        assert_eq!(thickness(&app, Row::Main), row_h() + 2.0 * stride_len());
     }
 
     /// The palette's own menu has Rows > 1 Row, 2 Rows, 3 Rows: picking
@@ -1450,7 +1529,7 @@ mod tests {
         frame(&mut app, release(two));
         frame(&mut app, Vec::new());
         assert_eq!(app.settings.palette.rows(), 2);
-        assert_eq!(thickness(&app, Row::Main), ROW_H + STRIDE);
+        assert_eq!(thickness(&app, Row::Main), row_h() + stride_len());
     }
 
     /// An RGB drawing's palette holds the palette's colours as RGB (named

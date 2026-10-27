@@ -30,11 +30,14 @@ use std::sync::OnceLock;
 use winit::platform::android::activity::AndroidApp;
 
 /// Space the system bars take, in pixels: the status bar at the top, the
-/// gesture bar at the bottom.
+/// gesture bar at the bottom (and, with the phone on its side, at the
+/// left or the right).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Insets {
     pub top: i32,
     pub bottom: i32,
+    pub left: i32,
+    pub right: i32,
 }
 
 /// Run `f` with the activity's JNI environment, on the calling thread.
@@ -138,7 +141,16 @@ pub fn read(activity: *mut c_void, vm: *mut c_void, sdk: i32) -> Option<Insets> 
             .ok()?;
         let top = env.get_field(&bars, "top", "I").ok()?.i().ok()?;
         let bottom = env.get_field(&bars, "bottom", "I").ok()?.i().ok()?;
-        Some(Insets { top, bottom })
+        // With the phone on its side the gesture bar is at an edge
+        // rather than at the bottom.
+        let left = env.get_field(&bars, "left", "I").ok()?.i().ok()?;
+        let right = env.get_field(&bars, "right", "I").ok()?.i().ok()?;
+        Some(Insets {
+            top,
+            bottom,
+            left,
+            right,
+        })
     })
 }
 
@@ -651,4 +663,218 @@ pub fn ask_storage(app: &AndroidApp) {
         );
         Some(())
     });
+}
+
+// ---------------------------------------------------------------------------
+// The drawing the system handed over
+// ---------------------------------------------------------------------------
+//
+// Tapping a `.cdr` or a `.tdraw` in a file manager starts TraceDraw with
+// that file as the intent's data: a `file://` path on older systems, a
+// `content://` URI since Android 7. The URI is not a path — the bytes come
+// through the content resolver — so the drawing is copied into the app's
+// own Documents folder and opened from there.
+
+/// The name the file should take here: the URI's last segment, with the
+/// extension the type names when the name has none.
+fn shared_name(last: &str, mime: &str) -> String {
+    let safe: String = last
+        .chars()
+        .map(|c| if "/\\:*?\"<>|".contains(c) { '_' } else { c })
+        .collect();
+    let safe = if safe.trim().is_empty() {
+        "Shared".to_string()
+    } else {
+        safe
+    };
+    let lower = safe.to_ascii_lowercase();
+    if lower.ends_with(".cdr") || lower.ends_with(".tdraw") {
+        return safe;
+    }
+    let ext = if mime.contains("corel") || mime.contains("cdr") {
+        ".cdr"
+    } else {
+        ".tdraw"
+    };
+    format!("{safe}{ext}")
+}
+
+/// A Java string as Rust text, if there is one.
+fn jstring_text(env: &mut jni::JNIEnv<'_>, obj: JObject<'_>) -> Option<String> {
+    if obj.is_null() {
+        return None;
+    }
+    let text = JString::from(obj);
+    let out: String = env.get_string(&text).ok()?.into();
+    (!out.is_empty()).then_some(out)
+}
+
+/// The `content://` URI the activity was started with, its last path
+/// segment and the type the system gives it.
+fn intent_data(app: &AndroidApp) -> Option<(String, String, String)> {
+    with_env(app.vm_as_ptr(), |env| {
+        let activity = activity_ref(env, app.activity_as_ptr())?;
+        let intent = env
+            .call_method(&activity, "getIntent", "()Landroid/content/Intent;", &[])
+            .ok()?
+            .l()
+            .ok()?;
+        if intent.is_null() {
+            return None;
+        }
+        let uri = env
+            .call_method(&intent, "getData", "()Landroid/net/Uri;", &[])
+            .ok()?
+            .l()
+            .ok()?;
+        if uri.is_null() {
+            return None;
+        }
+        let uri_text = env
+            .call_method(&uri, "toString", "()Ljava/lang/String;", &[])
+            .ok()?
+            .l()
+            .ok()?;
+        let uri_text = jstring_text(env, uri_text)?;
+        let last = env
+            .call_method(&uri, "getLastPathSegment", "()Ljava/lang/String;", &[])
+            .ok()
+            .and_then(|v| v.l().ok())
+            .and_then(|o| jstring_text(env, o))
+            .unwrap_or_default();
+        let mime = env
+            .call_method(&intent, "getType", "()Ljava/lang/String;", &[])
+            .ok()
+            .and_then(|v| v.l().ok())
+            .and_then(|o| jstring_text(env, o))
+            .unwrap_or_default();
+        Some((uri_text, last, mime))
+    })
+}
+
+/// Copy the drawing the app was started to open into `dir`, and give back
+/// its path there. Nothing to open (a start from the launcher) gives none.
+pub fn shared_drawing(app: &AndroidApp, dir: &std::path::Path) -> Option<std::path::PathBuf> {
+    let (uri, last, mime) = intent_data(app)?;
+    let name = shared_name(&last, &mime);
+    let _ = std::fs::create_dir_all(dir);
+    let path = dir.join(&name);
+    // A drawing of that name is already there: keep both.
+    let path = if path.exists() {
+        let stem = path
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| "Shared".into());
+        let ext = path
+            .extension()
+            .map(|e| format!(".{}", e.to_string_lossy()))
+            .unwrap_or_default();
+        let mut n = 2;
+        loop {
+            let candidate = dir.join(format!("{stem} ({n}){ext}"));
+            if !candidate.exists() {
+                break candidate;
+            }
+            n += 1;
+        }
+    } else {
+        path
+    };
+    // A `file://` URI is a path already; a `content://` one is read.
+    let bytes = if uri.starts_with("file:") {
+        let file_path = with_env(app.vm_as_ptr(), |env| {
+            let activity = activity_ref(env, app.activity_as_ptr())?;
+            let intent = env
+                .call_method(&activity, "getIntent", "()Landroid/content/Intent;", &[])
+                .ok()?
+                .l()
+                .ok()?;
+            let uri = env
+                .call_method(&intent, "getData", "()Landroid/net/Uri;", &[])
+                .ok()?
+                .l()
+                .ok()?;
+            let path = env
+                .call_method(&uri, "getPath", "()Ljava/lang/String;", &[])
+                .ok()?
+                .l()
+                .ok()?;
+            jstring_text(env, path)
+        });
+        file_path.and_then(|p| std::fs::read(p).ok())
+    } else {
+        read_uri(app, &uri)
+    }?;
+    std::fs::write(&path, bytes).ok()?;
+    Some(path)
+}
+
+/// The bytes behind a `content://` URI, through the content resolver.
+fn read_uri(app: &AndroidApp, uri: &str) -> Option<Vec<u8>> {
+    with_env(app.vm_as_ptr(), |env| {
+        let activity = activity_ref(env, app.activity_as_ptr())?;
+        let text: JObject = JObject::from(env.new_string(uri).ok()?);
+        let parsed = env
+            .call_static_method(
+                "android/net/Uri",
+                "parse",
+                "(Ljava/lang/String;)Landroid/net/Uri;",
+                &[JValue::Object(&text)],
+            )
+            .ok()?
+            .l()
+            .ok()?;
+        let resolver = env
+            .call_method(
+                &activity,
+                "getContentResolver",
+                "()Landroid/content/ContentResolver;",
+                &[],
+            )
+            .ok()?
+            .l()
+            .ok()?;
+        let stream = env
+            .call_method(
+                &resolver,
+                "openInputStream",
+                "(Landroid/net/Uri;)Ljava/io/InputStream;",
+                &[JValue::Object(&parsed)],
+            )
+            .ok()?
+            .l()
+            .ok()?;
+        if stream.is_null() {
+            return None;
+        }
+        let buffer = env.new_byte_array(16 * 1024).ok()?;
+        let out = env
+            .new_object("java/io/ByteArrayOutputStream", "()V", &[])
+            .ok()?;
+        loop {
+            let n = env
+                .call_method(&stream, "read", "([B)I", &[JValue::Object(&buffer)])
+                .ok()?
+                .i()
+                .ok()?;
+            if n <= 0 {
+                break;
+            }
+            env.call_method(
+                &out,
+                "write",
+                "([BII)V",
+                &[JValue::Object(&buffer), JValue::Int(0), JValue::Int(n)],
+            )
+            .ok()?;
+        }
+        let _ = env.call_method(&stream, "close", "()V", &[]);
+        let bytes = env
+            .call_method(&out, "toByteArray", "()[B", &[])
+            .ok()?
+            .l()
+            .ok()?;
+        let bytes = jni::objects::JByteArray::from(bytes);
+        env.convert_byte_array(&bytes).ok()
+    })
 }
