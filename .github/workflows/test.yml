@@ -56,10 +56,18 @@ jobs:
         run: |
           set -o pipefail
           xvfb-run -a cargo test --workspace --no-fail-fast 2>&1 | tee "$RUNNER_TEMP/test.log"
-      # A failing run has to name the tests that failed in the run's own
-      # annotations and summary: the log itself asks for a signed-in reader,
-      # and the annotation is what a reader of the API sees. The lint's
-      # complaints are read the same way, from whichever log is there.
+      # The application crate carries warnings of its own (an unread field, a
+      # `mut` it does not need), so the lint gate stays on the library crates,
+      # as AGENTS.md describes.
+      - name: Lint
+        if: success()
+        run: |
+          set -o pipefail
+          cargo clippy --workspace --exclude tracedraw -- -D warnings 2>&1 | tee "$RUNNER_TEMP/clippy.log"
+      # A failing run has to name what failed in the run's own annotations and
+      # summary: the logs ask for a signed-in reader, and the annotation is
+      # what a reader of the API sees. This is the last step, so that it runs
+      # whichever of the two before it failed.
       - name: What failed
         if: failure()
         run: |
@@ -74,11 +82,3 @@ jobs:
           log test.log | grep -E "^test .* FAILED$" | head -6 | sed 's/^/::error::/' || true
           log clippy.log | grep -E "^error(\[|:)" | head -8 | sed 's/^/::error::/' || true
           log test.log | grep -E "panicked" | head -4 | sed 's/^/::error::/' || true
-      # The application crate carries warnings of its own (an unread field, a
-      # `mut` it does not need), so the lint gate stays on the library crates,
-      # as AGENTS.md describes.
-      - name: Lint
-        if: success()
-        run: |
-          set -o pipefail
-          cargo clippy --workspace --exclude tracedraw -- -D warnings 2>&1 | tee "$RUNNER_TEMP/clippy.log"
