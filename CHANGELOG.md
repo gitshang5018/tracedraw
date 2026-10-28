@@ -14,6 +14,7 @@ full, row-by-row status.
 - Installing an update on a phone: the installer now comes from the package manager (`getPackageManager().getPackageInstaller()`) instead of `getSystemService("package")`, which answered with nothing and stopped the install with "no package installer". A Java exception now reaches the box with what it said, so the next failure names its cause instead of reporting something missing.
 - 在手机上安装更新：Android 14 不允许可变 PendingIntent 携带隐式 Intent，`PendingIntent.getBroadcast` 因此抛出异常，安装框只显示「Java exception was thrown」。现在意图带上了本应用的包名，成为显式意图；并且抛出异常时读取异常自身的文字，失败会说明系统给出的原因，而不是那句话本身。
 - 在手机上安装更新时系统安装器不出现：应用提交的安装会话被系统接受，之后却什么也不发生。现在 Android 10 及以上改为把安装包写进下载目录，再用文件管理器点击 APK 时发送的同一个 VIEW 意图打开它，也就是手动安装走的那条路；更早的系统仍用安装会话。
+- 更新下载报「No address associated with hostname」：下载先经 `github.adc.dpdns.org` 代理，而有些网络解析不了 `dpdns.org`，于是连文件都没开始下就失败。现在代理不通会回退到文件本身的地址（GitHub 的原始下载链接），重定向也保持直连，不再被重新套上代理；失败时错误里会带上最后尝试的地址。
 - 在手机上重新安装后读不到存储里的图纸：判断是否已获「所有文件访问」时，原来用 `is_dir()` 看共享存储，而没有授权时目录自身的属性仍然读得到，于是应用误以为已经授权，文件列表一片空白，也不再给出授权入口。现在只信系统自己的回答 `isExternalStorageManager()`，未授权时授权横幅会照常出现。
 - 手机上的悬浮调色板：卡片圆角从 20 收到 12，阴影也一并收小，和菜单、对话框统一；标题栏和右上角的叉现在都能把卡片收起来（此前只能在卡片外点一下，点窗口本身没有反应）。同时把手机端的窗口圆角从 28 收到 14、菜单从 16 收到 10，Material 对话框也一起收敛，浮层之间的落差不再突兀。
 - 手机上选中对象后，工具栏上方直接出现一条与对象相关的属性栏：文本给出字体和字号、连接线给出走线方式、形状给出轮廓，左右滑动看其余选项。没有选中对象时这条栏完全不出现，画布保持原来的高度；打开底部面板时也让位给它。

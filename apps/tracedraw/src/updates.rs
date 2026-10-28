@@ -815,17 +815,30 @@ impl Installer {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn download(url: &str) -> Result<Box<dyn std::io::Read + Send>, String> {
-    // Through the proxy first, since a network that needs it is the one
-    // that cannot reach GitHub at all; the address itself when the proxy
-    // answers nothing (or is not used for this address).
-    let proxied = through_proxy(url);
-    match open_stream(&proxied) {
-        Ok(body) => Ok(body),
-        Err(through) if proxied != url => {
-            open_stream(url).map_err(|direct| format!("{through} (directly: {direct})"))
+    // The proxy first, since a network that needs it is the one that
+    // cannot reach GitHub at all; then the address the proxy wraps, then
+    // the address itself. A proxy whose own host does not resolve (a
+    // network that cannot look `dpdns.org` up answers "no address
+    // associated with hostname") is not the only attempt: the file's own
+    // address is tried after it.
+    let wrapped = url.strip_prefix(PROXY).unwrap_or("");
+    let mut addresses: Vec<String> = Vec::new();
+    for address in [through_proxy(url), wrapped.to_string(), url.to_string()] {
+        if !address.is_empty() && !addresses.iter().any(|a| *a == address) {
+            addresses.push(address);
         }
-        Err(e) => Err(e),
     }
+    let mut last = String::new();
+    for address in &addresses {
+        match open_stream(address) {
+            Ok(body) => return Ok(body),
+            Err(e) => last = e,
+        }
+    }
+    Err(match addresses.last() {
+        Some(address) => format!("{last} ({address})"),
+        None => last,
+    })
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -841,9 +854,12 @@ fn open_stream(url: &str) -> Result<Box<dyn std::io::Read + Send>, String> {
         .build()
         .into();
     // Redirects (GitHub sends downloads to its file host) are followed
-    // here, each on a request of its own; the redirect's body is skipped,
-    // and the next address goes through the proxy like the first.
+    // here, each on a request of its own. An address that came through the
+    // proxy keeps going through it; one given directly stays direct, since
+    // a network whose proxy host does not resolve must not be handed the
+    // redirect either.
     let mut url = url.to_string();
+    let direct = !url.starts_with(PROXY);
     for _ in 0..5 {
         let resp = agent
             .get(&url)
@@ -864,7 +880,11 @@ fn open_stream(url: &str) -> Result<Box<dyn std::io::Read + Send>, String> {
                 .get("location")
                 .and_then(|v| v.to_str().ok())
                 .ok_or("a redirect without a location")?;
-            url = through_proxy(next);
+            url = if direct {
+                next.to_string()
+            } else {
+                through_proxy(next)
+            };
             continue;
         }
         if status != 200 {
