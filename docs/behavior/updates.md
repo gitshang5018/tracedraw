@@ -93,18 +93,22 @@ AppImage took the arm64 one, listed first).
 
 GitHub cannot be reached from every network a phone is on, and its file
 host is slow from many of them, so a phone's APK is downloaded from the
-project's own storage instead: EdgeOne Makers' blob storage, served by one
-edge function (`edgeone/`), at `APK_HOST` + `/apk/<file name>`. The Android
-workflow uploads each build's APKs there (`scripts/upload-edgeone.mjs`,
-`EDGEONE_PROJECT_ID` and `EDGEONE_TOKEN`), and drops the ones of the build
-before, since the check always offers the newest build.
+project's own update host instead: a page on EdgeOne's edge network
+(`edgeone/`, `APK_HOST` + `/apk/<file name>`). The Android workflow
+publishes each build's APKs there with `EDGEONE_TOKEN`, and a deployment
+replaces the one before, since the check always offers the newest build.
+
+The file is a page of the site rather than something a function hands over:
+an Edge Function answers within 200 ms of CPU and a Cloud Function may
+return 6 MB at most, while a static file is served by the CDN. A single
+page may be 25 MiB, so an APK over that (the x86_64 one, for emulators)
+stays on the release alone.
 
 The version, the file name and the SHA-256 digest still come from the
-release: the storage only hands over the bytes, and a file that does not
-match the digest is thrown away. When the storage has not got the file yet
-(a build whose upload failed, a repository without the two secrets) the
-release's own address is tried behind it, so the update still arrives, only
-more slowly.
+release: the host only hands over the bytes, and a file that does not match
+the digest is thrown away. When the host has not got the file (a build whose
+deployment failed, a repository without the token) the release's own address
+is tried behind it, so the update still arrives, only more slowly.
 
 ## Install in place
 

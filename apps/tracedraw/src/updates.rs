@@ -33,11 +33,11 @@ pub const RELEASES_URL: &str =
     "https://api.github.com/repos/gitshang5018/tracedraw/releases?per_page=10";
 /// The release list, for when no download fits this system.
 pub const RELEASES_PAGE: &str = "https://github.com/gitshang5018/tracedraw/releases";
-/// Where a phone's APK is downloaded from: the same file, kept in EdgeOne
-/// Makers' blob storage, whose edge network reaches phones that cannot
-/// download from GitHub at all. The project there serves `/apk/<file name>`
-/// out of the store (see `edgeone/`), and the release's own address stays
-/// as the fallback. Empty: download from the release itself.
+/// Where a phone's APK is downloaded from: the same file, published as a
+/// page of the update host on EdgeOne's edge network (see `edgeone/`),
+/// which reaches phones that cannot download from GitHub at all. The
+/// release's own address stays as the fallback. Empty: download from the
+/// release itself.
 pub const APK_HOST: &str = "https://tracedraw.edgeone.dev";
 /// How often the check at start runs, seconds.
 pub const DAILY: u64 = 24 * 60 * 60;

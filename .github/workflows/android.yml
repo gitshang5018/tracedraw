@@ -207,11 +207,12 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          # The changelog, for the notes of a version, and the script that
-          # puts the APKs into the update storage.
+          # The changelog, for the notes of a version, and the page the
+          # update host serves beside the APKs.
           sparse-checkout: |
             CHANGELOG.md
-            scripts/upload-edgeone.mjs
+            edgeone/index.html
+            edgeone/package.json
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
@@ -219,18 +220,39 @@ jobs:
       - name: The APKs
         run: ls -l artifacts
 
-      # The app downloads a phone's APK from EdgeOne Makers' blob storage
-      # (see `edgeone/`), which reaches phones that cannot download from
-      # GitHub at all. Without the two secrets the APKs stay on the release
-      # and the app falls back to them, so this step never blocks a release.
-      - name: Update storage
+      # The app downloads a phone's APK from the update host on EdgeOne's
+      # edge network (see `edgeone/`), which reaches phones that cannot
+      # download from GitHub at all. The APKs go out as the site's own
+      # files: a function cannot hand over 25 MB (Edge Functions answer in
+      # 200 ms of CPU, Cloud Functions cap a response at 6 MB), while a
+      # static file is served by the CDN and has no such limit beyond the
+      # 25 MiB a single asset may have. The one over that stays on the
+      # release, where the app still finds it. Without the token nothing is
+      # deployed and every phone falls back to the release, so this step
+      # never blocks a release.
+      - name: Update host
         continue-on-error: true
         env:
-          EDGEONE_PROJECT_ID: ${{ secrets.EDGEONE_PROJECT_ID }}
           EDGEONE_TOKEN: ${{ secrets.EDGEONE_TOKEN }}
         run: |
-          npm install --no-save --no-audit --no-fund @edgeone/pages-blob
-          node scripts/upload-edgeone.mjs artifacts
+          set -euo pipefail
+          if [[ -z "${EDGEONE_TOKEN:-}" ]]; then
+            echo "No EDGEONE_TOKEN: the APKs stay on the release only."
+            exit 0
+          fi
+          mkdir -p dist/apk
+          cp edgeone/index.html edgeone/package.json dist/
+          limit=$((25 * 1024 * 1024))
+          for apk in artifacts/*.apk; do
+            size=$(stat -c%s "$apk")
+            if (( size <= limit )); then
+              cp "$apk" dist/apk/
+            else
+              echo "::warning::$apk is $size bytes, over the 25 MiB a site file may have: it stays on the release."
+            fi
+          done
+          ls -l dist/apk
+          npx -y edgeone@latest makers deploy ./dist -n tracedraw -t "$EDGEONE_TOKEN"
 
       # The nightly keeps the name "nightly" while the APK names carry the
       # commit: the ones of the run before are dropped, or they pile up.

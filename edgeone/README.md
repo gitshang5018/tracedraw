@@ -1,92 +1,71 @@
 # TraceDraw's update host
 
-The APKs of a release are kept in EdgeOne Makers' blob storage and served
-by one edge function, so a phone downloads its update from Tencent's edge
-network instead of from GitHub, which a phone behind a filtered network
-cannot reach at all.
+A release's APKs are published as files of this site, so a phone downloads
+its update from Tencent's edge network instead of from GitHub, which a phone
+behind a filtered network cannot reach at all.
 
 The app still asks GitHub which build is the newest (`updates.rs`), and
 checks the SHA-256 digest GitHub records for the file; only the file itself
-comes from here. When the storage has not got a release's APK yet, the app
-falls back to the release's own address, so a missing upload costs speed
+comes from here. When the host has not got a release's APK, the app falls
+back to the release's own address, so a missing deployment costs speed
 rather than the update.
+
+## Why files and not a function
+
+An Edge Function answers within 200 ms of CPU, and a Cloud Function may
+return a response of 6 MB at most, while an APK is 23 to 26 MB: a function
+cannot hand one over. A static file is served by the CDN with no such limit,
+beyond the 25 MiB a single page of a site may have.
+
+The x86_64 APK (for emulators) is 25.6 MiB, over that: the workflow leaves
+it on the release, where the app still finds it. The two phone ABIs fit.
 
 ## What is here
 
 ```text
 edgeone/
-  index.html                        a page that says what this is
-  package.json                      the function's dependency
-  edge-functions/
-    apk/[[default]].js              GET /apk/<file name> -> the file from the store
+  index.html      a page that says what this is
+  package.json    the project's manifest, so the CLI takes the folder
 ```
 
-`GET /apk/tracedraw-0.19.9-dev.4c864d1-android-arm64-v8a.apk` answers with
-the APK, `application/vnd.android.package-archive`. Nothing else is served:
-the store is a project's own data, not a file host.
+The workflow makes the site to deploy: `index.html`, `package.json` and
+`apk/<file name>` for every APK under 25 MiB. `/apk/<file name>` is what the
+app asks for.
 
 ## Making the project
 
 1. Open [pages.edgeone.ai](https://pages.edgeone.ai) and sign in.
 2. On the console's home page, **创建项目**, and choose **直接上传** (direct
-   upload). It runs no build, which is what this folder wants: the function
-   is the whole site, and the APKs arrive in the store from the workflow
-   rather than with the code.
+   upload): the workflow deploys to it with the CLI, and the CLI wants a
+   project of that kind.
 3. Give it a name (5 to 50 characters, lower-case letters, digits and
-   hyphens) and choose the acceleration region.
-4. Drag the **contents of this folder** in: `index.html`, `package.json`
-   and `edge-functions/` have to sit at the root of what is uploaded, not
-   inside another folder.
-5. **开始部署**. The deployment's page shows the address the project answers
-   on, like `https://<name>.edgeone.dev`.
-
-The blob store makes itself: the first request that reads or writes the
-`tracedraw` namespace creates it, and the console's Blob page then lists it.
+   hyphens; the workflow expects `tracedraw`), and choose the acceleration
+   region.
+4. Drag this folder's contents in, and **开始部署**. The deployment's page
+   shows the address the project answers on, like
+   `https://tracedraw.edgeone.dev`.
 
 ## Wiring it to the app
-
-Two things are needed, and neither of them is in the project's own settings:
 
 1. **The API token** is a tab of the Makers console itself, beside the
    project list (API Token > 创建 API Token > a description, an expiry date,
    提交). It is not per project.
-2. **The project id** is the last part of the project's address in the
-   browser, `https://pages.edgeone.ai/project/pages-xxxxxxxx`, the
-   `pages-xxxxxxxx` bit. `edgeone makers link` in the CLI writes the same id
-   into the project's local configuration, for when the address does not
-   show it.
-
-Then:
-3. Add both to the GitHub repository, Settings > Secrets and variables >
-   Actions: `EDGEONE_PROJECT_ID` and `EDGEONE_TOKEN`. Without them the
-   Android workflow skips the upload and the app downloads from the release,
-   exactly as it did before.
-4. Put the project's address in `apps/tracedraw/src/updates.rs` as
+2. Add it to the GitHub repository, Settings > Secrets and variables >
+   Actions, as `EDGEONE_TOKEN`. Without it the workflow deploys nothing and
+   the app downloads from the release, exactly as it did before.
+3. Put the project's address in `apps/tracedraw/src/updates.rs` as
    `APK_HOST`.
-5. Push to `main`: the workflow builds the APKs, uploads them under `apk/`,
-   and drops the ones of the build before.
-
-The store keeps only the newest build's files, since the update check always
-offers the newest build and the free plan's 1 GB would otherwise fill up
-with nightlies.
-
-A mainland acceleration region answers on a domain that has been filed
-(备案); the project's own `.edgeone.dev` address needs no filing and answers
-from the region the project was made in.
+4. Push to `main`: the workflow builds the APKs and deploys them as the
+   site's own files.
 
 ## Checking it by hand
 
 ```sh
-curl -I https://<name>.edgeone.dev/apk/tracedraw-0.19.9-dev.4c864d1-android-arm64-v8a.apk
+curl -I https://tracedraw.edgeone.dev/apk/tracedraw-0.19.9-dev.d41c92a-android-arm64-v8a.apk
 ```
 
-answers `200` with `Content-Type: application/vnd.android.package-archive`
-and the file's size; a name that is not a release file answers `404`, and so
-does every name before the first upload, which is expected. `-I` sends HEAD,
-which the function answers with the headers alone.
+answers `200` with the file's size; a name that is not there answers `404`.
 
-## A project from the repository instead
-
-Importing the repository works too, with this folder as the project's root
-and no build command, but the function would then only change with a commit.
-The direct upload above is enough: a release changes the store, not the code.
+A function under `edge-functions/` cannot serve these files: it answers in
+200 ms of CPU and the platform returns `545` when a script cannot finish in
+it. That is why the APKs are pages of the site.
