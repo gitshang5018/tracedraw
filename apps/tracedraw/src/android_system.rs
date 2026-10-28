@@ -1289,7 +1289,15 @@ pub fn install_package(path: &std::path::Path) -> Result<(), String> {
     }
     let vm = app.vm_as_ptr();
     let activity = app.activity_as_ptr();
-    let answer = with_env(vm, |env| Some(install_session(env, activity, &bytes)));
+    // A call that throws answers with the bare "Java exception was thrown"
+    // and leaves the exception pending: what it said is read here, so the
+    // box names the reason the system gave instead of that sentence.
+    let answer = with_env(vm, |env| {
+        Some(match install_session(env, activity, &bytes) {
+            Err(e) => Err(java_error(env, "the installer").unwrap_or(e)),
+            ok => ok,
+        })
+    });
     match answer {
         Some(Ok(())) => Ok(()),
         Some(Err(e)) => Err(e),
@@ -1424,6 +1432,21 @@ fn install_session(
             &[JValue::Object(&JObject::from(action))],
         )
         .map_err(|e| e.to_string())?;
+    // Android 14 refuses a mutable PendingIntent whose intent names neither
+    // a component nor a package, and an action alone is an implicit one, so
+    // the call throws. Naming this app's package makes it explicit.
+    let package = env
+        .call_method(&activity, "getPackageName", "()Ljava/lang/String;", &[])
+        .map_err(|e| e.to_string())?
+        .l()
+        .map_err(|e| e.to_string())?;
+    env.call_method(
+        &intent,
+        "setPackage",
+        "(Ljava/lang/String;)Landroid/content/Intent;",
+        &[JValue::Object(&package)],
+    )
+    .map_err(|e| e.to_string())?;
     let pending = env
         .call_static_method(
             "android/app/PendingIntent",
