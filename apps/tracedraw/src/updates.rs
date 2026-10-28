@@ -824,7 +824,7 @@ fn download(url: &str) -> Result<Box<dyn std::io::Read + Send>, String> {
     let wrapped = url.strip_prefix(PROXY).unwrap_or("");
     let mut addresses: Vec<String> = Vec::new();
     for address in [through_proxy(url), wrapped.to_string(), url.to_string()] {
-        if !address.is_empty() && !addresses.iter().any(|a| *a == address) {
+        if !address.is_empty() && !addresses.contains(&address) {
             addresses.push(address);
         }
     }
