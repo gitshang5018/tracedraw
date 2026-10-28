@@ -4135,6 +4135,7 @@ updates.installed = "TraceDraw {new} sudah terpasang. Versi ini berjalan saat Tr
 updates.install_failed = "Pembaruan tidak dapat dipasang: {error}"
 updates.install_ready = "TraceDraw {new} sudah diunduh: penginstal sistem akan menawarkan pembaruan."
 updates.allow_install = "Izinkan TraceDraw memasang aplikasi, lalu periksa pembaruan lagi."
+updates.check_now = "Periksa pembaruan"
 web.notice_title = "TraceDraw di peramban Anda"
 web.notice_text = "Ini program Rust yang sama dengan aplikasi desktop, dikompilasi ke WebAssembly agar bisa dicoba tanpa memasang apa pun. Peramban lebih lambat: gambar besar, efek berat, dan berkas besar butuh waktu lebih lama, hanya fon bawaan yang tersedia, dan berkas dibuka dengan diunggah serta disimpan sebagai unduhan. Untuk pekerjaan sungguhan dan berkas besar, gunakan aplikasi untuk Windows, macOS, atau Linux: berjalan secara native, dengan kecepatan penuh."
 web.notice_download = "Unduh aplikasi desktop"

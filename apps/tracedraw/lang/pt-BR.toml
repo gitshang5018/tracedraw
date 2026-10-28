@@ -4135,6 +4135,7 @@ updates.installed = "O TraceDraw {new} está instalado. Ele roda na próxima vez
 updates.install_failed = "Não foi possível instalar a atualização: {error}"
 updates.install_ready = "TraceDraw {new} foi baixado: o instalador do sistema pedirá para atualizar."
 updates.allow_install = "Permita que o TraceDraw instale aplicativos e verifique as atualizações novamente."
+updates.check_now = "Verificar atualizações"
 web.notice_title = "TraceDraw no seu navegador"
 web.notice_text = "Este é o mesmo programa em Rust do aplicativo para desktop, compilado para WebAssembly para você experimentar sem instalar nada. No navegador tudo é mais lento: desenhos grandes, efeitos pesados e arquivos grandes demoram mais, só as fontes incluídas estão disponíveis, e os arquivos abrem por upload e são salvos como downloads. Para trabalho de verdade e arquivos grandes, use o aplicativo para Windows, macOS ou Linux: ele roda nativo, na velocidade total."
 web.notice_download = "Baixar o aplicativo para desktop"

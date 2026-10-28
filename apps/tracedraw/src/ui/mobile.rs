@@ -1459,7 +1459,6 @@ fn sheet_body(app: &mut App, ui: &mut Ui, which: Sheet, m3: &M3, open: &mut Shee
 /// The menus in a drawer that slides over the drawing from the left, the
 /// way an Android app keeps its sections, and the way into the settings.
 fn drawer(app: &mut App, ui: &mut Ui, m3: &M3, screen: Rect, open: &mut Sheet) {
-    let _ = app;
     let ctx = ui.ctx().clone();
     scrim(&ctx, screen, open);
     let land = landscape(screen);
@@ -1509,11 +1508,34 @@ fn drawer(app: &mut App, ui: &mut Ui, m3: &M3, screen: Rect, open: &mut Sheet) {
                                     .strong()
                                     .color(m3.on),
                             );
-                            ui.label(
-                                egui::RichText::new(crate::updates::version())
-                                    .size(12.0)
-                                    .color(m3.variant),
-                            );
+                            // The version, and the way to a newer one beside
+                            // it: Help > Updates is three taps away in the
+                            // menus, and this is where a build is named.
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    egui::RichText::new(crate::updates::version())
+                                        .size(12.0)
+                                        .color(m3.variant),
+                                );
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        let button = egui::Button::new(
+                                            egui::RichText::new(tr("updates.check_now"))
+                                                .size(12.0)
+                                                .color(m3.primary),
+                                        )
+                                        .fill(m3.high)
+                                        .stroke(Stroke::new(1.0, m3.primary))
+                                        .corner_radius(CornerRadius::same(18))
+                                        .min_size(Vec2::new(0.0, 36.0));
+                                        if ui.add(button).clicked() {
+                                            app.check_for_updates(Some(ui.ctx().clone()));
+                                            *open = Sheet::None;
+                                        }
+                                    },
+                                );
+                            });
                         });
                     let scroll_max_h = (screen.height() - (ui.cursor().top() - screen.top()) - safe.bottom).max(80.0);
                     egui::ScrollArea::vertical()

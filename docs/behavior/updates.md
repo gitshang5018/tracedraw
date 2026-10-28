@@ -110,6 +110,10 @@ dialog offers Install first:
 - **A failed check** (no connection, a proxy that is down): why, and Open
   the releases page.
 
+On a phone the drawer shows the version it runs, and beside it a Check for
+updates button that starts the same check and opens the same box, one tap
+from the menu rather than three.
+
 Options > Global > General, Check for updates at start (on by default):
 once a day the same check runs in the background at start, and only a
 newer release that was not skipped is shown.
