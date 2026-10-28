@@ -22,12 +22,13 @@ pre-releases. A release with nothing for this system is passed over, so a
 Linux build looks past the nightlies (APKs only) to the last release that
 had an AppImage.
 
-Every GitHub address goes through a proxy, which reaches GitHub from
-networks that cannot: `https://github.adc.dpdns.org/` and then the whole
-GitHub address, as the proxy documents it
-(`https://github.adc.dpdns.org/https://github.com/...`). That covers the
-API call, the release page and the download; anything that is not a GitHub
-address is left alone (`updates::through_proxy`).
+The list is read from GitHub directly, and so is the release page. A
+release's file is downloaded through a proxy, for networks where GitHub's
+file host is slow or out of reach: `https://github.adc.dpdns.org/` and then
+the whole file address, as the proxy documents it
+(`https://github.adc.dpdns.org/https://github.com/...`). Only a file of a
+release (`/releases/download/`, or a host GitHub redirects to) is rewritten;
+anything else is left as it is (`updates::through_proxy`).
 
 ## Which build is this
 
@@ -131,7 +132,7 @@ newer release that was not skipped is shown.
 - `updates::tests::the_x86_64_appimage_is_named_amd64_from_0_19_9`
 - `updates::tests::how_a_linux_copy_was_installed`
 - `updates::tests::the_appimage_comes_with_its_digest`
-- `updates::tests::github_addresses_go_through_the_proxy`
+- `updates::tests::only_downloads_go_through_the_proxy`
 - `updates::tests::installing_replaces_the_file_only_when_it_checks_out`
 - `ui::dialogs::tests::the_updates_dialog_draws_every_state`
 - `updates::tests::live_install_from_the_latest_release` (run by hand,

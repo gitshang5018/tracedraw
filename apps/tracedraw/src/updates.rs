@@ -19,9 +19,12 @@
 use serde::Deserialize;
 use std::sync::{Arc, Mutex};
 
-/// A proxy of GitHub, for networks that cannot reach it: the address of the
-/// proxy is a prefix, and the GitHub address follows it whole
-/// (`https://github.adc.dpdns.org/https://github.com/...`).
+/// A proxy of GitHub's file host, for networks where a release's files
+/// download slowly or not at all: the address of the proxy is a prefix,
+/// and the GitHub address follows it whole
+/// (`https://github.adc.dpdns.org/https://github.com/...`). The check
+/// itself and the release page are reached directly; only a download goes
+/// through it.
 pub const PROXY: &str = "https://github.adc.dpdns.org/";
 /// The releases, newest first. The list rather than "latest", since
 /// "latest" never names a pre-release and the development builds are
@@ -41,13 +44,14 @@ pub fn version() -> &'static str {
     option_env!("TRACEDRAW_BUILD_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"))
 }
 
-/// `url` reached through the proxy, when it is a GitHub address; anything
-/// else is left as it is.
+/// A release file's `url` reached through the proxy; anything that is not
+/// a file of a release is left as it is. Only downloads come through here:
+/// the release list and the release page are read directly.
 pub fn through_proxy(url: &str) -> String {
-    let github = url.starts_with("https://github.com/")
-        || url.starts_with("https://api.github.com/")
-        || url.starts_with("https://objects.githubusercontent.com/");
-    if github {
+    let file = (url.starts_with("https://github.com/") && url.contains("/releases/download/"))
+        || url.starts_with("https://objects.githubusercontent.com/")
+        || url.starts_with("https://release-assets.githubusercontent.com/");
+    if file {
         format!("{PROXY}{url}")
     } else {
         url.to_string()
@@ -353,7 +357,7 @@ pub fn parse_releases(
             });
         return Ok(Some(Release {
             version,
-            page: through_proxy(&r.html_url),
+            page: r.html_url.clone(),
             download: Some(through_proxy(&asset.browser_download_url)),
             package,
         }));
@@ -387,7 +391,7 @@ impl Checker {
             wasm_bindgen_futures::spawn_local(async move {
                 let req = crate::net::HttpRequest {
                     method: "GET",
-                    url: through_proxy(RELEASES_URL),
+                    url: RELEASES_URL.into(),
                     headers: vec![("Accept".into(), "application/vnd.github+json".into())],
                     body: String::new(),
                     bytes: Vec::new(),
@@ -659,8 +663,9 @@ fn download(url: &str) -> Result<Box<dyn std::io::Read + Send>, String> {
         .build()
         .into();
     // Redirects (GitHub sends downloads to its file host) are followed
-    // here, each on a request of its own; the redirect's body is skipped.
-    let mut url = url.to_string();
+    // here, each on a request of its own; the redirect's body is skipped,
+    // and the next address goes through the proxy like the first.
+    let mut url = through_proxy(url);
     for _ in 0..5 {
         let resp = agent
             .get(&url)
@@ -681,7 +686,7 @@ fn download(url: &str) -> Result<Box<dyn std::io::Read + Send>, String> {
                 .get("location")
                 .and_then(|v| v.to_str().ok())
                 .ok_or("a redirect without a location")?;
-            url = next.to_string();
+            url = through_proxy(next);
             continue;
         }
         if status != 200 {
@@ -705,7 +710,7 @@ fn fetch() -> Result<String, String> {
         .build()
         .into();
     let mut resp = agent
-        .get(&through_proxy(RELEASES_URL))
+        .get(RELEASES_URL)
         .header(
             "User-Agent",
             concat!("TraceDraw/", env!("CARGO_PKG_VERSION")),
@@ -1148,26 +1153,59 @@ mod tests {
         assert!(b.download.is_some());
     }
 
+    /// Only a release's files are downloaded through the proxy; the check
+    /// and the release page are read directly.
     #[test]
-    fn github_addresses_go_through_the_proxy() {
+    fn only_downloads_go_through_the_proxy() {
         assert_eq!(
             through_proxy("https://github.com/a/b/releases/download/nightly/c.apk"),
             "https://github.adc.dpdns.org/https://github.com/a/b/releases/download/nightly/c.apk"
         );
         assert_eq!(
-            through_proxy("https://api.github.com/repos/a/b/releases"),
-            "https://github.adc.dpdns.org/https://api.github.com/repos/a/b/releases"
+            through_proxy("https://objects.githubusercontent.com/x/c.apk"),
+            "https://github.adc.dpdns.org/https://objects.githubusercontent.com/x/c.apk"
         );
-        // Anything else is left alone.
+        // The check, the release page and anything else are left alone.
+        assert_eq!(
+            through_proxy(RELEASES_URL),
+            RELEASES_URL,
+            "the release list"
+        );
+        assert_eq!(
+            through_proxy("https://github.com/a/b/releases/tag/nightly"),
+            "https://github.com/a/b/releases/tag/nightly"
+        );
         assert_eq!(
             through_proxy("https://example.com/x"),
             "https://example.com/x"
         );
-        // The release's page and files are reached through it too.
-        let r = parse_releases(&sample(), "0.4.0", "android", "aarch64", Kind::Apk)
+        // A release from GitHub itself: the page directly, the file
+        // through the proxy.
+        let json = r#"[{
+            "tag_name": "v0.5.0",
+            "html_url": "https://github.com/gitshang5018/tracedraw/releases/tag/v0.5.0",
+            "draft": false,
+            "assets": [{
+                "name": "tracedraw-0.5.0-android-arm64-v8a.apk",
+                "browser_download_url": "https://github.com/gitshang5018/tracedraw/releases/download/v0.5.0/tracedraw-0.5.0-android-arm64-v8a.apk",
+                "size": 5,
+                "digest": "sha256:2CF24DBA5FB0A30E26E83B2AC5B9E29E1B161E5C1FA7425E73043362938B9824"
+            }]
+        }]"#;
+        let r = parse_releases(json, "0.4.0", "android", "aarch64", Kind::Apk)
             .expect("parses")
             .expect("newer");
-        assert!(r.page.starts_with(PROXY), "{}", r.page);
+        assert_eq!(
+            r.page,
+            "https://github.com/gitshang5018/tracedraw/releases/tag/v0.5.0"
+        );
+        assert_eq!(
+            r.download.expect("download"),
+            format!(
+                "{PROXY}https://github.com/gitshang5018/tracedraw/releases/download/v0.5.0/tracedraw-0.5.0-android-arm64-v8a.apk"
+            )
+        );
+        assert!(r.package.expect("apk").url.starts_with(PROXY));
     }
 
     #[test]
