@@ -30,6 +30,13 @@ build_targets = ["aarch64-linux-android", "x86_64-linux-android", "armv7-linux-a
 min_sdk_version = 24
 target_sdk_version = 34
 
+# The update check and AI Drawing reach the network. Without this the app's
+# own sockets are refused: the DNS lookup is denied for a UID that is not in
+# Android's internet group, and every request fails with "No address
+# associated with hostname", while a browser on the same phone works.
+[[package.metadata.android.uses_permission]]
+name = "android.permission.INTERNET"
+
 # Drawings live in the phone's own storage, where a file manager reaches
 # them: Android 11 and later grant that with "all files access", which the
 # Files sheet asks for; older systems ask for the storage permission.
