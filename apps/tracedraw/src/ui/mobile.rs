@@ -39,6 +39,9 @@ const STRIP_EDGE: f32 = 5.0;
 const STRIP_GAP: f32 = 10.0;
 /// The navigation bar: four destinations.
 const NAV_H: f32 = 76.0;
+/// How wide one of them is: fixed, since the commands of the selection
+/// follow them along the same bar and the row scrolls sideways.
+const NAV_ITEM_W: f32 = 72.0;
 /// The tools rail down the left edge of a phone on its side.
 const RAIL_W: f32 = 76.0;
 /// The destinations rail down the right edge there.
@@ -1127,24 +1130,35 @@ fn elide(text: &str, keep: usize) -> String {
 
 /// The navigation bar: the panels the desktop keeps beside the drawing,
 /// each a destination that opens as a sheet.
+/// The bottom bar: the four destinations, and after them the commands of
+/// what is selected, which a swipe sideways brings into reach.
 fn nav_bar(app: &mut App, ui: &mut Ui, m3: &M3, bottom: f32, open: &mut Sheet) {
-    let _ = app;
     egui::Panel::bottom("mobile_nav")
         .exact_size(NAV_H + bottom)
         .resizable(false)
         .show_separator_line(false)
         .frame(Frame::new().fill(m3.container))
         .show(ui, |ui| {
-            ui.horizontal_centered(|ui| {
-                let items = destinations();
-                let each = ui.available_width() / items.len() as f32;
-                for (which, glyph, label) in items {
-                    let active = *open == which;
-                    if nav_item(ui, m3, glyph, &label, active, each, NAV_H).clicked() {
-                        *open = if active { Sheet::None } else { which };
-                    }
-                }
-            });
+            egui::ScrollArea::horizontal()
+                .id_salt("mobile_nav_scroll")
+                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    ui.horizontal_centered(|ui| {
+                        ui.add_space(4.0);
+                        for (which, glyph, label) in destinations() {
+                            let active = *open == which;
+                            if nav_item(ui, m3, glyph, &label, active, NAV_ITEM_W, NAV_H).clicked() {
+                                *open = if active { Sheet::None } else { which };
+                            }
+                        }
+                        // The commands the floating toolbar of CorelDRAW
+                        // carries: what is done to the set of objects, how
+                        // they line up, and what is selected by kind.
+                        crate::ui::align_docker::align_part(app, ui, true);
+                        ui.add_space(4.0);
+                    });
+                });
             ui.add_space(bottom);
         });
 }
@@ -1894,21 +1908,6 @@ fn properties_sheet(app: &mut App, ui: &mut Ui, m3: &M3) {
                 });
         });
 
-    ui.add_space(8.0);
-    // The commands the floating toolbar of CorelDRAW carries, at a
-    // finger's size: what is done to the set of objects (smart arrange,
-    // centre, grouping), then how they line up, then what is selected by
-    // kind.
-    Frame::new()
-        .fill(m3.container)
-        .corner_radius(16.0)
-        .inner_margin(egui::Margin::symmetric(8, 6))
-        .show(ui, |ui| {
-            ui.set_width(width);
-            ui.horizontal_wrapped(|ui| {
-                crate::ui::align_docker::align_part(app, ui, true);
-            });
-        });
     ui.add_space(8.0);
     selection_actions(app, ui, m3);
     ui.add_space(8.0);
