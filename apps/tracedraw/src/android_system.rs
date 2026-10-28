@@ -1157,3 +1157,350 @@ pub fn set_fullscreen(app: &AndroidApp, hidden: bool) {
     });
     }));
 }
+
+// ---------------------------------------------------------------------------
+// Updating the app
+// ---------------------------------------------------------------------------
+//
+// A new build is an APK, and only the system's installer may put one in
+// place: the app writes the download into its own cache and hands the file
+// to `PackageInstaller`, which asks the user to update TraceDraw. Android
+// 8 and later also want the app to be allowed to install packages at all,
+// which the update dialog asks for before it downloads anything.
+
+/// The app's cache folder: a download of its own goes there, where the
+/// system's installer can read it and nothing else can see it.
+pub fn cache_dir(app: &AndroidApp) -> Option<std::path::PathBuf> {
+    let vm = app.vm_as_ptr();
+    let activity = app.activity_as_ptr();
+    let path = with_env(vm, |env| {
+        let activity = activity_ref(env, activity)?;
+        let dir = env
+            .call_method(&activity, "getCacheDir", "()Ljava/io/File;", &[])
+            .ok()?
+            .l()
+            .ok()?;
+        if dir.is_null() {
+            return None;
+        }
+        let text = env
+            .call_method(&dir, "getAbsolutePath", "()Ljava/lang/String;", &[])
+            .ok()?
+            .l()
+            .ok()?;
+        jstring_text(env, text)
+    })?;
+    Some(std::path::PathBuf::from(path))
+}
+
+/// Whether the system lets this app install packages: asked of the package
+/// manager, which says no until the user allows it for TraceDraw.
+pub fn can_install_packages(app: &AndroidApp) -> bool {
+    // Before Android 8 any app could hand an APK to the installer.
+    if AndroidApp::sdk_version() < 26 {
+        return true;
+    }
+    let vm = app.vm_as_ptr();
+    let activity = app.activity_as_ptr();
+    with_env(vm, |env| {
+        let activity = activity_ref(env, activity)?;
+        let manager = env
+            .call_method(
+                &activity,
+                "getPackageManager",
+                "()Landroid/content/pm/PackageManager;",
+                &[],
+            )
+            .ok()?
+            .l()
+            .ok()?;
+        if manager.is_null() {
+            return None;
+        }
+        let allowed = env
+            .call_method(&manager, "canRequestPackageInstalls", "()Z", &[])
+            .ok()?
+            .z()
+            .ok()?;
+        Some(allowed)
+    })
+    .unwrap_or(false)
+}
+
+/// The system's screen for allowing TraceDraw to install packages.
+pub fn ask_install_permission(app: &AndroidApp) {
+    let vm = app.vm_as_ptr() as usize;
+    let activity = app.activity_as_ptr() as usize;
+    app.run_on_java_main_thread(Box::new(move || {
+        let (vm, activity) = (vm as *mut c_void, activity as *mut c_void);
+        let _ = with_env(vm, |env| {
+            let activity = activity_ref(env, activity)?;
+            let package = env
+                .call_method(&activity, "getPackageName", "()Ljava/lang/String;", &[])
+                .ok()?
+                .l()
+                .ok()?;
+            let name = jstring_text(env, package)?;
+            let text = env.new_string(format!("package:{name}")).ok()?;
+            let uri = env
+                .call_static_method(
+                    "android/net/Uri",
+                    "parse",
+                    "(Ljava/lang/String;)Landroid/net/Uri;",
+                    &[JValue::Object(&JObject::from(text))],
+                )
+                .ok()?
+                .l()
+                .ok()?;
+            let action = env.new_string("android.settings.MANAGE_UNKNOWN_APP_SOURCES").ok()?;
+            let intent = env
+                .new_object(
+                    "android/content/Intent",
+                    "(Ljava/lang/String;Landroid/net/Uri;)V",
+                    &[
+                        JValue::Object(&JObject::from(action)),
+                        JValue::Object(&uri),
+                    ],
+                )
+                .ok()?;
+            let _ = env.call_method(
+                &activity,
+                "startActivity",
+                "(Landroid/content/Intent;)V",
+                &[JValue::Object(&intent)],
+            );
+            if env.exception_check().unwrap_or(false) {
+                let _ = env.exception_clear();
+            }
+            Some(())
+        });
+    }));
+}
+
+/// Hand `path` to the system's package installer: it shows its own prompt
+/// and updates TraceDraw when the user agrees. The file is read here and
+/// written into an installer session, so it need not be shared with
+/// anything.
+pub fn install_package(path: &std::path::Path) -> Result<(), String> {
+    let app = phone().ok_or_else(|| "no activity".to_string())?;
+    let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+    if bytes.is_empty() {
+        return Err("the download is empty".to_string());
+    }
+    let vm = app.vm_as_ptr();
+    let activity = app.activity_as_ptr();
+    let answer = with_env(vm, |env| Some(install_session(env, activity, &bytes)));
+    match answer {
+        Some(Ok(())) => Ok(()),
+        Some(Err(e)) => Err(e),
+        None => Err("the installer did not answer".to_string()),
+    }
+}
+
+/// The `PackageInstaller` session: open, written, committed. A session
+/// that cannot be committed is abandoned, so the system holds nothing.
+fn install_session(
+    env: &mut jni::JNIEnv<'_>,
+    activity: *mut c_void,
+    bytes: &[u8],
+) -> Result<(), String> {
+    let activity = activity_ref(env, activity).ok_or("no activity")?;
+    let name = env.new_string("package").map_err(|e| e.to_string())?;
+    let installer = env
+        .call_method(
+            &activity,
+            "getSystemService",
+            "(Ljava/lang/String;)Ljava/lang/Object;",
+            &[JValue::Object(&JObject::from(name))],
+        )
+        .map_err(|e| e.to_string())?
+        .l()
+        .map_err(|e| e.to_string())?;
+    if installer.is_null() {
+        return Err("no package installer".to_string());
+    }
+    // PackageInstaller.SessionParams(MODE_FULL_INSTALL).
+    let params = env
+        .new_object(
+            "android/content/pm/PackageInstaller$SessionParams",
+            "(I)V",
+            &[JValue::Int(1)],
+        )
+        .map_err(|e| e.to_string())?;
+    let id = env
+        .call_method(
+            &installer,
+            "createSession",
+            "(Landroid/content/pm/PackageInstaller$SessionParams;)I",
+            &[JValue::Object(&params)],
+        )
+        .map_err(|e| e.to_string())?
+        .i()
+        .map_err(|e| e.to_string())?;
+    let session = env
+        .call_method(
+            &installer,
+            "openSession",
+            "(I)Landroid/content/pm/PackageInstaller$Session;",
+            &[JValue::Int(id)],
+        )
+        .map_err(|e| e.to_string())?
+        .l()
+        .map_err(|e| e.to_string())?;
+    if session.is_null() {
+        return Err("the installer opened no session".to_string());
+    }
+    let name = env.new_string("base.apk").map_err(|e| e.to_string())?;
+    let out = env
+        .call_method(
+            &session,
+            "openWrite",
+            "(Ljava/lang/String;JJ)Ljava/io/OutputStream;",
+            &[
+                JValue::Object(&JObject::from(name)),
+                JValue::Long(0),
+                JValue::Long(-1),
+            ],
+        )
+        .map_err(|e| e.to_string())?
+        .l()
+        .map_err(|e| e.to_string())?;
+    let written = write_session(env, &out, bytes).and_then(|()| {
+        env.call_method(
+            &session,
+            "fsync",
+            "(Ljava/io/OutputStream;)V",
+            &[JValue::Object(&out)],
+        )
+        .map_err(|e| e.to_string())?;
+        env.call_method(&out, "close", "()V", &[])
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    });
+    if let Err(e) = written {
+        let _ = env.call_method(&installer, "abandonSession", "(I)V", &[JValue::Int(id)]);
+        if env.exception_check().unwrap_or(false) {
+            let _ = env.exception_clear();
+        }
+        return Err(e);
+    }
+    // FLAG_UPDATE_CURRENT | FLAG_MUTABLE: the installer fills the result
+    // in, and the app does not read it.
+    const FLAGS: i32 = 0x0800_0000 | 0x0200_0000;
+    let action = env
+        .new_string("dev.tracedraw.app.UPDATED")
+        .map_err(|e| e.to_string())?;
+    let intent = env
+        .new_object(
+            "android/content/Intent",
+            "(Ljava/lang/String;)V",
+            &[JValue::Object(&JObject::from(action))],
+        )
+        .map_err(|e| e.to_string())?;
+    let pending = env
+        .call_static_method(
+            "android/app/PendingIntent",
+            "getBroadcast",
+            "(Landroid/content/Context;ILandroid/content/Intent;I)Landroid/app/PendingIntent;",
+            &[
+                JValue::Object(&activity),
+                JValue::Int(0),
+                JValue::Object(&intent),
+                JValue::Int(FLAGS),
+            ],
+        )
+        .map_err(|e| e.to_string())?
+        .l()
+        .map_err(|e| e.to_string())?;
+    let sender = env
+        .call_method(
+            &pending,
+            "getIntentSender",
+            "()Landroid/content/IntentSender;",
+            &[],
+        )
+        .map_err(|e| e.to_string())?
+        .l()
+        .map_err(|e| e.to_string())?;
+    let committed = env.call_method(
+        &session,
+        "commit",
+        "(Landroid/content/IntentSender;)V",
+        &[JValue::Object(&sender)],
+    );
+    if env.exception_check().unwrap_or(false) {
+        let _ = env.exception_clear();
+        let _ = env.call_method(&installer, "abandonSession", "(I)V", &[JValue::Int(id)]);
+        if env.exception_check().unwrap_or(false) {
+            let _ = env.exception_clear();
+        }
+        return Err("the installer refused the update".to_string());
+    }
+    committed.map_err(|e| e.to_string())
+}
+
+/// The APK's bytes into the session's stream, a block at a time.
+fn write_session(
+    env: &mut jni::JNIEnv<'_>,
+    out: &JObject<'_>,
+    bytes: &[u8],
+) -> Result<(), String> {
+    for chunk in bytes.chunks(256 * 1024) {
+        let array = env
+            .byte_array_from_slice(chunk)
+            .map_err(|e| e.to_string())?;
+        env.call_method(
+            out,
+            "write",
+            "([B)V",
+            &[JValue::Object(&JObject::from(array))],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// A web page in the phone's browser.
+pub fn open_url(app: &AndroidApp, url: &str) {
+    let vm = app.vm_as_ptr() as usize;
+    let activity = app.activity_as_ptr() as usize;
+    let url = url.to_string();
+    app.run_on_java_main_thread(Box::new(move || {
+        let (vm, activity) = (vm as *mut c_void, activity as *mut c_void);
+        let _ = with_env(vm, |env| {
+            let activity = activity_ref(env, activity)?;
+            let text = env.new_string(url.as_str()).ok()?;
+            let uri = env
+                .call_static_method(
+                    "android/net/Uri",
+                    "parse",
+                    "(Ljava/lang/String;)Landroid/net/Uri;",
+                    &[JValue::Object(&JObject::from(text))],
+                )
+                .ok()?
+                .l()
+                .ok()?;
+            let action = env.new_string("android.intent.action.VIEW").ok()?;
+            let intent = env
+                .new_object(
+                    "android/content/Intent",
+                    "(Ljava/lang/String;Landroid/net/Uri;)V",
+                    &[
+                        JValue::Object(&JObject::from(action)),
+                        JValue::Object(&uri),
+                    ],
+                )
+                .ok()?;
+            let _ = env.call_method(
+                &activity,
+                "startActivity",
+                "(Landroid/content/Intent;)V",
+                &[JValue::Object(&intent)],
+            );
+            if env.exception_check().unwrap_or(false) {
+                let _ = env.exception_clear();
+            }
+            Some(())
+        });
+    }));
+}

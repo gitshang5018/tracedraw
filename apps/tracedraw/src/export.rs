@@ -1185,6 +1185,15 @@ impl App {
             crate::web::open_url(url);
             return;
         }
+        // A phone has no `xdg-open`: the browser is an intent away.
+        #[cfg(target_os = "android")]
+        {
+            match crate::android_system::phone() {
+                Some(phone) => crate::android_system::open_url(phone, url),
+                None => self.status = tr("status.could_not_open_viewer").to_string(),
+            }
+            return;
+        }
         #[allow(unreachable_code)]
         if let Err(e) = open_with_system(Path::new(url)) {
             self.status = e;

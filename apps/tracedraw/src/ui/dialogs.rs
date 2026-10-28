@@ -1575,7 +1575,7 @@ pub fn show(app: &mut App, ctx: &Context) {
         }
         Dialog::Updates => {
             use crate::updates::UpdateState;
-            let version = env!("CARGO_PKG_VERSION");
+            let version = crate::updates::version();
             let close_label = tr("dialog.close");
             let install = app.installer.get();
             match app.updates.get() {
@@ -1598,7 +1598,13 @@ pub fn show(app: &mut App, ctx: &Context) {
                             )
                         }
                         InstallState::Installed(v) => (
-                            trf("updates.installed", &[("new", v)]),
+                            if cfg!(target_os = "android") {
+                                // The system's installer has the file; its
+                                // own prompt is what is on screen.
+                                trf("updates.install_ready", &[("new", v)])
+                            } else {
+                                trf("updates.installed", &[("new", v)])
+                            },
                             vec![close_label.clone()],
                         ),
                         InstallState::Failed(e) => (
@@ -1659,9 +1665,10 @@ pub fn show(app: &mut App, ctx: &Context) {
                         tr("updates.notes"),
                         tr("updates.skip"),
                     );
-                    // A running AppImage can be replaced in place.
-                    let target = crate::updates::appimage_target();
-                    let in_place = r.appimage.clone().zip(target);
+                    // A running AppImage can be replaced in place, and a
+                    // phone hands the APK to the system's installer.
+                    let target = crate::updates::install_target();
+                    let in_place = r.package.clone().zip(target);
                     let install_label = tr("updates.install");
                     let mut labels: Vec<&str> = Vec::new();
                     if in_place.is_some() {
@@ -1684,12 +1691,21 @@ pub fn show(app: &mut App, ctx: &Context) {
                     }) {
                         Some(usize::MAX) => {
                             if let Some((package, target)) = in_place {
-                                app.installer.start(
-                                    r.version.clone(),
-                                    package,
-                                    target,
-                                    Some(ctx.clone()),
-                                );
+                                if crate::updates::can_install_in_place() {
+                                    app.installer.start(
+                                        r.version.clone(),
+                                        package,
+                                        target,
+                                        Some(ctx.clone()),
+                                    );
+                                } else {
+                                    // A phone must be allowed to install
+                                    // packages first: the system's screen
+                                    // for that, then the check again.
+                                    crate::updates::ask_install_permission();
+                                    app.status = tr("updates.allow_install");
+                                    close = true;
+                                }
                             }
                         }
                         Some(0) => {
@@ -5807,7 +5823,7 @@ mod tests {
             version: "9.0.0".into(),
             page: "https://example.org/r".into(),
             download: None,
-            appimage: Some(Package {
+            package: Some(Package {
                 url: "https://example.org/a.AppImage".into(),
                 sha256: "0".repeat(64),
                 size: 3 << 20,

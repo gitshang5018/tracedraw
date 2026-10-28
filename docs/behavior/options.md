@@ -78,7 +78,7 @@ Spiral (revolutions, symmetrical or logarithmic), Graph Paper and Table
 
 ## Global and Workspaces
 
-Global > General: user interface language; check for updates at start (on, desktop, see `updates.md`); Reset all settings... (asks
+Global > General: user interface language; check for updates at start (on, see `updates.md`); Reset all settings... (asks
 first, then puts every preference back to how TraceDraw comes, keeping
 the recent drawings, the last folder and the window's size; drawings are
 not touched). Global > File Locations: where the preferences and

@@ -2,6 +2,7 @@
 // the fonts bundled into the browser build.
 fn main() {
     web_fonts();
+    build_version();
     println!("cargo:rerun-if-changed=../../assets/icon/tracedraw.ico");
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
         let mut res = winresource::WindowsResource::new();
@@ -17,6 +18,20 @@ fn main() {
             println!("cargo:warning=could not embed Windows resources: {e}");
         }
     }
+}
+
+/// The version this build reports, for the update check: a release tag
+/// (`0.19.8`) or the development build of a commit (`0.19.8-dev.4c864d1`).
+/// The packaging scripts pass it in, since the crate version alone cannot
+/// tell two builds of the same version apart; without it the crate
+/// version is the answer.
+fn build_version() {
+    println!("cargo:rerun-if-env-changed=TRACEDRAW_BUILD_VERSION");
+    let version = match std::env::var("TRACEDRAW_BUILD_VERSION") {
+        Ok(v) if !v.trim().is_empty() => v.trim().to_string(),
+        _ => std::env::var("CARGO_PKG_VERSION").unwrap_or_default(),
+    };
+    println!("cargo:rustc-env=TRACEDRAW_BUILD_VERSION={version}");
 }
 
 /// The browser build has no system fonts: bundle the font files found on

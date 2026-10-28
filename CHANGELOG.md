@@ -6,6 +6,7 @@ full, row-by-row status.
 
 ## Unreleased
 
+- Help > Updates: the check follows this project's own releases on GitHub through a proxy (`github.adc.dpdns.org`), so it works where GitHub itself cannot be reached, and it reads the list of releases rather than the single latest one, so the development builds (published as the pre-release "nightly") are followed as well as the versions. Each build reports the version it was made from, commit included, so a newer push to main is offered. On a phone the newer build's APK is downloaded into the app's cache, its size and SHA-256 digest are checked, and the file is handed to the system's installer, which asks the user to update TraceDraw; the first time, the box opens the system's screen for allowing TraceDraw to install apps. The version that is running is shown in the About box and in the drawer.
 - Tracing: the grain of photos and compressed images is taken out before the colours are picked (more at lower detail, none at the highest), so flat colours no longer come out full of white holes, scratches and specks, and the trace has far fewer curves; edges and corners keep their place (#611).
 - Text fitted to a path: with the Pick tool the property bar shows the path's own fields (placement with Top centre and Bottom centre, distance from the path, the two mirrors, Straighten Text) before the text fields, so text on the bottom of a circle can be turned to read left to right, as on a stamp. The text fields came first and hid them (#193).
 

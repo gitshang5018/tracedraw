@@ -159,6 +159,11 @@ jobs:
           } >> "$GITHUB_ENV"
 
       - name: Build
+        # The version this build reports to Help > Updates: the release tag
+        # it is made from, or the commit of a development build. The crate
+        # version alone cannot tell two builds of 0.19.8 apart.
+        env:
+          TRACEDRAW_BUILD_VERSION: ${{ steps.ver.outputs.version }}
         run: |
           cargo apk build --manifest-path apps/tracedraw-android/Cargo.toml --lib \
             --release --target ${{ matrix.target }}

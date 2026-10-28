@@ -1510,7 +1510,7 @@ fn drawer(app: &mut App, ui: &mut Ui, m3: &M3, screen: Rect, open: &mut Sheet) {
                                     .color(m3.on),
                             );
                             ui.label(
-                                egui::RichText::new(env!("CARGO_PKG_VERSION"))
+                                egui::RichText::new(crate::updates::version())
                                     .size(12.0)
                                     .color(m3.variant),
                             );

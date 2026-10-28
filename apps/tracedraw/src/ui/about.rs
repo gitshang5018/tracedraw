@@ -49,7 +49,7 @@ fn banner(ui: &mut Ui, icon: Option<&TextureHandle>) {
         brand::TAGLINE,
     );
     let version = painter.layout_no_wrap(
-        format!("{} {}", tr("dialog.version"), env!("CARGO_PKG_VERSION")),
+        format!("{} {}", tr("dialog.version"), crate::updates::version()),
         FontId::proportional(11.5),
         Color32::from_rgb(0xE4, 0xEC, 0xF8),
     );

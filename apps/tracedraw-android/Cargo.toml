@@ -36,6 +36,12 @@ target_sdk_version = 34
 [[package.metadata.android.uses_permission]]
 name = "android.permission.MANAGE_EXTERNAL_STORAGE"
 
+# Help > Updates downloads a new APK and hands it to the system's installer
+# (the user allows it for TraceDraw on a screen of the system's the first
+# time).
+[[package.metadata.android.uses_permission]]
+name = "android.permission.REQUEST_INSTALL_PACKAGES"
+
 [[package.metadata.android.uses_permission]]
 name = "android.permission.READ_EXTERNAL_STORAGE"
 max_sdk_version = 32
