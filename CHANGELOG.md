@@ -6,6 +6,7 @@ full, row-by-row status.
 
 ## Unreleased
 
+- Installing an update on a phone: the installer now comes from the package manager (`getPackageManager().getPackageInstaller()`) instead of `getSystemService("package")`, which answered with nothing and stopped the install with "no package installer". A Java exception now reaches the box with what it said, so the next failure names its cause instead of reporting something missing.
 - The long-press menu on a phone keeps clear of the system bars: a phone draws edge to edge, so the menu could open under the status bar with its first rows unreachable. It now starts below it, and scrolls when it is taller than the room left.
 - Text on a phone: a text selected with the Pick tool puts the font list and the size first in the Properties strip, where a finger reaches them (the strip is scrolled sideways, and a drag over the fields does not scroll it), and the sheet carries an **Edit text** button, since a phone has no double click to remember.
 - 转曲保存 shows a progress bar while it runs: the pages are converted one a frame, so the bar moves and the interface keeps drawing, and the file is written once the bar reaches the end.

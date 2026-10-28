@@ -1305,19 +1305,40 @@ fn install_session(
     bytes: &[u8],
 ) -> Result<(), String> {
     let activity = activity_ref(env, activity).ok_or("no activity")?;
-    let name = env.new_string("package").map_err(|e| e.to_string())?;
-    let installer = env
+    // The installer comes from the package manager, which every Android
+    // has: asking `getSystemService("package")` for it answers with the
+    // package manager itself, or with nothing at all.
+    let manager = env
         .call_method(
             &activity,
-            "getSystemService",
-            "(Ljava/lang/String;)Ljava/lang/Object;",
-            &[JValue::Object(&JObject::from(name))],
+            "getPackageManager",
+            "()Landroid/content/pm/PackageManager;",
+            &[],
         )
         .map_err(|e| e.to_string())?
         .l()
         .map_err(|e| e.to_string())?;
+    if let Some(e) = java_error(env, "the package manager") {
+        return Err(e);
+    }
+    if manager.is_null() {
+        return Err("the system has no package manager".to_string());
+    }
+    let installer = env
+        .call_method(
+            &manager,
+            "getPackageInstaller",
+            "()Landroid/content/pm/PackageInstaller;",
+            &[],
+        )
+        .map_err(|e| e.to_string())?
+        .l()
+        .map_err(|e| e.to_string())?;
+    if let Some(e) = java_error(env, "the package installer") {
+        return Err(e);
+    }
     if installer.is_null() {
-        return Err("no package installer".to_string());
+        return Err("the system has no package installer".to_string());
     }
     // PackageInstaller.SessionParams(MODE_FULL_INSTALL).
     let params = env
@@ -1337,6 +1358,9 @@ fn install_session(
         .map_err(|e| e.to_string())?
         .i()
         .map_err(|e| e.to_string())?;
+    if let Some(e) = java_error(env, "the installer session") {
+        return Err(e);
+    }
     let session = env
         .call_method(
             &installer,
@@ -1347,6 +1371,9 @@ fn install_session(
         .map_err(|e| e.to_string())?
         .l()
         .map_err(|e| e.to_string())?;
+    if let Some(e) = java_error(env, "opening the session") {
+        return Err(e);
+    }
     if session.is_null() {
         return Err("the installer opened no session".to_string());
     }
@@ -1438,6 +1465,32 @@ fn install_session(
     }
     // `commit` answers nothing: the result arrives at the PendingIntent.
     committed.map(|_| ()).map_err(|e| e.to_string())
+}
+
+/// The message of a Java exception a call left pending, cleared so the
+/// calls after it work; `None` when none was thrown. A call that throws
+/// answers with a null object, so a failure says what the exception said
+/// rather than that something was missing.
+fn java_error(env: &mut jni::JNIEnv<'_>, what: &str) -> Option<String> {
+    if !env.exception_check().unwrap_or(false) {
+        return None;
+    }
+    let mut text = String::new();
+    if let Ok(thrown) = env.exception_occurred() {
+        if let Ok(value) = env.call_method(&thrown, "toString", "()Ljava/lang/String;", &[]) {
+            if let Ok(object) = value.l() {
+                if let Some(message) = jstring_text(env, object) {
+                    text = message;
+                }
+            }
+        }
+    }
+    let _ = env.exception_clear();
+    Some(if text.is_empty() {
+        format!("{what} failed")
+    } else {
+        format!("{what}: {text}")
+    })
 }
 
 /// The APK's bytes into the session's stream, a block at a time.
