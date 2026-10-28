@@ -141,7 +141,7 @@ pub fn progress_box(app: &App, ctx: &egui::Context) {
         .order(egui::Order::Foreground)
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
         .show(ctx, |ui| {
-            egui::Frame::popup(&ctx.style()).show(ui, |ui| {
+            egui::Frame::popup(&ctx.global_style()).show(ui, |ui| {
                 ui.set_min_width(240.0);
                 ui.label(egui::RichText::new(text).size(15.0));
                 ui.add(
