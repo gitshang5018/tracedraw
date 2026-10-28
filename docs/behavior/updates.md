@@ -80,13 +80,31 @@ installing:
 - macOS: `tracedraw-<v>-macos-<arch>.dmg`;
 - Android: `tracedraw-<v>-android-<abi>.apk`, one per ABI
   (`arm64-v8a`, `armeabi-v7a`, `x86_64`), and only the one this build was
-  packed for.
+  packed for. It is downloaded from the project's own storage rather than
+  from GitHub (see below).
 
 When the release has no such file (an rpm or other system package under
 `/usr`, a Flatpak or Snap, a processor without a build such as Windows on
 arm64) no file is downloaded and Download opens the release page instead; a
 file for another processor or package is never offered (#1038: the x86_64
 AppImage took the arm64 one, listed first).
+
+## Where a phone downloads from
+
+GitHub cannot be reached from every network a phone is on, and its file
+host is slow from many of them, so a phone's APK is downloaded from the
+project's own storage instead: EdgeOne Makers' blob storage, served by one
+edge function (`edgeone/`), at `APK_HOST` + `/apk/<file name>`. The Android
+workflow uploads each build's APKs there (`scripts/upload-edgeone.mjs`,
+`EDGEONE_PROJECT_ID` and `EDGEONE_TOKEN`), and drops the ones of the build
+before, since the check always offers the newest build.
+
+The version, the file name and the SHA-256 digest still come from the
+release: the storage only hands over the bytes, and a file that does not
+match the digest is thrown away. When the storage has not got the file yet
+(a build whose upload failed, a repository without the two secrets) the
+release's own address is tried behind it, so the update still arrives, only
+more slowly.
 
 ## Install in place
 

@@ -207,14 +207,30 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          # Only the changelog is needed, for the notes of a version.
-          sparse-checkout: CHANGELOG.md
+          # The changelog, for the notes of a version, and the script that
+          # puts the APKs into the update storage.
+          sparse-checkout: |
+            CHANGELOG.md
+            scripts/upload-edgeone.mjs
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
           merge-multiple: true
       - name: The APKs
         run: ls -l artifacts
+
+      # The app downloads a phone's APK from EdgeOne Makers' blob storage
+      # (see `edgeone/`), which reaches phones that cannot download from
+      # GitHub at all. Without the two secrets the APKs stay on the release
+      # and the app falls back to them, so this step never blocks a release.
+      - name: Update storage
+        continue-on-error: true
+        env:
+          EDGEONE_PROJECT_ID: ${{ secrets.EDGEONE_PROJECT_ID }}
+          EDGEONE_TOKEN: ${{ secrets.EDGEONE_TOKEN }}
+        run: |
+          npm install --no-save --no-audit --no-fund @edgeone/pages-blob
+          node scripts/upload-edgeone.mjs artifacts
 
       # The nightly keeps the name "nightly" while the APK names carry the
       # commit: the ones of the run before are dropped, or they pile up.

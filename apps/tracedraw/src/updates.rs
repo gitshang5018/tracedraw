@@ -33,6 +33,12 @@ pub const RELEASES_URL: &str =
     "https://api.github.com/repos/gitshang5018/tracedraw/releases?per_page=10";
 /// The release list, for when no download fits this system.
 pub const RELEASES_PAGE: &str = "https://github.com/gitshang5018/tracedraw/releases";
+/// Where a phone's APK is downloaded from: the same file, kept in EdgeOne
+/// Makers' blob storage, whose edge network reaches phones that cannot
+/// download from GitHub at all. The project there serves `/apk/<file name>`
+/// out of the store (see `edgeone/`), and the release's own address stays
+/// as the fallback. Empty: download from the release itself.
+pub const APK_HOST: &str = "https://tracedraw.edgeone.app";
 /// How often the check at start runs, seconds.
 pub const DAILY: u64 = 24 * 60 * 60;
 
@@ -75,6 +81,8 @@ pub struct Release {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Package {
     pub url: String,
+    /// The same file somewhere else, asked when `url` does not answer.
+    pub mirror: Option<String>,
     /// Lower-case hex.
     pub sha256: String,
     pub size: u64,
@@ -343,6 +351,15 @@ pub fn parse_releases(
         // The digest GitHub computes for every upload is what makes an
         // install in place safe: a file that does not match it is thrown
         // away instead of being run.
+        // A phone takes its APK from the project's own storage when there
+        // is one: the file is the same, and the release's own address is
+        // kept behind it for when the storage has not got it yet.
+        let stored = kind == Kind::Apk && !APK_HOST.is_empty();
+        let url = if stored {
+            format!("{APK_HOST}/apk/{}", asset.name)
+        } else {
+            through_proxy(&asset.browser_download_url)
+        };
         let package = asset
             .digest
             .as_deref()
@@ -351,14 +368,15 @@ pub fn parse_releases(
                 hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_hexdigit()) && asset.size > 0
             })
             .map(|hex| Package {
-                url: through_proxy(&asset.browser_download_url),
+                url: url.clone(),
+                mirror: stored.then(|| through_proxy(&asset.browser_download_url)),
                 sha256: hex.to_ascii_lowercase(),
                 size: asset.size,
             });
         return Ok(Some(Release {
             version,
             page: r.html_url.clone(),
-            download: Some(through_proxy(&asset.browser_download_url)),
+            download: Some(url),
             package,
         }));
     }
@@ -626,8 +644,14 @@ impl Installer {
                         ctx.request_repaint();
                     }
                 };
-                let result = download(&package.url)
-                    .and_then(|mut body| {
+                // The file's address, then its mirror: a storage that has
+                // not got it yet, or has another file under that name, is
+                // no reason to give up on the update.
+                let mut addresses = vec![package.url.clone()];
+                addresses.extend(package.mirror.clone());
+                let mut result = Err("the release has no address to download from".to_string());
+                for address in addresses {
+                    result = download(&address).and_then(|mut body| {
                         let mut last = 0u64;
                         install_file(&mut body, &package, &target, &mut |done| {
                             // A frame now and then, not for every block.
@@ -639,8 +663,12 @@ impl Installer {
                                 });
                             }
                         })
-                    })
-                    .and_then(|()| hand_over(&target));
+                    });
+                    if result.is_ok() {
+                        break;
+                    }
+                }
+                let result = result.and_then(|()| hand_over(&target));
                 set(match result {
                     Ok(()) => InstallState::Installed(version),
                     Err(e) => InstallState::Failed(e),
@@ -652,8 +680,9 @@ impl Installer {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn download(url: &str) -> Result<Box<dyn std::io::Read + Send>, String> {
-    // The proxy first, since a network that needs it is the one that cannot
-    // reach GitHub at all; the file's own address when it answers nothing.
+    // Through the proxy first, since a network that needs it is the one
+    // that cannot reach GitHub at all; the address itself when the proxy
+    // answers nothing (or is not used for this address).
     let proxied = through_proxy(url);
     match open_stream(&proxied) {
         Ok(body) => Ok(body),
@@ -818,12 +847,14 @@ mod tests {
         v.to_string()
     }
 
+    /// The name of the file the check would download: the last part of the
+    /// address, whichever host it comes from.
     fn pick_in(json: &str, os: &str, arch: &str, kind: Kind) -> Option<String> {
         parse_releases(json, "0.4.0", os, arch, kind)
             .expect("parses")
             .expect("newer")
             .download
-            .map(|u| u.trim_start_matches("https://x/").to_string())
+            .map(|u| u.rsplit('/').next().unwrap_or_default().to_string())
     }
 
     fn pick(os: &str, arch: &str, kind: Kind) -> Option<String> {
@@ -948,13 +979,22 @@ mod tests {
         assert_eq!(pick("android", "aarch64", AppImage), None);
         assert_eq!(pick("android", "aarch64", Deb), None);
         assert_eq!(pick("linux", "aarch64", Apk), None);
-        // The phone's APK comes with the digest of the release.
+        // The phone's APK comes with the digest of the release, from the
+        // project's own storage, with the release's address behind it.
         let r = parse_releases(&sample(), "0.4.0", "android", "aarch64", Apk)
             .expect("parses")
             .expect("newer");
         let p = r.package.expect("apk with digest");
         assert_eq!(p.size, 5);
         assert!(p.sha256.starts_with("2cf24dba"));
+        assert_eq!(
+            p.url,
+            format!("{APK_HOST}/apk/tracedraw-0.5.0-dev.abc1234-android-arm64-v8a.apk")
+        );
+        assert_eq!(
+            p.mirror.as_deref(),
+            Some("https://x/tracedraw-0.5.0-dev.abc1234-android-arm64-v8a.apk")
+        );
     }
 
     /// With no file for this system, processor or install there is no
@@ -1232,13 +1272,23 @@ mod tests {
             r.page,
             "https://github.com/gitshang5018/tracedraw/releases/tag/v0.5.0"
         );
+        // The phone's APK comes from the project's storage; the release's
+        // own address, kept behind it, is the one that goes through the
+        // proxy.
+        let p = r.package.expect("apk");
         assert_eq!(
-            r.download.expect("download"),
-            format!(
-                "{PROXY}https://github.com/gitshang5018/tracedraw/releases/download/v0.5.0/tracedraw-0.5.0-android-arm64-v8a.apk"
-            )
+            p.url,
+            format!("{APK_HOST}/apk/tracedraw-0.5.0-android-arm64-v8a.apk")
         );
-        assert!(r.package.expect("apk").url.starts_with(PROXY));
+        let mirrored = format!(
+            "{PROXY}https://github.com/gitshang5018/tracedraw/releases/download/v0.5.0/tracedraw-0.5.0-android-arm64-v8a.apk"
+        );
+        assert_eq!(p.mirror.as_deref(), Some(mirrored.as_str()));
+        // A system that takes the release's file itself gets the proxied
+        // address as its download.
+        let d = parse_releases(json, "0.4.0", "linux", "x86_64", Kind::Deb)
+            .expect("parses");
+        assert_eq!(d, None, "no .deb in that release");
     }
 
     #[test]
@@ -1255,6 +1305,7 @@ mod tests {
         }
         let good = Package {
             url: String::new(),
+            mirror: None,
             // sha256("hello")
             sha256: "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824".into(),
             size: 5,
