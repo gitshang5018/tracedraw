@@ -104,11 +104,20 @@ return 6 MB at most, while a static file is served by the CDN. A single
 page may be 25 MiB, so an APK over that (the x86_64 one, for emulators)
 stays on the release alone.
 
-The version, the file name and the SHA-256 digest still come from the
-release: the host only hands over the bytes, and a file that does not match
-the digest is thrown away. When the host has not got the file (a build whose
-deployment failed, a repository without the token) the release's own address
-is tried behind it, so the update still arrives, only more slowly.
+The host carries the check itself as well: `update.json` beside the APKs
+names the newest build, the file of each ABI and its digest, and the app
+reads that before it asks GitHub at all (`updates::check`). A phone that can
+reach the host therefore needs nothing else, which is the point: the
+networks this host exists for cannot resolve GitHub. GitHub is asked
+(directly, then through the proxy) only when the host has no manifest to
+give. The manifest is asked for with a value that changes each time, since
+the host caches a page for a year.
+
+The version, the file name and the SHA-256 digest come from the manifest, or
+from the release when there is no manifest; either way a file that does not
+match its digest is thrown away. When the host has not got the file (a build
+whose deployment failed, a repository without the token) the release's own
+address is tried behind it, so the update still arrives, only more slowly.
 
 ## Install in place
 
@@ -153,6 +162,7 @@ newer release that was not skipped is shown.
 - `updates::tests::a_development_build_is_newer_than_the_release_it_follows`
 - `updates::tests::the_download_fits_the_system`
 - `updates::tests::a_phone_gets_the_apk_of_its_own_abi`
+- `updates::tests::the_host_manifest_names_the_file_of_this_phone`
 - `updates::tests::a_development_release_takes_its_version_from_its_files`
 - `updates::tests::a_release_with_no_file_for_this_system_is_passed_over`
 - `updates::tests::drafts_are_not_offered`

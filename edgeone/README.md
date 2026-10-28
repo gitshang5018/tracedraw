@@ -28,9 +28,25 @@ edgeone/
   package.json    the project's manifest, so the CLI takes the folder
 ```
 
-The workflow makes the site to deploy: `index.html`, `package.json` and
-`apk/<file name>` for every APK under 25 MiB. `/apk/<file name>` is what the
-app asks for.
+The workflow makes the site to deploy: `index.html`, `package.json`,
+`apk/<file name>` for every APK under 25 MiB, and `update.json`.
+
+`update.json` is the check itself:
+
+```json
+{
+  "version": "0.19.9-dev.7e749ef",
+  "page": "https://github.com/gitshang5018/tracedraw/releases",
+  "assets": [
+    {"name": "tracedraw-0.19.9-dev.7e749ef-android-arm64-v8a.apk",
+     "size": 25776963, "sha256": "..."}
+  ]
+}
+```
+
+The app reads it before it asks GitHub anything, so a phone that can reach
+this host needs no other source. It is asked for with a changing query
+(`update.json?t=...`), since the host caches a page for a year.
 
 ## Making the project
 

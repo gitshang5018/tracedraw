@@ -252,6 +252,23 @@ jobs:
             fi
           done
           ls -l dist/apk
+          # The manifest the app reads: the version, and each file with the
+          # digest it was published with. The version is in the file names.
+          version=$(basename "$(ls dist/apk/*.apk | head -1)")
+          version=${version#tracedraw-}
+          version=${version%-android-*}
+          {
+            printf '{\n  "version": "%s",\n  "page": "https://github.com/%s/releases",\n  "assets": [\n' \
+              "$version" "${{ github.repository }}"
+            first=1
+            for apk in dist/apk/*.apk; do
+              if (( first )); then first=0; else printf ',\n'; fi
+              printf '    {"name": "%s", "size": %s, "sha256": "%s"}' \
+                "$(basename "$apk")" "$(stat -c%s "$apk")" "$(sha256sum "$apk" | cut -d' ' -f1)"
+            done
+            printf '\n  ]\n}\n'
+          } > dist/update.json
+          cat dist/update.json
           npx -y edgeone@latest makers deploy ./dist -n tracedraw -t "$EDGEONE_TOKEN"
 
       # The nightly keeps the name "nightly" while the APK names carry the

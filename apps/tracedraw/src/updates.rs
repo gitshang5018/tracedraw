@@ -222,16 +222,22 @@ fn arch_names(arch: &str) -> Option<(&'static str, &'static str)> {
 /// x86_64 AppImage is `linux-amd64` from 0.19.9 on, so that it sorts
 /// before the arm64 one for updaters of 0.19.8 and earlier, which take
 /// the first AppImage listed (#1038); older releases name it `linux-x86_64`.
+/// The ABI an Android build was packed for, from the architecture it was
+/// compiled for: a build only runs on the one it was packed for.
+fn android_abi(arch: &str) -> Option<&'static str> {
+    match arch {
+        "aarch64" => Some("arm64-v8a"),
+        "arm" | "armv7" => Some("armeabi-v7a"),
+        "x86_64" => Some("x86_64"),
+        "x86" => Some("x86"),
+        _ => None,
+    }
+}
+
 pub fn asset_names(version: &str, os: &str, arch: &str, kind: Kind) -> Vec<String> {
-    // A phone is packed once per ABI, and a build only runs on the one it
-    // was packed for.
     if os == "android" {
-        let abi = match arch {
-            "aarch64" => "arm64-v8a",
-            "arm" | "armv7" => "armeabi-v7a",
-            "x86_64" => "x86_64",
-            "x86" => "x86",
-            _ => return Vec::new(),
+        let Some(abi) = android_abi(arch) else {
+            return Vec::new();
         };
         return match kind {
             Kind::Apk => vec![format!("tracedraw-{version}-android-{abi}.apk")],
@@ -383,6 +389,99 @@ pub fn parse_releases(
     Ok(None)
 }
 
+/// The update host's own manifest, `update.json` beside the APKs: the
+/// newest build, the file of each ABI and its digest. A phone that can
+/// reach the host needs nothing else, which is the point of it: the
+/// networks this host exists for cannot resolve GitHub at all.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Deserialize)]
+struct Manifest {
+    version: String,
+    #[serde(default)]
+    page: String,
+    #[serde(default)]
+    assets: Vec<ManifestAsset>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Deserialize)]
+struct ManifestAsset {
+    name: String,
+    #[serde(default)]
+    size: u64,
+    #[serde(default)]
+    sha256: String,
+}
+
+/// The host's manifest, asked for with a value that changes each time: the
+/// host caches a page for a year (`max-age=31536000, immutable`, which is
+/// what the APKs want), and the manifest must never be the build before.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn manifest_url(now: u64) -> String {
+    format!("{APK_HOST}/update.json?t={now}")
+}
+
+/// Read the host's answer: the release when its version is newer than
+/// `current` and it carries the APK of this phone's ABI.
+#[cfg(not(target_arch = "wasm32"))]
+fn parse_manifest(json: &str, current: &str, arch: &str) -> Result<Option<Release>, String> {
+    let m: Manifest = serde_json::from_str(json).map_err(|e| e.to_string())?;
+    if !is_newer(&m.version, current) {
+        return Ok(None);
+    }
+    let Some(abi) = android_abi(arch) else {
+        return Ok(None);
+    };
+    let suffix = format!("-android-{abi}.apk");
+    let Some(asset) = m.assets.iter().find(|a| a.name.ends_with(suffix.as_str())) else {
+        // The host has no APK for this processor (an emulator's, most
+        // likely): nothing to offer here.
+        return Ok(None);
+    };
+    let url = format!("{APK_HOST}/apk/{}", asset.name);
+    let hex = asset.sha256.as_str();
+    let package = (asset.size > 0 && hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_hexdigit()))
+        .then(|| Package {
+            url: url.clone(),
+            mirror: None,
+            sha256: hex.to_ascii_lowercase(),
+            size: asset.size,
+        });
+    Ok(Some(Release {
+        version: m.version,
+        page: if m.page.is_empty() {
+            RELEASES_PAGE.to_string()
+        } else {
+            m.page
+        },
+        download: Some(url),
+        package,
+    }))
+}
+
+/// The whole check: the update host's manifest first, since a phone that
+/// can reach it needs no other source; the releases on GitHub (directly,
+/// then through the proxy) when the host has no manifest to give.
+#[cfg(not(target_arch = "wasm32"))]
+fn check() -> Result<Option<Release>, String> {
+    if !APK_HOST.is_empty() {
+        let url = manifest_url(crate::recovery::now_secs());
+        match fetch_from(&url) {
+            Ok(json) => return parse_manifest(&json, version(), std::env::consts::ARCH),
+            Err(e) => log::debug!("the update host has no manifest: {e}"),
+        }
+    }
+    fetch().and_then(|json| {
+        parse_releases(
+            &json,
+            version(),
+            std::env::consts::OS,
+            std::env::consts::ARCH,
+            current_kind(),
+        )
+    })
+}
+
 /// A check running in the background; its result lands in `state`.
 #[derive(Debug, Clone, Default)]
 pub struct Checker {
@@ -438,15 +537,7 @@ impl Checker {
         {
             let state = self.state.clone();
             std::thread::spawn(move || {
-                let result = fetch().and_then(|json| {
-                    parse_releases(
-                        &json,
-                        version(),
-                        std::env::consts::OS,
-                        std::env::consts::ARCH,
-                        current_kind(),
-                    )
-                });
+                let result = check();
                 let next = match result {
                     Ok(Some(r)) => UpdateState::Available(r),
                     Ok(None) => UpdateState::Latest,
@@ -995,6 +1086,43 @@ mod tests {
             p.mirror.as_deref(),
             Some("https://x/tracedraw-0.5.0-dev.abc1234-android-arm64-v8a.apk")
         );
+    }
+
+    /// The host's manifest says which build is the newest and where its
+    /// files are, so a phone that can reach the host needs no other source.
+    #[test]
+    fn the_host_manifest_names_the_file_of_this_phone() {
+        let json = r#"{
+            "version": "0.5.0-dev.abc1234",
+            "page": "https://github.com/gitshang5018/tracedraw/releases",
+            "assets": [
+                {"name": "tracedraw-0.5.0-dev.abc1234-android-armeabi-v7a.apk", "size": 4, "sha256": "68e481c13fc5dc04ed6b106a9f801e1fa2689889f070a02b4fb89e8cb29c91ef"},
+                {"name": "tracedraw-0.5.0-dev.abc1234-android-arm64-v8a.apk", "size": 5, "sha256": "2CF24DBA5FB0A30E26E83B2AC5B9E29E1B161E5C1FA7425E73043362938B9824"}
+            ]
+        }"#;
+        let r = parse_manifest(json, "0.4.0", "aarch64")
+            .expect("parses")
+            .expect("newer");
+        assert_eq!(r.version, "0.5.0-dev.abc1234");
+        let url = format!("{APK_HOST}/apk/tracedraw-0.5.0-dev.abc1234-android-arm64-v8a.apk");
+        assert_eq!(r.download.as_deref(), Some(url.as_str()));
+        let p = r.package.expect("package with a digest");
+        assert_eq!(p.url, url);
+        assert_eq!(p.size, 5);
+        assert_eq!(
+            p.sha256,
+            "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+        );
+        assert!(p.mirror.is_none());
+        // A build of that very version is not offered again, and neither is
+        // a processor the host has no file for.
+        assert_eq!(parse_manifest(json, "0.5.0-dev.abc1234", "aarch64"), Ok(None));
+        assert_eq!(parse_manifest(json, "0.4.0", "x86_64"), Ok(None));
+        assert!(parse_manifest("not json", "0.4.0", "aarch64").is_err());
+        // The manifest is asked for with a value that changes each time, or
+        // the host would keep answering with the build before.
+        assert_ne!(manifest_url(1), manifest_url(2));
+        assert!(manifest_url(1).starts_with(APK_HOST));
     }
 
     /// With no file for this system, processor or install there is no
