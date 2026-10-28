@@ -46,8 +46,9 @@ pub fn indented<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
     .inner
 }
 
-/// The docker's full-width button (Apply); true when clicked.
-pub fn wide_button(ui: &mut Ui, text: &str, enabled: bool) -> bool {
+/// The docker's full-width button (Apply) with its tip; true when clicked.
+pub fn wide_button(ui: &mut Ui, text: &str, enabled: bool, tip: &str) -> bool {
+    use crate::ui::tips::RichTip;
     ui.add_space(6.0);
     let w = ui.available_width();
     let h = if crate::ui::mobile::phone() { 40.0 } else { 26.0 };
@@ -55,5 +56,7 @@ pub fn wide_button(ui: &mut Ui, text: &str, enabled: bool) -> bool {
         enabled,
         egui::Button::new(text).min_size(Vec2::new(w, h)),
     )
+    .rich_tip(tip)
+    .rich_disabled_tip(tip)
     .clicked()
 }

@@ -11,6 +11,7 @@ use crate::i18n::tr;
 use crate::theme::Tokens;
 use crate::ui::field::NumField;
 use crate::ui::propbar::{draw_pic, Pic};
+use crate::ui::tips::RichTip;
 use egui::{epaint, Color32, Key, Modifiers, Pos2, Rect, Sense, Stroke, Ui, Vec2};
 use tracedraw_core::geometry::{
     complex_star_max_sharpness, BezPath, Point, COMPLEX_STAR_MIN_POINTS,
@@ -95,7 +96,7 @@ fn kind_button(ui: &mut Ui, kind: CoordKind, pressed: bool, flyout: bool) -> egu
             Stroke::NONE,
         ));
     }
-    resp.on_hover_text(tr(kind.key()))
+    resp.rich_tip(tr(kind.key()))
 }
 
 /// A flyout of two objects: the button shows the chosen one (or the
@@ -187,7 +188,7 @@ fn pick_button(
     } else {
         "coords.set_click_tip"
     };
-    if resp.on_hover_text(tr(key)).clicked() {
+    if resp.rich_tip(tr(key)).clicked() {
         *out = Some(pick);
     }
 }
@@ -207,6 +208,7 @@ fn length_row(ui: &mut Ui, app_units: crate::app::Units, key: &str, mm: &mut f64
                 .suffix(format!(" {}", u.short()))
                 .unit_mm(u.mm()),
         )
+        .rich_tip(crate::ui::tips::pair(key, &format!("{key}_desc")))
         .changed()
     {
         *mm = u.world_to_mm(v);
@@ -231,6 +233,11 @@ fn point_fields(ui: &mut Ui, u: crate::app::Units, o: Point, p: &mut Point) -> b
                     .suffix(format!(" {}", u.short()))
                     .unit_mm(u.mm()),
             )
+            .rich_tip(if axis == 0 {
+                crate::ui::tips::pair("toolbar.object_x", "coords.point_x_desc")
+            } else {
+                crate::ui::tips::pair("toolbar.object_y", "coords.point_y_desc")
+            })
             .changed()
         {
             let mm = u.world_to_mm(v);
@@ -253,13 +260,14 @@ fn angle_field(ui: &mut Ui, deg: &mut f64) -> bool {
             .max_decimals(1)
             .suffix(" °"),
     )
+    .rich_tip(crate::ui::tips::keyed("coords.angle_field"))
     .changed()
 }
 
 /// The 3 x 3 origin point selector; the chosen point when clicked.
 fn origin_grid(ui: &mut Ui, origin: usize) -> Option<usize> {
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(34.0, 34.0), Sense::click());
-    let resp = resp.on_hover_text(tr("coords.origin_tip"));
+    let resp = resp.rich_tip(tr("coords.origin_tip"));
     let frame = rect.shrink(6.0);
     ui.painter().rect_stroke(
         frame,
@@ -376,7 +384,8 @@ pub fn coordinates(app: &mut App, ui: &mut Ui) {
                 }
             });
             if !k.is_uniform() {
-                ui.checkbox(&mut c.proportional, tr("coords.proportional"));
+                ui.checkbox(&mut c.proportional, tr("coords.proportional"))
+                    .rich_tip(crate::ui::tips::keyed("coords.proportional"));
             }
             section(ui, "coords.angle");
             ui.horizontal(|ui| {
@@ -425,7 +434,8 @@ pub fn coordinates(app: &mut App, ui: &mut Ui) {
                 ui.add_sized(
                     [FIELD_W, 20.0],
                     NumField::new(&mut c.points).range(min..=500),
-                );
+                )
+                .rich_tip(crate::ui::tips::keyed("toolbar.points_tip"));
                 ui.end_row();
                 match k {
                     CoordKind::Star => {
@@ -433,6 +443,7 @@ pub fn coordinates(app: &mut App, ui: &mut Ui) {
                         let mut pct = (c.sharpness * 100.0).round();
                         if ui
                             .add_sized([FIELD_W, 20.0], NumField::new(&mut pct).range(1.0..=99.0))
+                            .rich_tip(crate::ui::tips::keyed("toolbar.sharpness_tip"))
                             .changed()
                         {
                             c.sharpness = (pct / 100.0).clamp(0.01, 0.99);
@@ -445,7 +456,8 @@ pub fn coordinates(app: &mut App, ui: &mut Ui) {
                         ui.add_sized(
                             [FIELD_W, 20.0],
                             NumField::new(&mut c.complex_sharpness).range(1..=max),
-                        );
+                        )
+                        .rich_tip(crate::ui::tips::keyed("toolbar.complex_sharpness_tip"));
                         c.complex_sharpness = c.complex_sharpness.clamp(1, max);
                         ui.end_row();
                     }
@@ -494,7 +506,8 @@ pub fn coordinates(app: &mut App, ui: &mut Ui) {
                 }
             });
             if !k.is_uniform() {
-                ui.checkbox(&mut c.proportional, tr("coords.proportional"));
+                ui.checkbox(&mut c.proportional, tr("coords.proportional"))
+                    .rich_tip(crate::ui::tips::keyed("coords.proportional"));
             }
         }
         CoordKind::Line => {
@@ -565,7 +578,12 @@ pub fn coordinates(app: &mut App, ui: &mut Ui) {
     ui.horizontal(|ui| {
         let btn_h = if crate::ui::mobile::phone() { 38.0 } else { 22.0 };
         if ui
-            .add_enabled(can, egui::Button::new(tr("coords.create")).min_size(Vec2::new(90.0, btn_h)))
+            .add_enabled(
+                can,
+                egui::Button::new(tr("coords.create")).min_size(Vec2::new(90.0, btn_h)),
+            )
+            .rich_tip(crate::ui::tips::keyed("coords.create"))
+            .rich_disabled_tip(crate::ui::tips::keyed("coords.create"))
             .clicked()
         {
             app.create_from_coords();
@@ -575,6 +593,8 @@ pub fn coordinates(app: &mut App, ui: &mut Ui) {
                 can && app.coords_target().is_some(),
                 egui::Button::new(tr("coords.replace")).min_size(Vec2::new(90.0, btn_h)),
             )
+            .rich_tip(crate::ui::tips::keyed("coords.replace"))
+            .rich_disabled_tip(crate::ui::tips::keyed("coords.replace"))
             .clicked()
         {
             app.replace_from_coords();
@@ -598,6 +618,11 @@ fn point_fields_grid(ui: &mut Ui, u: crate::app::Units, o: Point, p: &mut Point)
                     .suffix(format!(" {}", u.short()))
                     .unit_mm(u.mm()),
             )
+            .rich_tip(if axis == 0 {
+                crate::ui::tips::pair("toolbar.object_x", "coords.point_x_desc")
+            } else {
+                crate::ui::tips::pair("toolbar.object_y", "coords.point_y_desc")
+            })
             .changed()
         {
             let mm = u.world_to_mm(v);
@@ -743,16 +768,12 @@ fn multipoint(
         });
     }
     ui.horizontal(|ui| {
-        if ui
-            .button("+")
-            .on_hover_text(tr("coords.add_point"))
-            .clicked()
-        {
+        if ui.button("+").rich_tip(tr("coords.add_point")).clicked() {
             c.add_point();
         }
         if ui
             .add_enabled(c.current.is_some(), egui::Button::new("-"))
-            .on_hover_text(tr("coords.delete_point"))
+            .rich_tip(tr("coords.delete_point"))
             .clicked()
         {
             c.delete_point();
