@@ -107,10 +107,15 @@ The Android workflow publishes each build's APKs there under `apk/`, clears
 what was there before (the check always offers the newest build, and an
 older APK is of no use to anyone), and needs `R2_ACCOUNT_ID`,
 `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` and `R2_BUCKET` for it. Without
-them nothing is uploaded and every phone downloads from the release.
+them nothing is uploaded and every phone downloads from the release. The
+settings themselves, and what to do when an upload fails, are in
+[`update-host.md`](../update-host.md).
 
-An object in a bucket may be 25 MiB: the two phone ABIs fit, the x86_64 one
-(for emulators) stays on the release, where the app still finds it.
+Every ABI goes up, the emulator's included: an object in a bucket has no
+page size to stay under. Each file is served with the type it is
+(`text/html` for the page, `application/json` for the manifest,
+`application/vnd.android.package-archive` for an APK), so a phone's browser
+offers an APK as a file to install instead of showing it as text.
 
 The bucket carries a manifest of its own as well: `update.json` beside the
 APKs names the newest build, the file of each ABI and its digest. The check

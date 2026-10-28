@@ -235,6 +235,11 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           AWS_DEFAULT_REGION: auto
           R2_BUCKET: ${{ vars.R2_BUCKET }}
+          # A recent AWS CLI computes a CRC64NVME checksum on every upload
+          # by default, and a service that is not S3 proper may refuse the
+          # request for it; R2 takes the plain one.
+          AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+          AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
         run: |
           set -euo pipefail
           if [[ -z "${R2_ACCOUNT_ID:-}" || -z "${AWS_ACCESS_KEY_ID:-}" || -z "${R2_BUCKET:-}" ]]; then
@@ -244,17 +249,11 @@ jobs:
           endpoint="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
           mkdir -p dist/apk
           printf '<!doctype html>\n<meta charset="utf-8">\n<title>TraceDraw updates</title>\n<p>The app downloads a release from <code>/apk/</code>.\n' > dist/index.html
-          # A page of a bucket may be 25 MiB: the two phone ABIs fit, the
-          # x86_64 one (for emulators) stays on the release.
-          limit=$((25 * 1024 * 1024))
-          for apk in artifacts/*.apk; do
-            size=$(stat -c%s "$apk")
-            if (( size <= limit )); then
-              cp "$apk" dist/apk/
-            else
-              echo "::warning::$apk is $size bytes, over the 25 MiB a page may have: it stays on the release."
-            fi
-          done
+          # Every ABI goes up, the emulator's included: an object in a
+          # bucket has no page size to stay under, and `aws s3 cp` turns to
+          # a multipart upload above 8 MiB, so size is not a reason to leave
+          # one on the release.
+          cp artifacts/*.apk dist/apk/
           ls -l dist/apk
           # The manifest the app falls back to when GitHub cannot be read.
           version=$(basename "$(ls dist/apk/*.apk | head -1)")
@@ -274,9 +273,25 @@ jobs:
           cat dist/update.json
           # The bucket keeps the newest build only: the check always offers
           # it, and an older APK is of no use to anyone.
-          aws s3 rm "s3://${R2_BUCKET}/apk/" --recursive --endpoint-url "$endpoint" || true
-          aws s3 cp dist/ "s3://${R2_BUCKET}/" --recursive --endpoint-url "$endpoint" \
+          aws s3 rm "s3://${R2_BUCKET}/" --recursive --endpoint-url "$endpoint" || true
+          # Each file goes up with the type it is, rather than the type its
+          # name suggests: a phone's browser must offer an APK as a file to
+          # install instead of showing it as text, and a manifest served as
+          # anything but JSON is not read at all.
+          aws s3 cp dist/index.html "s3://${R2_BUCKET}/index.html" \
+            --endpoint-url "$endpoint" \
+            --content-type "text/html; charset=utf-8" \
             --cache-control "public, max-age=300"
+          aws s3 cp dist/update.json "s3://${R2_BUCKET}/update.json" \
+            --endpoint-url "$endpoint" \
+            --content-type "application/json" \
+            --cache-control "public, max-age=300"
+          for apk in dist/apk/*.apk; do
+            aws s3 cp "$apk" "s3://${R2_BUCKET}/apk/$(basename "$apk")" \
+              --endpoint-url "$endpoint" \
+              --content-type "application/vnd.android.package-archive" \
+              --cache-control "public, max-age=300"
+          done
 
       # The nightly keeps the name "nightly" while the APK names carry the
       # commit: the ones of the run before are dropped, or they pile up.
