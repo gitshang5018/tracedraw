@@ -6,3 +6,6 @@
 /tracedraw.exe
 /tracedraw
 /.workbuddy-ai/
+
+# The folder zipped for a direct upload to EdgeOne.
+edgeone/*.zip
