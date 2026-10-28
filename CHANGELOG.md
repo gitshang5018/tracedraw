@@ -6,6 +6,8 @@ full, row-by-row status.
 
 ## Unreleased
 
+- The long-press menu on a phone keeps clear of the system bars: a phone draws edge to edge, so the menu could open under the status bar with its first rows unreachable. It now starts below it, and scrolls when it is taller than the room left.
+- Text on a phone: a text selected with the Pick tool puts the font list and the size first in the Properties strip, where a finger reaches them (the strip is scrolled sideways, and a drag over the fields does not scroll it), and the sheet carries an **Edit text** button, since a phone has no double click to remember.
 - 转曲保存 shows a progress bar while it runs: the pages are converted one a frame, so the bar moves and the interface keeps drawing, and the file is written once the bar reaches the end.
 - A `.cdr` or `.tdraw` tapped in a file manager opens TraceDraw again: a manager sends the file as a `content://` address with `application/octet-stream` for an extension the system has no type for (`.tdraw`, and often `.cdr`), which no filter matched. The manifest now also takes any type held to the extension by the address's path, and an address with no type at all.
 - 检查更新 no longer stays on "正在检查更新": a phone checks certificates against ureq's own roots rather than the platform verifier (which wants the Android JVM context a native activity has none of, and panicked without it), and the check is given 45 seconds before its silence is reported as a failure, so the box always answers.

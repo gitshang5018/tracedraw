@@ -322,6 +322,22 @@ fn system_bars(ctx: &egui::Context, hidden: bool) {
     }
 }
 
+/// How much of the window the system bars take, in points: `(top, bottom,
+/// left, right)`. Zero everywhere but a phone, whose interface draws edge to
+/// edge and so has to keep its own menus clear of them.
+pub fn bars(ctx: &egui::Context) -> (f32, f32, f32, f32) {
+    #[cfg(target_os = "android")]
+    {
+        let safe = system_insets(ctx, landscape(ctx.content_rect()));
+        (safe.top, safe.bottom, safe.left, safe.right)
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = ctx;
+        (0.0, 0.0, 0.0, 0.0)
+    }
+}
+
 /// Whether the phone lies on its side: a screen wider than it is tall has
 /// room for a rail on each edge, and the bars move there.
 fn landscape(screen: Rect) -> bool {
@@ -1805,6 +1821,17 @@ fn selection_actions(app: &mut App, ui: &mut Ui, m3: &M3) {
         .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
         .show(ui, |ui| {
             ui.horizontal(|ui| {
+                // A phone has no double click to remember: the way back
+                // into a text is a button.
+                if !app.selection.is_empty()
+                    && app.selection.iter().all(|id| {
+                    app.doc()
+                        .find_shape(*id)
+                        .is_some_and(|s| matches!(s.kind, tracedraw_core::document::ShapeKind::Text { .. }))
+                }) && action_chip(ui, m3, &tr("menu.text.edit_text")).clicked()
+                {
+                    app.edit_selected_text();
+                }
                 if action_chip(ui, m3, &tr("menu.edit.delete")).clicked() {
                     app.delete_selection();
                 }

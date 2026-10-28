@@ -1103,8 +1103,14 @@ pub fn property_bar(app: &mut App, ui: &mut Ui) {
                 // follows the path (placement, distance, mirrors) first; a
                 // separate arm for it came after this one and was never
                 // reached (#193).
-                object_properties(app, ui);
-                vsep(ui);
+                //
+                // A phone shows this bar as a strip to scroll sideways, and
+                // a finger cannot drag it over the fields: there the text
+                // fields come first, so the font list is at the edge.
+                if !crate::ui::mobile::phone() {
+                    object_properties(app, ui);
+                    vsep(ui);
+                }
                 if app.fitted_text().is_some() {
                     crate::ui::text_path_bar::text_path_bar(app, ui);
                     vsep(ui);

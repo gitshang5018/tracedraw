@@ -41,11 +41,24 @@ pub fn context_menu(app: &mut App, ui: &mut Ui, response: &Response) {
         ctx.data_mut(|d| d.insert_temp(pos_id, pos));
         egui::Popup::open_id(&ctx, id);
     }
+    // A phone draws edge to edge, so egui's screen is not where a finger
+    // can reach: the menu keeps clear of the status bar and the gesture
+    // bar, and scrolls when it is taller than the room left.
+    let screen = ctx.content_rect();
+    let (top_bar, bottom_bar, _, _) = crate::ui::mobile::bars(&ctx);
+    let top = screen.top() + top_bar;
+    let bottom = screen.bottom() - bottom_bar;
+    let room = 240.0;
+    let anchor = egui::pos2(
+        pos.x.clamp(screen.left(), (screen.right() - 220.0).max(screen.left())),
+        pos.y.clamp(top, (bottom - room).max(top)),
+    );
+    let max_height = (bottom - anchor.y).max(140.0);
     let mut close = false;
     let shown = egui::Popup::new(
         id,
         ctx.clone(),
-        egui::PopupAnchor::Position(pos),
+        egui::PopupAnchor::Position(anchor),
         ui.layer_id(),
     )
     .kind(egui::PopupKind::Menu)
@@ -55,7 +68,11 @@ pub fn context_menu(app: &mut App, ui: &mut Ui, response: &Response) {
     .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
     .show(|ui| {
         ui.set_min_width(200.0);
-        body(ui, |ui| {
+        egui::ScrollArea::vertical()
+            .id_salt("canvas_context_menu_scroll")
+            .max_height(max_height)
+            .auto_shrink([false, true])
+            .show(ui, |ui| body(ui, |ui| {
             let on_guide = app.selection.is_empty()
                 && matches!(app.tool, Tool::Pick | Tool::FreeformPick)
                 && app.guide_at(p).is_some();
@@ -70,7 +87,7 @@ pub fn context_menu(app: &mut App, ui: &mut Ui, response: &Response) {
             } else {
                 object_menu(app, ui, &mut close);
             }
-        })
+        }));
     });
     if close || shown.is_none() {
         egui::Popup::close_id(&ctx, id);
