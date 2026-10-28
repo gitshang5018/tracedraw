@@ -1436,7 +1436,8 @@ fn install_session(
         }
         return Err("the installer refused the update".to_string());
     }
-    committed.map_err(|e| e.to_string())
+    // `commit` answers nothing: the result arrives at the PendingIntent.
+    committed.map(|_| ()).map_err(|e| e.to_string())
 }
 
 /// The APK's bytes into the session's stream, a block at a time.
