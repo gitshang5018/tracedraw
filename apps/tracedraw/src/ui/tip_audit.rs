@@ -348,7 +348,9 @@ pub fn audit(dockers: bool, dialogs: bool, options: bool) -> Vec<Missing> {
 fn every_bar_docker_dialog_and_options_control_has_a_tip() {
     crate::i18n::set_language("en");
     let missing = audit(true, true, true);
-    assert!(missing.is_empty(), "controls without a tip: {missing:#?}");
+    // One line, so the list reads whole in a run's annotation as well as
+    // in the log.
+    assert!(missing.is_empty(), "controls without a tip: {missing:?}");
 }
 
 /// Writes every control without a tip to `$TIPS_AUDIT`.
