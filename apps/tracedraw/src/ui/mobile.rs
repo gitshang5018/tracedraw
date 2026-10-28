@@ -32,6 +32,11 @@ const TOOLS_H: f32 = 72.0;
 /// The strip of properties above the tools, shown while something is
 /// selected: never shorter than this, taller when the bar's fields are.
 const SELECTION_H: f32 = 44.0;
+/// How far the strip keeps off the screen's edge, and how far it sits from
+/// what is under it: the paddings the floating toolbars of CorelDRAW use
+/// (5 and 10), so a card of this one reads like one of theirs.
+const STRIP_EDGE: f32 = 5.0;
+const STRIP_GAP: f32 = 10.0;
 /// The navigation bar: four destinations.
 const NAV_H: f32 = 76.0;
 /// The tools rail down the left edge of a phone on its side.
@@ -721,17 +726,21 @@ fn selection_strip(app: &mut App, ui: &mut Ui, m3: &M3, open: Sheet, ime: f32) -
     if app.selected_rc().is_empty() && app.selected_guides.is_empty() {
         return 0.0;
     }
-    // The bar's own drawing: a dense desktop strip, so the phone's
-    // finger-sized controls would make its rows taller than the bar's
-    // height, which both pushes it up and leaves its icons out of line.
+    // The bar's own drawing, as the card the floating toolbars of this
+    // family are: rounded, inset from the screen's edge, and scrolled
+    // sideways rather than squeezed. The phone's finger-sized controls
+    // would make its rows taller than the bar's height, which both pushes
+    // it up and leaves its icons out of line, so one row height is set.
     let body = |app: &mut App, ui: &mut Ui| {
-        egui::ScrollArea::horizontal()
-            .id_salt("mobile_selection_scroll")
-            .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
-            .auto_shrink([false, true])
+        Frame::new()
+            .fill(m3.container)
+            .corner_radius(12.0)
+            .inner_margin(egui::Margin::symmetric(10, 6))
             .show(ui, |ui| {
-                Frame::new()
-                    .inner_margin(egui::Margin::symmetric(8, 6))
+                egui::ScrollArea::horizontal()
+                    .id_salt("mobile_selection_scroll")
+                    .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+                    .auto_shrink([false, true])
                     .show(ui, |ui| {
                         ui.spacing_mut().interact_size.y = 22.0;
                         ui.spacing_mut().button_padding = Vec2::new(6.0, 1.0);
@@ -745,12 +754,12 @@ fn selection_strip(app: &mut App, ui: &mut Ui, m3: &M3, open: Sheet, ime: f32) -
         // where they are, and the drawing keeps its room.
         egui::Area::new(Id::new("mobile_selection_float"))
             .order(egui::Order::Foreground)
-            .anchor(egui::Align2::LEFT_BOTTOM, egui::vec2(0.0, -ime))
+            .anchor(egui::Align2::LEFT_BOTTOM, egui::vec2(0.0, -ime - STRIP_GAP))
             .show(ui.ctx(), |ui| {
-                ui.set_width(ui.ctx().content_rect().width());
-                Frame::new().fill(m3.container).show(ui, |ui| {
-                    body(app, ui);
-                });
+                ui.set_width(ui.ctx().content_rect().width() - 2.0 * STRIP_EDGE);
+                Frame::new()
+                    .inner_margin(egui::Margin::symmetric(STRIP_EDGE as i8, 0))
+                    .show(ui, |ui| body(app, ui));
             });
         return 0.0;
     }
@@ -758,7 +767,12 @@ fn selection_strip(app: &mut App, ui: &mut Ui, m3: &M3, open: Sheet, ime: f32) -
         .min_size(SELECTION_H)
         .resizable(false)
         .show_separator_line(false)
-        .frame(Frame::new().fill(m3.container))
+        .frame(Frame::new().inner_margin(egui::Margin {
+            left: STRIP_EDGE as i8,
+            right: STRIP_EDGE as i8,
+            top: 2,
+            bottom: STRIP_GAP as i8,
+        }))
         .show(ui, |ui| body(app, ui));
     shown.response.rect.height()
 }
