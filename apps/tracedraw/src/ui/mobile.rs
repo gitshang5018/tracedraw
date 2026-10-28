@@ -20,7 +20,7 @@
 //! menus), so a change to one shows on both.
 
 use crate::app::{App, DockerPlace, DockerTab};
-use crate::i18n::tr;
+use crate::i18n::{tr, trf};
 use crate::theme::Tokens;
 use crate::ui::icons::{draw_action, Action};
 use egui::{Color32, CornerRadius, Frame, Id, Rect, Response, Sense, Stroke, Ui, Vec2};
@@ -2329,6 +2329,13 @@ fn files_sheet(app: &mut App, ui: &mut Ui, m3: &M3) {
                     Ok(_) => {}
                     Err(e) => app.status = e,
                 }
+            }
+            // Fonts dropped into the Fonts folder of the drawings' folder
+            // are read at start; this reads the ones added since.
+            if tonal_button(ui, m3, &tr("mobile.reload_fonts"), true).clicked() {
+                let added = crate::fonts_folder::scan();
+                app.status =
+                    trf("status.fonts_loaded", &[("n", &added.to_string())]);
             }
             if tonal_button(ui, m3, &plain(&tr("menu.file.export")), has).clicked() {
                 app.dialog = crate::ui::dialogs::Dialog::Export(crate::ui::dialogs::ExportState::default());

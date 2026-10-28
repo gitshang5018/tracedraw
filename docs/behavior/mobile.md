@@ -142,6 +142,16 @@ no file manager shows and nothing needs to.
 Reading the phone's own clipboard needs the activity and a permission the
 interface does not ask for yet: copy and paste work inside TraceDraw.
 
+### Fonts of your own
+
+A phone installs no fonts, so the font lists would only ever hold the ones
+a drawing carries. Drop `.ttf`, `.otf` or `.ttc` files into **`Fonts`** in
+the folder the drawings live in (Download once the app may see it, its own
+folder before that) and they join the lists: they are read at start, and
+**Reload fonts** in the Files sheet reads the ones added since, which is how
+a font saved from WeChat gets in without a restart. A file already read is
+not read again, so the button costs a folder listing (`fonts_folder.rs`).
+
 ## Typing on a phone
 
 `winit` 0.30 has no text input on Android: its backend forwards physical key

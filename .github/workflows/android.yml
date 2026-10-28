@@ -291,31 +291,38 @@ jobs:
         env:
           SIGNED: ${{ needs.apk.outputs.signed }}
         run: |
+          # The notes are in Chinese: the phones this build is for read
+          # them, and the app's own update box opens this page.
           if [[ -n "$RELEASE_TAG" ]]; then
             # The version's section of CHANGELOG.md ("## 0.3.0 (date)").
             v="${RELEASE_TAG#v}"
             awk -v head="## ${v} " 'index($0, head) == 1 { p = 1; next } /^## / && p { exit } p' \
               CHANGELOG.md > release-notes.md
           else
-            echo "The Android app built from ${GITHUB_SHA} on main. Replaced on every push." > release-notes.md
+            {
+              echo "Android 版，由 \`main\` 分支的 ${GITHUB_SHA:0:7} 构建，每次推送都会替换这个包。"
+              echo
+              echo "在 App 里打开菜单 > 检查更新，就能直接下载安装；也可以点下面的 APK 手动装。"
+            } > release-notes.md
           fi
           cat >> release-notes.md <<'NOTES'
 
-          ### Android
+          ### 安装包
 
-          | file | runs on |
+          | 文件 | 适用机型 |
           | --- | --- |
-          | `tracedraw-*-arm64-v8a.apk` | 64-bit phones (nearly all of them) |
-          | `tracedraw-*-armeabi-v7a.apk` | older 32-bit phones |
-          | `tracedraw-*-x86_64.apk` | emulators |
+          | `tracedraw-*-arm64-v8a.apk` | 64 位手机（绝大多数） |
+          | `tracedraw-*-armeabi-v7a.apk` | 老的 32 位手机 |
+          | `tracedraw-*-x86_64.apk` | 模拟器 |
 
-          Tap a drawing in a file manager to open it here: `.cdr` and `.tdraw`
-          are registered.
+          在文件管理器里点开 `.cdr` 或 `.tdraw` 图纸，就能用 TraceDraw 打开。
           NOTES
           if [[ "$SIGNED" == "the release key" ]]; then
-            echo "Signed with the project's release key: this APK replaces an installed one." >> release-notes.md
+            echo "" >> release-notes.md
+            echo "已用项目发布密钥签名：可以直接覆盖安装旧版本。" >> release-notes.md
           else
-            echo "Signed with a key made for this run: uninstall an older build before installing this one." >> release-notes.md
+            echo "" >> release-notes.md
+            echo "使用本次构建临时生成的密钥签名：安装前请先卸载旧版本。" >> release-notes.md
           fi
           cat release-notes.md
 

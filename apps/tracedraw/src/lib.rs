@@ -69,6 +69,7 @@ mod fill_tool;
 mod focus;
 #[cfg(any(target_arch = "wasm32", test))]
 mod font_folder;
+mod fonts_folder;
 #[cfg(not(target_arch = "wasm32"))]
 mod frame_stats;
 mod frame_type;
@@ -200,6 +201,8 @@ pub fn desktop_main() -> eframe::Result<()> {
     // console to show them (#570).
     startup_log::init();
     tracedraw_text::install();
+    // Fonts kept in a folder of the user's own (see fonts_folder.rs).
+    fonts_folder::scan();
     // `tracedraw --mcp`: no window, a Model Context Protocol server on
     // stdin/stdout (see mcp.rs and docs/behavior/mcp.md).
     if args.iter().any(|a| a == "--mcp") {
@@ -394,6 +397,9 @@ pub fn android_run(android_app: winit::platform::android::activity::AndroidApp) 
     let shared = android_system::shared_drawing(&android_app, &documents);
     settings::set_android_folders(config, documents.clone());
     files::set_android_documents(documents);
+    // Fonts dropped into `Fonts` in the folder the drawings live in (see
+    // fonts_folder.rs).
+    fonts_folder::scan();
     // The system bars, the keyboard and the language are read through the
     // activity (see `android_system`).
     android_system::set_phone(android_app.clone());
