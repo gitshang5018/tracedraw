@@ -1505,3 +1505,207 @@ pub fn open_url(app: &AndroidApp, url: &str) {
         });
     }));
 }
+
+// ---------------------------------------------------------------------------
+// A file of the drawing, out to other apps
+// ---------------------------------------------------------------------------
+
+/// Write `bytes` into the phone's Download folder as `name` and offer the
+/// file to the system's share sheet, where WeChat, QQ and the rest of the
+/// apps take it. Answers whether the sheet was opened: from Android 10 the
+/// file goes in through `MediaStore`, which is what gives it an address
+/// other apps may read (a plain path cannot leave an app since Android 7),
+/// and before that the file is written where the app may write and nothing
+/// can be shared.
+pub fn save_and_share(
+    app: &AndroidApp,
+    name: &str,
+    mime: &str,
+    bytes: &[u8],
+) -> Result<bool, String> {
+    if AndroidApp::sdk_version() < 29 {
+        let path = crate::files::android_documents().join(name);
+        std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
+        return Ok(false);
+    }
+    let vm = app.vm_as_ptr();
+    let activity = app.activity_as_ptr();
+    with_env(vm, |env| {
+        Some(share_from_downloads(env, activity, name, mime, bytes))
+    })
+    .unwrap_or_else(|| Err("no Java environment".to_string()))
+}
+
+/// The `MediaStore` half of [`save_and_share`]: insert a row for the file,
+/// write the bytes through it, then hand its `content://` address to the
+/// share sheet.
+fn share_from_downloads(
+    env: &mut jni::JNIEnv<'_>,
+    activity_ptr: *mut c_void,
+    name: &str,
+    mime: &str,
+    bytes: &[u8],
+) -> Result<bool, String> {
+    let activity = activity_ref(env, activity_ptr).ok_or("no activity")?;
+    let resolver = env
+        .call_method(
+            &activity,
+            "getContentResolver",
+            "()Landroid/content/ContentResolver;",
+            &[],
+        )
+        .map_err(|e| e.to_string())?
+        .l()
+        .map_err(|e| e.to_string())?;
+
+    // The row the file gets in the Download collection: its name, its type
+    // and the folder it belongs to.
+    let values = env
+        .new_object("android/content/ContentValues", "()V", &[])
+        .map_err(|e| e.to_string())?;
+    for (key, value) in [
+        ("_display_name", name),
+        ("mime_type", mime),
+        ("relative_path", "Download/"),
+    ] {
+        let key = env.new_string(key).map_err(|e| e.to_string())?;
+        let value = env.new_string(value).map_err(|e| e.to_string())?;
+        env.call_method(
+            &values,
+            "put",
+            "(Ljava/lang/String;Ljava/lang/String;)V",
+            &[
+                JValue::Object(&JObject::from(key)),
+                JValue::Object(&JObject::from(value)),
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    let volume = env
+        .new_string("external_primary")
+        .map_err(|e| e.to_string())?;
+    let collection = env
+        .call_static_method(
+            "android/provider/MediaStore$Downloads",
+            "getContentUri",
+            "(Ljava/lang/String;)Landroid/net/Uri;",
+            &[JValue::Object(&JObject::from(volume))],
+        )
+        .map_err(|e| e.to_string())?
+        .l()
+        .map_err(|e| e.to_string())?;
+    let uri = env
+        .call_method(
+            &resolver,
+            "insert",
+            "(Landroid/net/Uri;Landroid/content/ContentValues;)Landroid/net/Uri;",
+            &[JValue::Object(&collection), JValue::Object(&values)],
+        )
+        .map_err(|e| e.to_string())?
+        .l()
+        .map_err(|e| e.to_string())?;
+    if uri.is_null() {
+        return Err("the Download folder refused the file".to_string());
+    }
+
+    let out = env
+        .call_method(
+            &resolver,
+            "openOutputStream",
+            "(Landroid/net/Uri;)Ljava/io/OutputStream;",
+            &[JValue::Object(&uri)],
+        )
+        .map_err(|e| e.to_string())?
+        .l()
+        .map_err(|e| e.to_string())?;
+    if out.is_null() {
+        return Err("the Download folder could not be written".to_string());
+    }
+    let written = write_session(env, &out, bytes).and_then(|()| {
+        env.call_method(&out, "close", "()V", &[])
+            .map_err(|e| e.to_string())
+    });
+    if let Err(e) = written {
+        // A half-written row would sit in the Download folder for good.
+        let _ = env.call_method(
+            &resolver,
+            "delete",
+            "(Landroid/net/Uri;Ljava/lang/String;[Ljava/lang/String;)I",
+            &[
+                JValue::Object(&uri),
+                JValue::Object(&JObject::null()),
+                JValue::Object(&JObject::null()),
+            ],
+        );
+        if env.exception_check().unwrap_or(false) {
+            let _ = env.exception_clear();
+        }
+        return Err(e);
+    }
+
+    // The share sheet: ACTION_SEND with the file's address, readable by
+    // whichever app is chosen.
+    let action = env
+        .new_string("android.intent.action.SEND")
+        .map_err(|e| e.to_string())?;
+    let intent = env
+        .new_object(
+            "android/content/Intent",
+            "(Ljava/lang/String;)V",
+            &[JValue::Object(&JObject::from(action))],
+        )
+        .map_err(|e| e.to_string())?;
+    let kind = env.new_string(mime).map_err(|e| e.to_string())?;
+    env.call_method(
+        &intent,
+        "setType",
+        "(Ljava/lang/String;)Landroid/content/Intent;",
+        &[JValue::Object(&JObject::from(kind))],
+    )
+    .map_err(|e| e.to_string())?;
+    let extra = env
+        .new_string("android.intent.extra.STREAM")
+        .map_err(|e| e.to_string())?;
+    env.call_method(
+        &intent,
+        "putExtra",
+        "(Ljava/lang/String;Landroid/os/Parcelable;)Landroid/content/Intent;",
+        &[JValue::Object(&JObject::from(extra)), JValue::Object(&uri)],
+    )
+    .map_err(|e| e.to_string())?;
+    // FLAG_GRANT_READ_URI_PERMISSION: the app chosen may read the file.
+    env.call_method(
+        &intent,
+        "addFlags",
+        "(I)Landroid/content/Intent;",
+        &[JValue::Int(1)],
+    )
+    .map_err(|e| e.to_string())?;
+    let title = env.new_string("分享").map_err(|e| e.to_string())?;
+    let chooser = env
+        .call_static_method(
+            "android/content/Intent",
+            "createChooser",
+            "(Landroid/content/Intent;Ljava/lang/CharSequence;)Landroid/content/Intent;",
+            &[
+                JValue::Object(&intent),
+                JValue::Object(&JObject::from(title)),
+            ],
+        )
+        .map_err(|e| e.to_string())?
+        .l()
+        .map_err(|e| e.to_string())?;
+    let started = env.call_method(
+        &activity,
+        "startActivity",
+        "(Landroid/content/Intent;)V",
+        &[JValue::Object(&chooser)],
+    );
+    if env.exception_check().unwrap_or(false) {
+        let _ = env.exception_clear();
+        // The file is saved and in the Download folder all the same.
+        return Ok(false);
+    }
+    started.map_err(|e| e.to_string())?;
+    Ok(true)
+}

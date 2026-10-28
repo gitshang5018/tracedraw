@@ -43,6 +43,7 @@ mod copy_effect;
 mod corner_widgets;
 mod corners;
 mod crop_tool;
+mod curves_cdr;
 mod curve_join;
 mod defaults;
 mod describe;

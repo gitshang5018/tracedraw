@@ -2322,6 +2322,14 @@ fn files_sheet(app: &mut App, ui: &mut Ui, m3: &M3) {
             if tonal_button(ui, m3, &plain(&tr("menu.file.save_as")), has).clicked() {
                 save_drawing(app, true);
             }
+            // 转曲保存: the drawing as curves, into Download, then the share
+            // sheet, which is how a phone sends a file to WeChat or QQ.
+            if tonal_button(ui, m3, &tr("mobile.save_curves"), has).clicked() {
+                match app.save_curves_cdr(crate::curves_cdr::X8) {
+                    Ok(_) => {}
+                    Err(e) => app.status = e,
+                }
+            }
             if tonal_button(ui, m3, &plain(&tr("menu.file.export")), has).clicked() {
                 app.dialog = crate::ui::dialogs::Dialog::Export(crate::ui::dialogs::ExportState::default());
             }

@@ -2097,6 +2097,15 @@ impl App {
         app
     }
 
+    /// An app of its own, for work that must not touch the one on screen:
+    /// 转曲保存 builds a copy of the drawing in it and writes that out. It
+    /// keeps no window and no settings of its own beyond the ones on disk.
+    pub fn scratch() -> Self {
+        let mut app = Self::build(None);
+        app.show_welcome = false;
+        app
+    }
+
     fn build(open: Option<PathBuf>) -> Self {
         let engine = Engine::default();
         let page = engine.document().pages[0].id;
