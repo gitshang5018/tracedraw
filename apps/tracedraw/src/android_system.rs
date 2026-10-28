@@ -690,10 +690,15 @@ pub fn storage_granted(app: &AndroidApp) -> bool {
         return true;
     }
 
-    // Direct filesystem check: if shared storage or Download is already readable,
-    // access is effectively granted regardless of JNI or OEM permission quirks.
+    // A fallback for the phones whose answer to `isExternalStorageManager`
+    // is wrong: what the permission buys is the listing of the shared
+    // storage, so a listing that works means the app has it. A `stat` is
+    // not enough, since a folder's own entry answers while its contents
+    // stay out of reach: that made a fresh install believe it had the
+    // grant, so the Files sheet offered no way to give it and listed
+    // nothing.
     if let Some(root) = storage_root(app) {
-        if root.join("Download").is_dir() || std::fs::read_dir(&root).is_ok() {
+        if std::fs::read_dir(&root).is_ok() {
             return true;
         }
     }
