@@ -1727,11 +1727,7 @@ impl FontSystem {
             if self.is_document_family(&family) {
                 continue;
             }
-            let Some(data) = self.face_file(&family, bold, italic).or_else(|| {
-                (bold || italic)
-                    .then(|| self.face_file(&family, false, false))
-                    .flatten()
-            }) else {
+            let Some(data) = self.face_file(&family, bold, italic) else {
                 continue;
             };
             let same = |f: &DocumentFont| Arc::ptr_eq(&f.data, &data) || f.data == data;
@@ -1790,32 +1786,19 @@ impl FontSystem {
         }
     }
 
-    /// The font file of `family`'s face in that weight and slant, for
-    /// embedding in a saved drawing: `None` when the family lacks that
-    /// face (bold or italic drawn from another) or the face sits in a
-    /// collection file.
+    /// The font file of the face that draws text set in `family` in that
+    /// weight and slant, for embedding in a saved drawing: the family's
+    /// own face found as the text finds it (by its name, its legacy name,
+    /// or the family a name with a weight belongs to, the nearest weight
+    /// and slant; the regular face for bold or italic it lacks, a variable
+    /// font for any weight). `None` when only a stand-in draws the text or
+    /// the face sits in a collection file. Before #1009 only a face of
+    /// exactly that name, weight and slant counted, so the fonts of most
+    /// text ("Montserrat SemiBold", bold in a family without a bold face,
+    /// a variable font at 700) were never embedded.
     pub fn face_file(&self, family: &str, bold: bool, italic: bool) -> Option<Arc<Vec<u8>>> {
         let db = self.db();
-        let id = db.query(&fontdb::Query {
-            families: &[fontdb::Family::Name(family)],
-            weight: if bold {
-                fontdb::Weight::BOLD
-            } else {
-                fontdb::Weight::NORMAL
-            },
-            stretch: fontdb::Stretch::Normal,
-            style: if italic {
-                fontdb::Style::Italic
-            } else {
-                fontdb::Style::Normal
-            },
-        })?;
-        let face = db.face(id)?;
-        let is_bold = face.weight.0 >= 600;
-        let is_italic = face.style != fontdb::Style::Normal;
-        if is_bold != bold || is_italic != italic {
-            return None;
-        }
+        let (id, _) = self.own_face(&db, family, bold, italic)?;
         db.with_face_data(id, |d, i| {
             (i == 0 && ttf_parser::fonts_in_collection(d).is_none()).then(|| Arc::new(d.to_vec()))
         })
@@ -2161,46 +2144,18 @@ impl FontSystem {
     /// stand-in.
     fn face_and_weight(&self, family: &str, bold: bool, italic: bool) -> Option<(fontdb::ID, u16)> {
         self.ask_for(family);
-        let plain = if bold { 700 } else { 400 };
-        let weight = fontdb::Weight(plain);
+        let db = self.db();
+        if let Some(found) = self.own_face(&db, family, bold, italic) {
+            return Some(found);
+        }
         let style = if italic {
             fontdb::Style::Italic
         } else {
             fontdb::Style::Normal
         };
-        let db = self.db();
-        let exact = fontdb::Query {
-            families: &[fontdb::Family::Name(family)],
-            weight,
-            stretch: fontdb::Stretch::Normal,
-            style,
-        };
-        if let Some(id) = db
-            .query(&exact)
-            .or_else(|| self.legacy_face(&db, family, weight, style))
-        {
-            return Some((id, plain));
-        }
         let target = target_weight(family, bold);
         let weight = fontdb::Weight(target);
-        // A family named with its weight ("Titillium Web SemiBold") whose
-        // faces are not listed under that name: the face of the family
-        // nearest that weight (bold text at least bold).
         let base = split_weight(family).map(|(b, _)| b);
-        if let Some(base) = base {
-            let q = fontdb::Query {
-                families: &[fontdb::Family::Name(base)],
-                weight,
-                stretch: fontdb::Stretch::Normal,
-                style,
-            };
-            if let Some(id) = db
-                .query(&q)
-                .or_else(|| self.legacy_face(&db, base, weight, style))
-            {
-                return Some((id, target));
-            }
-        }
         let mut fams: Vec<fontdb::Family> = substitutes(base.unwrap_or(family))
             .into_iter()
             .map(fontdb::Family::Name)
@@ -2218,6 +2173,53 @@ impl FontSystem {
         };
         db.query(&q)
             .or_else(|| db.faces().next().map(|f| f.id))
+            .map(|id| (id, target))
+    }
+
+    /// The face of `family` itself that draws its text, with the weight
+    /// to draw at (see [`FontSystem::face_and_weight`]): a face listing
+    /// the name or legacy name, else a face of the family a name with a
+    /// weight belongs to; `None` when only a stand-in would draw it.
+    fn own_face(
+        &self,
+        db: &fontdb::Database,
+        family: &str,
+        bold: bool,
+        italic: bool,
+    ) -> Option<(fontdb::ID, u16)> {
+        let plain = if bold { 700 } else { 400 };
+        let weight = fontdb::Weight(plain);
+        let style = if italic {
+            fontdb::Style::Italic
+        } else {
+            fontdb::Style::Normal
+        };
+        let exact = fontdb::Query {
+            families: &[fontdb::Family::Name(family)],
+            weight,
+            stretch: fontdb::Stretch::Normal,
+            style,
+        };
+        if let Some(id) = db
+            .query(&exact)
+            .or_else(|| self.legacy_face(db, family, weight, style))
+        {
+            return Some((id, plain));
+        }
+        let target = target_weight(family, bold);
+        let weight = fontdb::Weight(target);
+        // A family named with its weight ("Titillium Web SemiBold") whose
+        // faces are not listed under that name: the face of the family
+        // nearest that weight (bold text at least bold).
+        let (base, _) = split_weight(family)?;
+        let q = fontdb::Query {
+            families: &[fontdb::Family::Name(base)],
+            weight,
+            stretch: fontdb::Stretch::Normal,
+            style,
+        };
+        db.query(&q)
+            .or_else(|| self.legacy_face(db, base, weight, style))
             .map(|id| (id, target))
     }
 
@@ -3601,6 +3603,12 @@ impl FontSystem {
                 }
                 pen += h.advance;
             }
+            // The letters' winding, so the lines below go round the same way.
+            let glyph_area = if underline_runs.is_empty() {
+                0.0
+            } else {
+                line_path.area()
+            };
             for (si, a, b) in underline_runs {
                 let span = &spans[si];
                 let sm = metrics[si];
@@ -3611,7 +3619,7 @@ impl FontSystem {
                         b,
                         y + sm.underline_pos,
                     );
-                    let rp = orient_rest(r.to_path(0.01));
+                    let rp = wound_like(orient_rest(r.to_path(0.01)), glyph_area);
                     line_path.extend(rp.elements().iter().copied());
                     if collect {
                         line_glyphs.rest.extend(rp.elements().iter().copied());
@@ -3624,7 +3632,7 @@ impl FontSystem {
                         b,
                         y + sm.strike_pos + sm.underline_thick / 2.0,
                     );
-                    let rp = orient_rest(r.to_path(0.01));
+                    let rp = wound_like(orient_rest(r.to_path(0.01)), glyph_area);
                     line_path.extend(rp.elements().iter().copied());
                     if collect {
                         line_glyphs.rest.extend(rp.elements().iter().copied());
@@ -4325,6 +4333,19 @@ impl ttf_parser::OutlineBuilder for OutlineSink {
 
 #[cfg(test)]
 mod devanagari_tests;
+
+/// `line` (an underline or a strike line) wound the same way as the
+/// letters it crosses, whose summed signed area is `glyph_area`: text is
+/// filled with the nonzero rule, so a line wound against the letters cut
+/// holes where it crossed them (#1017). Fonts wind their outlines either
+/// way, so the letters decide.
+fn wound_like(line: BezPath, glyph_area: f64) -> BezPath {
+    if glyph_area != 0.0 && line.area() * glyph_area < 0.0 {
+        line.reverse_subpaths()
+    } else {
+        line
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -5219,6 +5240,47 @@ mod tests {
             ..ParagraphStyle::default()
         });
         assert!((pct - 1.5 * size).abs() < 1e-6, "{pct}");
+    }
+
+    /// A strike line or an underline crossing the letters fills with them:
+    /// under the nonzero rule text is filled with, every point of a solid
+    /// stem stays inside, whichever way the font winds its outlines
+    /// (TrueType and CFF wind opposite ways, #1017).
+    #[test]
+    fn strike_lines_and_underlines_fill_with_the_letters_they_cross() {
+        if !has_fonts() {
+            return;
+        }
+        let f = fonts();
+        let mut checked = 0;
+        for family in ["DejaVu Sans", "Inter", "FreeSans"] {
+            let mut plain = span("I");
+            plain.font_family = family.into();
+            plain.size_pt = 72.0;
+            let mut struck = plain.clone();
+            struck.strikethrough = true;
+            struck.underline = true;
+            let bare = f.outline(&[plain]);
+            let lined = f.outline(&[struck]);
+            if bare.glyphs != 1 {
+                continue;
+            }
+            let b = bare.path.bounding_box();
+            let x = b.center().x;
+            let mut inside_all = true;
+            for i in 1..40 {
+                let y = b.y0 + b.height() * i as f64 / 40.0;
+                if lined.path.winding(Point::new(x, y)) == 0 {
+                    inside_all = false;
+                }
+            }
+            assert!(inside_all, "{family}: the lines cut holes in the stem");
+            // The lines themselves are filled away from the letters too.
+            let lb = lined.path.bounding_box();
+            assert!(lb.x1 > b.x1, "{family}: {lb:?} {b:?}");
+            checked += 1;
+        }
+        assert!(checked > 0);
     }
 
     #[test]
@@ -6520,6 +6582,17 @@ mod tests {
         let plain = f.outline(std::slice::from_ref(&s)).path;
         s.set_variation("wght", Some(900.0));
         assert_eq!(f.outline(&[s]).path, plain);
+
+        // The family named with a weight draws the variable font at it:
+        // a weight of 600 saved in a .cdr file reopens as the SemiBold
+        // face of the family (#1013) and draws as the axis at 600 does.
+        let semi = f.outline(&[TextSpan::new("Hello", "Quicksand SemiBold", 100.0)]);
+        assert_eq!(semi.path, draw(false, Some(600.0)).path);
+        assert_ne!(semi.path, draw(false, None).path);
+        assert_eq!(
+            f.variation_axes("Quicksand SemiBold", false, false)[0].auto,
+            600.0
+        );
     }
 
     /// `data` with the OS/2 embedding bits set to `fs_type`.
@@ -6664,6 +6737,31 @@ mod tests {
         let junk = DocumentFont::new("Junk", vec![1, 2, 3]);
         assert!(f.add_document_fonts(&[restricted, junk]).is_empty());
         assert!(!f.has_family("Junk"));
+    }
+
+    /// The file to embed for a face is the one that draws its text
+    /// (#1009): found by the legacy name, by the family of a name with a
+    /// weight, the regular face for a style the family lacks, a variable
+    /// font at any weight; never a stand-in's.
+    #[test]
+    fn the_file_embedded_for_a_face_is_the_one_that_draws_it() {
+        const SELAWIK_BOLD: &[u8] =
+            include_bytes!("../../../apps/tracedraw/assets/fonts/Selawik-Bold.ttf");
+        let f = system_with(&[SELAWIK, SELAWIK_BOLD, QUICKSAND]);
+        let file = |family: &str, bold: bool, italic: bool| {
+            f.face_file(family, bold, italic).map(|d| d.len())
+        };
+        assert_eq!(file("Selawik", false, false), Some(SELAWIK.len()));
+        assert_eq!(file("Selawik", true, false), Some(SELAWIK_BOLD.len()));
+        assert_eq!(file("Selawik", true, true), Some(SELAWIK_BOLD.len()));
+        assert_eq!(file("Selawik", false, true), Some(SELAWIK.len()));
+        assert_eq!(
+            file("Selawik SemiBold", false, false),
+            Some(SELAWIK_BOLD.len())
+        );
+        assert_eq!(file("Quicksand", true, false), Some(QUICKSAND.len()));
+        assert_eq!(file("Quicksand Light", false, false), Some(QUICKSAND.len()));
+        assert_eq!(file("Nowhere Sans", false, false), None);
     }
 
     /// Save As's Embed fonts: the installed faces the text uses go with

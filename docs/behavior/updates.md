@@ -10,7 +10,7 @@ live there, and both are followed:
 
 - the development builds, as the pre-release tagged `nightly`, whose files
   are replaced on every push to main and named after the commit
-  (`tracedraw-0.19.8-dev.4c864d1-android-arm64-v8a.apk`);
+  (`tracedraw-0.19.9-dev.4c864d1-android-arm64-v8a.apk`);
 - a version, as a release of its own (`v0.19.9`), named without the commit.
 
 The check reads the list of releases
@@ -46,29 +46,66 @@ Numbers compare as major, minor, patch. When they are equal:
   as newer (the order of the release list is what says which came last);
 - a release is never newer than a development build of the same version.
 
+A development release carries the fixed tag "nightly", so its version is
+read from its file names (`updates::release_version`).
+
+## Which file
+
+Download opens the link of the release file named exactly for this system,
+its processor (x86_64, or arm64 for aarch64) and how this copy was
+installed (`updates::asset_names`); the system's installer does the
+installing:
+
+- Linux run as an AppImage (`APPIMAGE` set): `tracedraw-<v>-linux-<arch>.AppImage`,
+  where x86_64 looks for `linux-amd64` first and then `linux-x86_64`
+  (releases up to 0.19.8). From 0.19.9 on the release names the x86_64
+  AppImage `linux-amd64`, which sorts before `linux-arm64`: updaters of
+  0.19.8 and earlier take the first AppImage in GitHub's list, sorted by
+  name, and so get the x86_64 file (#1038). The tar.gz keeps
+  `linux-x86_64`;
+- Linux installed from the `.deb` (dpkg's list for `tracedraw` names the
+  running program): `tracedraw_<v>_<amd64|arm64>.deb`;
+- Linux unpacked from the tar.gz (a program outside `/usr`):
+  `tracedraw-<v>-linux-<arch>.tar.gz`;
+- Windows installed with setup: `tracedraw-<v>-windows-<arch>-setup.exe`;
+  the portable copy (the `tracedraw-settings` folder next to the program):
+  `tracedraw-<v>-windows-<arch>-portable.zip`;
+- macOS: `tracedraw-<v>-macos-<arch>.dmg`;
+- Android: `tracedraw-<v>-android-<abi>.apk`, one per ABI
+  (`arm64-v8a`, `armeabi-v7a`, `x86_64`), and only the one this build was
+  packed for.
+
+When the release has no such file (an rpm or other system package under
+`/usr`, a Flatpak or Snap, a processor without a build such as Windows on
+arm64) no file is downloaded and Download opens the release page instead; a
+file for another processor or package is never offered (#1038: the x86_64
+AppImage took the arm64 one, listed first).
+
+## Install in place
+
+When the release's file for this system carries a SHA-256 digest (GitHub
+gives one for every uploaded file) and there is somewhere to put it, the
+dialog offers Install first:
+
+- **A phone**: the APK is downloaded into the app's cache, its size and
+  digest are checked, and the file is written into a `PackageInstaller`
+  session and committed, so the system's own prompt asks the user to update
+  TraceDraw. Android 8 and later also need the app to be allowed to install
+  packages, which is granted per app; when it is not, the dialog opens that
+  screen instead and says so. A download that does not match its digest is
+  deleted and never reaches the installer.
+- **A Linux AppImage** (the AppImage runtime names its file in `APPIMAGE`):
+  the new AppImage is written next to the running one
+  (`.<name>.update`), showing the megabytes done, checked the same way,
+  given the running file's permissions and moved over it. The new version
+  runs from the next start. Windows, macOS, the `.deb` and the tar.gz keep
+  Download and the system's installer.
+
 ## What the dialog offers
 
 - **A newer release**: Download, Release notes, Skip this version and
-  Close, plus Install when the file can be put in place (below). Download
-  opens the file's link and the system's installer does the rest; Skip
-  keeps that version out of the daily check.
-- **Install in place**, when the release's file carries a SHA-256 digest
-  (GitHub gives one for every uploaded file) and there is somewhere to put
-  it:
-  - **A phone**: the APK for the phone's own ABI (`arm64-v8a`,
-    `armeabi-v7a`, `x86_64`) is downloaded into the app's cache, its size
-    and digest are checked, and the file is written into a
-    `PackageInstaller` session and committed, so the system's own prompt
-    asks the user to update TraceDraw. Android 8 and later also need the
-    app to be allowed to install packages, which is granted per app; when
-    it is not, the dialog opens that screen instead and says so. A download
-    that does not match its digest is deleted and never reaches the
-    installer.
-  - **A Linux AppImage** (the AppImage runtime names its file in
-    `APPIMAGE`): the new AppImage is written next to the running one
-    (`.<name>.update`), checked the same way, given the running file's
-    permissions and moved over it. The new version runs from the next
-    start.
+  Close, plus Install when the file can be put in place. Skip keeps that
+  version out of the daily check.
 - **No newer build**: the version that is running, and Close.
 - **A failed check** (no connection, a proxy that is down): why, and Open
   the releases page.
@@ -84,11 +121,15 @@ newer release that was not skipped is shown.
 - `updates::tests::the_download_fits_the_system`
 - `updates::tests::a_phone_gets_the_apk_of_its_own_abi`
 - `updates::tests::a_development_release_takes_its_version_from_its_files`
-- `updates::tests::the_same_or_older_drafts_are_not_offered`
-- `updates::tests::the_download_comes_with_its_digest`
+- `updates::tests::a_release_with_no_file_for_this_system_is_passed_over`
+- `updates::tests::drafts_are_not_offered`
+- `updates::tests::no_file_of_another_system_is_offered`
+- `updates::tests::the_x86_64_appimage_is_named_amd64_from_0_19_9`
+- `updates::tests::how_a_linux_copy_was_installed`
+- `updates::tests::the_appimage_comes_with_its_digest`
 - `updates::tests::github_addresses_go_through_the_proxy`
 - `updates::tests::installing_replaces_the_file_only_when_it_checks_out`
 - `ui::dialogs::tests::the_updates_dialog_draws_every_state`
-- `updates::tests::live_check_finds_the_newest_release` (run by hand, needs
-  the network: `cargo test -- --ignored`): the newest release parses
+- `updates::tests::live_install_from_the_latest_release` (run by hand,
+  needs the network: `cargo test -- --ignored`): the newest release parses
   through the proxy, its file downloads and its digest checks out.
