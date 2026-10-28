@@ -258,6 +258,24 @@ fn system_insets(ctx: &egui::Context, bars_hidden: bool) -> Safe {
     safe
 }
 
+/// How tall the phone's keyboard is right now, in points; zero while it is
+/// down, and on every system that has no keyboard of its own.
+fn ime_height(ctx: &egui::Context) -> f32 {
+    #[cfg(target_os = "android")]
+    if let Some(phone) = crate::android_system::phone() {
+        let sdk = winit::platform::android::activity::AndroidApp::sdk_version();
+        let px = crate::android_system::ime_bottom(
+            phone.activity_as_ptr(),
+            phone.vm_as_ptr(),
+            sdk,
+        );
+        return px.max(0) as f32 / ctx.pixels_per_point().max(0.1);
+    }
+    #[cfg(not(target_os = "android"))]
+    let _ = ctx;
+    0.0
+}
+
 /// A phone on its side draws edge to edge: the system bars are gone, and
 /// the camera cutout sits in the middle of a short edge, with the top bar
 /// and the rails running straight past it. No side room is kept for it, so
@@ -433,6 +451,18 @@ pub fn frame(app: &mut App, ui: &mut Ui) -> bool {
     }
 
     top_bar(app, ui, &m3, inset, &mut open);
+    // The phone's keyboard lies over the bottom of the window without the
+    // window shrinking, so a panel of its height is what keeps the bars,
+    // and the strip of properties above them, out from under it.
+    let ime = ime_height(&ctx);
+    if ime > 0.5 {
+        egui::Panel::bottom("mobile_ime")
+            .exact_size(ime)
+            .resizable(false)
+            .show_separator_line(false)
+            .frame(Frame::new())
+            .show(ui, |_| {});
+    }
     // The properties of what is selected sit above the bars, and take no
     // room at all while nothing is selected.
     let strip_h;
@@ -500,11 +530,11 @@ pub fn frame(app: &mut App, ui: &mut Ui) -> bool {
     } else if land {
         window.bottom() - inset.bottom
     } else {
-        window.bottom() - inset.bottom - NAV_H - TOOLS_H - strip_h
+        window.bottom() - inset.bottom - NAV_H - TOOLS_H - strip_h - ime
     };
     snackbar(app, ui, floor);
     if open == Sheet::Palette {
-        palette_float(app, &ctx, window, &m3, &mut open, strip_h);
+        palette_float(app, &ctx, window, &m3, &mut open, strip_h, ime);
     } else {
         // The card is not the one in front: the next opening starts over.
         ctx.data_mut(|d| d.remove::<u64>(Id::new("mobile_palette_since")));
@@ -2227,6 +2257,7 @@ fn palette_float(
     m3: &M3,
     open: &mut Sheet,
     strip: f32,
+    ime: f32,
 ) {
     let land = landscape(screen);
     let width = (screen.width() * 0.78).clamp(232.0, 360.0);
@@ -2241,7 +2272,7 @@ fn palette_float(
         // Standing: above the tool strip, against the right edge.
         egui::pos2(
             screen.right() - width - 12.0,
-            screen.bottom() - NAV_H - TOOLS_H - strip - height - 12.0,
+            screen.bottom() - ime - NAV_H - TOOLS_H - strip - height - 12.0,
         )
     };
     let card = egui::Area::new(Id::new("mobile_palette_float"))

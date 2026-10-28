@@ -249,6 +249,72 @@ pub fn read(activity: *mut c_void, vm: *mut c_void, sdk: i32) -> Option<Insets> 
     })
 }
 
+/// How much of the window's bottom edge the phone's keyboard covers, in
+/// pixels; zero while it is down. Read on every frame rather than cached
+/// with the system bars: the keyboard comes and goes without the window
+/// changing size, which is why the bars would otherwise sit under it.
+pub fn ime_bottom(activity: *mut c_void, vm: *mut c_void, sdk: i32) -> i32 {
+    if sdk < 28 {
+        return 0;
+    }
+    with_env(vm, |env| {
+        let activity = activity_ref(env, activity)?;
+        let window = window(env, &activity)?;
+        let decor = env
+            .call_method(&window, "getDecorView", "()Landroid/view/View;", &[])
+            .ok()?
+            .l()
+            .ok()?;
+        let insets = env
+            .call_method(
+                &decor,
+                "getRootWindowInsets",
+                "()Landroid/view/WindowInsets;",
+                &[],
+            )
+            .ok()?
+            .l()
+            .ok()?;
+        if insets.is_null() {
+            return None;
+        }
+        if sdk >= 30 {
+            let ime = env
+                .call_static_method("android/view/WindowInsets$Type", "ime", "()I", &[])
+                .map(|v| v.i().unwrap_or(8))
+                .unwrap_or(8);
+            if let Ok(val) = env.call_method(
+                &insets,
+                "getInsets",
+                "(I)Landroid/graphics/Insets;",
+                &[JValue::Int(ime)],
+            ) {
+                if let Ok(bottom) = val.l() {
+                    if !bottom.is_null() {
+                        return Some(
+                            env.get_field(&bottom, "bottom", "I")
+                                .ok()
+                                .and_then(|v| v.i().ok())
+                                .unwrap_or(0)
+                                .max(0),
+                        );
+                    }
+                }
+            }
+            if env.exception_check().unwrap_or(false) {
+                let _ = env.exception_clear();
+            }
+            return Some(0);
+        }
+        // Before Android 11 the keyboard is part of the legacy insets.
+        env.call_method(&insets, "getSystemWindowInsetBottom", "()I", &[])
+            .ok()
+            .and_then(|v| v.i().ok())
+            .map(|b| b.max(0))
+    })
+    .unwrap_or(0)
+}
+
 /// Dark icons on the system bars for a light interface, light ones for a
 /// dark one.
 pub fn set_light_bars(activity: *mut c_void, vm: *mut c_void, sdk: i32, light: bool) {
