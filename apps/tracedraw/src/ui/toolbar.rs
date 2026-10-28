@@ -1164,7 +1164,7 @@ pub fn property_bar(app: &mut App, ui: &mut Ui) {
                 // reaches first at the edge.
                 if shapes.len() > 1 {
                     vsep(ui);
-                    crate::ui::align_docker::align_part(app, ui);
+                    crate::ui::align_docker::align_part(app, ui, false);
                 }
                 crate::ui::propbar::arrange_part(app, ui);
             }
@@ -1218,7 +1218,7 @@ pub fn property_bar(app: &mut App, ui: &mut Ui) {
                 // order the floating toolbar of CorelDRAW keeps.
                 if shapes.len() > 1 {
                     crate::ui::propbar::sep(ui);
-                    crate::ui::align_docker::align_part(app, ui);
+                    crate::ui::align_docker::align_part(app, ui, false);
                 }
                 crate::ui::propbar::sep(ui);
                 if crate::ui::propbar::kind_part(app, ui) {

@@ -1895,6 +1895,21 @@ fn properties_sheet(app: &mut App, ui: &mut Ui, m3: &M3) {
         });
 
     ui.add_space(8.0);
+    // The commands the floating toolbar of CorelDRAW carries, at a
+    // finger's size: what is done to the set of objects (smart arrange,
+    // centre, grouping), then how they line up, then what is selected by
+    // kind.
+    Frame::new()
+        .fill(m3.container)
+        .corner_radius(16.0)
+        .inner_margin(egui::Margin::symmetric(8, 6))
+        .show(ui, |ui| {
+            ui.set_width(width);
+            ui.horizontal_wrapped(|ui| {
+                crate::ui::align_docker::align_part(app, ui, true);
+            });
+        });
+    ui.add_space(8.0);
     selection_actions(app, ui, m3);
     ui.add_space(8.0);
     object_geometry(app, ui, m3, width);

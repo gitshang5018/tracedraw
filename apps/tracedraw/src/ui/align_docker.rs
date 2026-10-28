@@ -35,6 +35,10 @@ enum Icon {
     Text,
     /// 全选形状: a square and a filled one.
     Shapes,
+    /// 群组: two boxes inside one frame.
+    Group,
+    /// 智能群组: the boxes that lie together, framed.
+    SmartGroup,
 }
 
 /// Draws on a 16 x 16 grid in `r`, with x and y swapped when `swap` (the
@@ -281,6 +285,21 @@ fn paint(p: &Painter, r: Rect, icon: Icon, color: Color32) {
             pen.frame(1.5, 4.5, 9.0, 12.0, 1.1);
             pen.block(8.0, 2.0, 14.5, 8.5);
         }
+        Icon::Group => {
+            // Two boxes and the frame that holds them.
+            let pen = pen(false);
+            pen.dotted(1.0, 1.0, 15.0, 15.0);
+            pen.block(3.0, 3.0, 9.0, 9.0);
+            pen.block(7.0, 7.0, 13.0, 13.0);
+        }
+        Icon::SmartGroup => {
+            // One cluster framed, one box left on its own.
+            let pen = pen(false);
+            pen.dotted(1.0, 1.5, 9.5, 14.5);
+            pen.block(2.0, 2.5, 5.5, 6.0);
+            pen.block(5.5, 9.0, 8.5, 13.0);
+            pen.block(11.0, 3.0, 14.5, 6.5);
+        }
     }
 }
 
@@ -481,16 +500,24 @@ pub fn align_distribute(app: &mut App, ui: &mut Ui) {
 /// two objects, and the four ways to space them out once there are three.
 /// Two objects can be aligned but not distributed, which is what the
 /// floating toolbar of CorelDRAW offers as well.
-pub fn align_part(app: &mut App, ui: &mut Ui) {
+pub fn align_part(app: &mut App, ui: &mut Ui, big: bool) {
     let two = app.selection.len() > 1;
+    let three = app.selection.len() > 2;
+    let put = |ui: &mut Ui, icon: Icon, tip: &str, enabled: bool| -> Response {
+        if big {
+            button(ui, icon, tip, enabled, false)
+        } else {
+            bar_button(ui, icon, tip, enabled)
+        }
+    };
     ui.spacing_mut().item_spacing.x = 2.0;
     // 智能排布 and 居中 come before the edges, as they do in the floating
     // toolbar of CorelDRAW: what is done to the set of objects first, then
     // how they line up.
-    if bar_button(ui, Icon::Arrange, &tr("docker.smart_arrange"), two).clicked() {
+    if put(ui, Icon::Arrange, &tr("docker.smart_arrange"), two).clicked() {
         app.arrange_selection();
     }
-    if bar_button(ui, Icon::CenterPage, &tr("docker.center_page"), true).clicked() {
+    if put(ui, Icon::CenterPage, &tr("docker.center_page"), true).clicked() {
         app.center_selection();
     }
     gap(ui);
@@ -508,12 +535,12 @@ pub fn align_part(app: &mut App, ui: &mut Ui) {
         if i == 3 {
             gap(ui);
         }
-        if bar_button(ui, Icon::Align(a), &tr(key), two).clicked() {
+        if put(ui, Icon::Align(a), &tr(key), two).clicked() {
             let to = app.align_to;
             app.align_with(a, to);
         }
     }
-    if app.selection.len() > 2 {
+    if three {
         gap(ui);
         let can = app.can_distribute(app.distribute_to);
         for (key, d) in [
@@ -522,18 +549,27 @@ pub fn align_part(app: &mut App, ui: &mut Ui) {
             ("menu.object.distribute_centers_v", Distribute::CentersV),
             ("menu.object.distribute_spacing_v", Distribute::SpacingV),
         ] {
-            if bar_button(ui, Icon::Distribute(d), &tr(key), can).clicked() {
+            if put(ui, Icon::Distribute(d), &tr(key), can).clicked() {
                 let to = app.distribute_to;
                 app.distribute_with(d, to);
             }
         }
     }
+    // Grouping: all of them at once, or each cluster of them that lies
+    // together, which is what 智能群组 works out.
+    gap(ui);
+    if put(ui, Icon::Group, &tr("menu.object.group_group"), two).clicked() {
+        app.group_selection();
+    }
+    if put(ui, Icon::SmartGroup, &tr("docker.smart_group"), two).clicked() {
+        app.smart_group();
+    }
     // Selecting by kind, as the same toolbar offers beside them.
     gap(ui);
-    if bar_button(ui, Icon::Text, &tr("menu.edit.select_all_text"), true).clicked() {
+    if put(ui, Icon::Text, &tr("menu.edit.select_all_text"), true).clicked() {
         app.select_all_of(|s| matches!(s.kind, tracedraw_core::document::ShapeKind::Text { .. }));
     }
-    if bar_button(ui, Icon::Shapes, &tr("docker.select_shapes"), true).clicked() {
+    if put(ui, Icon::Shapes, &tr("docker.select_shapes"), true).clicked() {
         app.select_all_of(|s| !matches!(s.kind, tracedraw_core::document::ShapeKind::Text { .. }));
     }
 }

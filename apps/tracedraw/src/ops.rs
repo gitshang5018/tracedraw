@@ -194,6 +194,36 @@ impl App {
         }
     }
 
+    /// 智能群组: the selected objects that sit close to each other become
+    /// a group each, so a page of parts comes out grouped the way they lie
+    /// on it. What is far from everything else is left alone.
+    pub fn smart_group(&mut self) {
+        let shapes = self.selected_shapes();
+        if shapes.len() < 2 {
+            return;
+        }
+        let boxes: Vec<(f64, f64, f64, f64)> = shapes
+            .iter()
+            .map(|s| {
+                let b = self.align_box(s);
+                (b.x0, b.y0, b.x1, b.y1)
+            })
+            .collect();
+        let gap = self.units.world_from_mm(2.0).abs();
+        let mut cmds = Vec::new();
+        for cluster in crate::arrange::clusters(&boxes, gap) {
+            if cluster.len() < 2 {
+                continue;
+            }
+            cmds.push(Command::Group {
+                shapes: cluster.iter().map(|i| shapes[*i].id).collect(),
+            });
+        }
+        if !cmds.is_empty() {
+            let _ = self.run_batch_keeping_lines("Smart group", &cmds);
+        }
+    }
+
     /// Distribute between the outermost selected objects (the menu).
     pub fn distribute(&mut self, how: Distribute) {
         self.distribute_with(how, DistributeTo::Selection);
