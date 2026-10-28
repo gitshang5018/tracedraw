@@ -1292,6 +1292,13 @@ pub fn install_package(path: &std::path::Path) -> Result<(), String> {
     if bytes.is_empty() {
         return Err("the download is empty".to_string());
     }
+    // The log is what says how far the hand-over got when the installer
+    // shows nothing: the steps below are logged as they happen.
+    log::info!(
+        "handing {} bytes to the system's installer, allowed to install: {}",
+        bytes.len(),
+        can_install_packages(&app)
+    );
     let vm = app.vm_as_ptr();
     let activity = app.activity_as_ptr();
     // A call that throws answers with the bare "Java exception was thrown"
@@ -1374,6 +1381,7 @@ fn install_session(
     if let Some(e) = java_error(env, "the installer session") {
         return Err(e);
     }
+    log::info!("installer session {id} created");
     let session = env
         .call_method(
             &installer,
@@ -1484,15 +1492,21 @@ fn install_session(
         &[JValue::Object(&sender)],
     );
     if env.exception_check().unwrap_or(false) {
-        let _ = env.exception_clear();
+        // What the system said, before the exception is cleared: the bare
+        // "refused the update" told nobody why.
+        let refused = java_error(env, "the installer")
+            .unwrap_or_else(|| "the installer refused the update".to_string());
+        log::warn!("the installer refused session {id}: {refused}");
         let _ = env.call_method(&installer, "abandonSession", "(I)V", &[JValue::Int(id)]);
         if env.exception_check().unwrap_or(false) {
             let _ = env.exception_clear();
         }
-        return Err("the installer refused the update".to_string());
+        return Err(refused);
     }
     // `commit` answers nothing: the result arrives at the PendingIntent.
-    committed.map(|_| ()).map_err(|e| e.to_string())
+    committed.map(|_| ()).map_err(|e| e.to_string())?;
+    log::info!("the installer took session {id}; its own prompt follows");
+    Ok(())
 }
 
 /// The message of a Java exception a call left pending, cleared so the
