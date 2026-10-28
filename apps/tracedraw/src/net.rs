@@ -43,18 +43,31 @@ pub fn spawn(req: HttpRequest, limit: u64, tx: std::sync::mpsc::Sender<HttpResul
     });
 }
 
+/// The roots a certificate is checked against. A phone has no JVM context
+/// for the platform verifier to ask (`rustls-platform-verifier` wants the
+/// Android context, and panics without it, which left the update box
+/// saying "checking" for good), so a phone uses ureq's own default,
+/// Mozilla's roots; a desktop keeps the system's.
+pub fn roots() -> ureq::tls::RootCerts {
+    #[cfg(target_os = "android")]
+    let roots = ureq::tls::RootCerts::WebPki;
+    #[cfg(not(target_os = "android"))]
+    let roots = ureq::tls::RootCerts::PlatformVerifier;
+    roots
+}
+
 /// One request over HTTPS (or HTTP for local servers), waiting up to
 /// five minutes. Certificates are checked against the system's trusted
 /// ones; proxies come from the usual environment variables.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn send(req: &HttpRequest, limit: u64) -> HttpResult {
-    use ureq::tls::{RootCerts, TlsConfig};
+    use ureq::tls::TlsConfig;
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_global(Some(std::time::Duration::from_secs(300)))
         .http_status_as_error(false)
         .tls_config(
             TlsConfig::builder()
-                .root_certs(RootCerts::PlatformVerifier)
+                .root_certs(crate::net::roots())
                 .build(),
         )
         .build()

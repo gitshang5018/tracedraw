@@ -537,7 +537,19 @@ impl Checker {
         {
             let state = self.state.clone();
             std::thread::spawn(move || {
-                let result = check();
+                // A check that panics or never comes back must not leave the
+                // box saying "checking" for good: the work runs in a thread
+                // of its own, and a panic or a wait longer than the timeout
+                // is reported as the failure it is.
+                let (tx, rx) = std::sync::mpsc::channel();
+                std::thread::spawn(move || {
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(check))
+                        .unwrap_or_else(|_| Err("the check failed unexpectedly".to_string()));
+                    let _ = tx.send(result);
+                });
+                let result = rx.recv_timeout(std::time::Duration::from_secs(45)).unwrap_or_else(
+                    |_| Err("the check took too long to answer".to_string()),
+                );
                 let next = match result {
                     Ok(Some(r)) => UpdateState::Available(r),
                     Ok(None) => UpdateState::Latest,
@@ -786,12 +798,12 @@ fn download(url: &str) -> Result<Box<dyn std::io::Read + Send>, String> {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn open_stream(url: &str) -> Result<Box<dyn std::io::Read + Send>, String> {
-    use ureq::tls::{RootCerts, TlsConfig};
+    use ureq::tls::TlsConfig;
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_connect(Some(std::time::Duration::from_secs(20)))
         .tls_config(
             TlsConfig::builder()
-                .root_certs(RootCerts::PlatformVerifier)
+                .root_certs(crate::net::roots())
                 .build(),
         )
         .build()
@@ -852,12 +864,12 @@ fn fetch() -> Result<String, String> {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn fetch_from(url: &str) -> Result<String, String> {
-    use ureq::tls::{RootCerts, TlsConfig};
+    use ureq::tls::TlsConfig;
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_global(Some(std::time::Duration::from_secs(20)))
         .tls_config(
             TlsConfig::builder()
-                .root_certs(RootCerts::PlatformVerifier)
+                .root_certs(crate::net::roots())
                 .build(),
         )
         .build()

@@ -36,6 +36,13 @@ proxy for the list as well: the check asks GitHub first and the proxy
 second, so it costs a second request rather than a failure. A download the
 proxy cannot serve is tried at its own address the same way.
 
+A phone checks certificates against ureq's own roots (Mozilla's), not the
+platform verifier: `rustls-platform-verifier` wants the Android JVM context,
+which a native activity has none of, and a check that panicked there left
+the box saying "checking" for good. The work runs in a thread of its own and
+is given 45 seconds: a panic or a wait longer than that is shown as the
+failure it is, so the box always answers.
+
 ## Which build is this
 
 `updates::version()`: the version the packaging scripts passed in
