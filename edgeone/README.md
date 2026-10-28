@@ -15,34 +15,54 @@ rather than the update.
 
 ```text
 edgeone/
-  package.json            the function's dependency (@edgeone/pages-blob)
-  functions/[[path]].js   GET /apk/<file name> -> the file from the store
+  index.html                        a page that says what this is
+  package.json                      the function's dependency
+  edge-functions/
+    apk/[[default]].js              GET /apk/<file name> -> the file from the store
 ```
 
 `GET /apk/tracedraw-0.19.9-dev.4c864d1-android-arm64-v8a.apk` answers with
 the APK, `application/vnd.android.package-archive`. Nothing else is served:
 the store is a project's own data, not a file host.
 
-## Setting it up
+## Making the project
 
-1. At [pages.edgeone.ai](https://pages.edgeone.ai), make a project from
-   this repository, with this folder as its root (a project of its own: the
-   function is the whole site).
-2. Deploy it, and note the project's domain (`https://<name>.edgeone.app`).
-3. Put that domain in `apps/tracedraw/src/updates.rs` as `APK_HOST`.
-4. In the project's settings, make an API token, and add two secrets to the
-   GitHub repository (Settings > Secrets and variables > Actions):
-   - `EDGEONE_PROJECT_ID`: the project's id (like `pages-urtsvuwmfvli`)
-   - `EDGEONE_TOKEN`: the API token
+1. Open [pages.edgeone.ai](https://pages.edgeone.ai) and sign in.
+2. On the console's home page, **创建项目**, and choose **直接上传** (direct
+   upload). It runs no build, which is what this folder wants: the function
+   is the whole site, and the APKs arrive in the store from the workflow
+   rather than with the code.
+3. Give it a name (5 to 50 characters, lower-case letters, digits and
+   hyphens) and choose the acceleration region.
+4. Drag the **contents of this folder** in: `index.html`, `package.json`
+   and `edge-functions/` have to sit at the root of what is uploaded, not
+   inside another folder.
+5. **开始部署**. The deployment's page shows the address the project answers
+   on, like `https://<name>.edgeone.app`.
 
-   Without them the Android workflow skips the upload and the app downloads
-   from the release, exactly as it did before.
-5. Push to `main`: the workflow builds the APKs, uploads them under
-   `apk/`, and drops the ones of the build before.
+The blob store makes itself: the first request that reads or writes the
+`tracedraw` namespace creates it, and the console's Blob page then lists it.
+
+## Wiring it to the app
+
+1. In the project's settings, note the **project id** (like
+   `pages-urtsvuwmfvli`) and make an **API token**.
+2. Add both to the GitHub repository, Settings > Secrets and variables >
+   Actions: `EDGEONE_PROJECT_ID` and `EDGEONE_TOKEN`. Without them the
+   Android workflow skips the upload and the app downloads from the release,
+   exactly as it did before.
+3. Put the project's address in `apps/tracedraw/src/updates.rs` as
+   `APK_HOST`.
+4. Push to `main`: the workflow builds the APKs, uploads them under `apk/`,
+   and drops the ones of the build before.
 
 The store keeps only the newest build's files, since the update check always
 offers the newest build and the free plan's 1 GB would otherwise fill up
 with nightlies.
+
+A mainland acceleration region answers on a domain that has been filed
+(备案); the project's own `.edgeone.app` address needs no filing and answers
+from the region the project was made in.
 
 ## Checking it by hand
 
@@ -51,4 +71,11 @@ curl -I https://<name>.edgeone.app/apk/tracedraw-0.19.9-dev.4c864d1-android-arm6
 ```
 
 answers `200` with `Content-Type: application/vnd.android.package-archive`;
-a name that is not a release file answers `404`.
+a name that is not a release file answers `404`. Before the first upload the
+same request answers `404` as well, which is expected.
+
+## A project from the repository instead
+
+Importing the repository works too, with this folder as the project's root
+and no build command, but the function would then only change with a commit.
+The direct upload above is enough: a release changes the store, not the code.

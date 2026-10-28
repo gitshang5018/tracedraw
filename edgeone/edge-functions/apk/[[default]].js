@@ -1,12 +1,12 @@
-// TraceDraw's update host.
+// TraceDraw's update host: `/apk/<file name>` -> the APK of a release.
 //
 // The Android workflow uploads each release's APKs into the blob store
 // under `apk/<file name>` (see `scripts/upload-edgeone.mjs`), and this
-// function serves them at `/apk/<file name>`, which is where the app's
-// update check downloads from. Nothing else is served.
+// function is where the app's update check downloads them from. Nothing
+// else is served.
 //
 // Blob is meant for a project's own data rather than as a public file
-// host, so the only keys this answers for are the names the release
+// host, so the only names this answers for are the ones the release
 // workflow gives its files.
 import { getStore } from "@edgeone/pages-blob";
 
@@ -14,19 +14,11 @@ const STORE = "tracedraw";
 /// tracedraw-<version>-android-<abi>.apk
 const APK = /^tracedraw-[0-9A-Za-z][0-9A-Za-z.\-]*-android-[0-9A-Za-z_\-]+\.apk$/;
 
-export async function onRequest({ request }) {
-  const url = new URL(request.url);
-  const path = decodeURIComponent(url.pathname).replace(/^\/+/, "");
-
+async function onRequest({ request }) {
   if (request.method !== "GET") {
     return new Response("Method not allowed", { status: 405 });
   }
-  if (path === "" || path === "index.html") {
-    return new Response("TraceDraw updates. The app downloads from /apk/.\n", {
-      headers: { "Content-Type": "text/plain; charset=utf-8" },
-    });
-  }
-  const name = path.startsWith("apk/") ? path.slice("apk/".length) : "";
+  const name = new URL(request.url).pathname.split("/").pop() ?? "";
   if (!APK.test(name)) {
     return new Response("Not found", { status: 404 });
   }
@@ -47,3 +39,8 @@ export async function onRequest({ request }) {
     },
   });
 }
+
+// The runtime accepts either shape of handler, and the two documents show
+// one each.
+export default onRequest;
+export { onRequest };
