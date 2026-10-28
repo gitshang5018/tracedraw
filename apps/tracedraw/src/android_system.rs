@@ -336,7 +336,7 @@ static KEYBOARD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::
 /// When the keyboard was last asked for, and how many times: a field that
 /// was just added sometimes loses the first ask, so it is asked again
 /// while nothing has been typed.
-static ASKED: std::sync::Mutex<Option<(std::time::Instant, u8)>> = std::sync::Mutex::new(None);
+static ASKED: std::sync::Mutex<Option<(web_time::Instant, u8)>> = std::sync::Mutex::new(None);
 
 /// Show or hide the phone's keyboard: the field is put in the window and
 /// focused, or taken out again.
@@ -347,7 +347,7 @@ pub fn set_keyboard(app: &AndroidApp, show: bool) {
     }
     lock(&TYPED).clear();
     if show {
-        *lock(&ASKED) = Some((std::time::Instant::now(), 0));
+        *lock(&ASKED) = Some((web_time::Instant::now(), 0));
         open_keyboard(app);
     } else {
         *lock(&ASKED) = None;
@@ -601,7 +601,7 @@ pub fn pump_typing(ctx: &egui::Context, wants: bool) {
                 Some((when, times))
                     if times < 3 && when.elapsed() >= std::time::Duration::from_millis(400) =>
                 {
-                    *asked = Some((std::time::Instant::now(), times + 1));
+                    *asked = Some((web_time::Instant::now(), times + 1));
                     true
                 }
                 _ => false,

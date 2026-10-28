@@ -26,6 +26,11 @@ env:
 jobs:
   test:
     runs-on: ubuntu-latest
+    env:
+      # `build.rs` bakes this in as `APK_HOST`, and the Android workflow
+      # passes the bucket's real address: a run that names one covers the
+      # branch a phone takes, which a plain build leaves out.
+      TRACEDRAW_APK_HOST: https://updates.example.com
     steps:
       - uses: actions/checkout@v5
       # Pinned so the lint set matches what contributors run locally; bump

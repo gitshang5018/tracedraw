@@ -987,17 +987,28 @@ mod tests {
     }
 
     /// The name of the file the check would download: the last part of the
-    /// address, whichever host it comes from.
+    /// address, whichever host it comes from. Nothing when the check offers
+    /// nothing, which is what the cases below ask about.
     fn pick_in(json: &str, os: &str, arch: &str, kind: Kind) -> Option<String> {
         parse_releases(json, "0.4.0", os, arch, kind)
-            .expect("parses")
-            .expect("newer")
+            .expect("parses")?
             .download
             .map(|u| u.rsplit('/').next().unwrap_or_default().to_string())
     }
 
     fn pick(os: &str, arch: &str, kind: Kind) -> Option<String> {
         pick_in(&sample(), os, arch, kind)
+    }
+
+    /// Where a phone downloads `name` from, and what sits behind it: the
+    /// project's storage when the build names one, with the release's own
+    /// address behind it, and the release itself when it names none.
+    fn phone_addresses(name: &str, own: &str) -> (String, Option<String>) {
+        if APK_HOST.is_empty() {
+            (through_proxy(own), None)
+        } else {
+            (format!("{APK_HOST}/apk/{name}"), Some(through_proxy(own)))
+        }
     }
 
     #[test]
@@ -1126,14 +1137,12 @@ mod tests {
         let p = r.package.expect("apk with digest");
         assert_eq!(p.size, 5);
         assert!(p.sha256.starts_with("2cf24dba"));
-        assert_eq!(
-            p.url,
-            format!("{APK_HOST}/apk/tracedraw-0.5.0-dev.abc1234-android-arm64-v8a.apk")
+        let (url, mirror) = phone_addresses(
+            "tracedraw-0.5.0-dev.abc1234-android-arm64-v8a.apk",
+            "https://x/tracedraw-0.5.0-dev.abc1234-android-arm64-v8a.apk",
         );
-        assert_eq!(
-            p.mirror.as_deref(),
-            Some("https://x/tracedraw-0.5.0-dev.abc1234-android-arm64-v8a.apk")
-        );
+        assert_eq!(p.url, url);
+        assert_eq!(p.mirror, mirror);
     }
 
     /// The host's manifest says which build is the newest and where its
@@ -1392,11 +1401,17 @@ mod tests {
             .expect("parses");
         assert!(w.expect("newer").package.is_none());
         // Nor for a copy that is not an AppImage.
-        for kind in [Kind::Tarball, Kind::Deb, Kind::Other] {
+        for kind in [Kind::Tarball, Kind::Deb] {
             let t = parse_releases(&release_only(), "0.4.0", "linux", "x86_64", kind)
                 .expect("parses");
             assert!(t.expect("newer").package.is_none(), "{kind:?}");
         }
+        // A system package such as an rpm is not released at all: there is
+        // no file to offer, rather than a file without a digest.
+        assert_eq!(
+            parse_releases(&release_only(), "0.4.0", "linux", "x86_64", Kind::Other),
+            Ok(None)
+        );
         // An arm64 AppImage installs the arm64 file, with its digest.
         let arm = parse_releases(&release_only(), "0.4.0", "linux", "aarch64", Kind::AppImage)
             .expect("parses")
@@ -1464,14 +1479,12 @@ mod tests {
         // own address, kept behind it, is the one that goes through the
         // proxy.
         let p = r.package.expect("apk");
-        assert_eq!(
-            p.url,
-            format!("{APK_HOST}/apk/tracedraw-0.5.0-android-arm64-v8a.apk")
+        let (url, mirror) = phone_addresses(
+            "tracedraw-0.5.0-android-arm64-v8a.apk",
+            "https://github.com/gitshang5018/tracedraw/releases/download/v0.5.0/tracedraw-0.5.0-android-arm64-v8a.apk",
         );
-        let mirrored = format!(
-            "{PROXY}https://github.com/gitshang5018/tracedraw/releases/download/v0.5.0/tracedraw-0.5.0-android-arm64-v8a.apk"
-        );
-        assert_eq!(p.mirror.as_deref(), Some(mirrored.as_str()));
+        assert_eq!(p.url, url);
+        assert_eq!(p.mirror, mirror);
         // A system that takes the release's file itself gets the proxied
         // address as its download.
         let d = parse_releases(json, "0.4.0", "linux", "x86_64", Kind::Deb)
