@@ -1224,10 +1224,12 @@ mod tests {
             assert_eq!(pick_in(&no_x86, "linux", "x86_64", kind), None, "{kind:?}");
         }
         assert_eq!(pick_in(&no_x86, "macos", "x86_64", Dmg), None);
-        let r = parse_releases(&no_x86, "0.4.0", "linux", "x86_64", AppImage)
-            .expect("parses")
-            .expect("newer");
-        assert!(r.package.is_none(), "no install in place either");
+        // The release has no file for this processor at all, so nothing is
+        // offered: not the arm64 one that is right there.
+        assert_eq!(
+            parse_releases(&no_x86, "0.4.0", "linux", "x86_64", AppImage),
+            Ok(None)
+        );
         // Names that only end like this system's file do not count.
         let lookalike = release_only().replace(
             "tracedraw-0.5.0-linux-x86_64.AppImage\", \"browser",
