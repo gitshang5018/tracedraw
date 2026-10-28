@@ -1274,9 +1274,9 @@ pub fn ask_install_permission(app: &AndroidApp) {
 }
 
 /// Hand `path` to the system's package installer: it shows its own prompt
-/// and updates TraceDraw when the user agrees. The file is read here and
-/// written into an installer session, so it need not be shared with
-/// anything.
+/// and updates TraceDraw when the user agrees. On Android 10 and later the
+/// file is put in Download and opened with a VIEW intent, the way a file
+/// manager opens a tapped APK; older phones get it through a session.
 pub fn install_package(path: &std::path::Path) -> Result<(), String> {
     let app = phone().ok_or_else(|| "no activity".to_string())?;
     let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
@@ -1290,6 +1290,19 @@ pub fn install_package(path: &std::path::Path) -> Result<(), String> {
         bytes.len(),
         can_install_packages(&app)
     );
+    // Android 10 and later: the file goes into Download through the
+    // system's own provider and is opened with the intent a file manager
+    // sends, which is the one every phone answers. A session, committed by
+    // the app itself, is accepted and then quietly dropped on some phones:
+    // nothing is shown and nothing is installed.
+    if AndroidApp::sdk_version() >= 29 {
+        match install_through_view(&app, &bytes) {
+            Ok(()) => return Ok(()),
+            Err(e) => log::warn!(
+                "opening the update with a VIEW intent failed ({e}); handing over a session instead"
+            ),
+        }
+    }
     let vm = app.vm_as_ptr();
     let activity = app.activity_as_ptr();
     // A call that throws answers with the bare "Java exception was thrown"
@@ -1305,6 +1318,170 @@ pub fn install_package(path: &std::path::Path) -> Result<(), String> {
         Some(Ok(())) => Ok(()),
         Some(Err(e)) => Err(e),
         None => Err("the installer did not answer".to_string()),
+    }
+}
+
+/// `values.put(key, value)`: a `ContentValues` holds strings here.
+fn content_values_put(
+    env: &mut jni::JNIEnv<'_>,
+    values: &JObject<'_>,
+    key: &str,
+    value: &str,
+) -> Result<(), String> {
+    let key = env.new_string(key).map_err(|e| e.to_string())?;
+    let value = env.new_string(value).map_err(|e| e.to_string())?;
+    env.call_method(
+        values,
+        "put",
+        "(Ljava/lang/String;Ljava/lang/String;)V",
+        &[
+            JValue::Object(&JObject::from(key)),
+            JValue::Object(&JObject::from(value)),
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// The APK into the phone's Download folder through `MediaStore`, then the
+/// intent a file manager sends for a tapped file: the system's installer
+/// answers it, asks the user, and updates TraceDraw. The row is the app's
+/// own, so nothing has to be granted for it.
+fn install_through_view(app: &AndroidApp, bytes: &[u8]) -> Result<(), String> {
+    let uri = with_env(app.vm_as_ptr(), |env| {
+        let activity = activity_ref(env, app.activity_as_ptr())?;
+        let resolver = env
+            .call_method(
+                &activity,
+                "getContentResolver",
+                "()Landroid/content/ContentResolver;",
+                &[],
+            )
+            .ok()?
+            .l()
+            .ok()?;
+        if resolver.is_null() {
+            return None;
+        }
+        let values = env
+            .new_object("android/content/ContentValues", "()V", &[])
+            .ok()?;
+        content_values_put(env, &values, "_display_name", "tracedraw-update.apk").ok()?;
+        content_values_put(
+            env,
+            &values,
+            "mime_type",
+            "application/vnd.android.package-archive",
+        )
+        .ok()?;
+        content_values_put(env, &values, "relative_path", "Download/").ok()?;
+        let collection = env
+            .get_static_field(
+                "android/provider/MediaStore$Downloads",
+                "EXTERNAL_CONTENT_URI",
+                "Landroid/net/Uri;",
+            )
+            .ok()?
+            .l()
+            .ok()?;
+        let row = env
+            .call_method(
+                &resolver,
+                "insert",
+                "(Landroid/net/Uri;Landroid/content/ContentValues;)Landroid/net/Uri;",
+                &[JValue::Object(&collection), JValue::Object(&values)],
+            )
+            .ok()?
+            .l()
+            .ok()?;
+        if row.is_null() {
+            return None;
+        }
+        let out = env
+            .call_method(
+                &resolver,
+                "openOutputStream",
+                "(Landroid/net/Uri;)Ljava/io/OutputStream;",
+                &[JValue::Object(&row)],
+            )
+            .ok()?
+            .l()
+            .ok()?;
+        if out.is_null() {
+            return None;
+        }
+        write_session(env, &out, bytes).ok()?;
+        env.call_method(&out, "close", "()V", &[]).ok()?;
+        let text = env
+            .call_method(&row, "toString", "()Ljava/lang/String;", &[])
+            .ok()?
+            .l()
+            .ok()?;
+        jstring_text(env, text)
+    })
+    .ok_or_else(|| "the phone would not take the file".to_string())?;
+    // The screen is opened on the Java main thread, where a window may be
+    // started, and the answer comes back through a channel since the thread
+    // does not wait for it.
+    let (tx, rx) = std::sync::mpsc::channel();
+    let vm = app.vm_as_ptr() as usize;
+    let activity = app.activity_as_ptr() as usize;
+    app.run_on_java_main_thread(Box::new(move || {
+        let (vm, activity) = (vm as *mut c_void, activity as *mut c_void);
+        let opened = with_env(vm, |env| {
+            let activity = activity_ref(env, activity)?;
+            let text = env.new_string(&uri).ok()?;
+            let row = env
+                .call_static_method(
+                    "android/net/Uri",
+                    "parse",
+                    "(Ljava/lang/String;)Landroid/net/Uri;",
+                    &[JValue::Object(&JObject::from(text))],
+                )
+                .ok()?
+                .l()
+                .ok()?;
+            let action = env.new_string("android.intent.action.VIEW").ok()?;
+            let intent = env
+                .new_object(
+                    "android/content/Intent",
+                    "(Ljava/lang/String;)V",
+                    &[JValue::Object(&JObject::from(action))],
+                )
+                .ok()?;
+            let mime = env
+                .new_string("application/vnd.android.package-archive")
+                .ok()?;
+            env.call_method(
+                &intent,
+                "setDataAndType",
+                "(Landroid/net/Uri;Ljava/lang/String;)Landroid/content/Intent;",
+                &[JValue::Object(&row), JValue::Object(&JObject::from(mime))],
+            )
+            .ok()?;
+            // FLAG_GRANT_READ_URI_PERMISSION | FLAG_ACTIVITY_NEW_TASK
+            env.call_method(
+                &intent,
+                "addFlags",
+                "(I)Landroid/content/Intent;",
+                &[JValue::Int(0x0000_0001 | 0x1000_0000)],
+            )
+            .ok()?;
+            env.call_method(
+                &activity,
+                "startActivity",
+                "(Landroid/content/Intent;)V",
+                &[JValue::Object(&intent)],
+            )
+            .ok()?;
+            Some(())
+        });
+        let _ = tx.send(opened.is_some());
+    }));
+    match rx.recv_timeout(std::time::Duration::from_secs(5)) {
+        Ok(true) => Ok(()),
+        Ok(false) => Err("the phone would not open the installer".to_string()),
+        Err(_) => Err("the installer did not answer".to_string()),
     }
 }
 
