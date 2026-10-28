@@ -444,6 +444,76 @@ pub fn align_distribute(app: &mut App, ui: &mut Ui) {
     }
 }
 
+/// The align buttons as the property bar carries them: the six edges for
+/// two objects, and the four ways to space them out once there are three.
+/// Two objects can be aligned but not distributed, which is what the
+/// floating toolbar of CorelDRAW offers as well.
+pub fn align_part(app: &mut App, ui: &mut Ui) {
+    let two = app.selection.len() > 1;
+    ui.spacing_mut().item_spacing.x = 2.0;
+    for (i, (key, a)) in [
+        ("menu.object.align_left", Align::Left),
+        ("menu.object.align_centers_v", Align::CenterV),
+        ("menu.object.align_right", Align::Right),
+        ("menu.object.align_top", Align::Top),
+        ("menu.object.align_centers_h", Align::CenterH),
+        ("menu.object.align_bottom", Align::Bottom),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        if i == 3 {
+            gap(ui);
+        }
+        if bar_button(ui, Icon::Align(a), &tr(key), two).clicked() {
+            let to = app.align_to;
+            app.align_with(a, to);
+        }
+    }
+    if app.selection.len() > 2 {
+        gap(ui);
+        let can = app.can_distribute(app.distribute_to);
+        for (key, d) in [
+            ("menu.object.distribute_centers_h", Distribute::CentersH),
+            ("menu.object.distribute_spacing_h", Distribute::SpacingH),
+            ("menu.object.distribute_centers_v", Distribute::CentersV),
+            ("menu.object.distribute_spacing_v", Distribute::SpacingV),
+        ] {
+            if bar_button(ui, Icon::Distribute(d), &tr(key), can).clicked() {
+                let to = app.distribute_to;
+                app.distribute_with(d, to);
+            }
+        }
+    }
+}
+
+/// A button at the property bar's own size: the bar's rows are short, so
+/// the picture is the 16 the bar draws everywhere else.
+fn bar_button(ui: &mut Ui, icon: Icon, tip: &str, enabled: bool) -> Response {
+    let (rect, resp) = ui.allocate_exact_size(
+        Vec2::new(22.0, 20.0),
+        if enabled {
+            Sense::click()
+        } else {
+            Sense::hover()
+        },
+    );
+    if enabled && resp.hovered() {
+        ui.painter().rect_filled(rect, 2.0, Tokens::tool_hover());
+    }
+    paint(
+        ui.painter(),
+        Rect::from_center_size(rect.center(), Vec2::splat(16.0)),
+        icon,
+        if enabled {
+            Tokens::icon()
+        } else {
+            Tokens::icon_off()
+        },
+    );
+    resp.rich_tip(tip)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
