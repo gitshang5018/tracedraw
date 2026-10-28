@@ -38,7 +38,7 @@ the store is a project's own data, not a file host.
    and `edge-functions/` have to sit at the root of what is uploaded, not
    inside another folder.
 5. **开始部署**. The deployment's page shows the address the project answers
-   on, like `https://<name>.edgeone.app`.
+   on, like `https://<name>.edgeone.dev`.
 
 The blob store makes itself: the first request that reads or writes the
 `tracedraw` namespace creates it, and the console's Blob page then lists it.
@@ -71,18 +71,19 @@ offers the newest build and the free plan's 1 GB would otherwise fill up
 with nightlies.
 
 A mainland acceleration region answers on a domain that has been filed
-(备案); the project's own `.edgeone.app` address needs no filing and answers
+(备案); the project's own `.edgeone.dev` address needs no filing and answers
 from the region the project was made in.
 
 ## Checking it by hand
 
 ```sh
-curl -I https://<name>.edgeone.app/apk/tracedraw-0.19.9-dev.4c864d1-android-arm64-v8a.apk
+curl -I https://<name>.edgeone.dev/apk/tracedraw-0.19.9-dev.4c864d1-android-arm64-v8a.apk
 ```
 
-answers `200` with `Content-Type: application/vnd.android.package-archive`;
-a name that is not a release file answers `404`. Before the first upload the
-same request answers `404` as well, which is expected.
+answers `200` with `Content-Type: application/vnd.android.package-archive`
+and the file's size; a name that is not a release file answers `404`, and so
+does every name before the first upload, which is expected. `-I` sends HEAD,
+which the function answers with the headers alone.
 
 ## A project from the repository instead
 

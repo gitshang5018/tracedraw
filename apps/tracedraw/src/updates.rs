@@ -38,7 +38,7 @@ pub const RELEASES_PAGE: &str = "https://github.com/gitshang5018/tracedraw/relea
 /// download from GitHub at all. The project there serves `/apk/<file name>`
 /// out of the store (see `edgeone/`), and the release's own address stays
 /// as the fallback. Empty: download from the release itself.
-pub const APK_HOST: &str = "https://tracedraw.edgeone.app";
+pub const APK_HOST: &str = "https://tracedraw.edgeone.dev";
 /// How often the check at start runs, seconds.
 pub const DAILY: u64 = 24 * 60 * 60;
 

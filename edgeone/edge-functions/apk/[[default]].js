@@ -15,7 +15,10 @@ const STORE = "tracedraw";
 const APK = /^tracedraw-[0-9A-Za-z][0-9A-Za-z.\-]*-android-[0-9A-Za-z_\-]+\.apk$/;
 
 async function onRequest({ request }) {
-  if (request.method !== "GET") {
+  // HEAD answers with the headers alone, so `curl -I` says whether the file
+  // is there without downloading 25 MB of it.
+  const head = request.method === "HEAD";
+  if (!head && request.method !== "GET") {
     return new Response("Method not allowed", { status: 405 });
   }
   const name = new URL(request.url).pathname.split("/").pop() ?? "";
@@ -28,7 +31,7 @@ async function onRequest({ request }) {
   if (!file) {
     return new Response("Not found", { status: 404 });
   }
-  return new Response(file, {
+  return new Response(head ? null : file, {
     headers: {
       "Content-Type": "application/vnd.android.package-archive",
       "Content-Length": String(file.byteLength),
