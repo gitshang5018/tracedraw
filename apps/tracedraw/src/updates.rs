@@ -119,8 +119,6 @@ struct ApiRelease {
     tag_name: String,
     html_url: String,
     #[serde(default)]
-    prerelease: bool,
-    #[serde(default)]
     draft: bool,
     #[serde(default)]
     assets: Vec<Asset>,

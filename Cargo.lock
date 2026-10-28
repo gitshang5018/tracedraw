@@ -4168,7 +4168,7 @@ dependencies = [
 
 [[package]]
 name = "tracedraw-android"
-version = "0.19.8"
+version = "0.19.9"
 dependencies = [
  "log",
  "tracedraw",

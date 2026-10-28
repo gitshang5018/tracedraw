@@ -611,7 +611,7 @@ fn desktop(app: &mut App, ui: &mut Ui, ctx: &egui::Context) {
         egui::CentralPanel::default()
             .frame(Frame::new().fill(Tokens::panel()))
             .show(ui, |_| {});
-        dialogs::show(app, &ctx);
+        dialogs::show(app, ctx);
         return;
     }
     if app.page_sorter && !app.multipage {

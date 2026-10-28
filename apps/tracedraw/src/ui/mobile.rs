@@ -465,18 +465,17 @@ pub fn frame(app: &mut App, ui: &mut Ui) -> bool {
     }
     // The properties of what is selected sit above the bars, and take no
     // room at all while nothing is selected.
-    let strip_h;
-    if land {
+    let strip_h = if land {
         // On its side the phone keeps the tools down the left edge and
         // the destinations down the right one, out of the drawing's way.
         tools_rail(app, ui, &m3, inset);
         nav_rail(app, ui, &m3, inset, &mut open);
-        strip_h = selection_strip(app, ui, &m3, open);
+        selection_strip(app, ui, &m3, open)
     } else {
         nav_bar(app, ui, &m3, inset.bottom, &mut open);
         tools_bar(app, ui, &m3);
-        strip_h = selection_strip(app, ui, &m3, open);
-    }
+        selection_strip(app, ui, &m3, open)
+    };
     // A group whose button was tapped or held floats its other tools over
     // the drawing, above the bars.
     tool_pop(app, &ctx, &m3);
@@ -929,7 +928,7 @@ fn tool_pop(app: &mut App, ctx: &egui::Context, m3: &M3) {
                             } else {
                                 resp.hovered()
                             };
-                            let body_w = (rect.width() - 4.0).min(TOUCH - 8.0).max(28.0);
+                            let body_w = (rect.width() - 4.0).clamp(28.0, TOUCH - 8.0);
                             let body = Rect::from_center_size(
                                 egui::pos2(rect.center().x, rect.top() + 24.0),
                                 Vec2::new(body_w, 46.0),
