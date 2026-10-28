@@ -99,35 +99,30 @@ AppImage took the arm64 one, listed first).
 ## Where a phone downloads from
 
 GitHub cannot be reached from every network a phone is on, and its file
-host is slow from many of them, so a phone's APK is downloaded from the
-project's own update host instead: a page on EdgeOne's edge network
-(`edgeone/`, `APK_HOST` + `/apk/<file name>`). The Android workflow
-publishes each build's APKs there with `EDGEONE_TOKEN`, and a deployment
-replaces the one before, since the check always offers the newest build.
+host is slow from many of them, so a phone's APK is downloaded from a
+bucket of the project's own instead: Cloudflare R2, whose public address is
+`APK_HOST` (`TRACEDRAW_APK_HOST`, a repository variable the workflow passes
+to `build.rs`, so the address is a setting rather than a line of code).
+The Android workflow publishes each build's APKs there under `apk/`, clears
+what was there before (the check always offers the newest build, and an
+older APK is of no use to anyone), and needs `R2_ACCOUNT_ID`,
+`R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` and `R2_BUCKET` for it. Without
+them nothing is uploaded and every phone downloads from the release.
 
-The file is a page of the site rather than something a function hands over:
-an Edge Function answers within 200 ms of CPU and a Cloud Function may
-return 6 MB at most, while a static file is served by the CDN. A single
-page may be 25 MiB, so an APK over that (the x86_64 one, for emulators)
-stays on the release alone.
+An object in a bucket may be 25 MiB: the two phone ABIs fit, the x86_64 one
+(for emulators) stays on the release, where the app still finds it.
 
-The host carries a manifest of its own as well: `update.json` beside the
+The bucket carries a manifest of its own as well: `update.json` beside the
 APKs names the newest build, the file of each ABI and its digest. The check
 reads the releases on GitHub first, directly and then through the proxy,
-because a release is written by the same run that builds it and the host is
-only as fresh as its last deployment; the manifest answers only when GitHub
-cannot be read at all (`updates::check`). It is asked for with a value that
-changes each time, since the host caches a page for a year, and it carries
-when the build was made (`"built"`, seconds since 1970, which `build.rs`
-bakes into the app as well): a host that is behind a build the phone already
-has offers nothing, since two development builds carry a commit each and
-nothing else says which came first.
-
-The version, the file name and the SHA-256 digest come from the manifest, or
-from the release when there is no manifest; either way a file that does not
-match its digest is thrown away. When the host has not got the file (a build
-whose deployment failed, a repository without the token) the release's own
-address is tried behind it, so the update still arrives, only more slowly.
+because a release is written by the same run that builds it; the manifest
+answers only when GitHub cannot be read at all (`updates::check`). It is
+asked for with a value that changes each time, since a bucket may hold a
+copy for a while, and it carries when the build was made (`"built"`,
+seconds since 1970, which `build.rs` bakes into the app as well): a host
+that is behind a build the phone already has offers nothing, since two
+development builds carry a commit each and nothing else says which came
+first.
 
 ## Install in place
 

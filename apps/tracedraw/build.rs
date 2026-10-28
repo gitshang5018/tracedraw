@@ -4,6 +4,7 @@ fn main() {
     web_fonts();
     build_version();
     build_time();
+    update_host();
     println!("cargo:rerun-if-changed=../../assets/icon/tracedraw.ico");
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
         let mut res = winresource::WindowsResource::new();
@@ -33,6 +34,17 @@ fn build_version() {
         _ => std::env::var("CARGO_PKG_VERSION").unwrap_or_default(),
     };
     println!("cargo:rustc-env=TRACEDRAW_BUILD_VERSION={version}");
+}
+
+/// Where the update files are published, when they are published anywhere
+/// but the release itself (Cloudflare R2's public address, say). The
+/// workflow passes it in from the repository's variables, so the address is
+/// a setting rather than a line of code; without it the app downloads from
+/// the release.
+fn update_host() {
+    println!("cargo:rerun-if-env-changed=TRACEDRAW_APK_HOST");
+    let host = std::env::var("TRACEDRAW_APK_HOST").unwrap_or_default();
+    println!("cargo:rustc-env=TRACEDRAW_APK_HOST={}", host.trim());
 }
 
 /// When this build was made, in seconds since 1970: the update check tells

@@ -164,6 +164,9 @@ jobs:
         # version alone cannot tell two builds of 0.19.8 apart.
         env:
           TRACEDRAW_BUILD_VERSION: ${{ steps.ver.outputs.version }}
+          # The bucket the update files go to (see the update host step):
+          # a repository variable, so the address is a setting.
+          TRACEDRAW_APK_HOST: ${{ vars.UPDATE_HOST }}
         run: |
           cargo apk build --manifest-path apps/tracedraw-android/Cargo.toml --lib \
             --release --target ${{ matrix.target }}
@@ -209,10 +212,7 @@ jobs:
         with:
           # The changelog, for the notes of a version, and the page the
           # update host serves beside the APKs.
-          sparse-checkout: |
-            CHANGELOG.md
-            edgeone/index.html
-            edgeone/package.json
+          sparse-checkout: CHANGELOG.md
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
@@ -220,40 +220,43 @@ jobs:
       - name: The APKs
         run: ls -l artifacts
 
-      # The app downloads a phone's APK from the update host on EdgeOne's
-      # edge network (see `edgeone/`), which reaches phones that cannot
-      # download from GitHub at all. The APKs go out as the site's own
-      # files: a function cannot hand over 25 MB (Edge Functions answer in
-      # 200 ms of CPU, Cloud Functions cap a response at 6 MB), while a
-      # static file is served by the CDN and has no such limit beyond the
-      # 25 MiB a single asset may have. The one over that stays on the
-      # release, where the app still finds it. Without the token nothing is
-      # deployed and every phone falls back to the release, so this step
-      # never blocks a release.
+      # The app downloads a phone's APK from a bucket of the project's own
+      # (Cloudflare R2), whose public address `UPDATE_HOST` names and which
+      # `build.rs` bakes in as `APK_HOST`: a phone that cannot download from
+      # GitHub reaches that. The APKs and the manifest go up together and
+      # what was there before is cleared, so the bucket only ever holds the
+      # newest build. Without the secrets nothing is uploaded and the app
+      # downloads from the release, so this step never blocks a release.
       - name: Update host
         continue-on-error: true
         env:
-          EDGEONE_TOKEN: ${{ secrets.EDGEONE_TOKEN }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          R2_BUCKET: ${{ vars.R2_BUCKET }}
         run: |
           set -euo pipefail
-          if [[ -z "${EDGEONE_TOKEN:-}" ]]; then
-            echo "No EDGEONE_TOKEN: the APKs stay on the release only."
+          if [[ -z "${R2_ACCOUNT_ID:-}" || -z "${AWS_ACCESS_KEY_ID:-}" || -z "${R2_BUCKET:-}" ]]; then
+            echo "R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY and R2_BUCKET are not set: the APKs stay on the release only."
             exit 0
           fi
+          endpoint="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
           mkdir -p dist/apk
-          cp edgeone/index.html edgeone/package.json dist/
+          printf '<!doctype html>\n<meta charset="utf-8">\n<title>TraceDraw updates</title>\n<p>The app downloads a release from <code>/apk/</code>.\n' > dist/index.html
+          # A page of a bucket may be 25 MiB: the two phone ABIs fit, the
+          # x86_64 one (for emulators) stays on the release.
           limit=$((25 * 1024 * 1024))
           for apk in artifacts/*.apk; do
             size=$(stat -c%s "$apk")
             if (( size <= limit )); then
               cp "$apk" dist/apk/
             else
-              echo "::warning::$apk is $size bytes, over the 25 MiB a site file may have: it stays on the release."
+              echo "::warning::$apk is $size bytes, over the 25 MiB a page may have: it stays on the release."
             fi
           done
           ls -l dist/apk
-          # The manifest the app reads: the version, and each file with the
-          # digest it was published with. The version is in the file names.
+          # The manifest the app falls back to when GitHub cannot be read.
           version=$(basename "$(ls dist/apk/*.apk | head -1)")
           version=${version#tracedraw-}
           version=${version%-android-*}
@@ -269,22 +272,11 @@ jobs:
             printf '\n  ]\n}\n'
           } > dist/update.json
           cat dist/update.json
-          # A deployment now and then comes back "Failed Operation" while
-          # the one before is still settling: it is asked again, and a host
-          # that stays behind is said out loud, since a stale manifest makes
-          # every phone offer the build before this one.
-          deployed=0
-          for attempt in 1 2 3; do
-            if npx -y edgeone@latest makers deploy ./dist -n tracedraw -t "$EDGEONE_TOKEN"; then
-              deployed=1
-              break
-            fi
-            echo "::warning::the update host did not take the deployment (attempt $attempt)"
-            sleep 20
-          done
-          if (( ! deployed )); then
-            echo "::warning::the update host is behind: the app keeps offering the release until it is deployed again"
-          fi
+          # The bucket keeps the newest build only: the check always offers
+          # it, and an older APK is of no use to anyone.
+          aws s3 rm "s3://${R2_BUCKET}/apk/" --recursive --endpoint-url "$endpoint" || true
+          aws s3 cp dist/ "s3://${R2_BUCKET}/" --recursive --endpoint-url "$endpoint" \
+            --cache-control "public, max-age=300"
 
       # The nightly keeps the name "nightly" while the APK names carry the
       # commit: the ones of the run before are dropped, or they pile up.

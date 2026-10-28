@@ -1,9 +1,0 @@
-{
-  "name": "tracedraw-updates",
-  "private": true,
-  "type": "module",
-  "description": "TraceDraw's update host: the release APKs, served out of EdgeOne Makers blob storage",
-  "dependencies": {
-    "@edgeone/pages-blob": "*"
-  }
-}
