@@ -258,8 +258,8 @@ jobs:
           version=${version#tracedraw-}
           version=${version%-android-*}
           {
-            printf '{\n  "version": "%s",\n  "page": "https://github.com/%s/releases",\n  "assets": [\n' \
-              "$version" "${{ github.repository }}"
+            printf '{\n  "version": "%s",\n  "built": %s,\n  "page": "https://github.com/%s/releases",\n  "assets": [\n' \
+              "$version" "$(date +%s)" "${{ github.repository }}"
             first=1
             for apk in dist/apk/*.apk; do
               if (( first )); then first=0; else printf ',\n'; fi
@@ -269,7 +269,22 @@ jobs:
             printf '\n  ]\n}\n'
           } > dist/update.json
           cat dist/update.json
-          npx -y edgeone@latest makers deploy ./dist -n tracedraw -t "$EDGEONE_TOKEN"
+          # A deployment now and then comes back "Failed Operation" while
+          # the one before is still settling: it is asked again, and a host
+          # that stays behind is said out loud, since a stale manifest makes
+          # every phone offer the build before this one.
+          deployed=0
+          for attempt in 1 2 3; do
+            if npx -y edgeone@latest makers deploy ./dist -n tracedraw -t "$EDGEONE_TOKEN"; then
+              deployed=1
+              break
+            fi
+            echo "::warning::the update host did not take the deployment (attempt $attempt)"
+            sleep 20
+          done
+          if (( ! deployed )); then
+            echo "::warning::the update host is behind: the app keeps offering the release until it is deployed again"
+          fi
 
       # The nightly keeps the name "nightly" while the APK names carry the
       # commit: the ones of the run before are dropped, or they pile up.

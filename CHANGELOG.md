@@ -6,6 +6,7 @@ full, row-by-row status.
 
 ## Unreleased
 
+- 检查更新 no longer offers an older build: the update host's manifest carries when its build was made, and `build.rs` bakes that time into the app, so a host that is behind a build this phone already has (the deployment of the newest one came back "Failed Operation" and was skipped) offers nothing instead of a downgrade. The workflow asks the host again when a deployment fails, and says so when it stays behind.
 - Fonts of your own on a phone are found where they are put: `Download/Fonts` is read directly (the folder the drawings live in could still be the app's own at start, before the storage grant is looked at), the folder is settled before the start's scan, and a drawing is opened only after the folder has been read again, so a font added since the start is there when its text asks for it.
 - Installing an update on a phone: the installer now comes from the package manager (`getPackageManager().getPackageInstaller()`) instead of `getSystemService("package")`, which answered with nothing and stopped the install with "no package installer". A Java exception now reaches the box with what it said, so the next failure names its cause instead of reporting something missing.
 - The long-press menu on a phone keeps clear of the system bars: a phone draws edge to edge, so the menu could open under the status bar with its first rows unreachable. It now starts below it, and scrolls when it is taller than the room left.

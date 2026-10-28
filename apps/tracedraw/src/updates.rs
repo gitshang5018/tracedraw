@@ -1106,6 +1106,7 @@ mod tests {
     fn the_host_manifest_names_the_file_of_this_phone() {
         let json = r#"{
             "version": "0.5.0-dev.abc1234",
+            "built": 9999999999,
             "page": "https://github.com/gitshang5018/tracedraw/releases",
             "assets": [
                 {"name": "tracedraw-0.5.0-dev.abc1234-android-armeabi-v7a.apk", "size": 4, "sha256": "68e481c13fc5dc04ed6b106a9f801e1fa2689889f070a02b4fb89e8cb29c91ef"},
@@ -1131,6 +1132,10 @@ mod tests {
         assert_eq!(parse_manifest(json, "0.5.0-dev.abc1234", "aarch64"), Ok(None));
         assert_eq!(parse_manifest(json, "0.4.0", "x86_64"), Ok(None));
         assert!(parse_manifest("not json", "0.4.0", "aarch64").is_err());
+        // A host that is behind a build this phone already has offers
+        // nothing, however its version reads.
+        let stale = json.replace("\"built\": 9999999999", "\"built\": 1");
+        assert_eq!(parse_manifest(&stale, "0.4.0", "aarch64"), Ok(None));
         // The manifest is asked for with a value that changes each time, or
         // the host would keep answering with the build before.
         assert_ne!(manifest_url(1), manifest_url(2));

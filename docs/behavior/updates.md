@@ -118,7 +118,11 @@ reach the host therefore needs nothing else, which is the point: the
 networks this host exists for cannot resolve GitHub. GitHub is asked
 (directly, then through the proxy) only when the host has no manifest to
 give. The manifest is asked for with a value that changes each time, since
-the host caches a page for a year.
+the host caches a page for a year, and it carries when the build was made
+(`"built"`, seconds since 1970, which `build.rs` bakes into the app as
+well): a host that is behind a build the phone already has offers nothing,
+since two development builds carry a commit each and nothing else says
+which came first.
 
 The version, the file name and the SHA-256 digest come from the manifest, or
 from the release when there is no manifest; either way a file that does not

@@ -3,6 +3,7 @@
 fn main() {
     web_fonts();
     build_version();
+    build_time();
     println!("cargo:rerun-if-changed=../../assets/icon/tracedraw.ico");
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
         let mut res = winresource::WindowsResource::new();
@@ -32,6 +33,17 @@ fn build_version() {
         _ => std::env::var("CARGO_PKG_VERSION").unwrap_or_default(),
     };
     println!("cargo:rustc-env=TRACEDRAW_BUILD_VERSION={version}");
+}
+
+/// When this build was made, in seconds since 1970: the update check tells
+/// a build from the one before it by this, since two development builds
+/// carry a commit each and nothing says which came first.
+fn build_time() {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    println!("cargo:rustc-env=TRACEDRAW_BUILD_TIME={now}");
 }
 
 /// The browser build has no system fonts: bundle the font files found on
