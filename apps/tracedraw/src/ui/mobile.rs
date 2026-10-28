@@ -460,9 +460,12 @@ pub fn frame(app: &mut App, ui: &mut Ui) -> bool {
 
     top_bar(app, ui, &m3, inset, &mut open);
     // The phone's keyboard lies over the bottom of the window without the
-    // window shrinking. Only the strip of properties moves up over it: the
-    // tool row and the navigation bar stay where they are, under the
-    // keyboard, and the drawing keeps its room.
+    // window shrinking. A band of its height, between the bars and the
+    // strip of properties, is what lifts the strip over the keyboard: the
+    // tool row and the navigation bar stay where they are, under it. The
+    // strip keeps the one container it always had, since a widget that
+    // moves to another one loses the focus it was given and the keyboard
+    // closes with it.
     let ime = ime_height(&ctx);
     // The properties of what is selected sit above the bars, and take no
     // room at all while nothing is selected.
@@ -471,11 +474,13 @@ pub fn frame(app: &mut App, ui: &mut Ui) -> bool {
         // the destinations down the right one, out of the drawing's way.
         tools_rail(app, ui, &m3, inset);
         nav_rail(app, ui, &m3, inset, &mut open);
-        selection_strip(app, ui, &m3, open, ime)
+        keyboard_gap(ui, ime);
+        selection_strip(app, ui, &m3, open)
     } else {
         nav_bar(app, ui, &m3, inset.bottom, &mut open);
         tools_bar(app, ui, &m3);
-        selection_strip(app, ui, &m3, open, ime)
+        keyboard_gap(ui, ime);
+        selection_strip(app, ui, &m3, open)
     };
     // A group whose button was tapped or held floats its other tools over
     // the drawing, above the bars.
@@ -717,12 +722,27 @@ fn top_bar(app: &mut App, ui: &mut Ui, m3: &M3, safe: Safe, open: &mut Sheet) {
         });
 }
 
+/// The room the phone's keyboard takes, between the bars and the strip of
+/// properties above them: nothing is drawn there, and the keyboard covers
+/// it.
+fn keyboard_gap(ui: &mut Ui, ime: f32) {
+    if ime <= 0.5 {
+        return;
+    }
+    egui::Panel::bottom("mobile_selection_gap")
+        .exact_size(ime)
+        .resizable(false)
+        .show_separator_line(false)
+        .frame(Frame::new())
+        .show(ui, |_| {});
+}
+
 /// The properties of what is selected, as a strip above the tools: a text
 /// brings its font and size, a connector the way it runs, a shape its
 /// outline, and the strip is swiped sideways for the rest of them. Nothing
 /// selected means no strip, and the drawing keeps the room. Returns the
 /// height it took, so the snackbar and the floating card stay above it.
-fn selection_strip(app: &mut App, ui: &mut Ui, m3: &M3, open: Sheet, ime: f32) -> f32 {
+fn selection_strip(app: &mut App, ui: &mut Ui, m3: &M3, open: Sheet) -> f32 {
     if open != Sheet::None || !app.drawing_shown() {
         return 0.0;
     }
@@ -751,21 +771,6 @@ fn selection_strip(app: &mut App, ui: &mut Ui, m3: &M3, open: Sheet, ime: f32) -
                     });
             });
     };
-    if ime > 0.5 {
-        // The keyboard covers the bottom of the window. Only this strip
-        // moves up, over it: the tool row and the navigation bar stay
-        // where they are, and the drawing keeps its room.
-        egui::Area::new(Id::new("mobile_selection_float"))
-            .order(egui::Order::Foreground)
-            .anchor(egui::Align2::LEFT_BOTTOM, egui::vec2(0.0, -ime - STRIP_GAP))
-            .show(ui.ctx(), |ui| {
-                ui.set_width(ui.ctx().content_rect().width() - 2.0 * STRIP_EDGE);
-                Frame::new()
-                    .inner_margin(egui::Margin::symmetric(STRIP_EDGE as i8, 0))
-                    .show(ui, |ui| body(app, ui));
-            });
-        return 0.0;
-    }
     let shown = egui::Panel::bottom("mobile_selection")
         .min_size(SELECTION_H)
         .resizable(false)

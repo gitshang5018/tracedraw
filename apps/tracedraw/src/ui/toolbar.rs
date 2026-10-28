@@ -1159,13 +1159,6 @@ pub fn property_bar(app: &mut App, ui: &mut Ui) {
                     app.sync_text_defaults_from(id);
                 }
                 text_properties(app, ui);
-                // Several texts: they can be lined up with each other, at
-                // the end of the strip where a phone keeps the fields it
-                // reaches first at the edge.
-                if shapes.len() > 1 {
-                    vsep(ui);
-                    crate::ui::align_docker::align_part(app, ui, false);
-                }
                 crate::ui::propbar::arrange_part(app, ui);
             }
             Tool::Pick | Tool::FreeformPick
@@ -1213,13 +1206,6 @@ pub fn property_bar(app: &mut App, ui: &mut Ui) {
             }
             Tool::Pick | Tool::FreeformPick => {
                 object_properties(app, ui);
-                // Several objects: what can be done to the set of them
-                // comes before what is done to one of them, which is the
-                // order the floating toolbar of CorelDRAW keeps.
-                if shapes.len() > 1 {
-                    crate::ui::propbar::sep(ui);
-                    crate::ui::align_docker::align_part(app, ui, false);
-                }
                 crate::ui::propbar::sep(ui);
                 if crate::ui::propbar::kind_part(app, ui) {
                     crate::ui::propbar::sep(ui);
