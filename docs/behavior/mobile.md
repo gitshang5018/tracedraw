@@ -155,12 +155,13 @@ app's folder and opened from there (`android_system::shared_drawing`).
 ### Fonts of your own
 
 A phone installs no fonts, so the font lists would only ever hold the ones
-a drawing carries. Drop `.ttf`, `.otf` or `.ttc` files into **`Fonts`** in
-the folder the drawings live in (Download once the app may see it, its own
-folder before that) and they join the lists: they are read at start, and
-**Reload fonts** in the Files sheet reads the ones added since, which is how
-a font saved from WeChat gets in without a restart. A file already read is
-not read again, so the button costs a folder listing (`fonts_folder.rs`).
+a drawing carries (and the phone's own, from `/system/fonts`). Drop `.ttf`,
+`.otf` or `.ttc` files into **`Fonts`** inside the shared **Download**
+folder (`/storage/emulated/0/Download/Fonts`, the folder a chat app saves
+to) and they join the lists: they are read at start, again when a drawing
+is opened (so its text is not reported missing what it was set in), and
+from **Reload fonts** in the Files sheet. A file already read is not read
+again, so each of those costs a folder listing (`fonts_folder.rs`).
 
 ## Typing on a phone
 

@@ -22,13 +22,22 @@ static LOADED: Mutex<Option<HashSet<PathBuf>>> = Mutex::new(None);
 pub fn folders() -> Vec<PathBuf> {
     #[cfg(target_os = "android")]
     {
-        let mut out = vec![crate::files::android_documents().join("Fonts")];
-        // The app's own folder, which is where the drawings live before
-        // the phone lets it see Download.
-        let own = crate::settings::android_documents().join("Fonts");
-        if !out.contains(&own) {
-            out.push(own);
+        let mut out: Vec<PathBuf> = Vec::new();
+        // The shared Download folder itself, which is where a phone puts
+        // what a chat app saves, and what the drawings folder is once the
+        // storage grant is in place.
+        if let Some(phone) = crate::android_system::phone() {
+            if crate::android_system::storage_granted(phone) {
+                if let Some(root) = crate::android_system::storage_root(phone) {
+                    out.push(root.join("Download").join("Fonts"));
+                }
+            }
         }
+        // Then the folder the drawings live in, and the app's own, which is
+        // where they live before the phone lets it see Download.
+        out.push(crate::files::android_documents().join("Fonts"));
+        out.push(crate::settings::android_documents().join("Fonts"));
+        out.dedup();
         out
     }
     #[cfg(not(target_os = "android"))]

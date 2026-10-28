@@ -6,6 +6,7 @@ full, row-by-row status.
 
 ## Unreleased
 
+- Fonts of your own on a phone are found where they are put: `Download/Fonts` is read directly (the folder the drawings live in could still be the app's own at start, before the storage grant is looked at), the folder is settled before the start's scan, and a drawing is opened only after the folder has been read again, so a font added since the start is there when its text asks for it.
 - Installing an update on a phone: the installer now comes from the package manager (`getPackageManager().getPackageInstaller()`) instead of `getSystemService("package")`, which answered with nothing and stopped the install with "no package installer". A Java exception now reaches the box with what it said, so the next failure names its cause instead of reporting something missing.
 - The long-press menu on a phone keeps clear of the system bars: a phone draws edge to edge, so the menu could open under the status bar with its first rows unreachable. It now starts below it, and scrolls when it is taller than the room left.
 - Text on a phone: a text selected with the Pick tool puts the font list and the size first in the Properties strip, where a finger reaches them (the strip is scrolled sideways, and a drag over the fields does not scroll it), and the sheet carries an **Edit text** button, since a phone has no double click to remember.

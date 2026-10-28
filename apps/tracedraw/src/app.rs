@@ -5543,6 +5543,10 @@ impl App {
 
     /// Open `path`; `password` opens a protected PDF (empty: none).
     pub fn open_path_with_password(&mut self, path: PathBuf, password: &str) {
+        // Fonts dropped into the Fonts folder since the start are read
+        // before the drawing asks for them, or its text would be reported
+        // missing what it was set in.
+        crate::fonts_folder::scan();
         let ext = Self::file_kind(&path);
         // Objects of a `.cdr` file left out because they could not be read.
         let mut unread = 0usize;

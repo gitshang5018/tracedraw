@@ -397,8 +397,11 @@ pub fn android_run(android_app: winit::platform::android::activity::AndroidApp) 
     let shared = android_system::shared_drawing(&android_app, &documents);
     settings::set_android_folders(config, documents.clone());
     files::set_android_documents(documents);
-    // Fonts dropped into `Fonts` in the folder the drawings live in (see
-    // fonts_folder.rs).
+    // The folder the phone saves to, once it lets the app see the storage:
+    // drawings and fonts both live there, and the grant is often already in
+    // place at start.
+    files::refresh_android_documents();
+    // Fonts dropped into `Fonts` in that folder (see fonts_folder.rs).
     fonts_folder::scan();
     // The system bars, the keyboard and the language are read through the
     // activity (see `android_system`).
