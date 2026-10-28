@@ -403,20 +403,52 @@ static KEYBOARD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::
 /// was just added sometimes loses the first ask, so it is asked again
 /// while nothing has been typed.
 static ASKED: std::sync::Mutex<Option<(web_time::Instant, u8)>> = std::sync::Mutex::new(None);
+/// The field the interface had focused when the keyboard was last asked
+/// for: a new one is a new ask, even though the keyboard was up already.
+static FOCUSED: std::sync::Mutex<Option<u64>> = std::sync::Mutex::new(None);
+/// Whether the keyboard has been seen up since it was asked for: once it
+/// has, putting it away is the user's doing and it is not asked again.
+static SHOWN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// How long a keyboard that was just asked for stays up while the
+/// interface reports no field for a frame or two.
+const KEYBOARD_GRACE: std::time::Duration = std::time::Duration::from_millis(700);
 
 /// Show or hide the phone's keyboard: the field is put in the window and
 /// focused, or taken out again.
-pub fn set_keyboard(app: &AndroidApp, show: bool) {
+pub fn set_keyboard(app: &AndroidApp, show: bool, focus: Option<u64>) {
     use std::sync::atomic::Ordering;
-    if KEYBOARD.swap(show, Ordering::Relaxed) == show {
+    let was = KEYBOARD.load(Ordering::Relaxed);
+    // A field the keyboard was not asked for yet: the interface moved the
+    // focus from one field to the next, and the phone may have put its
+    // keyboard away in between. It is asked for again.
+    let moved = {
+        let mut last = lock(&FOCUSED);
+        let moved = *last != focus;
+        *last = focus;
+        moved
+    };
+    if was == show && !(show && moved) {
         return;
     }
+    if !show {
+        // The focus flickers for a frame or two while the phone brings its
+        // keyboard forward, and while the strip of properties moves up over
+        // it: a keyboard asked for a moment ago is not put away by that.
+        if let Some((when, _)) = *lock(&ASKED) {
+            if when.elapsed() < KEYBOARD_GRACE {
+                return;
+            }
+        }
+    }
+    KEYBOARD.store(show, Ordering::Relaxed);
     lock(&TYPED).clear();
     if show {
         *lock(&ASKED) = Some((web_time::Instant::now(), 0));
+        SHOWN.store(false, Ordering::Relaxed);
         open_keyboard(app);
     } else {
         *lock(&ASKED) = None;
+        SHOWN.store(false, Ordering::Relaxed);
         close_keyboard(app);
     }
 }
@@ -634,7 +666,7 @@ pub fn pump_typing(ctx: &egui::Context, wants: bool) {
     let Some(phone) = phone() else {
         return;
     };
-    set_keyboard(phone, wants);
+    set_keyboard(phone, wants, ctx.memory(|m| m.focused()).map(|id| id.value()));
     for edit in typed(phone.vm_as_ptr()) {
         match edit {
             Typing::Text(text) => {
@@ -656,24 +688,37 @@ pub fn pump_typing(ctx: &egui::Context, wants: bool) {
         }
     }
     if wants {
-        // Nothing typed yet and the field has been there a moment: the
-        // keyboard may have missed its first ask.
-        // The locks are taken one at a time, in the order every other
-        // path takes them, so two of them never wait on each other.
-        let nothing_yet = lock(&TYPED).is_empty();
-        let retry = if nothing_yet {
+        // The keyboard is up when the window says so, not when the last
+        // ask went out. An ask the phone missed is asked again; one it
+        // answered and the user then put away is left alone until another
+        // field takes the focus.
+        let up = ime_bottom(
+            phone.activity_as_ptr(),
+            phone.vm_as_ptr(),
+            AndroidApp::sdk_version(),
+        ) > 0;
+        if up {
+            SHOWN.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        let retry = if up || SHOWN.load(std::sync::atomic::Ordering::Relaxed) {
+            false
+        } else {
+            // The locks are taken one at a time, in the order every other
+            // path takes them, so two of them never wait on each other.
             let mut asked = lock(&ASKED);
             match *asked {
                 Some((when, times))
-                    if times < 3 && when.elapsed() >= std::time::Duration::from_millis(400) =>
+                    if times < 10 && when.elapsed() >= std::time::Duration::from_millis(400) =>
                 {
                     *asked = Some((web_time::Instant::now(), times + 1));
                     true
                 }
+                None => {
+                    *asked = Some((web_time::Instant::now(), 1));
+                    true
+                }
                 _ => false,
             }
-        } else {
-            false
         };
         if retry {
             ask_again(phone);

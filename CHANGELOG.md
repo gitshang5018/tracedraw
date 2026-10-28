@@ -19,6 +19,7 @@ full, row-by-row status.
 - 手机上选中对象后，工具栏上方直接出现一条与对象相关的属性栏：文本给出字体和字号、连接线给出走线方式、形状给出轮廓，左右滑动看其余选项。没有选中对象时这条栏完全不出现，画布保持原来的高度；打开底部面板时也让位给它。
 - 属性栏的图标统一成 16 px（按钮原来是 18、字段标签是 13，两者混在一行里高低不齐），按钮也不再随界面尺寸放大到 35，因此同一行的图标现在对齐了。手机上的选中属性条顺带矮了一截：行高统一为 22，最少 44 高，不再被手指尺寸的控件撑到 60 左右。
 - 手机上弹出输入法时，工具栏、导航栏和选中对象的属性栏整体上移到键盘上方，不再被键盘盖住。键盘弹出不会让窗口变小，所以应用现在每帧读取输入法占用的高度，用它垫出一条等高的空白。
+- 手机上的属性栏与输入法：键盘弹出时只有属性栏浮到键盘上方，工具栏和导航栏留在原位；输入尺寸时键盘不再一弹出就消失（焦点在换帧时抖一下不再被当成离开输入框）；在多个尺寸框之间来回切换时，每个新输入框都会重新请出输入法。
 - The long-press menu on a phone keeps clear of the system bars: a phone draws edge to edge, so the menu could open under the status bar with its first rows unreachable. It now starts below it, and scrolls when it is taller than the room left.
 - Text on a phone: a text selected with the Pick tool puts the font list and the size first in the Properties strip, where a finger reaches them (the strip is scrolled sideways, and a drag over the fields does not scroll it), and the sheet carries an **Edit text** button, since a phone has no double click to remember.
 - 转曲保存 shows a progress bar while it runs: the pages are converted one a frame, so the bar moves and the interface keeps drawing, and the file is written once the bar reaches the end.
