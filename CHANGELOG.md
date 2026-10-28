@@ -17,6 +17,7 @@ full, row-by-row status.
 - 在手机上重新安装后读不到存储里的图纸：判断是否已获「所有文件访问」时，原来用 `is_dir()` 看共享存储，而没有授权时目录自身的属性仍然读得到，于是应用误以为已经授权，文件列表一片空白，也不再给出授权入口。现在只信系统自己的回答 `isExternalStorageManager()`，未授权时授权横幅会照常出现。
 - 手机上的悬浮调色板：卡片圆角从 20 收到 12，阴影也一并收小，和菜单、对话框统一；标题栏和右上角的叉现在都能把卡片收起来（此前只能在卡片外点一下，点窗口本身没有反应）。同时把手机端的窗口圆角从 28 收到 14、菜单从 16 收到 10，Material 对话框也一起收敛，浮层之间的落差不再突兀。
 - 手机上选中对象后，工具栏上方直接出现一条与对象相关的属性栏：文本给出字体和字号、连接线给出走线方式、形状给出轮廓，左右滑动看其余选项。没有选中对象时这条栏完全不出现，画布保持原来的高度；打开底部面板时也让位给它。
+- 属性栏的图标统一成 16 px（按钮原来是 18、字段标签是 13，两者混在一行里高低不齐），按钮也不再随界面尺寸放大到 35，因此同一行的图标现在对齐了。手机上的选中属性条顺带矮了一截：行高统一为 22，最少 44 高，不再被手指尺寸的控件撑到 60 左右。
 - The long-press menu on a phone keeps clear of the system bars: a phone draws edge to edge, so the menu could open under the status bar with its first rows unreachable. It now starts below it, and scrolls when it is taller than the room left.
 - Text on a phone: a text selected with the Pick tool puts the font list and the size first in the Properties strip, where a finger reaches them (the strip is scrolled sideways, and a drag over the fields does not scroll it), and the sheet carries an **Edit text** button, since a phone has no double click to remember.
 - 转曲保存 shows a progress bar while it runs: the pages are converted one a frame, so the bar moves and the interface keeps drawing, and the file is written once the bar reaches the end.

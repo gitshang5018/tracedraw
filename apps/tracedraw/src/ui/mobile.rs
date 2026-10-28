@@ -31,7 +31,7 @@ const TOP_H: f32 = 64.0;
 const TOOLS_H: f32 = 72.0;
 /// The strip of properties above the tools, shown while something is
 /// selected: never shorter than this, taller when the bar's fields are.
-const SELECTION_H: f32 = 52.0;
+const SELECTION_H: f32 = 44.0;
 /// The navigation bar: four destinations.
 const NAV_H: f32 = 76.0;
 /// The tools rail down the left edge of a phone on its side.
@@ -713,6 +713,13 @@ fn selection_strip(app: &mut App, ui: &mut Ui, m3: &M3, open: Sheet) -> f32 {
                     Frame::new()
                         .inner_margin(egui::Margin::symmetric(8, 6))
                         .show(ui, |ui| {
+                            // The bar is a dense desktop strip: the phone's
+                            // finger-sized controls would make its rows
+                            // taller than the bar's own height, which both
+                            // pushes the strip up and leaves its icons out
+                            // of line. One row height for all of them.
+                            ui.spacing_mut().interact_size.y = 22.0;
+                            ui.spacing_mut().button_padding = Vec2::new(6.0, 1.0);
                             crate::ui::toolbar::property_bar(app, ui);
                         });
                 });

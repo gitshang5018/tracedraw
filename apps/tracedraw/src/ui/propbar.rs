@@ -18,10 +18,18 @@ use tracedraw_core::{
 /// Two fields stacked: 19 px each, sharing their middle border.
 pub const BAR_H: f32 = 37.0;
 const ROW: f32 = 19.0;
+/// Every picture in the bar, on a button or before a field, is drawn this
+/// wide: one size for all of them keeps a row's icons in line with each
+/// other, which a button's 18 and a label's 13 did not.
+const ICON_PIC: f32 = 16.0;
 /// Icon buttons are 28 px square with an 18 px icon.
 /// A property bar button's side: 28 px at the medium button size.
+/// A property bar button's side: 28 px, the height the bar was drawn for.
+/// The interface's own button size does not stretch it, since the bar's
+/// rows and height stay as they are: a larger button only breaks its
+/// alignment with the fields beside it.
 fn btn() -> f32 {
-    crate::theme::Tokens::prop_button()
+    crate::theme::Tokens::prop_button().min(28.0)
 }
 
 /// The small pictures before fields and on the bar's buttons, drawn on a
@@ -1255,7 +1263,7 @@ pub fn pic_button(ui: &mut Ui, pic: Pic, tip: &str, enabled: bool, pressed: bool
     frame(ui, rect, enabled && resp.hovered(), pressed);
     draw_pic(
         ui.painter(),
-        Rect::from_center_size(rect.center(), Vec2::splat(18.0)),
+        Rect::from_center_size(rect.center(), Vec2::splat(ICON_PIC)),
         pic,
         if enabled {
             Tokens::icon()
@@ -1282,7 +1290,7 @@ pub(crate) fn label_pic(ui: &mut Ui, pic: Pic, tip: &str) {
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(16.0, ROW), Sense::hover());
     draw_pic(
         ui.painter(),
-        Rect::from_center_size(rect.center(), Vec2::splat(13.0)),
+        Rect::from_center_size(rect.center(), Vec2::splat(ICON_PIC)),
         pic,
         Tokens::icon(),
     );
