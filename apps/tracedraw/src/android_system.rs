@@ -686,24 +686,15 @@ pub fn storage_granted(app: &AndroidApp) -> bool {
     })
     .unwrap_or(false);
 
-    if is_manager {
-        return true;
-    }
+    // The system's own answer is the answer. A listing of the shared
+    // storage is not a second opinion: a phone without the grant still
+    // answers one, empty, which is how a fresh install came to believe it
+    // had the permission, so the Files sheet offered no way to give it and
+    // listed nothing. The screen that grants it is what the app offers
+    // instead, and this is read again when that screen closes.
+    log::info!("all files access: {is_manager}");
 
-    // A fallback for the phones whose answer to `isExternalStorageManager`
-    // is wrong: what the permission buys is the listing of the shared
-    // storage, so a listing that works means the app has it. A `stat` is
-    // not enough, since a folder's own entry answers while its contents
-    // stay out of reach: that made a fresh install believe it had the
-    // grant, so the Files sheet offered no way to give it and listed
-    // nothing.
-    if let Some(root) = storage_root(app) {
-        if std::fs::read_dir(&root).is_ok() {
-            return true;
-        }
-    }
-
-    false
+    is_manager
 }
 
 /// The folder the phone keeps the user's files in (`/storage/emulated/0`).
