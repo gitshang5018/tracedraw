@@ -1258,6 +1258,9 @@ pub struct App {
     pub updates: crate::updates::Checker,
     /// Help > Updates, Install: an AppImage replaced in place.
     pub installer: crate::updates::Installer,
+    /// 转曲保存 on its way: the copy of the drawing, a page converted per
+    /// frame so the bar moves (see `curves_cdr.rs`).
+    pub curves_save: Option<crate::curves_cdr::CurvesSave>,
     /// The running check was started at start, not asked for: only a
     /// newer release, not skipped, is shown.
     pub update_quiet: bool,
@@ -2326,6 +2329,7 @@ impl App {
             highlight_whats_new: false,
             updates: Default::default(),
             installer: Default::default(),
+            curves_save: None,
             update_quiet: false,
             recent_thumbs: Default::default(),
             shelf: Default::default(),

@@ -142,6 +142,16 @@ no file manager shows and nothing needs to.
 Reading the phone's own clipboard needs the activity and a permission the
 interface does not ask for yet: copy and paste work inside TraceDraw.
 
+### A drawing tapped in a file manager
+
+`.cdr` and `.tdraw` are registered with the system, so a tap in a file
+manager opens TraceDraw with that drawing: the manifest lists the address a
+manager may send (`file://` on old systems, `content://` since Android 7)
+and the types it may give it, and since a type is `application/octet-stream`
+for an extension the system has no table entry for, a filter takes any type
+held to the extension by the address's path. The drawing is copied into the
+app's folder and opened from there (`android_system::shared_drawing`).
+
 ### Fonts of your own
 
 A phone installs no fonts, so the font lists would only ever hold the ones

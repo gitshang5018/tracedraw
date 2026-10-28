@@ -334,6 +334,8 @@ fn root_frame(app: &mut App, ui: &mut Ui) {
     }
     // Help > Updates, once a day.
     app.update_tick(crate::recovery::now_secs(), Some(ctx.clone()));
+    // 转曲保存 converts a page a frame, so its bar moves (curves_cdr.rs).
+    app.curves_tick(&ctx);
     // Options > Save > Auto-backup.
     if app.auto_backup_tick(web_time::Instant::now()) {
         app.status = tr("status.auto_backup_saved");
@@ -374,6 +376,8 @@ fn root_frame(app: &mut App, ui: &mut Ui) {
         crate::perspective_draw::show_bar(app, &ctx);
     }
     dialogs::show(app, &ctx);
+    // A 转曲保存 still running draws over everything.
+    crate::curves_cdr::progress_box(app, &ctx);
     // A change this frame made to a master shows on its clones at once.
     let before = app.engine.revision();
     app.sync_object_clones();

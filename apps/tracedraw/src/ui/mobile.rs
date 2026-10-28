@@ -2325,9 +2325,8 @@ fn files_sheet(app: &mut App, ui: &mut Ui, m3: &M3) {
             // 转曲保存: the drawing as curves, into Download, then the share
             // sheet, which is how a phone sends a file to WeChat or QQ.
             if tonal_button(ui, m3, &tr("mobile.save_curves"), has).clicked() {
-                match app.save_curves_cdr(crate::curves_cdr::X8) {
-                    Ok(_) => {}
-                    Err(e) => app.status = e,
+                if let Err(e) = app.start_curves_save(crate::curves_cdr::X8) {
+                    app.status = e;
                 }
             }
             // Fonts dropped into the Fonts folder of the drawings' folder

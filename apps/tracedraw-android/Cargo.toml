@@ -106,6 +106,47 @@ categories = ["android.intent.category.DEFAULT"]
 scheme = "file"
 path_pattern = ".*\\.tdraw"
 
+# A file manager hands a file over as a `content://` address with the type
+# the system gives it, and that type is `application/octet-stream` for an
+# extension no table knows (`.tdraw`) and sometimes for `.cdr` as well. A
+# filter that takes any type but holds it to the extension covers those; the
+# address of a file in the shared storage carries its name
+# (`/document/primary:Download/x.cdr`), which is what the path matches.
+[[package.metadata.android.application.activity.intent_filter]]
+actions = ["android.intent.action.VIEW"]
+categories = ["android.intent.category.DEFAULT"]
+
+[[package.metadata.android.application.activity.intent_filter.data]]
+scheme = "content"
+mime_type = "*/*"
+path_pattern = ".*\\.cdr"
+
+[[package.metadata.android.application.activity.intent_filter]]
+actions = ["android.intent.action.VIEW"]
+categories = ["android.intent.category.DEFAULT"]
+
+[[package.metadata.android.application.activity.intent_filter.data]]
+scheme = "content"
+mime_type = "*/*"
+path_pattern = ".*\\.tdraw"
+
+# And one with no type at all, for a manager that sends the address alone.
+[[package.metadata.android.application.activity.intent_filter]]
+actions = ["android.intent.action.VIEW"]
+categories = ["android.intent.category.DEFAULT"]
+
+[[package.metadata.android.application.activity.intent_filter.data]]
+scheme = "content"
+path_pattern = ".*\\.cdr"
+
+[[package.metadata.android.application.activity.intent_filter]]
+actions = ["android.intent.action.VIEW"]
+categories = ["android.intent.category.DEFAULT"]
+
+[[package.metadata.android.application.activity.intent_filter.data]]
+scheme = "content"
+path_pattern = ".*\\.tdraw"
+
 [[package.metadata.android.application.activity.intent_filter]]
 actions = ["android.intent.action.VIEW"]
 categories = ["android.intent.category.DEFAULT"]

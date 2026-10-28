@@ -20,6 +20,14 @@ The work happens on a **copy** of the drawing, in an app of its own
 (`App::scratch`): the drawing on screen keeps its text, its selection and
 its undo history, so a save that goes wrong leaves nothing to undo.
 
+## While it runs
+
+A page is converted per frame (`App::curves_tick`), so the box over the
+interface carries a bar that moves and the interface keeps drawing between
+pages; the file is written on the frame after the last one, so the bar
+reaches the end before the write takes its time. A drawing of one page shows
+the bar full at once, which is as fine as the work can be divided.
+
 ## The file
 
 `<drawing>_<yyyy-M-d>_x8曲.cdr`, in the phone's Download folder, or beside

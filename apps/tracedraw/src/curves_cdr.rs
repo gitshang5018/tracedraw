@@ -48,62 +48,130 @@ pub fn today() -> String {
     format!("{}-{}-{}", now.year(), now.month(), now.day())
 }
 
-impl App {
-    /// The drawing as a `.cdr` of `version`, with everything Convert to
-    /// Curves changes turned into curves. The drawing that is open is left
-    /// as it was, undo history and all.
-    pub fn cdr_curves(&self, version: u16) -> Vec<u8> {
-        let mut work = App::scratch();
-        work.open_document(self.doc().clone(), None);
-        let pages = work.doc().pages.len();
-        for i in 0..pages {
-            work.goto_page(i);
-            work.select_all();
-            work.convert_to_curves();
-        }
-        tracedraw_cdr::write::document_to_cdr_version(work.doc(), version)
-    }
+/// A 转曲保存 on its way: the copy of the drawing the pages are converted
+/// in, one page per frame, and the name the file takes.
+pub struct CurvesSave {
+    work: Box<App>,
+    name: String,
+    version: u16,
+    pages: usize,
+    done: usize,
+}
 
-    /// 转曲保存: write the drawing as curves, as a `.cdr` of `version`,
-    /// into the phone's Download folder, and offer it to the share sheet.
-    /// Answers the file's name.
-    pub fn save_curves_cdr(&mut self, version: u16) -> Result<String, String> {
+impl App {
+    /// Begin a 转曲保存: the copy is made now, and a page is converted per
+    /// frame by [`App::curves_tick`], so the bar moves and the interface
+    /// keeps drawing. Answers an error when there is nothing to save.
+    pub fn start_curves_save(&mut self, version: u16) -> Result<(), String> {
         if !self.has_document() {
             return Err("no drawing is open".to_string());
         }
-        let bytes = self.cdr_curves(version);
-        let name = file_name(&self.document_title(), &today(), version);
-        #[cfg(target_os = "android")]
-        {
-            let phone = crate::android_system::phone().ok_or("no activity")?;
-            let shared = crate::android_system::save_and_share(
-                phone,
-                &name,
-                "application/octet-stream",
-                &bytes,
-            )?;
-            self.status = if shared {
-                crate::i18n::trf("status.saved_share", &[("name", &name)])
-            } else {
-                crate::i18n::trf("status.saved", &[("p", &name)])
-            };
-            return Ok(name);
+        let mut work = App::scratch();
+        work.open_document(self.doc().clone(), None);
+        let pages = work.doc().pages.len().max(1);
+        self.curves_save = Some(CurvesSave {
+            work: Box::new(work),
+            name: file_name(&self.document_title(), &today(), version),
+            version,
+            pages,
+            done: 0,
+        });
+        Ok(())
+    }
+
+    /// One frame of a 转曲保存: convert the next page, and once they are all
+    /// converted write the file and offer it. `ctx` gets a frame while it
+    /// runs, so the bar reaches the end before the file is written.
+    pub fn curves_tick(&mut self, ctx: &egui::Context) {
+        let Some(save) = self.curves_save.as_mut() else {
+            return;
+        };
+        if save.done < save.pages {
+            save.work.goto_page(save.done);
+            save.work.select_all();
+            save.work.convert_to_curves();
+            save.done += 1;
+            ctx.request_repaint();
+            return;
         }
-        #[cfg(not(target_os = "android"))]
-        {
-            // A desktop has folders of its own: the drawing's folder when it
-            // has one, else the one the phone layout shows.
-            let dir = self
-                .file
-                .as_ref()
-                .and_then(|p| p.parent().map(|d| d.to_path_buf()))
-                .unwrap_or_else(crate::files::android_documents);
-            let path = dir.join(&name);
-            crate::files::write_creating(&path, &bytes).map_err(|e| e.to_string())?;
-            let shown = path.display().to_string();
-            self.status = crate::i18n::trf("status.saved", &[("p", &shown)]);
-            Ok(name)
+        let Some(save) = self.curves_save.take() else {
+            return;
+        };
+        let bytes =
+            tracedraw_cdr::write::document_to_cdr_version(save.work.doc(), save.version);
+        let dir = self
+            .file
+            .as_ref()
+            .and_then(|p| p.parent().map(|d| d.to_path_buf()));
+        match save_curves_file(dir, &save.name, &bytes) {
+            Ok(true) => {
+                self.status = crate::i18n::trf("status.saved_share", &[("name", &save.name)]);
+            }
+            Ok(false) => {
+                self.status = crate::i18n::trf("status.saved", &[("p", &save.name)]);
+            }
+            Err(e) => self.status = e,
         }
+    }
+
+    /// How far a 转曲保存 has got: the fraction for the bar, and what it is
+    /// doing, for the box drawn over the interface.
+    pub fn curves_progress(&self) -> Option<(f32, String)> {
+        let save = self.curves_save.as_ref()?;
+        let fraction = (save.done as f32 / save.pages as f32).clamp(0.0, 1.0);
+        Some((
+            fraction,
+            format!(
+                "{}  {}/{}",
+                crate::i18n::tr("mobile.save_curves"),
+                save.done,
+                save.pages
+            ),
+        ))
+    }
+}
+
+/// The box a 转曲保存 shows while it runs: what it is doing, and a bar for
+/// how far the pages have got.
+pub fn progress_box(app: &App, ctx: &egui::Context) {
+    let Some((fraction, text)) = app.curves_progress() else {
+        return;
+    };
+    egui::Area::new(egui::Id::new("curves_save_progress"))
+        .order(egui::Order::Foreground)
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .show(ctx, |ui| {
+            egui::Frame::popup(&ctx.style()).show(ui, |ui| {
+                ui.set_min_width(240.0);
+                ui.label(egui::RichText::new(text).size(15.0));
+                ui.add(
+                    egui::ProgressBar::new(fraction)
+                        .desired_width(220.0)
+                        .show_percentage(),
+                );
+            });
+        });
+}
+
+/// Write `bytes` as `name`: into the phone's Download folder and on to its
+/// share sheet, or beside the drawing on a desktop. Answers whether the
+/// share sheet was opened.
+fn save_curves_file(
+    dir: Option<std::path::PathBuf>,
+    name: &str,
+    bytes: &[u8],
+) -> Result<bool, String> {
+    #[cfg(target_os = "android")]
+    {
+        let _ = dir;
+        let phone = crate::android_system::phone().ok_or("no activity")?;
+        crate::android_system::save_and_share(phone, name, "application/octet-stream", bytes)
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let dir = dir.unwrap_or_else(crate::files::android_documents);
+        crate::files::write_creating(dir.join(name), bytes).map_err(|e| e.to_string())?;
+        Ok(false)
     }
 }
 
