@@ -652,6 +652,20 @@ impl Installer {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn download(url: &str) -> Result<Box<dyn std::io::Read + Send>, String> {
+    // The proxy first, since a network that needs it is the one that cannot
+    // reach GitHub at all; the file's own address when it answers nothing.
+    let proxied = through_proxy(url);
+    match open_stream(&proxied) {
+        Ok(body) => Ok(body),
+        Err(through) if proxied != url => {
+            open_stream(url).map_err(|direct| format!("{through} (directly: {direct})"))
+        }
+        Err(e) => Err(e),
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn open_stream(url: &str) -> Result<Box<dyn std::io::Read + Send>, String> {
     use ureq::tls::{RootCerts, TlsConfig};
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_connect(Some(std::time::Duration::from_secs(20)))
@@ -665,7 +679,7 @@ fn download(url: &str) -> Result<Box<dyn std::io::Read + Send>, String> {
     // Redirects (GitHub sends downloads to its file host) are followed
     // here, each on a request of its own; the redirect's body is skipped,
     // and the next address goes through the proxy like the first.
-    let mut url = through_proxy(url);
+    let mut url = url.to_string();
     for _ in 0..5 {
         let resp = agent
             .get(&url)
@@ -699,6 +713,25 @@ fn download(url: &str) -> Result<Box<dyn std::io::Read + Send>, String> {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn fetch() -> Result<String, String> {
+    // The list is read from GitHub itself. A network that cannot resolve it
+    // (a phone behind a broken or filtered DNS, "No address associated with
+    // hostname") is answered by the proxy instead, which is there for the
+    // downloads anyway: the check then costs a second request, not a
+    // failure.
+    match fetch_from(RELEASES_URL) {
+        Ok(json) => Ok(json),
+        Err(direct) => {
+            fetch_from(&format!("{PROXY}{RELEASES_URL}")).map_err(|proxied| {
+                // The first error is the one that says what is wrong with
+                // this network; the second only says the proxy is no help.
+                format!("{direct} (through the proxy: {proxied})")
+            })
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn fetch_from(url: &str) -> Result<String, String> {
     use ureq::tls::{RootCerts, TlsConfig};
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_global(Some(std::time::Duration::from_secs(20)))
@@ -710,7 +743,7 @@ fn fetch() -> Result<String, String> {
         .build()
         .into();
     let mut resp = agent
-        .get(RELEASES_URL)
+        .get(url)
         .header(
             "User-Agent",
             concat!("TraceDraw/", env!("CARGO_PKG_VERSION")),

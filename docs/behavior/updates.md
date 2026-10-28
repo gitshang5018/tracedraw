@@ -30,6 +30,12 @@ the whole file address, as the proxy documents it
 release (`/releases/download/`, or a host GitHub redirects to) is rewritten;
 anything else is left as it is (`updates::through_proxy`).
 
+A network that cannot reach GitHub at all (a phone whose DNS answers
+nothing for it, "No address associated with hostname") is answered by the
+proxy for the list as well: the check asks GitHub first and the proxy
+second, so it costs a second request rather than a failure. A download the
+proxy cannot serve is tried at its own address the same way.
+
 ## Which build is this
 
 `updates::version()`: the version the packaging scripts passed in
