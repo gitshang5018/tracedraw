@@ -419,8 +419,9 @@ pub fn set_keyboard(app: &AndroidApp, show: bool, focus: Option<u64>) {
     use std::sync::atomic::Ordering;
     let was = KEYBOARD.load(Ordering::Relaxed);
     // A field the keyboard was not asked for yet: the interface moved the
-    // focus from one field to the next, and the phone may have put its
-    // keyboard away in between. It is asked for again.
+    // focus from one field to the next. Nothing is rebuilt for that, since
+    // the keyboard is usually still up; the retry below asks again if the
+    // phone put it away in between.
     let moved = {
         let mut last = lock(&FOCUSED);
         let moved = *last != focus;
@@ -428,6 +429,11 @@ pub fn set_keyboard(app: &AndroidApp, show: bool, focus: Option<u64>) {
         moved
     };
     if was == show && !(show && moved) {
+        return;
+    }
+    if was == show {
+        SHOWN.store(false, Ordering::Relaxed);
+        *lock(&ASKED) = Some((web_time::Instant::now(), 0));
         return;
     }
     if !show {
@@ -518,6 +524,24 @@ fn open_field(vm: *mut c_void, activity: *mut c_void) -> Result<(), String> {
             .ok()?
             .l()
             .ok()?;
+        // A field already in the window is emptied and used again. A second
+        // one would be a second place to type: the keyboard keeps the focus
+        // of whichever view it saw last, and the app reads only one of them,
+        // so the keys would land nowhere it can see.
+        if let Some(field) = lock(&FIELD).as_ref().map(|g| g.as_obj().clone()) {
+            // Its text is left as it was: emptying it would read as a run of
+            // backspaces to the frame that diffs it.
+            let _ = env.call_method(&field, "requestFocus", "()Z", &[]);
+            if let Some(service) = input_method(env, &activity) {
+                let _ = env.call_method(
+                    &service,
+                    "showSoftInput",
+                    "(Landroid/view/View;I)Z",
+                    &[JValue::Object(&field), JValue::Int(0)],
+                );
+            }
+            return Some(());
+        }
         // One pixel, invisible, and a colour of its own: it is never seen,
         // only typed into.
         let field = env
@@ -556,17 +580,7 @@ fn open_field(vm: *mut c_void, activity: *mut c_void) -> Result<(), String> {
         );
         let _ = env.call_method(&field, "requestFocus", "()Z", &[]);
         // The keyboard over it.
-        let name: JObject = JObject::from(env.new_string("input_method").ok()?);
-        let service = env
-            .call_method(
-                &activity,
-                "getSystemService",
-                "(Ljava/lang/String;)Ljava/lang/Object;",
-                &[JValue::Object(&name)],
-            )
-            .ok()
-            .and_then(|v| v.l().ok());
-        if let Some(service) = service.filter(|s| !s.is_null()) {
+        if let Some(service) = input_method(env, &activity) {
             let _ = env.call_method(
                 &service,
                 "showSoftInput",
@@ -579,6 +593,21 @@ fn open_field(vm: *mut c_void, activity: *mut c_void) -> Result<(), String> {
         Some(())
     })
     .ok_or_else(|| "the keyboard field could not be added".to_string())
+}
+
+/// The phone's input method service, for asking the keyboard up.
+fn input_method<'a>(env: &mut jni::JNIEnv<'a>, activity: &JObject<'a>) -> Option<JObject<'a>> {
+    let name: JObject = JObject::from(env.new_string("input_method").ok()?);
+    env.call_method(
+        activity,
+        "getSystemService",
+        "(Ljava/lang/String;)Ljava/lang/Object;",
+        &[JValue::Object(&name)],
+    )
+    .ok()?
+    .l()
+    .ok()
+    .filter(|s| !s.is_null())
 }
 
 /// Take the field out of the window, keyboard first.

@@ -82,3 +82,7 @@ jobs:
           log test.log | grep -E "^test .* FAILED$" | head -6 | sed 's/^/::error::/' || true
           log clippy.log | grep -E "^error(\[|:)" | head -8 | sed 's/^/::error::/' || true
           log test.log | grep -E "panicked" | head -4 | sed 's/^/::error::/' || true
+          # The line under a panic is the assertion's own text: the list of
+          # controls without a tip, for one.
+          log test.log | grep -A 1 "panicked at" | grep -v "panicked at" \
+            | grep -v -E "^--$|^$" | head -6 | sed 's/^/::error::/' || true

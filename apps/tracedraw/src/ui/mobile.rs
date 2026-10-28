@@ -1227,7 +1227,6 @@ fn tools_rail(app: &mut App, ui: &mut Ui, m3: &M3, safe: Safe) {
 
 /// The destinations down the right edge, for a phone on its side.
 fn nav_rail(app: &mut App, ui: &mut Ui, m3: &M3, safe: Safe, open: &mut Sheet) {
-    let _ = app;
     egui::Panel::right("mobile_nav")
         .exact_size(NAV_RAIL_W + safe.right)
         .resizable(false)
@@ -1235,15 +1234,28 @@ fn nav_rail(app: &mut App, ui: &mut Ui, m3: &M3, safe: Safe, open: &mut Sheet) {
         .frame(Frame::new().fill(m3.container))
         .show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.vertical_centered(|ui| {
-                    ui.add_space(6.0);
-                    for (which, glyph, label) in destinations() {
-                        let active = *open == which;
-                        if nav_item(ui, m3, glyph, &label, active, NAV_RAIL_W, NAV_H).clicked() {
-                            *open = if active { Sheet::None } else { which };
-                        }
-                    }
-                });
+                // The rail is short on a phone on its side: the destinations
+                // and the commands of the selection scroll under the finger,
+                // the same two groups the bar carries when it stands.
+                egui::ScrollArea::vertical()
+                    .id_salt("mobile_nav_rail_scroll")
+                    .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+                    .auto_shrink([true, false])
+                    .show(ui, |ui| {
+                        ui.vertical_centered(|ui| {
+                            ui.add_space(6.0);
+                            for (which, glyph, label) in destinations() {
+                                let active = *open == which;
+                                if nav_item(ui, m3, glyph, &label, active, NAV_RAIL_W, NAV_H)
+                                    .clicked()
+                                {
+                                    *open = if active { Sheet::None } else { which };
+                                }
+                            }
+                            crate::ui::align_docker::align_part(app, ui);
+                            ui.add_space(6.0);
+                        });
+                    });
                 // The gesture bar of a phone on its side.
                 ui.add_space(safe.right);
             });
