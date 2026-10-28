@@ -45,15 +45,25 @@ The blob store makes itself: the first request that reads or writes the
 
 ## Wiring it to the app
 
-1. In the project's settings, note the **project id** (like
-   `pages-urtsvuwmfvli`) and make an **API token**.
-2. Add both to the GitHub repository, Settings > Secrets and variables >
+Two things are needed, and neither of them is in the project's own settings:
+
+1. **The API token** is a tab of the Makers console itself, beside the
+   project list (API Token > 创建 API Token > a description, an expiry date,
+   提交). It is not per project.
+2. **The project id** is the last part of the project's address in the
+   browser, `https://pages.edgeone.ai/project/pages-xxxxxxxx`, the
+   `pages-xxxxxxxx` bit. `edgeone makers link` in the CLI writes the same id
+   into the project's local configuration, for when the address does not
+   show it.
+
+Then:
+3. Add both to the GitHub repository, Settings > Secrets and variables >
    Actions: `EDGEONE_PROJECT_ID` and `EDGEONE_TOKEN`. Without them the
    Android workflow skips the upload and the app downloads from the release,
    exactly as it did before.
-3. Put the project's address in `apps/tracedraw/src/updates.rs` as
+4. Put the project's address in `apps/tracedraw/src/updates.rs` as
    `APK_HOST`.
-4. Push to `main`: the workflow builds the APKs, uploads them under `apk/`,
+5. Push to `main`: the workflow builds the APKs, uploads them under `apk/`,
    and drops the ones of the build before.
 
 The store keeps only the newest build's files, since the update check always
