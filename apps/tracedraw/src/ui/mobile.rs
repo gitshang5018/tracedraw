@@ -188,58 +188,93 @@ struct Safe {
     left: f32,
     right: f32,
     status_bar_visible: bool,
+    /// How much of `top` the camera cutout accounts for: with the status
+    /// bar hidden this is all the room the bar still owes the notch.
+    cutout_top: f32,
 }
 
+/// How many frames the system bars may take to follow a request before
+/// their last word is taken as final (see `system_insets`).
 #[cfg(target_os = "android")]
-fn system_insets(ctx: &egui::Context) -> Safe {
+const BAR_SETTLE_FRAMES: u32 = 40;
+
+/// The insets read last, with the surface and the bars request they
+/// belong to: `(pixels, bars_hidden, insets, frames waited)`.
+#[cfg(target_os = "android")]
+type InsetsCache = ((i32, i32), bool, Safe, u32);
+
+#[cfg(target_os = "android")]
+fn system_insets(ctx: &egui::Context, bars_hidden: bool) -> Safe {
     let Some(phone) = crate::android_system::phone() else {
         return Safe::default();
     };
     let ppp = ctx.pixels_per_point().max(0.1);
     // The insets change with the window (a rotation, the keyboard), not
     // with the frame: they are read again only when the surface changes.
+    // Hiding or showing the bars changes them too without touching the
+    // surface, so the request is part of the key, and a reading that
+    // still disagrees with it is not kept: the bars take a frame or two
+    // to follow, and a stale status bar height would keep the top bar
+    // pushed down for as long as the phone lies on its side.
     let key = Id::new("mobile_insets");
     let size = ctx.content_rect().size() * ppp;
     let px = (size.x.round() as i32, size.y.round() as i32);
-    if let Some((seen, got, vis)) =
-        ctx.data(|d| d.get_temp::<((i32, i32), (f32, f32, f32, f32), bool)>(key))
-    {
-        if seen == px {
-            return Safe {
-                top: got.0,
-                bottom: got.1,
-                left: got.2,
-                right: got.3,
-                status_bar_visible: vis,
-            };
+    let mut waited = 0;
+    if let Some((seen, hidden, got, frames)) = ctx.data(|d| d.get_temp::<InsetsCache>(key)) {
+        if seen == px && hidden == bars_hidden {
+            // The bars agree with the request (a hidden status bar for a
+            // phone on its side, a shown one for a phone standing), or
+            // they were given their frames to: either way the reading
+            // stands until the surface or the request changes again.
+            if got.status_bar_visible != bars_hidden || frames >= BAR_SETTLE_FRAMES {
+                return got;
+            }
+            waited = frames;
         }
     }
     let sdk = winit::platform::android::activity::AndroidApp::sdk_version();
-    let insets = crate::android_system::read(phone.activity_as_ptr(), phone.vm_as_ptr(), sdk);
-    let (got, vis) = match insets {
-        Some(i) => (
-            (
-                i.top as f32 / ppp,
-                i.bottom as f32 / ppp,
-                i.left as f32 / ppp,
-                i.right as f32 / ppp,
-            ),
-            i.status_bar_visible,
-        ),
-        None => ((0.0, 0.0, 0.0, 0.0), false),
+    let safe = match crate::android_system::read(phone.activity_as_ptr(), phone.vm_as_ptr(), sdk) {
+        Some(i) => Safe {
+            top: i.top as f32 / ppp,
+            bottom: i.bottom as f32 / ppp,
+            left: i.left as f32 / ppp,
+            right: i.right as f32 / ppp,
+            status_bar_visible: i.status_bar_visible,
+            cutout_top: i.cutout_top as f32 / ppp,
+        },
+        None => Safe::default(),
     };
-    ctx.data_mut(|d| d.insert_temp(key, (px, got, vis)));
-    Safe {
-        top: got.0,
-        bottom: got.1,
-        left: got.2,
-        right: got.3,
-        status_bar_visible: vis,
+    let settled = safe.status_bar_visible != bars_hidden;
+    let safe = edge_to_edge(safe, bars_hidden);
+    ctx.data_mut(|d| {
+        d.insert_temp(
+            key,
+            (px, bars_hidden, safe, if settled { 0 } else { waited + 1 }),
+        )
+    });
+    safe
+}
+
+/// A phone on its side draws edge to edge: the system bars are gone, and
+/// the camera cutout sits in the middle of a short edge, with the top bar
+/// and the rails running straight past it. No side room is kept for it, so
+/// no icon is pushed in from the edge. A phone standing up keeps the room
+/// the bars and the cutout take.
+#[cfg(any(target_os = "android", test))]
+fn edge_to_edge(safe: Safe, land: bool) -> Safe {
+    if land {
+        Safe {
+            left: 0.0,
+            right: 0.0,
+            ..safe
+        }
+    } else {
+        safe
     }
 }
 
 #[cfg(not(target_os = "android"))]
-fn system_insets(_ctx: &egui::Context) -> Safe {
+fn system_insets(_ctx: &egui::Context, _bars_hidden: bool) -> Safe {
     Safe::default()
 }
 
@@ -311,7 +346,7 @@ pub fn frame(app: &mut App, ui: &mut Ui) -> bool {
     // A phone lying on its side gives the whole screen to the drawing: the
     // system bars go, and come back when it stands up again.
     system_bars(&ctx, land);
-    let inset = system_insets(&ctx);
+    let inset = system_insets(&ctx, land);
 
     let mut open = sheet(&ctx);
     // A file dialog asked anywhere (File > Open, an import) becomes the
@@ -554,15 +589,19 @@ fn touch_style(ctx: &egui::Context) {
 // ---------------------------------------------------------------------------
 
 /// Top padding for the top app bar, drawer, and headers.
-/// In landscape mode, if it is in fullscreen mode (status bar is hidden or no top inset),
-/// no downward shift is applied. If the system status bar is visible, shift down slightly
-/// to clear the status bar. In portrait mode, use natural safe insets.
+///
+/// A phone on its side asks for the system bars to go: with the status bar
+/// hidden the bar sits on the very top edge of the screen, and the only
+/// room it still owes is what the camera cutout itself takes (nothing at
+/// all for a notch in the middle of the edge). Only a status bar that is
+/// still shown earns the few extra points that clear it. A phone standing
+/// up uses the natural safe inset.
 fn top_padding(safe: Safe, land: bool) -> f32 {
     if land {
-        if safe.status_bar_visible && safe.top > 0.0 {
+        if safe.status_bar_visible && safe.top > safe.cutout_top {
             safe.top + 6.0
         } else {
-            safe.top
+            safe.cutout_top
         }
     } else {
         safe.top
@@ -1423,8 +1462,8 @@ fn drawer(app: &mut App, ui: &mut Ui, m3: &M3, screen: Rect, open: &mut Sheet) {
     let _ = app;
     let ctx = ui.ctx().clone();
     scrim(&ctx, screen, open);
-    let safe = system_insets(&ctx);
     let land = landscape(screen);
+    let safe = system_insets(&ctx, land);
     let top_pad = top_padding(safe, land);
     let width = (screen.width() * 0.86).min(320.0 + safe.left);
     let area_id = if land {
@@ -1549,8 +1588,8 @@ fn page_ui(
     body: impl FnOnce(&mut App, &mut Ui),
 ) {
     let ctx = ui.ctx().clone();
-    let safe = system_insets(&ctx);
     let land = landscape(screen);
+    let safe = system_insets(&ctx, land);
     let top_pad = top_padding(safe, land);
     let area_id = if land {
         Id::new("mobile_page_land")
@@ -2834,4 +2873,49 @@ fn tail_of(text: &str, keep: usize) -> String {
     let mut out = String::from("\u{2026}");
     out.extend(text.chars().skip(count - keep));
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn safe(top: f32, cutout_top: f32, visible: bool) -> Safe {
+        Safe {
+            top,
+            cutout_top,
+            status_bar_visible: visible,
+            ..Safe::default()
+        }
+    }
+
+    #[test]
+    fn a_phone_on_its_side_keeps_the_bar_on_the_top_edge() {
+        // Bars hidden, the notch in the middle of an edge: nothing to clear.
+        assert_eq!(top_padding(safe(30.0, 0.0, false), true), 0.0);
+        // Bars hidden, but the cutout reaches the top edge: clear that much.
+        assert_eq!(top_padding(safe(30.0, 26.0, false), true), 26.0);
+        // The status bar still on screen is cleared, and a little more.
+        assert_eq!(top_padding(safe(30.0, 0.0, true), true), 36.0);
+        // A cutout taller than the status bar is not counted twice.
+        assert_eq!(top_padding(safe(26.0, 26.0, true), true), 26.0);
+    }
+
+    #[test]
+    fn a_phone_standing_up_uses_the_whole_top_inset() {
+        assert_eq!(top_padding(safe(28.0, 28.0, true), false), 28.0);
+        assert_eq!(top_padding(safe(0.0, 0.0, true), false), 0.0);
+    }
+
+    #[test]
+    fn the_camera_cutout_never_pushes_an_icon_sideways_on_its_side() {
+        let mut s = safe(0.0, 0.0, false);
+        s.left = 32.0;
+        s.right = 12.0;
+        // On its side the interface runs edge to edge, past the cutout.
+        let flat = edge_to_edge(s, true);
+        assert_eq!((flat.left, flat.right), (0.0, 0.0));
+        // Standing up the bars reach the edges the interface is drawn on.
+        let up = edge_to_edge(s, false);
+        assert_eq!((up.left, up.right), (32.0, 12.0));
+    }
 }

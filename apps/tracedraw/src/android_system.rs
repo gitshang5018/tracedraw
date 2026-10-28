@@ -39,6 +39,10 @@ pub struct Insets {
     pub left: i32,
     pub right: i32,
     pub status_bar_visible: bool,
+    /// How much of `top` the camera cutout alone accounts for: the status
+    /// bar adds nothing to it when it is hidden, so this is the room the
+    /// interface still owes the notch with no bar on screen.
+    pub cutout_top: i32,
 }
 
 /// Run `f` with the activity's JNI environment, on the calling thread.
@@ -193,7 +197,10 @@ pub fn read(activity: *mut c_void, vm: *mut c_void, sdk: i32) -> Option<Insets> 
             }
         }
 
-        // Measure DisplayCutout safely across API 28+
+        // Measure DisplayCutout safely across API 28+. The top of it is
+        // kept apart: with the status bar hidden the notch may still reach
+        // the top edge, and that is the only room the bar owes then.
+        let mut cutout_top = 0;
         if let Ok(val) = env.call_method(&insets, "getDisplayCutout", "()Landroid/view/DisplayCutout;", &[]) {
             if let Ok(cutout_obj) = val.l() {
                 if !cutout_obj.is_null() {
@@ -201,6 +208,7 @@ pub fn read(activity: *mut c_void, vm: *mut c_void, sdk: i32) -> Option<Insets> 
                     let ct = env.call_method(&cutout_obj, "getSafeInsetTop", "()I", &[]).ok().and_then(|v| v.i().ok()).unwrap_or(0);
                     let cr = env.call_method(&cutout_obj, "getSafeInsetRight", "()I", &[]).ok().and_then(|v| v.i().ok()).unwrap_or(0);
                     let cb = env.call_method(&cutout_obj, "getSafeInsetBottom", "()I", &[]).ok().and_then(|v| v.i().ok()).unwrap_or(0);
+                    cutout_top = ct;
                     left = left.max(cl);
                     top = top.max(ct);
                     right = right.max(cr);
@@ -236,6 +244,7 @@ pub fn read(activity: *mut c_void, vm: *mut c_void, sdk: i32) -> Option<Insets> 
             left,
             right,
             status_bar_visible,
+            cutout_top,
         })
     })
 }

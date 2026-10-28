@@ -43,7 +43,7 @@ on the desktop.
 A Material app draws edge to edge, and so does this one: the window covers
 the status bar and the gesture bar, the interface paints its own background
 behind them and keeps its buttons out of them. The heights come from the
-window itself (`android_insets.rs`, through the activity): Android 11 and
+window itself (`android_system.rs`, through the activity): Android 11 and
 later are asked for the insets of `systemBars | ime` and the window is put
 edge to edge with `setDecorFitsSystemWindows(false)`; older systems lay the
 window out below the bars already and nothing is added.
@@ -55,7 +55,23 @@ The icon colour of the bars follows the theme: dark icons on a light
 interface, light ones on a dark one (`setSystemBarsAppearance`).
 
 The insets are read again when the surface changes, so a rotation or the
-soft keyboard moves the bars with it.
+soft keyboard moves the bars with it. Hiding the bars changes them without
+touching the surface, so the request a reading was taken for is part of the
+reading, and one that still reports the status bar is taken again until the
+bars follow (up to forty frames, for a system that refuses): a stale
+reading would keep the top app bar pushed down for as long as the phone
+lies on its side.
+
+## On its side
+
+A phone on its side hides the system bars and draws edge to edge. The top
+app bar sits on the very top edge of the screen, and the camera cutout in
+the middle of a short edge is drawn over rather than kept clear of: the top
+bar and the two rails run straight past it, so no icon is pushed in from
+the edge and nothing is reserved beside it. The one room the bar still
+keeps is what the cutout takes from the top edge itself, which is nothing
+for a notch in the middle of an edge and its height for one in a corner. A
+status bar that the system declines to hide is cleared as usual.
 
 ## The drawer, the pages and the sheets
 
