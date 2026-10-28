@@ -29,6 +29,9 @@ use egui::{Color32, CornerRadius, Frame, Id, Rect, Response, Sense, Stroke, Ui, 
 const TOP_H: f32 = 64.0;
 /// The strip of tools above the navigation bar.
 const TOOLS_H: f32 = 72.0;
+/// The strip of properties above the tools, shown while something is
+/// selected: never shorter than this, taller when the bar's fields are.
+const SELECTION_H: f32 = 52.0;
 /// The navigation bar: four destinations.
 const NAV_H: f32 = 76.0;
 /// The tools rail down the left edge of a phone on its side.
@@ -430,14 +433,19 @@ pub fn frame(app: &mut App, ui: &mut Ui) -> bool {
     }
 
     top_bar(app, ui, &m3, inset, &mut open);
+    // The properties of what is selected sit above the bars, and take no
+    // room at all while nothing is selected.
+    let strip_h;
     if land {
         // On its side the phone keeps the tools down the left edge and
         // the destinations down the right one, out of the drawing's way.
         tools_rail(app, ui, &m3, inset);
         nav_rail(app, ui, &m3, inset, &mut open);
+        strip_h = selection_strip(app, ui, &m3, open);
     } else {
         nav_bar(app, ui, &m3, inset.bottom, &mut open);
         tools_bar(app, ui, &m3);
+        strip_h = selection_strip(app, ui, &m3, open);
     }
     // A group whose button was tapped or held floats its other tools over
     // the drawing, above the bars.
@@ -492,11 +500,11 @@ pub fn frame(app: &mut App, ui: &mut Ui) -> bool {
     } else if land {
         window.bottom() - inset.bottom
     } else {
-        window.bottom() - inset.bottom - NAV_H - TOOLS_H
+        window.bottom() - inset.bottom - NAV_H - TOOLS_H - strip_h
     };
     snackbar(app, ui, floor);
     if open == Sheet::Palette {
-        palette_float(app, &ctx, window, &m3, &mut open);
+        palette_float(app, &ctx, window, &m3, &mut open, strip_h);
     } else {
         // The card is not the one in front: the next opening starts over.
         ctx.data_mut(|d| d.remove::<u64>(Id::new("mobile_palette_since")));
@@ -677,6 +685,39 @@ fn top_bar(app: &mut App, ui: &mut Ui, m3: &M3, safe: Safe, open: &mut Sheet) {
                 }
             });
         });
+}
+
+/// The properties of what is selected, as a strip above the tools: a text
+/// brings its font and size, a connector the way it runs, a shape its
+/// outline, and the strip is swiped sideways for the rest of them. Nothing
+/// selected means no strip, and the drawing keeps the room. Returns the
+/// height it took, so the snackbar and the floating card stay above it.
+fn selection_strip(app: &mut App, ui: &mut Ui, m3: &M3, open: Sheet) -> f32 {
+    if open != Sheet::None || !app.drawing_shown() {
+        return 0.0;
+    }
+    if app.selected_rc().is_empty() && app.selected_guides.is_empty() {
+        return 0.0;
+    }
+    let shown = egui::Panel::bottom("mobile_selection")
+        .min_size(SELECTION_H)
+        .resizable(false)
+        .show_separator_line(false)
+        .frame(Frame::new().fill(m3.container))
+        .show(ui, |ui| {
+            egui::ScrollArea::horizontal()
+                .id_salt("mobile_selection_scroll")
+                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    Frame::new()
+                        .inner_margin(egui::Margin::symmetric(8, 6))
+                        .show(ui, |ui| {
+                            crate::ui::toolbar::property_bar(app, ui);
+                        });
+                });
+        });
+    shown.response.rect.height()
 }
 
 /// The tools as a strip of round targets, over the navigation bar.
@@ -2172,7 +2213,14 @@ fn palette_grids(app: &mut App, ui: &mut Ui) {
 /// The palettes as a card floating over the drawing, in the corner the
 /// tools are not in: a colour can be picked without losing sight of what
 /// it goes on. No scrim — the drawing stays live behind it.
-fn palette_float(app: &mut App, ctx: &egui::Context, screen: Rect, m3: &M3, open: &mut Sheet) {
+fn palette_float(
+    app: &mut App,
+    ctx: &egui::Context,
+    screen: Rect,
+    m3: &M3,
+    open: &mut Sheet,
+    strip: f32,
+) {
     let land = landscape(screen);
     let width = (screen.width() * 0.78).clamp(232.0, 360.0);
     let height = (screen.height() * 0.34).clamp(190.0, 300.0);
@@ -2186,7 +2234,7 @@ fn palette_float(app: &mut App, ctx: &egui::Context, screen: Rect, m3: &M3, open
         // Standing: above the tool strip, against the right edge.
         egui::pos2(
             screen.right() - width - 12.0,
-            screen.bottom() - NAV_H - TOOLS_H - height - 12.0,
+            screen.bottom() - NAV_H - TOOLS_H - strip - height - 12.0,
         )
     };
     let card = egui::Area::new(Id::new("mobile_palette_float"))
