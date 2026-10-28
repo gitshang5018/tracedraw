@@ -111,18 +111,17 @@ return 6 MB at most, while a static file is served by the CDN. A single
 page may be 25 MiB, so an APK over that (the x86_64 one, for emulators)
 stays on the release alone.
 
-The host carries the check itself as well: `update.json` beside the APKs
-names the newest build, the file of each ABI and its digest, and the app
-reads that before it asks GitHub at all (`updates::check`). A phone that can
-reach the host therefore needs nothing else, which is the point: the
-networks this host exists for cannot resolve GitHub. GitHub is asked
-(directly, then through the proxy) only when the host has no manifest to
-give. The manifest is asked for with a value that changes each time, since
-the host caches a page for a year, and it carries when the build was made
-(`"built"`, seconds since 1970, which `build.rs` bakes into the app as
-well): a host that is behind a build the phone already has offers nothing,
-since two development builds carry a commit each and nothing else says
-which came first.
+The host carries a manifest of its own as well: `update.json` beside the
+APKs names the newest build, the file of each ABI and its digest. The check
+reads the releases on GitHub first, directly and then through the proxy,
+because a release is written by the same run that builds it and the host is
+only as fresh as its last deployment; the manifest answers only when GitHub
+cannot be read at all (`updates::check`). It is asked for with a value that
+changes each time, since the host caches a page for a year, and it carries
+when the build was made (`"built"`, seconds since 1970, which `build.rs`
+bakes into the app as well): a host that is behind a build the phone already
+has offers nothing, since two development builds carry a commit each and
+nothing else says which came first.
 
 The version, the file name and the SHA-256 digest come from the manifest, or
 from the release when there is no manifest; either way a file that does not

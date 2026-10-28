@@ -459,19 +459,14 @@ fn parse_manifest(json: &str, current: &str, arch: &str) -> Result<Option<Releas
     }))
 }
 
-/// The whole check: the update host's manifest first, since a phone that
-/// can reach it needs no other source; the releases on GitHub (directly,
-/// then through the proxy) when the host has no manifest to give.
+/// The whole check: the releases on GitHub first (directly, then through
+/// the proxy), since they are the record of what exists and a release is
+/// written by the same run that builds it; the update host's manifest only
+/// when GitHub cannot be read, because the host is only as fresh as its
+/// last deployment, and one that failed leaves it behind.
 #[cfg(not(target_arch = "wasm32"))]
 fn check() -> Result<Option<Release>, String> {
-    if !APK_HOST.is_empty() {
-        let url = manifest_url(crate::recovery::now_secs());
-        match fetch_from(&url) {
-            Ok(json) => return parse_manifest(&json, version(), std::env::consts::ARCH),
-            Err(e) => log::debug!("the update host has no manifest: {e}"),
-        }
-    }
-    fetch().and_then(|json| {
+    let releases = fetch().and_then(|json| {
         parse_releases(
             &json,
             version(),
@@ -479,7 +474,20 @@ fn check() -> Result<Option<Release>, String> {
             std::env::consts::ARCH,
             current_kind(),
         )
-    })
+    });
+    match releases {
+        Ok(found) => Ok(found),
+        Err(releases) => {
+            if APK_HOST.is_empty() {
+                return Err(releases);
+            }
+            log::debug!("the releases could not be read ({releases}): asking the update host");
+            let url = manifest_url(crate::recovery::now_secs());
+            fetch_from(&url)
+                .and_then(|json| parse_manifest(&json, version(), std::env::consts::ARCH))
+                .map_err(|host| format!("{releases} (the update host: {host})"))
+        }
+    }
 }
 
 /// A check running in the background; its result lands in `state`.
@@ -866,7 +874,9 @@ fn fetch() -> Result<String, String> {
 fn fetch_from(url: &str) -> Result<String, String> {
     use ureq::tls::TlsConfig;
     let agent: ureq::Agent = ureq::Agent::config_builder()
-        .timeout_global(Some(std::time::Duration::from_secs(20)))
+        // A small answer: the three attempts of a check (GitHub, the proxy,
+        // the update host) have to fit in the box's patience.
+        .timeout_global(Some(std::time::Duration::from_secs(12)))
         .tls_config(
             TlsConfig::builder()
                 .root_certs(crate::net::roots())
