@@ -14,7 +14,8 @@ full, row-by-row status.
 - Installing an update on a phone: the installer now comes from the package manager (`getPackageManager().getPackageInstaller()`) instead of `getSystemService("package")`, which answered with nothing and stopped the install with "no package installer". A Java exception now reaches the box with what it said, so the next failure names its cause instead of reporting something missing.
 - 在手机上安装更新：Android 14 不允许可变 PendingIntent 携带隐式 Intent，`PendingIntent.getBroadcast` 因此抛出异常，安装框只显示「Java exception was thrown」。现在意图带上了本应用的包名，成为显式意图；并且抛出异常时读取异常自身的文字，失败会说明系统给出的原因，而不是那句话本身。
 - 在手机上安装更新时系统安装器不出现：应用提交的安装会话被系统接受，之后却什么也不发生。现在 Android 10 及以上改为把安装包写进下载目录，再用文件管理器点击 APK 时发送的同一个 VIEW 意图打开它，也就是手动安装走的那条路；更早的系统仍用安装会话。
-- 在手机上重新安装后读不到存储里的图纸：判断是否已获「所有文件访问」时，原来用 `is_dir()` 看共享存储，而没有授权时目录自身的属性仍然读得到，于是应用误以为已经授权，文件列表一片空白，也不再给出授权入口。现在改为实际列一次目录，列不出来就当作未授权，授权横幅会照常出现。
+- 在手机上重新安装后读不到存储里的图纸：判断是否已获「所有文件访问」时，原来用 `is_dir()` 看共享存储，而没有授权时目录自身的属性仍然读得到，于是应用误以为已经授权，文件列表一片空白，也不再给出授权入口。现在只信系统自己的回答 `isExternalStorageManager()`，未授权时授权横幅会照常出现。
+- 手机上的悬浮调色板：卡片圆角从 20 收到 12，阴影也一并收小，和菜单、对话框统一；标题栏和右上角的叉现在都能把卡片收起来（此前只能在卡片外点一下，点窗口本身没有反应）。同时把手机端的窗口圆角从 28 收到 14、菜单从 16 收到 10，Material 对话框也一起收敛，浮层之间的落差不再突兀。
 - The long-press menu on a phone keeps clear of the system bars: a phone draws edge to edge, so the menu could open under the status bar with its first rows unreachable. It now starts below it, and scrolls when it is taller than the room left.
 - Text on a phone: a text selected with the Pick tool puts the font list and the size first in the Properties strip, where a finger reaches them (the strip is scrolled sideways, and a drag over the fields does not scroll it), and the sheet carries an **Edit text** button, since a phone has no double click to remember.
 - 转曲保存 shows a progress bar while it runs: the pages are converted one a frame, so the bar moves and the interface keeps drawing, and the file is written once the bar reaches the end.

@@ -79,12 +79,12 @@ pub(crate) fn menu_popup_style(style: &mut egui::Style) {
     style.override_font_id = Some(egui::FontId::proportional(font_size()));
     if touch() {
         style.visuals.window_stroke = egui::Stroke::NONE;
-        style.visuals.menu_corner_radius = egui::CornerRadius::same(16);
+        style.visuals.menu_corner_radius = egui::CornerRadius::same(10);
         style.visuals.popup_shadow = egui::epaint::Shadow {
-            offset: [0, 8],
-            blur: 28,
-            spread: 2,
-            color: egui::Color32::from_black_alpha(80),
+            offset: [0, 3],
+            blur: 10,
+            spread: 0,
+            color: egui::Color32::from_black_alpha(44),
         };
         style.spacing.menu_margin = egui::Margin::same(6);
         style.spacing.item_spacing.y = 0.0;

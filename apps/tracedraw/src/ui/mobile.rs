@@ -588,13 +588,13 @@ fn touch_style(ctx: &egui::Context) {
             ] {
                 w.corner_radius = round;
             }
-            s.visuals.window_corner_radius = CornerRadius::same(28);
-            s.visuals.menu_corner_radius = CornerRadius::same(16);
+            s.visuals.window_corner_radius = CornerRadius::same(14);
+            s.visuals.menu_corner_radius = CornerRadius::same(10);
             s.visuals.popup_shadow = egui::epaint::Shadow {
-                offset: [0, 6],
-                blur: 24,
+                offset: [0, 3],
+                blur: 10,
                 spread: 0,
-                color: Color32::from_black_alpha(60),
+                color: Color32::from_black_alpha(44),
             };
         });
     }
@@ -2195,12 +2195,12 @@ fn palette_float(app: &mut App, ctx: &egui::Context, screen: Rect, m3: &M3, open
         .show(ctx, |ui| {
             Frame::new()
                 .fill(m3.surface)
-                .corner_radius(20.0)
+                .corner_radius(12.0)
                 .shadow(crate::theme::shadow(egui::epaint::Shadow {
-                    offset: [0, 8],
-                    blur: 28,
-                    spread: 2,
-                    color: Color32::from_black_alpha(80),
+                    offset: [0, 4],
+                    blur: 12,
+                    spread: 0,
+                    color: Color32::from_black_alpha(48),
                 }))
                 .inner_margin(egui::Margin {
                     left: 0,
@@ -2211,9 +2211,11 @@ fn palette_float(app: &mut App, ctx: &egui::Context, screen: Rect, m3: &M3, open
                 .show(ui, |ui| {
                     ui.set_width(width);
                     ui.set_min_height(height);
-                    // No close button: a tap anywhere else puts it away.
-                    let (row, _) =
-                        ui.allocate_exact_size(Vec2::new(width, 44.0), Sense::hover());
+                    // The title is the way out: a tap on it, or on the cross
+                    // beside it, puts the card away. A tap elsewhere on the
+                    // card picks a colour, so the header is what closes it.
+                    let (row, row_resp) =
+                        ui.allocate_exact_size(Vec2::new(width, 44.0), Sense::click());
                     ui.painter().text(
                         egui::pos2(row.left() + 16.0, row.center().y),
                         egui::Align2::LEFT_CENTER,
@@ -2221,6 +2223,21 @@ fn palette_float(app: &mut App, ctx: &egui::Context, screen: Rect, m3: &M3, open
                         crate::theme::bold(16.0),
                         m3.on,
                     );
+                    let close = Rect::from_center_size(
+                        egui::pos2(row.right() - 28.0, row.center().y),
+                        Vec2::splat(48.0),
+                    );
+                    let close_resp =
+                        ui.interact(close, Id::new("mobile_palette_close"), Sense::click());
+                    draw_glyph(
+                        ui,
+                        Rect::from_center_size(close.center(), Vec2::splat(ICON)),
+                        Glyph::Close,
+                        m3.on,
+                    );
+                    if row_resp.clicked() || close_resp.clicked() {
+                        *open = Sheet::None;
+                    }
                     egui::ScrollArea::vertical()
                         .id_salt("mobile_palette_scroll")
                         .max_height(height - 44.0)

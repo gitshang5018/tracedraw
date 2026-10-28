@@ -37,13 +37,14 @@ fn material(ctx: &Context) -> Option<M3> {
     crate::ui::mobile::active(ctx).then(M3::of)
 }
 
-/// The shadow under a Material dialog: a soft, wide lift off the drawing.
+/// The shadow under a Material dialog: a soft lift off the drawing, no
+/// wider than a menu's, so a card and a menu read as the same surface.
 fn dialog_shadow() -> egui::epaint::Shadow {
     crate::theme::shadow(egui::epaint::Shadow {
-        offset: [0, 6],
-        blur: 28,
-        spread: 2,
-        color: Color32::from_black_alpha(70),
+        offset: [0, 4],
+        blur: 14,
+        spread: 0,
+        color: Color32::from_black_alpha(52),
     })
 }
 
@@ -140,7 +141,7 @@ fn dialog_frame(m3: &Option<M3>) -> Frame {
     match m3 {
         Some(m3) => Frame::new()
             .fill(m3.surface)
-            .corner_radius(CornerRadius::same(28))
+            .corner_radius(CornerRadius::same(14))
             .shadow(dialog_shadow())
             .inner_margin(Margin::ZERO),
         None => Frame::new()
@@ -300,7 +301,7 @@ impl Window {
             .frame(
                 Frame::new()
                     .fill(m3.surface)
-                    .corner_radius(CornerRadius::same(28))
+                    .corner_radius(CornerRadius::same(14))
                     .shadow(dialog_shadow()),
             )
             .show(ctx, |ui| {
