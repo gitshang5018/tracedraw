@@ -27,6 +27,14 @@ enum Icon {
     To(AlignTo),
     Extent(DistributeTo),
     Outline,
+    /// 智能排布: blocks packed into rows.
+    Arrange,
+    /// 居中到页面: a page with a box in its middle.
+    CenterPage,
+    /// 全选文字: a T.
+    Text,
+    /// 全选形状: a square and a filled one.
+    Shapes,
 }
 
 /// Draws on a 16 x 16 grid in `r`, with x and y swapped when `swap` (the
@@ -248,6 +256,31 @@ fn paint(p: &Painter, r: Rect, icon: Icon, color: Color32) {
             pen.block(4.0, 4.0, 12.0, 12.0);
             pen.frame(4.0, 4.0, 12.0, 12.0, 2.2);
         }
+        Icon::Arrange => {
+            // Three blocks packed into two rows, the tall one first.
+            let pen = pen(false);
+            pen.block(1.5, 2.5, 8.0, 13.5);
+            pen.block(9.0, 2.5, 14.5, 7.0);
+            pen.block(9.0, 8.0, 14.5, 13.5);
+        }
+        Icon::CenterPage => {
+            // A page, and the box the selection makes in its middle.
+            let pen = pen(false);
+            pen.frame(2.0, 1.5, 14.0, 14.5, 1.1);
+            pen.block(5.5, 6.0, 10.5, 10.0);
+        }
+        Icon::Text => {
+            // A T: the crossbar and the stem.
+            let pen = pen(false);
+            pen.line(3.0, 4.0, 13.0, 4.0, 1.6);
+            pen.line(8.0, 4.0, 8.0, 13.0, 1.6);
+        }
+        Icon::Shapes => {
+            // A square and a filled one, the two kinds of object.
+            let pen = pen(false);
+            pen.frame(1.5, 4.5, 9.0, 12.0, 1.1);
+            pen.block(8.0, 2.0, 14.5, 8.5);
+        }
     }
 }
 
@@ -451,6 +484,16 @@ pub fn align_distribute(app: &mut App, ui: &mut Ui) {
 pub fn align_part(app: &mut App, ui: &mut Ui) {
     let two = app.selection.len() > 1;
     ui.spacing_mut().item_spacing.x = 2.0;
+    // 智能排布 and 居中 come before the edges, as they do in the floating
+    // toolbar of CorelDRAW: what is done to the set of objects first, then
+    // how they line up.
+    if bar_button(ui, Icon::Arrange, &tr("docker.smart_arrange"), two).clicked() {
+        app.arrange_selection();
+    }
+    if bar_button(ui, Icon::CenterPage, &tr("docker.center_page"), true).clicked() {
+        app.center_selection();
+    }
+    gap(ui);
     for (i, (key, a)) in [
         ("menu.object.align_left", Align::Left),
         ("menu.object.align_centers_v", Align::CenterV),
@@ -484,6 +527,14 @@ pub fn align_part(app: &mut App, ui: &mut Ui) {
                 app.distribute_with(d, to);
             }
         }
+    }
+    // Selecting by kind, as the same toolbar offers beside them.
+    gap(ui);
+    if bar_button(ui, Icon::Text, &tr("menu.edit.select_all_text"), true).clicked() {
+        app.select_all_of(|s| matches!(s.kind, tracedraw_core::document::ShapeKind::Text { .. }));
+    }
+    if bar_button(ui, Icon::Shapes, &tr("docker.select_shapes"), true).clicked() {
+        app.select_all_of(|s| !matches!(s.kind, tracedraw_core::document::ShapeKind::Text { .. }));
     }
 }
 

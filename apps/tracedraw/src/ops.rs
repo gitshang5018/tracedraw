@@ -153,6 +153,47 @@ impl App {
         }
     }
 
+    /// 智能排布: the selected objects packed into rows of their own, the
+    /// gaps between them evened out, the block left where the selection
+    /// was. Whole outlines are moved, never turned or fitted into each
+    /// other, so what comes out is what was drawn.
+    pub fn arrange_selection(&mut self) {
+        let shapes = self.selected_shapes();
+        if shapes.len() < 2 {
+            return;
+        }
+        let boxes: Vec<Rect> = shapes.iter().map(|s| self.align_box(s)).collect();
+        let sizes: Vec<(f64, f64)> = boxes.iter().map(|b| (b.width(), b.height())).collect();
+        let gap = self.units.world_from_mm(5.0).abs();
+        let (spots, _, _) = crate::arrange::shelf(&sizes, gap);
+        let left = boxes.iter().fold(f64::MAX, |m, b| m.min(b.x0));
+        let top = boxes.iter().fold(f64::MIN, |m, b| m.max(b.y1));
+        let mut cmds = Vec::new();
+        for ((s, b), (x, y)) in shapes.iter().zip(&boxes).zip(&spots) {
+            let d = Vec2::new(left + x - b.x0, top - y - b.y1);
+            if d.hypot() > 1e-9 {
+                cmds.push(Command::TransformShapes {
+                    shapes: vec![s.id],
+                    transform: Affine::translate(d),
+                });
+            }
+        }
+        if !cmds.is_empty() {
+            let _ = self.run_batch_keeping_lines("Smart arrange", &cmds);
+        }
+    }
+
+    /// The selection as a whole, centred on the page.
+    pub fn center_selection(&mut self) {
+        let Some(b) = self.selection_bounds() else {
+            return;
+        };
+        let d = self.page_rect().center() - b.center();
+        if d.hypot() > 1e-9 {
+            self.transform_selection(Affine::translate(d));
+        }
+    }
+
     /// Distribute between the outermost selected objects (the menu).
     pub fn distribute(&mut self, how: Distribute) {
         self.distribute_with(how, DistributeTo::Selection);

@@ -21,6 +21,7 @@ full, row-by-row status.
 - 手机上弹出输入法时，工具栏、导航栏和选中对象的属性栏整体上移到键盘上方，不再被键盘盖住。键盘弹出不会让窗口变小，所以应用现在每帧读取输入法占用的高度，用它垫出一条等高的空白。
 - 手机上的属性栏与输入法：键盘弹出时只有属性栏浮到键盘上方，工具栏和导航栏留在原位；输入尺寸时键盘不再一弹出就消失（焦点在换帧时抖一下不再被当成离开输入框）；在多个尺寸框之间来回切换时，每个新输入框都会重新请出输入法。
 - 手机上选中多个对象时，属性栏先给出针对整个选区的命令：两个对象是六个对齐方式，三个及以上再加四种分布方式，之后才是单个对象的字段与轮廓。分档方式取自 CdrQrDocker 的悬浮工具条（multi2 / multi3 两档，选区里全是文字时另加文字对齐）。
+- 属性栏多选时再加两条作用于整个选区的命令：智能排布把选中的对象按行紧凑重排（自己的算法：高的先入行，行宽取摆出来最方正的那一种，只挪外框不旋转不嵌合），居中把整个选区放到页面中心；旁边还有全选文字、全选形状两个按钮。对应 CdrQrDocker 悬浮工具条里的智能优排、居中与按类型选择。
 - The long-press menu on a phone keeps clear of the system bars: a phone draws edge to edge, so the menu could open under the status bar with its first rows unreachable. It now starts below it, and scrolls when it is taller than the room left.
 - Text on a phone: a text selected with the Pick tool puts the font list and the size first in the Properties strip, where a finger reaches them (the strip is scrolled sideways, and a drag over the fields does not scroll it), and the sheet carries an **Edit text** button, since a phone has no double click to remember.
 - 转曲保存 shows a progress bar while it runs: the pages are converted one a frame, so the bar moves and the interface keeps drawing, and the file is written once the bar reaches the end.
