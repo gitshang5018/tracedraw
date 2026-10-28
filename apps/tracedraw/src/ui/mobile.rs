@@ -1111,7 +1111,7 @@ fn paint_chip(ui: &Ui, m3: &M3, rect: Rect, text: &str, hovered: bool) {
 }
 
 /// A name cut to what a narrow bar holds, with a mark that it was cut.
-fn elide(text: &str, keep: usize) -> String {
+pub(crate) fn elide(text: &str, keep: usize) -> String {
     if text.chars().count() <= keep {
         return text.to_string();
     }
@@ -1147,7 +1147,7 @@ fn nav_bar(app: &mut App, ui: &mut Ui, m3: &M3, bottom: f32, open: &mut Sheet) {
                         // The commands the floating toolbar of CorelDRAW
                         // carries: what is done to the set of objects, how
                         // they line up, and what is selected by kind.
-                        crate::ui::align_docker::align_part(app, ui, true);
+                        crate::ui::align_docker::align_part(app, ui);
                         ui.add_space(4.0);
                     });
                 });

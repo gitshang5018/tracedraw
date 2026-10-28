@@ -500,15 +500,11 @@ pub fn align_distribute(app: &mut App, ui: &mut Ui) {
 /// two objects, and the four ways to space them out once there are three.
 /// Two objects can be aligned but not distributed, which is what the
 /// floating toolbar of CorelDRAW offers as well.
-pub fn align_part(app: &mut App, ui: &mut Ui, big: bool) {
+pub fn align_part(app: &mut App, ui: &mut Ui) {
     let two = app.selection.len() > 1;
     let three = app.selection.len() > 2;
-    let put = |ui: &mut Ui, icon: Icon, tip: &str, enabled: bool| -> Response {
-        if big {
-            button(ui, icon, tip, enabled, false)
-        } else {
-            bar_button(ui, icon, tip, enabled)
-        }
+    let put = |ui: &mut Ui, icon: Icon, label: &str, enabled: bool| -> Response {
+        nav_command(ui, icon, label, enabled)
     };
     ui.spacing_mut().item_spacing.x = 2.0;
     // 智能排布 and 居中 come before the edges, as they do in the floating
@@ -574,23 +570,28 @@ pub fn align_part(app: &mut App, ui: &mut Ui, big: bool) {
     }
 }
 
-/// A button at the property bar's own size: the bar's rows are short, so
-/// the picture is the 16 the bar draws everywhere else.
-fn bar_button(ui: &mut Ui, icon: Icon, tip: &str, enabled: bool) -> Response {
+/// A command of the bottom bar: the picture with its name under it, the
+/// way the destinations beside it are drawn. The name is cut to what the
+/// width holds, and the whole name is in the tip.
+fn nav_command(ui: &mut Ui, icon: Icon, label: &str, enabled: bool) -> Response {
     let (rect, resp) = ui.allocate_exact_size(
-        Vec2::new(22.0, 20.0),
+        Vec2::new(66.0, 58.0),
         if enabled {
             Sense::click()
         } else {
             Sense::hover()
         },
     );
-    if enabled && resp.hovered() {
-        ui.painter().rect_filled(rect, 2.0, Tokens::tool_hover());
+    if enabled && (resp.hovered() || resp.is_pointer_button_down_on()) {
+        let pill = Rect::from_center_size(rect.center(), Vec2::new(56.0, 50.0));
+        ui.painter().rect_filled(pill, 12.0, Tokens::tool_hover());
     }
     paint(
         ui.painter(),
-        Rect::from_center_size(rect.center(), Vec2::splat(16.0)),
+        Rect::from_center_size(
+            egui::pos2(rect.center().x, rect.top() + 21.0),
+            Vec2::splat(22.0),
+        ),
         icon,
         if enabled {
             Tokens::icon()
@@ -598,7 +599,18 @@ fn bar_button(ui: &mut Ui, icon: Icon, tip: &str, enabled: bool) -> Response {
             Tokens::icon_off()
         },
     );
-    resp.rich_tip(tip)
+    ui.painter().text(
+        egui::pos2(rect.center().x, rect.top() + 45.0),
+        egui::Align2::CENTER_CENTER,
+        crate::ui::mobile::elide(label, 5),
+        egui::FontId::proportional(11.0),
+        if enabled {
+            Tokens::text()
+        } else {
+            Tokens::text_dim()
+        },
+    );
+    resp.rich_tip(label)
 }
 
 #[cfg(test)]
