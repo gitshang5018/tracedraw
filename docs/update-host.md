@@ -39,9 +39,14 @@ The manifest names the newest build and its files:
 reader is sent when there is no file to install (empty: the releases page);
 an asset is taken only when its name ends in `-android-<abi>.apk` for this
 phone's processor, and it is offered for an install in place only when it
-carries a size and a SHA-256 of 64 hex digits. The workflow writes `built`
-(seconds since 1970) as well, and `build.rs` bakes the same kind of time
-into the app.
+carries a size and a SHA-256 of 64 hex digits.
+
+`built` (seconds since 1970, written by the workflow) is compared with the
+time `build.rs` baked into the running build: a manifest that names a build
+no newer than that one is ignored, however its version reads. Two
+development builds carry a commit each, so the time is what says which came
+first. A manifest without `built`, which is what a host filled by an older
+workflow answers, is taken at its version.
 
 The address is fixed at build time. Changing `UPDATE_HOST` has no effect on
 a phone until it has installed a build made after the change.

@@ -400,6 +400,11 @@ pub fn parse_releases(
 #[derive(Deserialize)]
 struct Manifest {
     version: String,
+    /// When the build this manifest names was made, seconds since 1970, as
+    /// the workflow writes it. Zero when the host does not say, which is
+    /// what every manifest written before the field existed answers.
+    #[serde(default)]
+    built: u64,
     #[serde(default)]
     page: String,
     #[serde(default)]
@@ -424,12 +429,30 @@ pub fn manifest_url(now: u64) -> String {
     format!("{APK_HOST}/update.json?t={now}")
 }
 
+/// When this build was made, seconds since 1970, or zero when the build
+/// does not know (one made before `build.rs` wrote the time down).
+#[cfg(not(target_arch = "wasm32"))]
+fn built_at() -> u64 {
+    option_env!("TRACEDRAW_BUILD_TIME")
+        .and_then(|t| t.trim().parse::<u64>().ok())
+        .unwrap_or(0)
+}
+
 /// Read the host's answer: the release when its version is newer than
 /// `current` and it carries the APK of this phone's ABI.
 #[cfg(not(target_arch = "wasm32"))]
 fn parse_manifest(json: &str, current: &str, arch: &str) -> Result<Option<Release>, String> {
     let m: Manifest = serde_json::from_str(json).map_err(|e| e.to_string())?;
     if !is_newer(&m.version, current) {
+        return Ok(None);
+    }
+    // A host that is behind the build this phone already has offers
+    // nothing, however its version reads: two development builds carry a
+    // commit each, and the time they were made is the only thing that says
+    // which came first. A host that does not say when its build was made,
+    // or a build that does not know its own time, is taken at its version.
+    let made = built_at();
+    if made > 0 && m.built > 0 && m.built <= made {
         return Ok(None);
     }
     let Some(abi) = android_abi(arch) else {
@@ -1149,6 +1172,13 @@ mod tests {
         // nothing, however its version reads.
         let stale = json.replace("\"built\": 9999999999", "\"built\": 1");
         assert_eq!(parse_manifest(&stale, "0.4.0", "aarch64"), Ok(None));
+        // A host that does not say when its build was made is taken at its
+        // version, which is what a manifest written before the field
+        // existed answers.
+        let untimed = json.replace("\"built\": 9999999999,", "");
+        assert!(parse_manifest(&untimed, "0.4.0", "aarch64")
+            .expect("parses")
+            .is_some());
         // The manifest is asked for with a value that changes each time, or
         // the host would keep answering with the build before.
         assert_ne!(manifest_url(1), manifest_url(2));
