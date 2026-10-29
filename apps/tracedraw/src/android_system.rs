@@ -607,26 +607,25 @@ fn open_field(vm: *mut c_void, activity: *mut c_void) -> Result<(), String> {
         // be a second place to type: the keyboard keeps the focus of
         // whichever view it saw last, and the app reads only one of them,
         // so the keys would land nowhere it can see.
-        // The lock is held for the read alone: the field it hands back is
-        // its own, so the guard goes before the field is used.
-        let kept = {
-            let guard = lock(&FIELD);
-            guard.as_ref().map(|g| g.as_obj().clone())
-        };
-        if let Some(field) = kept {
+        // The field itself is taken out of the lock, not a borrow of it:
+        // a reference into the guard would end with the guard, and the
+        // field is used well past it.
+        let kept = lock(&FIELD).clone();
+        if let Some(field) = kept.as_ref() {
+            let obj = field.as_obj();
             // A field the window no longer holds cannot take the focus, and
             // the ask for a keyboard over it answers nothing for as long as
             // it is kept: the view goes, and a new one is made below.
             let attached = env
-                .call_method(&field, "isAttachedToWindow", "()Z", &[])
+                .call_method(obj, "isAttachedToWindow", "()Z", &[])
                 .ok()
                 .and_then(|v| v.z().ok())
                 .unwrap_or(false);
             if attached {
                 // Its text is left as it was: emptying it would read as a
                 // run of backspaces to the frame that diffs it.
-                let _ = env.call_method(&field, "requestFocus", "()Z", &[]);
-                let shown = show_soft_input(env, &activity, &field);
+                let _ = env.call_method(obj, "requestFocus", "()Z", &[]);
+                let shown = show_soft_input(env, &activity, obj);
                 log::info!("keyboard over the field already there: shown {shown}");
                 return Some(());
             }
@@ -634,7 +633,7 @@ fn open_field(vm: *mut c_void, activity: *mut c_void) -> Result<(), String> {
                 &decor,
                 "removeView",
                 "(Landroid/view/View;)V",
-                &[JValue::Object(&field)],
+                &[JValue::Object(obj)],
             );
             *lock(&FIELD) = None;
             lock(&TYPED).clear();
