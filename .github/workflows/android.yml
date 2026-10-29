@@ -272,8 +272,12 @@ jobs:
           } > dist/update.json
           cat dist/update.json
           # The bucket keeps the newest build only: the check always offers
-          # it, and an older APK is of no use to anyone.
-          aws s3 rm "s3://${R2_BUCKET}/" --recursive --endpoint-url "$endpoint" || true
+          # it, and an older APK is of no use to anyone. `models/` stays
+          # though: the image tools' models are long-lived files put there
+          # by hand, not part of a build, and clearing the whole bucket
+          # swept them away with the APK of the run before.
+          aws s3 rm "s3://${R2_BUCKET}/" --recursive --exclude "models/*" \
+            --endpoint-url "$endpoint" || true
           # Each file goes up with the type it is, rather than the type its
           # name suggests: a phone's browser must offer an APK as a file to
           # install instead of showing it as text, and a manifest served as
