@@ -16,10 +16,39 @@ pub mod param;
 use image::RgbaImage;
 use std::path::Path;
 
-/// The side of a tile, in pixels of the picture being enlarged.
-const TILE: usize = 160;
+/// The side of a tile, in pixels of the picture being enlarged. A tile is
+/// a whole network's worth of feature maps, so it cannot be large; it is
+/// as large as a phone's memory takes, since every tile costs a dispatch
+/// of a thousand layers and a wait of its own.
+const TILE: usize = 224;
 /// What a tile carries beyond its own side, thrown away at the join.
 const MARGIN: usize = 12;
+
+/// The model read last, kept: reading it again for every picture costs
+/// more than the picture does, since the weights have to be read, turned
+/// and put on the card each time.
+static LOADED: std::sync::Mutex<Option<(String, std::sync::Arc<Upscaler>)>> =
+    std::sync::Mutex::new(None);
+
+/// The model named `key`, read from `dir` the first time and kept after.
+pub fn loaded(dir: &Path, key: &str) -> Result<std::sync::Arc<Upscaler>, String> {
+    {
+        let held = LOADED
+            .lock()
+            .map_err(|_| "the model cache was poisoned".to_string())?;
+        if let Some((name, up)) = held.as_ref() {
+            if name == key {
+                return Ok(up.clone());
+            }
+        }
+    }
+    let up = std::sync::Arc::new(Upscaler::load(dir, key)?);
+    let mut held = LOADED
+        .lock()
+        .map_err(|_| "the model cache was poisoned".to_string())?;
+    *held = Some((key.to_string(), up.clone()));
+    Ok(up)
+}
 
 /// A model read from its `.param` and `.bin`, ready to run.
 pub struct Upscaler {
@@ -133,6 +162,7 @@ impl Upscaler {
         if out_w.saturating_mul(out_h) > 64_000_000 {
             return Err("the enlarged picture would be too big".to_string());
         }
+        let started = std::time::Instant::now();
         let mut out = RgbaImage::new(out_w as u32, out_h as u32);
         let tiles_x = (w + TILE - 1) / TILE;
         let tiles_y = (h + TILE - 1) / TILE;
@@ -206,6 +236,13 @@ impl Upscaler {
                 }
             }
         }
+        log::error!(
+            "upscale: {} tiles of {} px in {} ms on the {}",
+            total,
+            TILE,
+            started.elapsed().as_millis(),
+            if self.on_card() { "card" } else { "processor" }
+        );
         Ok(out)
     }
 }

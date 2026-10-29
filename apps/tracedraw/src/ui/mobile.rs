@@ -1530,7 +1530,7 @@ fn upscale_start(app: &mut App, ctx: &egui::Context, model: &crate::ai_tools::Mo
     let worker = ctx.clone();
     std::thread::spawn(move || {
         let outcome = (|| -> Result<image::RgbaImage, String> {
-            let up = crate::upscale::Upscaler::load(&dir, &key)?;
+            let up = crate::upscale::loaded(&dir, &key)?;
             worker.data_mut(|d| {
                 d.insert_temp(Id::new("upscale_card"), up.on_card());
                 if let Some(why) = &up.card_error {
