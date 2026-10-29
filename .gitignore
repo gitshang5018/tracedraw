@@ -9,3 +9,6 @@
 
 # The folder zipped for a direct upload to EdgeOne.
 edgeone/*.zip
+
+# The emulator this repository is tested with.
+/.avd/
