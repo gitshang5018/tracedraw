@@ -383,7 +383,6 @@ pub fn web_main() {
 /// made by the system, and nothing to size).
 #[cfg(target_os = "android")]
 pub fn android_run(android_app: winit::platform::android::activity::AndroidApp) -> eframe::Result<()> {
-    startup_log::init();
     tracedraw_text::install();
     // The app's own folders: preferences, logs, autosaves, and the
     // documents the file list of `files.rs` shows. A phone grants no
@@ -401,6 +400,9 @@ pub fn android_run(android_app: winit::platform::android::activity::AndroidApp) 
     let shared = android_system::shared_drawing(&android_app, &documents);
     settings::set_android_folders(config, documents.clone());
     files::set_android_documents(documents);
+    // The log comes after the folders are known: it goes in one of them, and
+    // started before that it had no folder to go in and wrote nothing at all.
+    startup_log::init();
     // The folder the phone saves to, once it lets the app see the storage:
     // drawings and fonts both live there, and the grant is often already in
     // place at start.
