@@ -174,6 +174,7 @@ mod tools2;
 mod trace;
 mod ui;
 mod updates;
+mod upscale;
 mod variable_outline;
 mod vector_mosaic;
 mod view;

@@ -6524,6 +6524,8 @@ ai.upscale_hint = "Увеличивает выбранное изображен�
 ai.upscale_scale = "Размер"
 ai.upscale_x4 = "4x, без потери резкости"
 ai.upscale_run = "Увеличить"
-ai.upscale_pending = "Модель готова; само увеличение появится в следующей сборке."
 ai.upscale_ultrasharp = "UltraSharp 4x"
 ai.upscale_digital_art = "Digital Art 4x"
+
+ai.need_picture = "Сначала выберите изображение."
+ai.upscale_done = "Увеличено в четыре раза."

@@ -1299,6 +1299,9 @@ fn matting_sheet(app: &mut App, ui: &mut Ui, m3: &M3) {
 /// its size with it.
 fn upscale_sheet(app: &mut App, ui: &mut Ui, m3: &M3) {
     let ctx = ui.ctx().clone();
+    // An enlargement that finished since the last frame goes in first, so
+    // the panel below is drawn over the picture it made.
+    upscale_apply(app, &ctx);
     let mut st = ai_state(&ctx);
     ui.label(
         egui::RichText::new(tr("ai.upscale_hint"))
@@ -1314,6 +1317,20 @@ fn upscale_sheet(app: &mut App, ui: &mut Ui, m3: &M3) {
     property_label(ui, m3, &tr("ai.upscale_scale"));
     ui.label(egui::RichText::new(tr("ai.upscale_x4")).size(13.0).color(m3.on));
     ui.add_space(10.0);
+    // A picture already being enlarged says so, tile by tile.
+    if let Some((done, total)) = ctx.data(|d| d.get_temp::<(usize, usize)>(Id::new("upscale_progress"))) {
+        let share = if total > 0 {
+            done as f32 / total as f32
+        } else {
+            0.0
+        };
+        ui.add(egui::ProgressBar::new(share).text(format!("{done} / {total}")));
+        ui.add_space(8.0);
+    }
+    if let Some(e) = ctx.data(|d| d.get_temp::<String>(Id::new("upscale_error"))) {
+        ui.label(egui::RichText::new(elide(&e, 80)).size(11.5).color(m3.variant));
+        ui.add_space(6.0);
+    }
     let model = crate::ai_tools::UPSCALE.get(st.upscale).copied();
     let ready = model.map(crate::ai_tools::ready).unwrap_or(false);
     let label = if ready {
@@ -1324,13 +1341,99 @@ fn upscale_sheet(app: &mut App, ui: &mut Ui, m3: &M3) {
     if action_chip(ui, m3, &label).clicked() {
         if let Some(model) = model {
             if ready {
-                app.status = tr("ai.upscale_pending");
+                upscale_start(app, &ctx, &model);
             } else {
                 crate::ai_tools::download(&ctx, &model);
             }
         }
     }
     save_ai_state(&ctx, &st);
+}
+
+/// Start enlarging the selected picture on a thread of its own: a thousand
+/// layers over a phone's picture takes a while, and the sheet has to stay
+/// live while it runs. The result waits in the context until the next frame
+/// puts it in place.
+fn upscale_start(app: &mut App, ctx: &egui::Context, model: &crate::ai_tools::Model) {
+    let Some(id) = app.selected_bitmap() else {
+        app.status = tr("ai.need_picture");
+        return;
+    };
+    let Some((_, _, _, _, png)) = app
+        .bitmap_shapes()
+        .into_iter()
+        .find(|(shape, ..)| *shape == id)
+    else {
+        app.status = tr("ai.need_picture");
+        return;
+    };
+    let Some(dir) = crate::ai_tools::dir() else {
+        return;
+    };
+    if ctx
+        .data(|d| d.get_temp::<(usize, usize)>(Id::new("upscale_progress")))
+        .is_some()
+    {
+        return;
+    }
+    ctx.data_mut(|d| {
+        d.remove::<image::RgbaImage>(Id::new("upscale_done"));
+        d.remove::<String>(Id::new("upscale_error"));
+        d.insert_temp(Id::new("upscale_progress"), (0usize, 1usize));
+        d.insert_temp(Id::new("upscale_shape"), id);
+    });
+    let key = model.key.to_string();
+    let worker = ctx.clone();
+    std::thread::spawn(move || {
+        let outcome = (|| -> Result<image::RgbaImage, String> {
+            let up = crate::upscale::Upscaler::load(&dir, &key)?;
+            let img = crate::bitmap_fx::decode(&png).ok_or("the picture could not be read")?;
+            let mut last = 0usize;
+            up.run(&img, &mut |done, total| {
+                if done != last {
+                    last = done;
+                    worker.data_mut(|d| d.insert_temp(Id::new("upscale_progress"), (done, total)));
+                    worker.request_repaint();
+                }
+            })
+        })();
+        worker.data_mut(|d| {
+            d.remove::<(usize, usize)>(Id::new("upscale_progress"));
+            match outcome {
+                Ok(img) => {
+                    d.insert_temp(Id::new("upscale_done"), img);
+                }
+                Err(e) => {
+                    d.insert_temp(Id::new("upscale_error"), e);
+                }
+            }
+        });
+        worker.request_repaint();
+    });
+}
+
+/// Put an enlarged picture where the one it came from was, once the thread
+/// that made it has finished.
+fn upscale_apply(app: &mut App, ctx: &egui::Context) {
+    let Some(img) = ctx.data(|d| d.get_temp::<image::RgbaImage>(Id::new("upscale_done"))) else {
+        return;
+    };
+    let id = ctx.data(|d| {
+        d.get_temp::<tracedraw_core::ShapeId>(Id::new("upscale_shape"))
+    });
+    ctx.data_mut(|d| {
+        d.remove::<image::RgbaImage>(Id::new("upscale_done"));
+        d.remove::<tracedraw_core::ShapeId>(Id::new("upscale_shape"));
+    });
+    let Some(id) = id else { return };
+    if let Some((_, rect, ..)) = app
+        .bitmap_shapes()
+        .into_iter()
+        .find(|(shape, ..)| *shape == id)
+    {
+        app.replace_bitmap(id, rect, &img);
+        app.status = tr("ai.upscale_done");
+    }
 }
 
 /// Variable data: the desktop's Print Merge panel, a copy of the drawing a

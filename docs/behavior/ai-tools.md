@@ -34,11 +34,34 @@ Two models only, both 4x: UltraSharp for photographs, Digital Art for
 illustrations. The size is fixed at four times; there is no half step,
 since neither model was trained for one.
 
-The panel fetches the model it is told to. The upscaling itself reads the
-NCNN model (`.param` is the network as text, `.bin` the weights, layer after
-layer in the order the `.param` names them) with no C++ runtime, so the
-build stays Rust only and still compiles for the browser. Until that pass is
-wired up the panel says so rather than pretending: `ai.upscale_pending`.
+The upscaling itself reads the NCNN model with no C++ runtime, so the build
+stays Rust only and still compiles for the browser (`upscale/`):
+
+- `param.rs` reads the `.param` (one layer to a line: its type, its name,
+  how many blobs it reads and writes, their names, then `key=value` pairs,
+  where a key may be negative and a value may be a list) and the `.bin`.
+  **The weights are `f16`, not `f32`**, with a four byte mark before each
+  layer's weights and a single precision bias after them; which layout a
+  file is in is not written anywhere, so it is told by the reading that
+  ends exactly at the end of the file. Both models in the bucket check out
+  to the byte.
+- `net.rs` runs the layers the upscalers use: a convolution with its own
+  activation (`9=2` is a leaky ReLU whose slope is `-23310`), a split, a
+  concat, an element-wise add and a nearest resize. The add is **weighted**
+  when the layer gives coefficients (`-23301=2,0.2,1.0`): an upscaler's
+  residual block adds its own input back at a fifth, and adding it whole
+  turns the picture to mud. Feature maps are dropped as soon as nothing
+  reads them again, which a thousand layers need.
+- `mod.rs` cuts the picture into 160 pixel tiles, each carried 12 pixels
+  beyond its own edge so the seams have something to read, and throws the
+  margin away at the join. The alpha channel is enlarged on its own with a
+  smooth filter, so a picture cut out of its background keeps the cut.
+
+The network reads colour in `[0,1]` and writes the same; nothing is
+normalised by a mean or a standard deviation, which is what Real-ESRGAN
+does. A phone runs a tile in seconds, so a large picture takes a while: the
+panel shows the tiles as they finish, and the work is on a thread of its
+own, so the sheet stays live.
 
 ## Variable data
 

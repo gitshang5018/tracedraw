@@ -6524,6 +6524,8 @@ ai.upscale_hint = "নির্বাচিত ছবি চার গুণ ব
 ai.upscale_scale = "আকার"
 ai.upscale_x4 = "4x, স্পষ্ট থাকে"
 ai.upscale_run = "আপস্কেল"
-ai.upscale_pending = "মডেল প্রস্তুত; আপস্কেল পরের বিল্ডে যুক্ত হবে।"
 ai.upscale_ultrasharp = "UltraSharp 4x"
 ai.upscale_digital_art = "Digital Art 4x"
+
+ai.need_picture = "আগে একটি ছবি নির্বাচন করুন।"
+ai.upscale_done = "চার গুণ বড় করা হয়েছে।"
