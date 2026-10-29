@@ -66,11 +66,14 @@ fn device() -> Option<&'static Gpu> {
 /// A device of this build's own, on the fastest adapter there is.
 #[cfg(not(target_arch = "wasm32"))]
 fn made_here() -> Option<Gpu> {
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::default());
+    // No display handle: this instance never draws anything, it only
+    // computes, so it needs no window to be presentable to.
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
         power_preference: wgpu::PowerPreference::HighPerformance,
         compatible_surface: None,
         force_fallback_adapter: false,
+        ..Default::default()
     }))
     .map_err(|e| log::info!("upscaling: no graphics card to make a device on: {e}"))
     .ok()?;
