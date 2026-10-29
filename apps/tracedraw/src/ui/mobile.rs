@@ -109,6 +109,12 @@ pub enum Sheet {
     Drawings,
     /// The other tools of toolbox group `n`.
     Tools(usize),
+    /// The chip at the left edge: the background taken out of a picture.
+    Matting,
+    /// The chip at the left edge: a picture made four times its size.
+    Upscale,
+    /// The chip at the left edge: one drawing filled from a table.
+    Variable,
 }
 
 /// Whether the interface is laid out for a phone: always in the Android
@@ -520,6 +526,7 @@ pub fn frame(app: &mut App, ui: &mut Ui) -> bool {
                 // view is.
                 crate::ui::drawing_window_bare(app, ui, full);
                 view_chips(app, ui, &m3, full, &mut open);
+                ai_chip(app, ui, &m3, full, &mut open);
             });
     }
 
@@ -1110,6 +1117,229 @@ fn paint_chip(ui: &Ui, m3: &M3, rect: Rect, text: &str, hovered: bool) {
     );
 }
 
+// ---------------------------------------------------------------------------
+// The image tools at the left edge
+// ---------------------------------------------------------------------------
+
+/// What the three panels hold, kept while they are closed.
+fn ai_state(ctx: &egui::Context) -> crate::ai_tools::AiTools {
+    ctx.data(|d| d.get_temp(Id::new("ai_tools_state")))
+        .unwrap_or_default()
+}
+
+fn save_ai_state(ctx: &egui::Context, st: &crate::ai_tools::AiTools) {
+    ctx.data_mut(|d| d.insert_temp(Id::new("ai_tools_state"), st.clone()));
+}
+
+/// A size in bytes, as a panel says it.
+fn size_text(bytes: u64) -> String {
+    let mb = bytes as f64 / (1024.0 * 1024.0);
+    if mb >= 1.0 {
+        format!("{mb:.1} MB")
+    } else {
+        format!("{:.0} KB", bytes as f64 / 1024.0)
+    }
+}
+
+/// The chip at the left edge over the drawing: the three image tools whose
+/// models the project's bucket serves. A tap opens them just above it, and
+/// one of the three opens its own sheet.
+fn ai_chip(app: &mut App, ui: &mut Ui, m3: &M3, full: Rect, open: &mut Sheet) {
+    let rect = Rect::from_min_max(
+        egui::pos2(full.left() + 16.0, full.bottom() - 52.0),
+        egui::pos2(full.left() + 92.0, full.bottom() - 16.0),
+    );
+    let resp = ui.interact(rect, Id::new("mobile_ai_chip"), Sense::click());
+    paint_chip(ui, m3, rect, &tr("ai.tools"), resp.hovered());
+    let menu_key = Id::new("mobile_ai_menu");
+    let mut shown: bool = ui.ctx().data(|d| d.get_temp(menu_key)).unwrap_or(false);
+    if resp.clicked() {
+        shown = !shown;
+        ui.ctx().data_mut(|d| d.insert_temp(menu_key, shown));
+    }
+    if !shown {
+        return;
+    }
+    let items = [
+        (Sheet::Matting, "ai.matting"),
+        (Sheet::Upscale, "ai.upscale"),
+        (Sheet::Variable, "ai.variable"),
+    ];
+    let row = 44.0;
+    let height = row * items.len() as f32 + 12.0;
+    let top = (rect.top() - height - 8.0).max(full.top() + 8.0);
+    let ctx = ui.ctx().clone();
+    egui::Area::new(Id::new("mobile_ai_menu_area"))
+        .order(egui::Order::Foreground)
+        .fixed_pos(egui::pos2(rect.left(), top))
+        .show(&ctx, |ui| {
+            Frame::new()
+                .fill(m3.surface)
+                .corner_radius(16.0)
+                .inner_margin(egui::Margin::symmetric(8, 6))
+                .show(ui, |ui| {
+                    ui.set_width(136.0);
+                    for (sheet, label) in items {
+                        let text = egui::RichText::new(tr(label)).size(14.0).color(m3.on);
+                        let button = egui::Button::new(text)
+                            .corner_radius(12.0)
+                            .fill(m3.container)
+                            .min_size(Vec2::new(120.0, row - 8.0));
+                        if ui.add(button).clicked() {
+                            *open = sheet;
+                            ui.ctx().data_mut(|d| d.insert_temp(menu_key, false));
+                        }
+                    }
+                });
+        });
+}
+
+/// One model of a panel: the choice, what it is doing, and the way to fetch
+/// it. The choice is a row of its own, a finger tall.
+fn model_choice(
+    ui: &mut Ui,
+    m3: &M3,
+    model: &crate::ai_tools::Model,
+    chosen: bool,
+    pick: &mut usize,
+    index: usize,
+) {
+    let ctx = ui.ctx().clone();
+    let width = ui.available_width();
+    let text = egui::RichText::new(tr(model.title))
+        .size(14.0)
+        .color(if chosen { m3.primary } else { m3.on });
+    let mut button = egui::Button::new(text)
+        .corner_radius(12.0)
+        .min_size(Vec2::new(width, 44.0));
+    button = if chosen {
+        button.fill(m3.primary_container)
+    } else {
+        button.fill(m3.high).stroke(Stroke::new(1.0, m3.outline))
+    };
+    if ui.add(button).clicked() {
+        *pick = index;
+    }
+    if let Some((done, total)) = crate::ai_tools::progress(&ctx, model) {
+        let share = if total > 0 {
+            done as f32 / total as f32
+        } else {
+            0.0
+        };
+        ui.add(
+            egui::ProgressBar::new(share)
+                .text(format!("{} / {}", size_text(done), size_text(total))),
+        );
+    } else if crate::ai_tools::ready(model) {
+        ui.label(
+            egui::RichText::new(format!(
+                "{} \u{00B7} {}",
+                tr("ai.model_ready"),
+                size_text(crate::ai_tools::size_on_disk(model))
+            ))
+            .size(11.5)
+            .color(m3.variant),
+        );
+    } else {
+        if let Some(e) = crate::ai_tools::failed(&ctx, model) {
+            ui.label(
+                egui::RichText::new(elide(&e, 60))
+                    .size(11.0)
+                    .color(m3.variant),
+            );
+        }
+        if action_chip(ui, m3, &tr("ai.download_model")).clicked() {
+            crate::ai_tools::download(&ctx, model);
+        }
+    }
+    ui.add_space(4.0);
+}
+
+/// Matting: the background of the selected pictures goes, by the colours
+/// learnt from their border or by the model picked.
+fn matting_sheet(app: &mut App, ui: &mut Ui, m3: &M3) {
+    let ctx = ui.ctx().clone();
+    let mut st = ai_state(&ctx);
+    ui.label(
+        egui::RichText::new(tr("ai.matting_hint"))
+            .size(12.5)
+            .color(m3.variant),
+    );
+    ui.add_space(6.0);
+    property_label(ui, m3, &tr("ai.model"));
+    for (i, model) in crate::ai_tools::MATTING.iter().enumerate() {
+        model_choice(ui, m3, model, st.matting == i, &mut st.matting, i);
+    }
+    ui.add_space(6.0);
+    property_label(ui, m3, &tr("ai.matting_settings"));
+    let mut s = st.matting_settings.clone();
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new(tr("dialog.tolerance")).size(13.0));
+        ui.add(egui::Slider::new(&mut s.tolerance, 0.0..=100.0));
+    });
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new(tr("dialog.edge_softness")).size(13.0));
+        ui.add(egui::Slider::new(&mut s.softness, 0.0..=20.0).suffix(" px"));
+    });
+    ui.checkbox(&mut s.contiguous, tr("dialog.bg_contiguous"));
+    ui.checkbox(&mut s.despeckle, tr("dialog.bg_despeckle"));
+    ui.checkbox(&mut s.clean_edges, tr("dialog.bg_clean_edges"));
+    st.matting_settings = s;
+    ui.add_space(10.0);
+    if action_chip(ui, m3, &tr("ai.apply")).clicked() {
+        let settings = st.matting_settings.clone();
+        app.apply_to_bitmaps("Remove Background", move |img, _| {
+            crate::bg_remove::remove_background(img, &settings, 1.0)
+        });
+    }
+    save_ai_state(&ctx, &st);
+}
+
+/// Upscaling: one of the two 4x models, and the picture made four times
+/// its size with it.
+fn upscale_sheet(app: &mut App, ui: &mut Ui, m3: &M3) {
+    let ctx = ui.ctx().clone();
+    let mut st = ai_state(&ctx);
+    ui.label(
+        egui::RichText::new(tr("ai.upscale_hint"))
+            .size(12.5)
+            .color(m3.variant),
+    );
+    ui.add_space(6.0);
+    property_label(ui, m3, &tr("ai.model"));
+    for (i, model) in crate::ai_tools::UPSCALE.iter().enumerate() {
+        model_choice(ui, m3, model, st.upscale == i, &mut st.upscale, i);
+    }
+    ui.add_space(6.0);
+    property_label(ui, m3, &tr("ai.upscale_scale"));
+    ui.label(egui::RichText::new(tr("ai.upscale_x4")).size(13.0).color(m3.on));
+    ui.add_space(10.0);
+    let model = crate::ai_tools::UPSCALE.get(st.upscale).copied();
+    let ready = model.map(crate::ai_tools::ready).unwrap_or(false);
+    let label = if ready {
+        tr("ai.upscale_run")
+    } else {
+        tr("ai.download_model")
+    };
+    if action_chip(ui, m3, &label).clicked() {
+        if let Some(model) = model {
+            if ready {
+                app.status = tr("ai.upscale_pending");
+            } else {
+                crate::ai_tools::download(&ctx, &model);
+            }
+        }
+    }
+    save_ai_state(&ctx, &st);
+}
+
+/// Variable data: the desktop's Print Merge panel, a copy of the drawing a
+/// row of the table.
+fn variable_sheet(app: &mut App, ui: &mut Ui, m3: &M3) {
+    let _ = m3;
+    crate::ui::print_merge_docker::print_merge(app, ui);
+}
+
 /// A name cut to what a narrow bar holds, with a mark that it was cut.
 pub(crate) fn elide(text: &str, keep: usize) -> String {
     if text.chars().count() <= keep {
@@ -1483,6 +1713,7 @@ fn sheet_height(which: Sheet, screen: f32) -> f32 {
         Sheet::Panels | Sheet::Tools(_) => 0.62,
         Sheet::Files | Sheet::Drawings => 0.52,
         Sheet::Properties => 0.46,
+        Sheet::Matting | Sheet::Upscale | Sheet::Variable => 0.52,
         Sheet::Palette => 0.24,
         Sheet::None | Sheet::Drawer | Sheet::MenuPage(_) | Sheet::Settings | Sheet::SettingsPage(_) => 0.0,
     };
@@ -1568,6 +1799,9 @@ fn sheet_title(which: Sheet) -> String {
             .get(gi)
             .map(|g| g.tools[0].name())
             .unwrap_or_default(),
+        Sheet::Matting => tr("ai.matting"),
+        Sheet::Upscale => tr("ai.upscale"),
+        Sheet::Variable => tr("ai.variable"),
         Sheet::None
         | Sheet::Drawer
         | Sheet::MenuPage(_)
@@ -1584,6 +1818,9 @@ fn sheet_body(app: &mut App, ui: &mut Ui, which: Sheet, m3: &M3, open: &mut Shee
         Sheet::Files => files_sheet(app, ui, m3),
         Sheet::Drawings => drawings_sheet(app, ui, m3),
         Sheet::Tools(gi) => tools_sheet(app, ui, m3, gi, open),
+        Sheet::Matting => matting_sheet(app, ui, m3),
+        Sheet::Upscale => upscale_sheet(app, ui, m3),
+        Sheet::Variable => variable_sheet(app, ui, m3),
         Sheet::None
         | Sheet::Drawer
         | Sheet::MenuPage(_)

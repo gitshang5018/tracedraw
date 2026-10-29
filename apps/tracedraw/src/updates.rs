@@ -842,7 +842,7 @@ fn download(url: &str) -> Result<Box<dyn std::io::Read + Send>, String> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn open_stream(url: &str) -> Result<Box<dyn std::io::Read + Send>, String> {
+pub(crate) fn open_stream(url: &str) -> Result<Box<dyn std::io::Read + Send>, String> {
     use ureq::tls::TlsConfig;
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_connect(Some(std::time::Duration::from_secs(20)))

@@ -1466,6 +1466,31 @@ pub fn cache_dir(app: &AndroidApp) -> Option<std::path::PathBuf> {
     Some(std::path::PathBuf::from(path))
 }
 
+/// The app's own folder: what the app keeps across runs goes there, where
+/// the system does not clear it the way it clears the cache.
+pub fn files_dir(app: &AndroidApp) -> Option<std::path::PathBuf> {
+    let vm = app.vm_as_ptr();
+    let activity = app.activity_as_ptr();
+    let path = with_env(vm, |env| {
+        let activity = activity_ref(env, activity)?;
+        let dir = env
+            .call_method(&activity, "getFilesDir", "()Ljava/io/File;", &[])
+            .ok()?
+            .l()
+            .ok()?;
+        if dir.is_null() {
+            return None;
+        }
+        let text = env
+            .call_method(&dir, "getAbsolutePath", "()Ljava/lang/String;", &[])
+            .ok()?
+            .l()
+            .ok()?;
+        jstring_text(env, text)
+    })?;
+    Some(std::path::PathBuf::from(path))
+}
+
 /// Whether the system lets this app install packages: asked of the package
 /// manager, which says no until the user allows it for TraceDraw.
 pub fn can_install_packages(app: &AndroidApp) -> bool {

@@ -17,6 +17,7 @@
 mod android_system;
 mod ai;
 mod ai_image;
+mod ai_tools;
 mod anchors;
 mod app;
 mod arrange;
