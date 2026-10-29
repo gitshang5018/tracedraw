@@ -607,7 +607,12 @@ fn open_field(vm: *mut c_void, activity: *mut c_void) -> Result<(), String> {
         // be a second place to type: the keyboard keeps the focus of
         // whichever view it saw last, and the app reads only one of them,
         // so the keys would land nowhere it can see.
-        let kept = lock(&FIELD).as_ref().map(|g| g.as_obj().clone());
+        // The lock is held for the read alone: the field it hands back is
+        // its own, so the guard goes before the field is used.
+        let kept = {
+            let guard = lock(&FIELD);
+            guard.as_ref().map(|g| g.as_obj().clone())
+        };
         if let Some(field) = kept {
             // A field the window no longer holds cannot take the focus, and
             // the ask for a keyboard over it answers nothing for as long as
