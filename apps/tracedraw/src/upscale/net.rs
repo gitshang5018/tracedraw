@@ -499,13 +499,21 @@ mod tests {
     #[test]
     fn a_convolution_pads_with_zeros_and_sums_its_taps() {
         // One output channel, one input channel, every weight 1: the output
-        // is the sum of the nine neighbours, the padding counted as zero.
+        // is the sum of the nine neighbours, the padding counted as zero. A
+        // three by three picture keeps the corners apart from the middle.
         let c = conv_of(1, 1, vec![1.0; 9]);
-        let input = Tensor::new(1, 2, 2, vec![1.0, 2.0, 3.0, 4.0]);
+        let input = Tensor::new(
+            1,
+            3,
+            3,
+            vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0],
+        );
         let out = conv_run(&c, &input);
-        assert_eq!((out.h, out.w, out.c), (2, 2, 1));
-        assert_eq!(out.data[0], 1.0 + 2.0 + 3.0);
-        assert_eq!(out.data[3], 4.0 + 3.0 + 2.0);
+        assert_eq!((out.h, out.w, out.c), (3, 3, 1));
+        // The corner sees four pixels, the middle all nine.
+        assert_eq!(out.data[0], 1.0 + 2.0 + 4.0 + 5.0);
+        assert_eq!(out.data[4], 45.0);
+        assert_eq!(out.data[8], 5.0 + 6.0 + 8.0 + 9.0);
     }
 
     #[test]
