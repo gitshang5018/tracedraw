@@ -73,6 +73,13 @@ keeps is what the cutout takes from the top edge itself, which is nothing
 for a notch in the middle of an edge and its height for one in a corner. A
 status bar that the system declines to hide is cleared as usual.
 
+The tools run down the left edge and the destinations down the right one,
+both in a column that scrolls under the finger, since a rail on its side is
+short. The column is given the whole rail (`scope_builder` with the rail's
+rect), not a row's height: `ui.horizontal` lays its content out in
+`spacing.interact_size.y`, and the scroll under it then had room for the
+first icon only.
+
 ## The drawer, the pages and the sheets
 
 The menu button opens a **navigation drawer** from the left, as an Android
@@ -173,12 +180,45 @@ to type into, and a paragraph frame or a field in a dialog stayed empty.
 
 So the app brings its own field: while a text field has the focus, or while
 the canvas edits text (`app.text_edit`), a one pixel `EditText` is added to
-the window, made invisible, focused and given the keyboard
+the window, focused and given the keyboard
 (`android_system::set_keyboard`). The keyboard edits it as it would any
 field; every frame reads what it holds and hands the difference to the
 interface as `Event::Text` and `Backspace` key presses, so the canvas text
 editing and every field of a dialog type as they do on a desktop. The field
 is taken out of the window as soon as the typing stops.
+
+Five things that field depends on, each of which once left a field in the
+property bar with no keyboard:
+
+- **The window is not resized for the keyboard.** `setSoftInputMode` is
+  `SOFT_INPUT_ADJUST_NOTHING` (`go_edge_to_edge`): the interface lifts its
+  own bars above the keyboard from the insets it reads, and a window the
+  system resized or panned as well would lift them twice and slide the
+  field out from under the finger.
+- **The focus is asked for once the field has a layout.** A view joins the
+  window a frame or two before it is laid out, and `requestFocus` and
+  `showSoftInput` both answer no until then. The first ask is made anyway;
+  the retry that follows asks for the focus again before the keyboard, and
+  both answers are logged (`keyboard asked again: focused .., shown ..`).
+- **One field, and only one that the window still holds.** The keyboard
+  keeps the focus of whichever view it saw last, so a second field is a
+  second place to type. A field that left the window is dropped and made
+  again rather than asked over (`isAttachedToWindow`), and a keyboard
+  believed up with no field behind it is asked for again instead of
+  returning early.
+- **No extract view.** A box one pixel wide is what an input method takes
+  for a field with no room on screen, and it answers by editing on a screen
+  of its own, where the drawing is not: `IME_FLAG_NO_EXTRACT_UI`, with
+  `IME_ACTION_DONE` for the action key.
+- **No alpha of zero.** An input method is free to take a fully transparent
+  view for one it cannot edit; the field is one pixel with a transparent
+  background and no cursor instead.
+- **The pixel sits in the middle of the window.** A window drawn edge to
+  edge has the status bar over its top left, and a field there is one the
+  input method may answer with no keyboard at all. In the middle it is
+  under the drawing and under nothing else (`Gravity.CENTER`). This is why
+  a phone on its side could type while one standing up could not: on its
+  side the system bars are hidden and the corner is clear.
 
 The interface language follows the phone's, unless the user picked one in
 Options: `Locale.getDefault().toLanguageTag()` (`zh-CN`, `pt-BR`) is read

@@ -87,15 +87,30 @@ fn window<'a>(env: &mut jni::JNIEnv<'a>, activity: &JObject<'a>) -> Option<JObje
         .ok()
 }
 
+/// `Window.setSoftInputMode`'s `SOFT_INPUT_ADJUST_NOTHING`: the window keeps
+/// its size and place when the keyboard comes.
+const SOFT_INPUT_ADJUST_NOTHING: i32 = 0x30;
+
 /// Ask the window to take the whole screen, so the interface may draw its
 /// own background behind the system bars (once per start).
 pub fn go_edge_to_edge(activity: *mut c_void, vm: *mut c_void, sdk: i32) {
-    if sdk < 28 {
-        return;
-    }
     with_env(vm, |env| {
         let activity = activity_ref(env, activity)?;
         let window = window(env, &activity)?;
+        // The keyboard comes over the window, and the interface lifts its
+        // own bars above it from the insets it reads (`ui::mobile`). A
+        // window the system resizes or pans for the keyboard would lift
+        // them a second time, and the fields under the finger would slide
+        // away from it as the keyboard rises.
+        let _ = env.call_method(
+            &window,
+            "setSoftInputMode",
+            "(I)V",
+            &[JValue::Int(SOFT_INPUT_ADJUST_NOTHING)],
+        );
+        if sdk < 28 {
+            return Some(());
+        }
         if sdk >= 30 {
             // false: the decor lays nothing out around the system bars; the app
             // does it itself with the insets.
@@ -413,6 +428,29 @@ static SHOWN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new
 /// interface reports no field for a frame or two.
 const KEYBOARD_GRACE: std::time::Duration = std::time::Duration::from_millis(700);
 
+/// `EditorInfo.IME_FLAG_NO_EXTRACT_UI`: the input method edits in its own
+/// strip over the drawing, never on a full screen of its own.
+const IME_FLAG_NO_EXTRACT_UI: i32 = 0x1000_0000;
+/// `EditorInfo.IME_ACTION_DONE`: the action key says done.
+const IME_ACTION_DONE: i32 = 6;
+/// `Gravity.CENTER`: where the field sits in the window, under the drawing
+/// and clear of the system bars.
+const GRAVITY_CENTER: i32 = 17;
+
+/// Whether the field the keyboard types into has to be made again: none is
+/// kept, and the last ask is old enough for the one already on its way to
+/// have been answered. Without the wait, every frame of a keyboard that has
+/// not risen yet would add a field of its own to the window.
+fn field_due() -> bool {
+    if lock(&FIELD).is_some() {
+        return false;
+    }
+    let asked = *lock(&ASKED);
+    asked
+        .map(|(when, _)| when.elapsed() >= std::time::Duration::from_millis(150))
+        .unwrap_or(true)
+}
+
 /// Show or hide the phone's keyboard: the field is put in the window and
 /// focused, or taken out again.
 pub fn set_keyboard(app: &AndroidApp, show: bool, focus: Option<u64>) {
@@ -429,11 +467,34 @@ pub fn set_keyboard(app: &AndroidApp, show: bool, focus: Option<u64>) {
         moved
     };
     if was == show && !(show && moved) {
+        // The keyboard is wanted and believed up. It is up only if the
+        // field it types into is still in the window: one taken out while
+        // the ask went the other way leaves the flag saying "up" and no
+        // field to type into, and every later ask answers nothing.
+        if show && lock(&FIELD).is_none() {
+            // A keyboard that has not been seen up since the field went
+            // must be asked for again: the retry in `pump_typing` is what
+            // asks, and it stays quiet while `SHOWN` says the phone
+            // answered.
+            SHOWN.store(false, Ordering::Relaxed);
+            if field_due() {
+                *lock(&ASKED) = Some((web_time::Instant::now(), 0));
+                open_keyboard(app);
+            }
+        }
         return;
     }
     if was == show {
         SHOWN.store(false, Ordering::Relaxed);
+        // The field may have gone with a keyboard that was put away in
+        // between: then there is nothing to ask again, and a new field has
+        // to be made. Asking the phone again would answer nothing, and the
+        // next field tapped would get no keyboard at all.
+        let lost = field_due();
         *lock(&ASKED) = Some((web_time::Instant::now(), 0));
+        if lost {
+            open_keyboard(app);
+        }
         return;
     }
     if !show {
@@ -473,6 +534,12 @@ fn open_keyboard(app: &AndroidApp) {
 }
 
 /// Ask the keyboard to come up over the field that is already there.
+///
+/// The focus is asked for again as well: a field that joined the window a
+/// moment ago had no layout yet, and `requestFocus` on it was answered
+/// with a no. `showSoftInput` needs a view the window has focused, so a
+/// retry that only asked for the keyboard answered nothing, however many
+/// times it ran.
 fn ask_again(app: &AndroidApp) {
     let vm = app.vm_as_ptr() as usize;
     let activity = app.activity_as_ptr() as usize;
@@ -482,26 +549,38 @@ fn ask_again(app: &AndroidApp) {
             let field = lock(&FIELD);
             let field = field.as_ref()?;
             let activity = activity_ref(env, activity)?;
-            let name: JObject = JObject::from(env.new_string("input_method").ok()?);
-            let service = env
-                .call_method(
-                    &activity,
-                    "getSystemService",
-                    "(Ljava/lang/String;)Ljava/lang/Object;",
-                    &[JValue::Object(&name)],
-                )
-                .ok()?
-                .l()
-                .ok()?;
-            let _ = env.call_method(
-                &service,
-                "showSoftInput",
-                "(Landroid/view/View;I)Z",
-                &[JValue::Object(field.as_obj()), JValue::Int(0)],
-            );
+            let focused = env
+                .call_method(field.as_obj(), "requestFocus", "()Z", &[])
+                .ok()
+                .and_then(|v| v.z().ok())
+                .unwrap_or(false);
+            let shown = show_soft_input(env, &activity, field.as_obj());
+            log::info!("keyboard asked again: focused {focused}, shown {shown}");
             Some(())
         });
     }));
+}
+
+/// `InputMethodManager.showSoftInput(view, 0)`: whether the phone took the
+/// ask. It answers no for a view the window has not focused or has not
+/// laid out yet, which is the answer to read when no keyboard comes.
+fn show_soft_input<'a>(
+    env: &mut jni::JNIEnv<'a>,
+    activity: &JObject<'a>,
+    view: &JObject<'a>,
+) -> bool {
+    let Some(service) = input_method(env, activity) else {
+        return false;
+    };
+    env.call_method(
+        &service,
+        "showSoftInput",
+        "(Landroid/view/View;I)Z",
+        &[JValue::Object(view), JValue::Int(0)],
+    )
+    .ok()
+    .and_then(|v| v.z().ok())
+    .unwrap_or(false)
 }
 
 /// Take the field out of the window.
@@ -524,26 +603,42 @@ fn open_field(vm: *mut c_void, activity: *mut c_void) -> Result<(), String> {
             .ok()?
             .l()
             .ok()?;
-        // A field already in the window is emptied and used again. A second
-        // one would be a second place to type: the keyboard keeps the focus
-        // of whichever view it saw last, and the app reads only one of them,
+        // A field already in the window is used again. A second one would
+        // be a second place to type: the keyboard keeps the focus of
+        // whichever view it saw last, and the app reads only one of them,
         // so the keys would land nowhere it can see.
-        if let Some(field) = lock(&FIELD).as_ref().map(|g| g.as_obj().clone()) {
-            // Its text is left as it was: emptying it would read as a run of
-            // backspaces to the frame that diffs it.
-            let _ = env.call_method(&field, "requestFocus", "()Z", &[]);
-            if let Some(service) = input_method(env, &activity) {
-                let _ = env.call_method(
-                    &service,
-                    "showSoftInput",
-                    "(Landroid/view/View;I)Z",
-                    &[JValue::Object(&field), JValue::Int(0)],
-                );
+        let kept = lock(&FIELD).as_ref().map(|g| g.as_obj().clone());
+        if let Some(field) = kept {
+            // A field the window no longer holds cannot take the focus, and
+            // the ask for a keyboard over it answers nothing for as long as
+            // it is kept: the view goes, and a new one is made below.
+            let attached = env
+                .call_method(&field, "isAttachedToWindow", "()Z", &[])
+                .ok()
+                .and_then(|v| v.z().ok())
+                .unwrap_or(false);
+            if attached {
+                // Its text is left as it was: emptying it would read as a
+                // run of backspaces to the frame that diffs it.
+                let _ = env.call_method(&field, "requestFocus", "()Z", &[]);
+                let shown = show_soft_input(env, &activity, &field);
+                log::info!("keyboard over the field already there: shown {shown}");
+                return Some(());
             }
-            return Some(());
+            let _ = env.call_method(
+                &decor,
+                "removeView",
+                "(Landroid/view/View;)V",
+                &[JValue::Object(&field)],
+            );
+            *lock(&FIELD) = None;
+            lock(&TYPED).clear();
+            log::info!("the keyboard field had left the window: a new one is made");
         }
-        // One pixel, invisible, and a colour of its own: it is never seen,
-        // only typed into.
+        // One pixel, and a colour of its own: it is never seen, only typed
+        // into. Its alpha is left alone: an input method is free to take a
+        // fully transparent view for one it cannot edit, and answers the
+        // ask for a keyboard with nothing.
         let field = env
             .new_object(
                 "android/widget/EditText",
@@ -551,19 +646,55 @@ fn open_field(vm: *mut c_void, activity: *mut c_void) -> Result<(), String> {
                 &[JValue::Object(&activity)],
             )
             .ok()?;
-        let _ = env.call_method(&field, "setAlpha", "(F)V", &[JValue::Float(0.0)]);
         let _ = env.call_method(
             &field,
             "setBackgroundColor",
             "(I)V",
             &[JValue::Int(0x00FF_FFFF)],
         );
+        let _ = env.call_method(&field, "setCursorVisible", "(Z)V", &[JValue::Bool(0)]);
         let _ = env.call_method(&field, "setSingleLine", "(Z)V", &[JValue::Bool(0)]);
+        // Everything the window reads to decide whether this field may take
+        // the focus and the keyboard is set before it joins the window: a
+        // view added a moment ago is not laid out yet, and the focus it is
+        // asked for then is refused.
+        let _ = env.call_method(&field, "setFocusable", "(Z)V", &[JValue::Bool(1)]);
+        let _ = env.call_method(
+            &field,
+            "setFocusableInTouchMode",
+            "(Z)V",
+            &[JValue::Bool(1)],
+        );
+        let _ = env.call_method(
+            &field,
+            "setShowSoftInputOnFocus",
+            "(Z)V",
+            &[JValue::Bool(1)],
+        );
+        // A box one pixel wide is what an input method takes for a field
+        // with no room on screen, and it answers by editing on a screen of
+        // its own, where the drawing is not: no extract view, and a done
+        // key rather than a line break.
+        let _ = env.call_method(
+            &field,
+            "setImeOptions",
+            "(I)V",
+            &[JValue::Int(IME_FLAG_NO_EXTRACT_UI | IME_ACTION_DONE)],
+        );
+        // One pixel in the middle of the window, not in its corner: a
+        // window drawn edge to edge has the status bar over its top left,
+        // and an input method is free to answer a view it cannot see with
+        // no keyboard. In the middle the pixel is under the drawing and
+        // under nothing else.
         let params = env
             .new_object(
-                "android/view/ViewGroup$LayoutParams",
-                "(II)V",
-                &[JValue::Int(1), JValue::Int(1)],
+                "android/widget/FrameLayout$LayoutParams",
+                "(III)V",
+                &[
+                    JValue::Int(1),
+                    JValue::Int(1),
+                    JValue::Int(GRAVITY_CENTER),
+                ],
             )
             .ok()?;
         let _ = env.call_method(
@@ -572,22 +703,17 @@ fn open_field(vm: *mut c_void, activity: *mut c_void) -> Result<(), String> {
             "(Landroid/view/View;Landroid/view/ViewGroup$LayoutParams;)V",
             &[JValue::Object(&field), JValue::Object(&params)],
         );
-        let _ = env.call_method(
-            &field,
-            "setFocusableInTouchMode",
-            "(Z)V",
-            &[JValue::Bool(1)],
-        );
-        let _ = env.call_method(&field, "requestFocus", "()Z", &[]);
-        // The keyboard over it.
-        if let Some(service) = input_method(env, &activity) {
-            let _ = env.call_method(
-                &service,
-                "showSoftInput",
-                "(Landroid/view/View;I)Z",
-                &[JValue::Object(&field), JValue::Int(0)],
-            );
-        }
+        let _ = env.call_method(&field, "bringToFront", "()V", &[]);
+        let focused = env
+            .call_method(&field, "requestFocus", "()Z", &[])
+            .ok()
+            .and_then(|v| v.z().ok())
+            .unwrap_or(false);
+        // The keyboard over it: the ask usually comes too early for the
+        // phone to take it, and the retry in `pump_typing` makes it again
+        // once the field has been laid out.
+        let shown = show_soft_input(env, &activity, &field);
+        log::info!("keyboard field added: focused {focused}, shown {shown}");
         let global = env.new_global_ref(&field).ok()?;
         *lock(&FIELD) = Some(global);
         Some(())
@@ -736,8 +862,12 @@ pub fn pump_typing(ctx: &egui::Context, wants: bool) {
             // path takes them, so two of them never wait on each other.
             let mut asked = lock(&ASKED);
             match *asked {
+                // A field joins the window a frame or two before it has a
+                // layout, and the phone refuses the ask made before that:
+                // the retry comes back quickly, and for as long as the
+                // keyboard takes to rise on a slow phone.
                 Some((when, times))
-                    if times < 10 && when.elapsed() >= std::time::Duration::from_millis(400) =>
+                    if times < 24 && when.elapsed() >= std::time::Duration::from_millis(150) =>
                 {
                     *asked = Some((web_time::Instant::now(), times + 1));
                     true
@@ -750,7 +880,14 @@ pub fn pump_typing(ctx: &egui::Context, wants: bool) {
             }
         };
         if retry {
-            ask_again(phone);
+            // A retry asks the phone over the field already in the window.
+            // With no field there, there is nothing to ask: one is made,
+            // which is what a keyboard put away in between leaves behind.
+            if lock(&FIELD).is_none() {
+                open_keyboard(phone);
+            } else {
+                ask_again(phone);
+            }
         }
         ctx.request_repaint_after(std::time::Duration::from_millis(80));
     }

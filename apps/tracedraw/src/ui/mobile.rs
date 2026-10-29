@@ -1233,10 +1233,18 @@ fn nav_rail(app: &mut App, ui: &mut Ui, m3: &M3, safe: Safe, open: &mut Sheet) {
         .show_separator_line(false)
         .frame(Frame::new().fill(m3.container))
         .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                // The rail is short on a phone on its side: the destinations
-                // and the commands of the selection scroll under the finger,
-                // the same two groups the bar carries when it stands.
+            // The rail is short on a phone on its side: the destinations
+            // and the commands of the selection scroll under the finger,
+            // the same two groups the bar carries when it stands.
+            //
+            // The column is given the whole rail rather than a row's height
+            // (`ui.horizontal` lays its content out in `interact_size.y`
+            // and the scroll under it had room for the first icon only).
+            let rail = Rect::from_min_max(
+                ui.max_rect().min,
+                ui.max_rect().max - Vec2::new(safe.right, 0.0),
+            );
+            ui.scope_builder(egui::UiBuilder::new().max_rect(rail), |ui| {
                 egui::ScrollArea::vertical()
                     .id_salt("mobile_nav_rail_scroll")
                     .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
@@ -1256,8 +1264,6 @@ fn nav_rail(app: &mut App, ui: &mut Ui, m3: &M3, safe: Safe, open: &mut Sheet) {
                             ui.add_space(6.0);
                         });
                     });
-                // The gesture bar of a phone on its side.
-                ui.add_space(safe.right);
             });
         });
 }
