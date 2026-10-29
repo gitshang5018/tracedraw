@@ -2946,7 +2946,12 @@ fn files_sheet(app: &mut App, ui: &mut Ui, m3: &M3) {
             if filled_button(ui, m3, &plain(&tr("menu.file.open"))).clicked() {
                 app.open_dialog();
             }
+            // A drawing of another format comes in beside the one open,
+            // which is what File > Import does on a desktop.
             let has = app.has_document();
+            if tonal_button(ui, m3, &plain(&tr("menu.file.import")), has).clicked() {
+                app.import();
+            }
             if tonal_button(ui, m3, &plain(&tr("menu.file.save")), has).clicked() {
                 save_drawing(app, false);
             }
