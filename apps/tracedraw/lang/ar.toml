@@ -6532,3 +6532,8 @@ ai.upscale_done = "كُبّرت أربع مرات."
 
 ai.upscale_on_card = "على بطاقة الرسوميات"
 ai.upscale_on_cpu = "على المعالج"
+
+updates.running = "TraceDraw {version}"
+ai.models = "الطرازات"
+ai.models_hint = "تنزّل أدوات الصور طرازاتها هنا مرة واحدة."
+ai.download_all = "تنزيل الكل"

@@ -6532,3 +6532,8 @@ ai.upscale_done = "Vier keer vergroot."
 
 ai.upscale_on_card = "Op de grafische kaart"
 ai.upscale_on_cpu = "Op de processor"
+
+updates.running = "TraceDraw {version}"
+ai.models = "Modellen"
+ai.models_hint = "De beeldgereedschappen downloaden hun modellen hier één keer."
+ai.download_all = "Alles downloaden"

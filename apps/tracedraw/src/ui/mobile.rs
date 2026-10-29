@@ -1131,16 +1131,6 @@ fn save_ai_state(ctx: &egui::Context, st: &crate::ai_tools::AiTools) {
     ctx.data_mut(|d| d.insert_temp(Id::new("ai_tools_state"), st.clone()));
 }
 
-/// A size in bytes, as a panel says it.
-fn size_text(bytes: u64) -> String {
-    let mb = bytes as f64 / (1024.0 * 1024.0);
-    if mb >= 1.0 {
-        format!("{mb:.1} MB")
-    } else {
-        format!("{:.0} KB", bytes as f64 / 1024.0)
-    }
-}
-
 /// The chip at the left edge over the drawing: the three image tools whose
 /// models the project's bucket serves. A tap opens them just above it, and
 /// one of the three opens its own sheet.
@@ -1228,14 +1218,14 @@ fn model_choice(
         };
         ui.add(
             egui::ProgressBar::new(share)
-                .text(format!("{} / {}", size_text(done), size_text(total))),
+                .text(format!("{} / {}", crate::ai_tools::size_text(done), crate::ai_tools::size_text(total))),
         );
     } else if crate::ai_tools::ready(model) {
         ui.label(
             egui::RichText::new(format!(
                 "{} \u{00B7} {}",
                 tr("ai.model_ready"),
-                size_text(crate::ai_tools::size_on_disk(model))
+                crate::ai_tools::size_text(crate::ai_tools::size_on_disk(model))
             ))
             .size(11.5)
             .color(m3.variant),

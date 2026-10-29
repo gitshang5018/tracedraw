@@ -6532,3 +6532,8 @@ ai.upscale_done = "4倍に拡大しました。"
 
 ai.upscale_on_card = "GPU で処理"
 ai.upscale_on_cpu = "CPU で処理"
+
+updates.running = "TraceDraw {version}"
+ai.models = "モデル"
+ai.models_hint = "画像ツールのモデルはここで一度だけダウンロードします。"
+ai.download_all = "すべてダウンロード"

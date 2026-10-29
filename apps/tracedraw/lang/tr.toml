@@ -6532,3 +6532,8 @@ ai.upscale_done = "Dört kat büyütüldü."
 
 ai.upscale_on_card = "Ekran kartında"
 ai.upscale_on_cpu = "İşlemcide"
+
+updates.running = "TraceDraw {version}"
+ai.models = "Modeller"
+ai.models_hint = "Görsel araçları modellerini burada bir kez indirir."
+ai.download_all = "Tümünü indir"

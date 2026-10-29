@@ -5,14 +5,20 @@ the zoom chip on the right: **Matting**, **Upscale** and **Variable data**.
 A tap on the chip opens the three of them just above it, and one of the
 three opens its own sheet.
 
-The models the first two use are not in the app. They are in the project's
-own bucket, under `models/`, at the address the phone's own update comes
-from (`TRACEDRAW_APK_HOST`, the `UPDATE_HOST` repository variable). A panel
-names its models, shows which of them is on the phone, and fetches the one
-that is not: `ai_tools::download` writes the files into the app's folder
-(`getFilesDir()/models` on a phone, `~/.tracedraw/models` elsewhere), and
-the panel shows the bytes as they arrive. Nothing is fetched twice at once,
-and a failed download says what it stopped on.
+The models the first two use are not in the app. They are served from
+`https://tracedraw.metoo.dpdns.org/models` (`ai_tools::HOST`), and land in
+**`Download/models`**: on a phone that is the shared storage's own Download
+folder, where a file manager can drop a model as easily as the app can, so
+one copied by hand is found like a downloaded one. Without the storage grant
+a phone falls back to its own folder (`getFilesDir()/models`); a desktop
+uses `~/Download/models`.
+
+They are fetched from **Help > Updates**, which is a page rather than a
+message box: the version, what the check found, and below it every model
+with what it is doing. `ai_tools::download` writes the files as they arrive,
+nothing is fetched twice at once, and a failed download says what it stopped
+on. The image tools' own panels name the same models and can fetch them too,
+so a model is one tap from wherever it is missed.
 
 | Tool | Models in the bucket | What it does |
 | --- | --- | --- |

@@ -6532,3 +6532,8 @@ ai.upscale_done = "চার গুণ বড় করা হয়েছে।
 
 ai.upscale_on_card = "গ্রাফিক্স কার্ডে"
 ai.upscale_on_cpu = "প্রসেসরে"
+
+updates.running = "TraceDraw {version}"
+ai.models = "মডেল"
+ai.models_hint = "ছবির টুলগুলো তাদের মডেল এখানে একবার ডাউনলোড করে।"
+ai.download_all = "সব ডাউনলোড"

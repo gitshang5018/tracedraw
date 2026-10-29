@@ -6532,3 +6532,8 @@ ai.upscale_done = "चार गुना बड़ा किया गया।
 
 ai.upscale_on_card = "ग्राफ़िक्स कार्ड पर"
 ai.upscale_on_cpu = "प्रोसेसर पर"
+
+updates.running = "TraceDraw {version}"
+ai.models = "मॉडल"
+ai.models_hint = "छवि उपकरण अपने मॉडल यहाँ एक बार डाउनलोड करते हैं।"
+ai.download_all = "सभी डाउनलोड करें"

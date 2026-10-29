@@ -170,16 +170,21 @@ fn split_rows(text: &str, sep: char) -> Vec<Vec<String>> {
     rows
 }
 
-/// Where the models live: a folder of the app's own, made on first use.
+/// Where the models live: `Download/models`, where a file manager can drop
+/// one as easily as the app can, so a model copied by hand is found like a
+/// downloaded one. A phone without the storage grant has only its own
+/// folder, and that is the way out.
 pub fn dir() -> Option<PathBuf> {
     #[cfg(target_os = "android")]
-    let base = {
+    let dir = {
         let phone = crate::android_system::phone()?;
-        crate::android_system::files_dir(phone)?
+        match crate::android_system::storage_root(phone) {
+            Some(root) if root.is_dir() => root.join("Download").join("models"),
+            _ => crate::android_system::files_dir(phone)?.join("models"),
+        }
     };
     #[cfg(not(target_os = "android"))]
-    let base = crate::files::home_dir()?.join(".tracedraw");
-    let dir = base.join("models");
+    let dir = crate::files::home_dir()?.join("Download").join("models");
     if !dir.is_dir() {
         let _ = crate::files::create_dir(&dir);
     }
@@ -209,14 +214,22 @@ pub fn size_on_disk(model: &Model) -> u64 {
         .sum()
 }
 
-/// Where a model is downloaded from: the project's bucket, the same the
-/// phone's own update comes from, with the models under `models/`.
-pub fn url(file: &str) -> String {
-    let host = crate::updates::APK_HOST;
-    if host.is_empty() {
-        return String::new();
+/// A size in bytes, as a panel says it.
+pub fn size_text(bytes: u64) -> String {
+    let mb = bytes as f64 / (1024.0 * 1024.0);
+    if mb >= 1.0 {
+        format!("{mb:.1} MB")
+    } else {
+        format!("{:.0} KB", bytes as f64 / 1024.0)
     }
-    format!("{}/models/{file}", host.trim_end_matches('/'))
+}
+
+/// Where the models are downloaded from.
+pub const HOST: &str = "https://tracedraw.metoo.dpdns.org/models";
+
+/// The address of one model file.
+pub fn url(file: &str) -> String {
+    format!("{HOST}/{file}")
 }
 
 fn progress_id(model: &Model) -> Id {

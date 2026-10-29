@@ -6532,3 +6532,8 @@ ai.upscale_done = "Zvětšeno čtyřikrát."
 
 ai.upscale_on_card = "Na grafické kartě"
 ai.upscale_on_cpu = "Na procesoru"
+
+updates.running = "TraceDraw {version}"
+ai.models = "Modely"
+ai.models_hint = "Obrazové nástroje si zde své modely stáhnou jednou."
+ai.download_all = "Stáhnout vše"

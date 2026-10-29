@@ -6532,3 +6532,8 @@ ai.upscale_done = "Vierfach vergrößert."
 
 ai.upscale_on_card = "Auf der Grafikkarte"
 ai.upscale_on_cpu = "Auf dem Prozessor"
+
+updates.running = "TraceDraw {version}"
+ai.models = "Modelle"
+ai.models_hint = "Die Bildwerkzeuge laden ihre Modelle hier einmal herunter."
+ai.download_all = "Alle herunterladen"

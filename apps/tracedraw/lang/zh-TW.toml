@@ -6532,3 +6532,8 @@ ai.upscale_done = "已放大四倍。"
 
 ai.upscale_on_card = "用顯卡加速"
 ai.upscale_on_cpu = "用處理器"
+
+updates.running = "TraceDraw {version}"
+ai.models = "模型"
+ai.models_hint = "影像工具需要的模型在這裡下載一次。"
+ai.download_all = "全部下載"

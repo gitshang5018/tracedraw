@@ -6532,3 +6532,8 @@ ai.upscale_done = "Diperbesar empat kali."
 
 ai.upscale_on_card = "Di kartu grafis"
 ai.upscale_on_cpu = "Di prosesor"
+
+updates.running = "TraceDraw {version}"
+ai.models = "Model"
+ai.models_hint = "Alat gambar mengunduh modelnya di sini, sekali."
+ai.download_all = "Unduh semua"
