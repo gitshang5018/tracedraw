@@ -122,15 +122,17 @@ fn run(path: &Path, data: &[f32], side: usize) -> Result<Vec<f32>, String> {
         2 => (shape[0], shape[1]),
         _ => return Err(format!("the model answered {shape:?}")),
     };
-    let data = answer
-        .as_slice::<f32>()
+    // The batch and channel dimensions are one apiece, so what the view
+    // walks is the mask itself; a walk of the values is asked for rather
+    // than a slice, since the shape gymnastics of a view are what changes
+    // between one version of the reader and the next.
+    let view = answer
+        .to_plain_array_view::<f32>()
         .map_err(|e| format!("the model's answer is not a mask: {e}"))?;
-    // The batch and channel dimensions are one apiece, so the mask is the
-    // run of values that is left.
-    if data.len() != h * w {
+    let out: Vec<f32> = view.iter().copied().collect();
+    if out.len() != h * w {
         return Err(format!("the model answered {shape:?}, which is not one mask"));
     }
-    let out: Vec<f32> = data.to_vec();
     if h == side && w == side {
         return Ok(out);
     }
