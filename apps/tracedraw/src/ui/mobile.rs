@@ -463,26 +463,26 @@ pub fn frame(app: &mut App, ui: &mut Ui) -> bool {
 
     top_bar(app, ui, &m3, inset, &mut open);
     // The phone's keyboard lies over the bottom of the window without the
-    // window shrinking. A band of its height, between the bars and the
-    // strip of properties, is what lifts the strip over the keyboard: the
-    // tool row and the navigation bar stay where they are, under it. The
-    // strip keeps the one container it always had, since a widget that
-    // moves to another one loses the focus it was given and the keyboard
-    // closes with it.
+    // window shrinking. A band of its height, taken first, is what keeps
+    // the whole bottom of the interface above the keyboard: the bars and
+    // the strip of properties all move up together, so nothing is left
+    // under the keyboard and the strip keeps its place among them. Taking
+    // the band after the bars left them underneath it, and the strip alone
+    // floating over the keyboard, which is not a bar that can be typed in.
     let ime = ime_height(&ctx);
     // The properties of what is selected sit above the bars, and take no
     // room at all while nothing is selected.
     let strip_h = if land {
         // On its side the phone keeps the tools down the left edge and
         // the destinations down the right one, out of the drawing's way.
+        keyboard_gap(ui, ime);
         tools_rail(app, ui, &m3, inset);
         nav_rail(app, ui, &m3, inset, &mut open);
-        keyboard_gap(ui, ime);
         selection_strip(app, ui, &m3, open)
     } else {
+        keyboard_gap(ui, ime);
         nav_bar(app, ui, &m3, inset.bottom, &mut open);
         tools_bar(app, ui, &m3);
-        keyboard_gap(ui, ime);
         selection_strip(app, ui, &m3, open)
     };
     // A group whose button was tapped or held floats its other tools over
