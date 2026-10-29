@@ -19,7 +19,15 @@ use eframe::wgpu;
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 
-const SHADER: &str = include_str!("upscale.wgsl");
+// One module a kernel: a single module may name a binding once, and four
+// kernels each wanting their own uniform at group 0 binding 0 is four
+// modules. Sharing one had every kernel collide with the next, the module
+// failed to build, and the whole card path fell back to the processor
+// without a word.
+const CONV: &str = include_str!("conv.wgsl");
+const ADD: &str = include_str!("add.wgsl");
+const COPY: &str = include_str!("copy.wgsl");
+const RESIZE: &str = include_str!("resize.wgsl");
 
 /// The workgroup size every kernel in the shader is written for.
 const PER_GROUP: usize = 64;
@@ -74,10 +82,15 @@ fn read_write() -> wgpu::BindingType {
     }
 }
 
-fn kernel(device: &wgpu::Device, entry: &str, kinds: &[wgpu::BindingType]) -> Kernel {
+fn kernel(
+    device: &wgpu::Device,
+    entry: &str,
+    source: &'static str,
+    kinds: &[wgpu::BindingType],
+) -> Kernel {
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some(entry),
-        source: wgpu::ShaderSource::Wgsl(SHADER.into()),
+        source: wgpu::ShaderSource::Wgsl(source.into()),
     });
     let entries: Vec<wgpu::BindGroupLayoutEntry> = kinds
         .iter()
@@ -246,21 +259,25 @@ impl GpuNet {
         let conv = kernel(
             &device,
             "conv",
+            CONV,
             &[uniform(), read_only(), read_only(), read_only(), read_write()],
         );
         let add = kernel(
             &device,
             "add",
+            ADD,
             &[uniform(), read_only(), read_only(), read_write()],
         );
         let copy = kernel(
             &device,
             "copy_channels",
+            COPY,
             &[uniform(), read_only(), read_write()],
         );
         let resize = kernel(
             &device,
             "resize",
+            RESIZE,
             &[uniform(), read_only(), read_write()],
         );
         let mut steps = Vec::with_capacity(layers.len());

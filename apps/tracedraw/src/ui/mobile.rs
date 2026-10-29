@@ -1453,6 +1453,14 @@ fn upscale_sheet(app: &mut App, ui: &mut Ui, m3: &M3) {
         ui.label(egui::RichText::new(tr(key)).size(11.5).color(m3.variant));
         ui.add_space(6.0);
     }
+    if let Some(why) = ctx.data(|d| d.get_temp::<String>(Id::new("upscale_card_error"))) {
+        ui.label(
+            egui::RichText::new(elide(&why, 110))
+                .size(11.0)
+                .color(m3.variant),
+        );
+        ui.add_space(6.0);
+    }
     // A picture already being enlarged says so, tile by tile.
     if let Some((done, total)) = ctx.data(|d| d.get_temp::<(usize, usize)>(Id::new("upscale_progress"))) {
         let share = if total > 0 {
@@ -1523,7 +1531,14 @@ fn upscale_start(app: &mut App, ctx: &egui::Context, model: &crate::ai_tools::Mo
     std::thread::spawn(move || {
         let outcome = (|| -> Result<image::RgbaImage, String> {
             let up = crate::upscale::Upscaler::load(&dir, &key)?;
-            worker.data_mut(|d| d.insert_temp(Id::new("upscale_card"), up.on_card()));
+            worker.data_mut(|d| {
+                d.insert_temp(Id::new("upscale_card"), up.on_card());
+                if let Some(why) = &up.card_error {
+                    d.insert_temp(Id::new("upscale_card_error"), why.clone());
+                } else {
+                    d.remove::<String>(Id::new("upscale_card_error"));
+                }
+            });
             worker.request_repaint();
             let img = crate::bitmap_fx::decode(&png).ok_or("the picture could not be read")?;
             let mut last = 0usize;

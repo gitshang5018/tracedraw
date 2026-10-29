@@ -30,6 +30,10 @@ pub struct Upscaler {
     /// Set once a kernel has been refused, so the rest of the picture is
     /// not sent to a card that will not take it.
     card_failed: std::sync::atomic::AtomicBool,
+    /// Why there is no card to run on, when there is not one: a driver that
+    /// refuses a kernel is otherwise invisible, and a picture that took a
+    /// minute looks like a bug rather than a fallback.
+    pub card_error: Option<String>,
     /// What the network does to one pixel: 4 for both models in the bucket.
     pub scale: usize,
 }
@@ -65,13 +69,18 @@ impl Upscaler {
         }
         // The card is the fast way; the processor stays the way out when
         // there is no card or a kernel is refused.
-        let card = gpu::GpuNet::new(&layers, &weighed)
-            .map_err(|e| log::info!("upscaling on the card is not available: {e}"))
-            .ok();
+        let (card, card_error) = match gpu::GpuNet::new(&layers, &weighed) {
+            Ok(net) => (Some(net), None),
+            Err(e) => {
+                log::info!("upscaling on the card is not available: {e}");
+                (None, Some(e))
+            }
+        };
         Ok(Upscaler {
             net,
             card,
             card_failed: std::sync::atomic::AtomicBool::new(false),
+            card_error,
             scale,
         })
     }
