@@ -1035,6 +1035,8 @@ pub struct App {
     pub eyedropper_apply: bool,
     /// Bitmap sample box side in pixels: 1, 2 or 5.
     pub eyedropper_sample: u32,
+    /// The colour eyedroppers' readout beside the pointer (#990).
+    pub eyedropper_hover: crate::eyedropper::HoverReadout,
     pub canvas_rect: egui::Rect,
     pub pointer_page: Option<Point>,
     /// The palette shown in the bottom strip (the first visible one).
@@ -2249,6 +2251,7 @@ impl App {
             eyedropper_groups: Default::default(),
             eyedropper_apply: false,
             eyedropper_sample: 1,
+            eyedropper_hover: Default::default(),
             canvas_rect: egui::Rect::NOTHING,
             pointer_page: None,
             palette: crate::palette::default_cmyk(),
