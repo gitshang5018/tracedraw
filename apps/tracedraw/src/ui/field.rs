@@ -184,7 +184,12 @@ impl<N: Numeric> NumField<'_, N> {
     /// The prefix, the box and the arrows, laid out left to right; `slot`
     /// is the width they share when the parent gave one.
     fn row(self, ui: &mut Ui, mut slot: Option<f32>) -> Response {
-        let id = ui.next_auto_id().with("num_field");
+        // The box is known by the value it edits, not by where it happens to
+        // sit in the layout: an id that follows the layout changes the
+        // moment the layout does, and a field whose id changed under it has
+        // lost the focus, which on a phone closes the keyboard. The value's
+        // own address does not move.
+        let id = egui::Id::new(("num_field", &*self.value as *const N as usize));
         let shown = self.text();
         // While typing, the text lives in memory until it is applied.
         let stored = ui.data(|d| d.get_temp::<String>(id));
