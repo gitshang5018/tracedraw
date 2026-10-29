@@ -6537,3 +6537,7 @@ updates.running = "TraceDraw {version}"
 ai.models = "モデル"
 ai.models_hint = "画像ツールのモデルはここで一度だけダウンロードします。"
 ai.download_all = "すべてダウンロード"
+
+ai.matting_done = "背景を削除しました。"
+ai.matting_colour = "端末にまだモデルがありません。画像の縁の色で背景を消します。"
+ai.model_missing = "モデルのファイルが所定の場所にありません。"

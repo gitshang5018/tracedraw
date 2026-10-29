@@ -99,6 +99,7 @@ mod lens;
 mod live_guides;
 mod macro_forms;
 mod macros;
+mod matting;
 mod mcp;
 #[cfg(not(target_arch = "wasm32"))]
 mod mcp_link;

@@ -6537,3 +6537,7 @@ updates.running = "TraceDraw {version}"
 ai.models = "मॉडल"
 ai.models_hint = "छवि उपकरण अपने मॉडल यहाँ एक बार डाउनलोड करते हैं।"
 ai.download_all = "सभी डाउनलोड करें"
+
+ai.matting_done = "बैकग्राउंड हटा दिया।"
+ai.matting_colour = "फ़ोन पर अभी मॉडल नहीं है: तस्वीर के किनारे के रंग बैकग्राउंड हटाते हैं।"
+ai.model_missing = "मॉडल की फ़ाइल वहाँ नहीं है जहाँ होनी चाहिए।"

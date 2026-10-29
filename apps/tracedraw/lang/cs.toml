@@ -6537,3 +6537,7 @@ updates.running = "TraceDraw {version}"
 ai.models = "Modely"
 ai.models_hint = "Obrazové nástroje si zde své modely stáhnou jednou."
 ai.download_all = "Stáhnout vše"
+
+ai.matting_done = "Pozadí odstraněno."
+ai.matting_colour = "V telefonu zatím není model: pozadí odstraní barvy na okraji obrázku."
+ai.model_missing = "Soubor modelu není tam, kde má být."

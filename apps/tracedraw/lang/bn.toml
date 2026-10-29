@@ -6537,3 +6537,7 @@ updates.running = "TraceDraw {version}"
 ai.models = "মডেল"
 ai.models_hint = "ছবির টুলগুলো তাদের মডেল এখানে একবার ডাউনলোড করে।"
 ai.download_all = "সব ডাউনলোড"
+
+ai.matting_done = "ব্যাকগ্রাউন্ড সরানো হয়েছে।"
+ai.matting_colour = "ফোনে এখনো মডেল নেই: ছবির প্রান্তের রং ব্যাকগ্রাউন্ড সরায়।"
+ai.model_missing = "মডেলের ফাইল যেখানে থাকার কথা সেখানে নেই।"

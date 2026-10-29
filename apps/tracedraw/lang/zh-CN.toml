@@ -6537,3 +6537,7 @@ updates.running = "TraceDraw {version}"
 ai.models = "模型"
 ai.models_hint = "图像工具需要的模型在这里下载一次。"
 ai.download_all = "全部下载"
+
+ai.matting_done = "背景已去除。"
+ai.matting_colour = "手机上还没有模型：按图片边缘的颜色抠图。"
+ai.model_missing = "模型文件不在预期位置。"

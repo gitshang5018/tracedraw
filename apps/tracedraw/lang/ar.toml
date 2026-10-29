@@ -6537,3 +6537,7 @@ updates.running = "TraceDraw {version}"
 ai.models = "الطرازات"
 ai.models_hint = "تنزّل أدوات الصور طرازاتها هنا مرة واحدة."
 ai.download_all = "تنزيل الكل"
+
+ai.matting_done = "أُزيلت الخلفية."
+ai.matting_colour = "لا يوجد طراز على الهاتف بعد: ألوان حافة الصورة تزيل الخلفية."
+ai.model_missing = "ملف الطراز ليس في مكانه."

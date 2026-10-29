@@ -6537,3 +6537,7 @@ updates.running = "TraceDraw {version}"
 ai.models = "Modelle"
 ai.models_hint = "Die Bildwerkzeuge laden ihre Modelle hier einmal herunter."
 ai.download_all = "Alle herunterladen"
+
+ai.matting_done = "Hintergrund entfernt."
+ai.matting_colour = "Noch kein Modell auf dem Telefon: die Farben am Bildrand nehmen den Hintergrund weg."
+ai.model_missing = "Die Datei des Modells ist nicht da, wo sie sein sollte."

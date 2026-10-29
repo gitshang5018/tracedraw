@@ -51,6 +51,11 @@ web-time = "1"
 # Local dates and times (Time Tracker), with the system time zone.
 jiff = "0.2"
 
+# The AI matting models are ONNX, and this reads them with no runtime to
+# carry: the browser build has no models to read, so it does without.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tract-onnx = "0.23"
+
 # The desktop windows: system file dialogs, the system clipboard, and the
 # window drawn with wgpu (Direct3D 12, Vulkan or Metal) on the graphics
 # card chosen in Options, or on its software adapter (#445, #439).

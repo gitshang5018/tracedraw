@@ -6537,3 +6537,7 @@ updates.running = "TraceDraw {version}"
 ai.models = "Models"
 ai.models_hint = "The image tools download their models here, once."
 ai.download_all = "Download all"
+
+ai.matting_done = "Background removed."
+ai.matting_colour = "No model on the phone yet: the colours along the picture's edge take the background out."
+ai.model_missing = "The model's file is not where it should be."

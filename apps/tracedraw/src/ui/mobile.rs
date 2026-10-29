@@ -1249,6 +1249,8 @@ fn model_choice(
 /// learnt from their border or by the model picked.
 fn matting_sheet(app: &mut App, ui: &mut Ui, m3: &M3) {
     let ctx = ui.ctx().clone();
+    // A mask that finished since the last frame goes in first.
+    matting_apply(app, &ctx);
     let mut st = ai_state(&ctx);
     ui.label(
         egui::RichText::new(tr("ai.matting_hint"))
@@ -1276,13 +1278,125 @@ fn matting_sheet(app: &mut App, ui: &mut Ui, m3: &M3) {
     ui.checkbox(&mut s.clean_edges, tr("dialog.bg_clean_edges"));
     st.matting_settings = s;
     ui.add_space(10.0);
+    if let Some((done, total)) =
+        ctx.data(|d| d.get_temp::<(usize, usize)>(Id::new("matting_progress")))
+    {
+        let share = if total > 0 {
+            done as f32 / total as f32
+        } else {
+            0.0
+        };
+        ui.add(egui::ProgressBar::new(share).text(format!("{done} / {total}")));
+        ui.add_space(6.0);
+    }
+    if let Some(e) = ctx.data(|d| d.get_temp::<String>(Id::new("matting_error"))) {
+        ui.label(egui::RichText::new(elide(&e, 80)).size(11.5).color(m3.variant));
+        ui.add_space(6.0);
+    }
+    let model = crate::ai_tools::MATTING.get(st.matting).copied();
+    let ready = model.map(|m| crate::ai_tools::ready(&m)).unwrap_or(false);
+    if !ready {
+        // No model on the phone: the colours learnt from the picture's
+        // border are what takes the background out, and that is worth
+        // saying, since it fails on a busy edge where a model would not.
+        ui.label(
+            egui::RichText::new(tr("ai.matting_colour"))
+                .size(11.5)
+                .color(m3.variant),
+        );
+        ui.add_space(6.0);
+    }
     if action_chip(ui, m3, &tr("ai.apply")).clicked() {
-        let settings = st.matting_settings.clone();
-        app.apply_to_bitmaps("Remove Background", move |img, _| {
-            crate::bg_remove::remove_background(img, &settings, 1.0)
-        });
+        match model {
+            Some(m) if ready => matting_start(app, &ctx, &m),
+            _ => {
+                let settings = st.matting_settings.clone();
+                app.apply_to_bitmaps("Remove Background", move |img, _| {
+                    crate::bg_remove::remove_background(img, &settings, 1.0)
+                });
+            }
+        }
     }
     save_ai_state(&ctx, &st);
+}
+
+/// Take the background out of the selected pictures with the model chosen,
+/// on a thread of its own: a model over a picture takes seconds, and the
+/// sheet has to stay live while it runs.
+fn matting_start(app: &mut App, ctx: &egui::Context, model: &crate::ai_tools::Model) {
+    let shapes = app.bitmap_shapes();
+    if shapes.is_empty() {
+        app.status = tr("ai.need_picture");
+        return;
+    }
+    let Some(path) = crate::ai_tools::path(model.files[0]) else {
+        app.status = tr("ai.model_missing");
+        return;
+    };
+    if ctx
+        .data(|d| d.get_temp::<(usize, usize)>(Id::new("matting_progress")))
+        .is_some()
+    {
+        return;
+    }
+    let total = shapes.len();
+    ctx.data_mut(|d| {
+        d.remove::<Vec<(tracedraw_core::ShapeId, image::RgbaImage)>>(Id::new("matting_done"));
+        d.remove::<String>(Id::new("matting_error"));
+        d.insert_temp(Id::new("matting_progress"), (0usize, total));
+    });
+    let key = model.key.to_string();
+    let worker = ctx.clone();
+    std::thread::spawn(move || {
+        let mut done: Vec<(tracedraw_core::ShapeId, image::RgbaImage)> = Vec::new();
+        let mut error = None;
+        for (i, (id, _rect, _, _, png)) in shapes.into_iter().enumerate() {
+            let Some(img) = crate::bitmap_fx::decode(&png) else {
+                continue;
+            };
+            match crate::matting::matte(&img, &path, &key) {
+                Ok(mask) => done.push((id, crate::matting::applied(&img, &mask))),
+                Err(e) => {
+                    error = Some(e);
+                    break;
+                }
+            }
+            worker.data_mut(|d| d.insert_temp(Id::new("matting_progress"), (i + 1, total)));
+            worker.request_repaint();
+        }
+        worker.data_mut(|d| {
+            d.remove::<(usize, usize)>(Id::new("matting_progress"));
+            if let Some(e) = error {
+                d.insert_temp(Id::new("matting_error"), e);
+            }
+            d.insert_temp(Id::new("matting_done"), done);
+        });
+        worker.request_repaint();
+    });
+}
+
+/// Put the cut-out pictures where the ones they came from were.
+fn matting_apply(app: &mut App, ctx: &egui::Context) {
+    let Some(done) = ctx.data(|d| {
+        d.get_temp::<Vec<(tracedraw_core::ShapeId, image::RgbaImage)>>(Id::new("matting_done"))
+    }) else {
+        return;
+    };
+    ctx.data_mut(|d| d.remove::<Vec<(tracedraw_core::ShapeId, image::RgbaImage)>>(Id::new("matting_done")));
+    let mut cut = 0;
+    for (id, img) in done {
+        if let Some((_, rect, ..)) = app
+            .bitmap_shapes()
+            .into_iter()
+            .find(|(shape, ..)| *shape == id)
+        {
+            app.replace_bitmap(id, rect, &img);
+            cut += 1;
+        }
+    }
+    if cut > 0 {
+        app.status = tr("ai.matting_done");
+    }
 }
 
 /// Upscaling: one of the two 4x models, and the picture made four times
@@ -3034,6 +3148,11 @@ fn drawings_sheet(app: &mut App, ui: &mut Ui, m3: &M3) {
         }
         if tonal_button(ui, m3, &plain(&tr("menu.file.open")), true).clicked() {
             app.open_dialog();
+        }
+        // A drawing of another format comes in beside the one open, which
+        // is what File > Import does on a desktop.
+        if tonal_button(ui, m3, &plain(&tr("menu.file.import")), true).clicked() {
+            app.import();
         }
     });
 }
