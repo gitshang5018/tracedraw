@@ -6541,3 +6541,6 @@ ai.download_all = "すべてダウンロード"
 ai.matting_done = "背景を削除しました。"
 ai.matting_colour = "端末にまだモデルがありません。画像の縁の色で背景を消します。"
 ai.model_missing = "モデルのファイルが所定の場所にありません。"
+
+ai.trace = "トレース"
+ai.trace_hint = "選択した画像を曲線に変換します。"

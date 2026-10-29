@@ -6541,3 +6541,6 @@ ai.download_all = "全部下載"
 ai.matting_done = "背景已去除。"
 ai.matting_colour = "手機上還沒有模型：依圖片邊緣的顏色去背。"
 ai.model_missing = "模型檔案不在預期位置。"
+
+ai.trace = "巡邊"
+ai.trace_hint = "把選取的圖片轉成曲線。"

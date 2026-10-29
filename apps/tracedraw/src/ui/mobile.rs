@@ -115,6 +115,8 @@ pub enum Sheet {
     Upscale,
     /// The chip at the left edge: one drawing filled from a table.
     Variable,
+    /// The chip at the left edge: a picture turned into curves.
+    Trace,
 }
 
 /// Whether the interface is laid out for a phone: always in the Android
@@ -1154,6 +1156,7 @@ fn ai_chip(_app: &mut App, ui: &mut Ui, m3: &M3, full: Rect, open: &mut Sheet) {
         (Sheet::Matting, "ai.matting"),
         (Sheet::Upscale, "ai.upscale"),
         (Sheet::Variable, "ai.variable"),
+        (Sheet::Trace, "ai.trace"),
     ];
     let row = 44.0;
     let height = row * items.len() as f32 + 12.0;
@@ -1553,6 +1556,34 @@ fn upscale_apply(app: &mut App, ctx: &egui::Context) {
     }
 }
 
+/// Tracing: a picture turned into curves, by one of the presets the Bitmaps
+/// menu offers. The preset opens the desktop's Trace dialog, which is where
+/// the detail and the smoothing are set.
+fn trace_sheet(app: &mut App, ui: &mut Ui, m3: &M3, open: &mut Sheet) {
+    ui.label(
+        egui::RichText::new(tr("ai.trace_hint"))
+            .size(12.5)
+            .color(m3.variant),
+    );
+    ui.add_space(8.0);
+    let last = app.last_trace.as_ref().map(|(preset, _)| *preset);
+    let mut chosen = None;
+    for preset in crate::trace::Preset::ALL {
+        let here = last == Some(preset);
+        if toggle_button(ui, m3, &tr(preset.key()), here, ui.available_width()).clicked() {
+            chosen = Some(preset);
+        }
+        ui.add_space(6.0);
+    }
+    if let Some(preset) = chosen {
+        app.dialog = crate::ui::dialogs::Dialog::Trace(crate::ui::dialogs::TraceState::new(
+            preset,
+            &app.settings.tracing,
+        ));
+        *open = Sheet::None;
+    }
+}
+
 /// Variable data: the desktop's Print Merge panel, a copy of the drawing a
 /// row of the table.
 fn variable_sheet(app: &mut App, ui: &mut Ui, m3: &M3) {
@@ -1933,7 +1964,7 @@ fn sheet_height(which: Sheet, screen: f32) -> f32 {
         Sheet::Panels | Sheet::Tools(_) => 0.62,
         Sheet::Files | Sheet::Drawings => 0.52,
         Sheet::Properties => 0.46,
-        Sheet::Matting | Sheet::Upscale | Sheet::Variable => 0.52,
+        Sheet::Matting | Sheet::Upscale | Sheet::Variable | Sheet::Trace => 0.52,
         Sheet::Palette => 0.24,
         Sheet::None | Sheet::Drawer | Sheet::MenuPage(_) | Sheet::Settings | Sheet::SettingsPage(_) => 0.0,
     };
@@ -2022,6 +2053,7 @@ fn sheet_title(which: Sheet) -> String {
         Sheet::Matting => tr("ai.matting"),
         Sheet::Upscale => tr("ai.upscale"),
         Sheet::Variable => tr("ai.variable"),
+        Sheet::Trace => tr("ai.trace"),
         Sheet::None
         | Sheet::Drawer
         | Sheet::MenuPage(_)
@@ -2041,6 +2073,7 @@ fn sheet_body(app: &mut App, ui: &mut Ui, which: Sheet, m3: &M3, open: &mut Shee
         Sheet::Matting => matting_sheet(app, ui, m3),
         Sheet::Upscale => upscale_sheet(app, ui, m3),
         Sheet::Variable => variable_sheet(app, ui, m3),
+        Sheet::Trace => trace_sheet(app, ui, m3, open),
         Sheet::None
         | Sheet::Drawer
         | Sheet::MenuPage(_)
@@ -2988,13 +3021,14 @@ fn files_sheet(app: &mut App, ui: &mut Ui, m3: &M3) {
     if !dir.is_dir() {
         dir = start.clone();
     }
-    // The way up stops at the root of the shared storage: the folders
-    // above it are the system's, not the user's.
+    // The way up goes as far as the root of the shared storage, which is
+    // `/storage/emulated/0`: the folders above it are the system's, not the
+    // user's.
     let root = crate::files::android_root();
     let up = dir
         .parent()
         .map(|p| p.to_path_buf())
-        .filter(|p| p.starts_with(&root) && p != &root);
+        .filter(|p| p.starts_with(&root));
     ui.horizontal(|ui| {
         match &up {
             Some(up) => {

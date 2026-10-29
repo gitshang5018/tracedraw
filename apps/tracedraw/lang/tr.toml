@@ -6541,3 +6541,6 @@ ai.download_all = "Tümünü indir"
 ai.matting_done = "Arka plan kaldırıldı."
 ai.matting_colour = "Telefonda henüz model yok: arka planı görselin kenarındaki renkler kaldırır."
 ai.model_missing = "Modelin dosyası olması gereken yerde değil."
+
+ai.trace = "İzleme"
+ai.trace_hint = "Seçili resmi eğrilere dönüştürür."

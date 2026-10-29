@@ -6541,3 +6541,6 @@ ai.download_all = "Stáhnout vše"
 ai.matting_done = "Pozadí odstraněno."
 ai.matting_colour = "V telefonu zatím není model: pozadí odstraní barvy na okraji obrázku."
 ai.model_missing = "Soubor modelu není tam, kde má být."
+
+ai.trace = "Obkreslení"
+ai.trace_hint = "Převede vybraný obrázek na křivky."

@@ -6541,3 +6541,6 @@ ai.download_all = "Alles downloaden"
 ai.matting_done = "Achtergrond verwijderd."
 ai.matting_colour = "Nog geen model op de telefoon: de kleuren langs de rand halen de achtergrond weg."
 ai.model_missing = "Het bestand van het model staat niet waar het hoort."
+
+ai.trace = "Natekenen"
+ai.trace_hint = "Maakt van de gekozen afbeelding krommen."

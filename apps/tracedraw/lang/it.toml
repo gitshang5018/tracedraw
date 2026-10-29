@@ -6541,3 +6541,6 @@ ai.download_all = "Scarica tutto"
 ai.matting_done = "Sfondo rimosso."
 ai.matting_colour = "Non c'è ancora un modello sul telefono: i colori del bordo tolgono lo sfondo."
 ai.model_missing = "Il file del modello non è dove dovrebbe."
+
+ai.trace = "Ricalco"
+ai.trace_hint = "Trasforma l'immagine scelta in curve."

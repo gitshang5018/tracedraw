@@ -6541,3 +6541,6 @@ ai.download_all = "Unduh semua"
 ai.matting_done = "Latar dihapus."
 ai.matting_colour = "Belum ada model di ponsel: warna di tepi gambar yang menghapus latar."
 ai.model_missing = "Berkas model tidak ada di tempatnya."
+
+ai.trace = "Jiplak"
+ai.trace_hint = "Mengubah gambar terpilih menjadi kurva."

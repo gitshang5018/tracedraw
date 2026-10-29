@@ -6541,3 +6541,6 @@ ai.download_all = "Download all"
 ai.matting_done = "Background removed."
 ai.matting_colour = "No model on the phone yet: the colours along the picture's edge take the background out."
 ai.model_missing = "The model's file is not where it should be."
+
+ai.trace = "Trace"
+ai.trace_hint = "Turns the selected picture into curves."
