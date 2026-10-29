@@ -114,29 +114,23 @@ fn run(path: &Path, data: &[f32], side: usize) -> Result<Vec<f32>, String> {
     let outputs = model
         .run(tvec!(input.into()))
         .map_err(|e| format!("the model stopped: {e}"))?;
-    let view = outputs
-        .first()
-        .ok_or("the model answered nothing")?
-        .to_array_view::<f32>()
-        .map_err(|e| format!("the model's answer is not a mask: {e}"))?;
-    let shape: Vec<usize> = view.shape().to_vec();
+    let answer = outputs.first().ok_or("the model answered nothing")?;
+    let shape: Vec<usize> = answer.shape().to_vec();
     let (h, w) = match shape.len() {
         4 => (shape[2], shape[3]),
         3 => (shape[1], shape[2]),
         2 => (shape[0], shape[1]),
         _ => return Err(format!("the model answered {shape:?}")),
     };
-    let mut out = Vec::with_capacity(h * w);
-    for y in 0..h {
-        for x in 0..w {
-            let v = match shape.len() {
-                4 => view[[0, 0, y, x]],
-                3 => view[[0, y, x]],
-                _ => view[[y, x]],
-            };
-            out.push(v);
-        }
+    let data = answer
+        .as_slice::<f32>()
+        .map_err(|e| format!("the model's answer is not a mask: {e}"))?;
+    // The batch and channel dimensions are one apiece, so the mask is the
+    // run of values that is left.
+    if data.len() != h * w {
+        return Err(format!("the model answered {shape:?}, which is not one mask"));
     }
+    let out: Vec<f32> = data.to_vec();
     if h == side && w == side {
         return Ok(out);
     }

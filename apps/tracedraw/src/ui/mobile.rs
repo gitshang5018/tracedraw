@@ -1628,7 +1628,7 @@ fn contour_run(app: &mut App, expand_mm: f64, detail: f64, smoothing: f64) {
         cmds.push(tracedraw_core::Command::AddShape { layer, shape });
     }
     if let Err(e) = app.engine.run_batch("Contour", &cmds) {
-        app.status = e;
+        app.status = e.to_string();
         return;
     }
     app.status = tr("ai.contour_done");
