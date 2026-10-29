@@ -20,6 +20,18 @@ pub fn quiet_panics(on: bool) {
 
 /// The log file of this run, in `dir`.
 pub fn log_path(dir: &Path) -> PathBuf {
+    // On a phone the app's own folder cannot be read from outside a release
+    // build: `run-as` refuses a package that is not debuggable, so a log
+    // written there is a log nobody can read. It goes to Download instead,
+    // where a file manager and `adb` both reach it.
+    #[cfg(target_os = "android")]
+    if let Some(phone) = crate::android_system::phone() {
+        if let Some(root) = crate::android_system::storage_root(phone) {
+            if root.is_dir() {
+                return root.join("Download").join("tracedraw.log");
+            }
+        }
+    }
     dir.join("tracedraw.log")
 }
 
