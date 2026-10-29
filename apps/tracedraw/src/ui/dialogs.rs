@@ -767,7 +767,6 @@ pub struct PaletteEditorState {
     pub name: String,
 }
 
-#[derive(Debug, Clone, PartialEq)]
 /// What the updates page was asked to do this frame.
 enum Act {
     Install(String, crate::updates::Package, std::path::PathBuf),
@@ -839,6 +838,7 @@ fn models_page(ui: &mut egui::Ui) {
     });
 }
 
+#[derive(Debug, Clone, PartialEq)]
 pub enum Dialog {
     None,
     /// Edit Line Style: custom dash patterns.
