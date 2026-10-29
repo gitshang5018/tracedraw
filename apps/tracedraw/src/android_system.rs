@@ -827,22 +827,14 @@ pub fn pump_typing(ctx: &egui::Context, wants: bool) {
     let Some(phone) = phone() else {
         return;
     };
-    let focused = ctx.memory(|m| m.focused());
-    // A field that lost the focus while nothing was touched gets it back.
-    // The keyboard rising lifts the bar the field sits in, and whatever
-    // frames that takes, it is not the user letting go of the field: only a
-    // touch is, and a touch is what is checked. The window this used to
-    // have was shorter than the keyboard's own rise, so it stopped helping
-    // before the keyboard had finished coming up.
-    if focused.is_none()
-        && !ctx.input(|i| i.pointer.any_pressed())
-        && KEYBOARD.load(std::sync::atomic::Ordering::Relaxed)
-    {
-        if let Some(last) = *lock(&FOCUSED) {
-            ctx.memory_mut(|m| m.request_focus(last));
-        }
-    }
-    set_keyboard(phone, wants, focused);
+    // The field's focus is left to the interface. It was put back by hand
+    // for a while, on the theory that the keyboard's rise was losing it:
+    // what was actually wrong was the band the keyboard's height was taken
+    // in, which left the bars under the keyboard and the strip of
+    // properties floating over it. With the band taken first, nothing moves
+    // out from under the field, and a focus put back by hand would only be
+    // one more thing to fight the user for.
+    set_keyboard(phone, wants, ctx.memory(|m| m.focused()));
     for edit in typed(phone.vm_as_ptr()) {
         match edit {
             Typing::Text(text) => {
