@@ -32,11 +32,14 @@ pub const MODNET: Recipe = Recipe {
 };
 
 /// RMBG 1.4: anything, on a picture scaled to a thousand and twenty four
-/// pixels and taken to the ImageNet spread it was trained on.
+/// pixels and taken to `[-0.5, 0.5]`, which is what its own preprocessing
+/// does: a half taken off, and nothing divided. The ImageNet spread other
+/// models use is wrong here, and a model fed the wrong spread answers
+/// nonsense that still looks like a mask.
 pub const RMBG: Recipe = Recipe {
     side: 1024,
-    mean: [0.485, 0.456, 0.406],
-    scale: [0.229, 0.224, 0.225],
+    mean: [0.5, 0.5, 0.5],
+    scale: [1.0, 1.0, 1.0],
 };
 
 /// The recipe of the model named `key`.
@@ -81,7 +84,15 @@ pub fn matte(img: &RgbaImage, path: &Path, key: &str) -> Result<GrayImage, Strin
                 }
             }
         }
-        let mask = run(path, &data, side)?;
+        let mut mask = run(path, &data, side)?;
+        if key.starts_with("rmbg") {
+            // RMBG answers a field of its own scale, not a mask: what it
+            // says is stretched between its own smallest and largest value,
+            // which is what its preprocessing does before anything is shown.
+            // Clamped instead, a field that runs past 0 and 1 comes back
+            // as flat black and white.
+            mask = spread(&mask);
+        }
         let mut out = GrayImage::new(side as u32, side as u32);
         for y in 0..side {
             for x in 0..side {
@@ -160,6 +171,25 @@ fn run(path: &Path, data: &[f32], side: usize) -> Result<Vec<f32>, String> {
     Ok(big.pixels().map(|p| p[0] as f32 / 255.0).collect())
 }
 
+/// A model's answer stretched between its own smallest and largest value.
+fn spread(values: &[f32]) -> Vec<f32> {
+    let mut lo = f32::INFINITY;
+    let mut hi = f32::NEG_INFINITY;
+    for v in values {
+        if v.is_finite() {
+            lo = lo.min(*v);
+            hi = hi.max(*v);
+        }
+    }
+    if !(hi > lo) {
+        return values.to_vec();
+    }
+    values
+        .iter()
+        .map(|v| ((v - lo) / (hi - lo)).clamp(0.0, 1.0))
+        .collect()
+}
+
 /// A model's answer with its edge pulled apart: what it was unsure about,
 /// around the half mark, becomes either the subject or the background, so
 /// the cut looks cut rather than smudged. This is a smoothstep over the
@@ -209,9 +239,22 @@ mod tests {
     }
 
     #[test]
+    fn a_field_is_stretched_between_its_own_ends() {
+        let out = spread(&[-5.0, 0.0, 5.0]);
+        assert_eq!(out, vec![0.0, 0.5, 1.0]);
+        // A field that is flat has nothing to stretch.
+        assert_eq!(spread(&[2.0, 2.0]), vec![2.0, 2.0]);
+    }
+
+    #[test]
     fn the_two_models_have_their_own_recipes() {
         assert_eq!(recipe("modnet").side, 512);
         assert_eq!(recipe("rmbg-1.4").side, 1024);
-        assert!((recipe("rmbg-1.4").mean[0] - 0.485).abs() < 1e-6);
+        // RMBG takes a half off and divides by nothing; the ImageNet spread
+        // it was first written with made it answer nonsense.
+        assert_eq!(recipe("rmbg-1.4").mean, [0.5, 0.5, 0.5]);
+        assert_eq!(recipe("rmbg-1.4").scale, [1.0, 1.0, 1.0]);
+        assert_eq!(recipe("modnet").mean, [0.5, 0.5, 0.5]);
+        assert_eq!(recipe("modnet").scale, [0.5, 0.5, 0.5]);
     }
 }
