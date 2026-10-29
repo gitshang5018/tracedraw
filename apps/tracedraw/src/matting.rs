@@ -102,8 +102,14 @@ pub fn matte(img: &RgbaImage, path: &Path, key: &str) -> Result<GrayImage, Strin
 #[cfg(not(target_arch = "wasm32"))]
 fn run(path: &Path, data: &[f32], side: usize) -> Result<Vec<f32>, String> {
     use tract_onnx::prelude::*;
+    // The picture's size is given to the model before it is optimised: a
+    // resize layer whose output size follows from its input can then be
+    // worked out once, at load, instead of being asked to resize by a
+    // factor it cannot see at run time.
     let model = tract_onnx::onnx()
         .model_for_path(path)
+        .map_err(|e| format!("{}: {e}", path.display()))?
+        .with_input_fact(0, f32::fact([1, 3, side, side]).into())
         .map_err(|e| format!("{}: {e}", path.display()))?
         .into_optimized()
         .map_err(|e| format!("{}: {e}", path.display()))?
