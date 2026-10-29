@@ -3006,15 +3006,26 @@ fn save_name(app: &App) -> String {
 /// The open drawings, as a list of tabs a finger picks from.
 fn drawings_sheet(app: &mut App, ui: &mut Ui, m3: &M3) {
     let active = app.active_doc;
+    let many = app.docs.len() > 1;
     let mut pick = None;
+    let mut shut = None;
     for (i, _) in app.docs.iter().enumerate() {
         let title = app.document_tab_title(i);
-        if drawing_row(ui, m3, &title, i == active).clicked() {
+        let (row, close) = drawing_row(ui, m3, &elide(&title, 26), i == active, many);
+        if close {
+            shut = Some(i);
+        } else if row.clicked() {
             pick = Some(i);
         }
     }
     if let Some(i) = pick {
         app.active_doc = i;
+    }
+    if let Some(i) = shut {
+        // Closing goes through the document's own way, so a drawing with
+        // unsaved changes still asks before it goes.
+        app.active_doc = i;
+        app.close_document();
     }
     ui.add_space(12.0);
     ui.horizontal(|ui| {
@@ -3280,7 +3291,13 @@ fn file_row(ui: &mut Ui, m3: &M3, name: &str, size: u64) -> Response {
 }
 
 /// An open drawing in the list of them.
-fn drawing_row(ui: &mut Ui, m3: &M3, title: &str, active: bool) -> Response {
+fn drawing_row(
+    ui: &mut Ui,
+    m3: &M3,
+    title: &str,
+    active: bool,
+    closable: bool,
+) -> (Response, bool) {
     let (rect, resp) =
         ui.allocate_exact_size(Vec2::new(ui.available_width(), 56.0), Sense::click());
     if active {
@@ -3289,6 +3306,8 @@ fn drawing_row(ui: &mut Ui, m3: &M3, title: &str, active: bool) -> Response {
         let fill = mix(m3.on, m3.surface, 0.08);
         ui.painter().rect_filled(rect, 12.0, fill);
     }
+    // The name gives way to the close target at the row's end.
+    let room = if closable { 48.0 } else { 12.0 };
     ui.painter().text(
         egui::pos2(rect.left() + 12.0, rect.center().y),
         egui::Align2::LEFT_CENTER,
@@ -3296,7 +3315,27 @@ fn drawing_row(ui: &mut Ui, m3: &M3, title: &str, active: bool) -> Response {
         egui::FontId::proportional(16.0),
         if active { m3.primary } else { m3.on },
     );
-    resp
+    let mut close = false;
+    if closable {
+        let side = 40.0;
+        let target = Rect::from_center_size(
+            egui::pos2(rect.right() - room / 2.0, rect.center().y),
+            Vec2::splat(side),
+        );
+        let hit = ui.interact(target, resp.id.with("close"), Sense::click());
+        if hit.hovered() {
+            ui.painter()
+                .circle_filled(target.center(), side / 2.0, mix(m3.on, m3.surface, 0.10));
+        }
+        draw_glyph(
+            ui,
+            Rect::from_center_size(target.center(), Vec2::splat(18.0)),
+            Glyph::Close,
+            m3.variant,
+        );
+        close = hit.clicked();
+    }
+    (resp, close)
 }
 
 /// Draw one of the bars' glyphs in `rect`.

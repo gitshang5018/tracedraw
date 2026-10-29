@@ -420,13 +420,17 @@ static KEYBOARD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::
 static ASKED: std::sync::Mutex<Option<(web_time::Instant, u8)>> = std::sync::Mutex::new(None);
 /// The field the interface had focused when the keyboard was last asked
 /// for: a new one is a new ask, even though the keyboard was up already.
-static FOCUSED: std::sync::Mutex<Option<u64>> = std::sync::Mutex::new(None);
+static FOCUSED: std::sync::Mutex<Option<egui::Id>> = std::sync::Mutex::new(None);
 /// Whether the keyboard has been seen up since it was asked for: once it
 /// has, putting it away is the user's doing and it is not asked again.
 static SHOWN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 /// How long a keyboard that was just asked for stays up while the
 /// interface reports no field for a frame or two.
-const KEYBOARD_GRACE: std::time::Duration = std::time::Duration::from_millis(700);
+const KEYBOARD_GRACE: std::time::Duration = std::time::Duration::from_millis(1200);
+/// How long after the keyboard was asked for a lost focus is put back. A
+/// phone standing up lifts the bar the field sits in as the keyboard rises,
+/// and the frame or two that takes is not the user letting go of the field.
+const FOCUS_RECOVER: std::time::Duration = std::time::Duration::from_millis(1500);
 
 /// `EditorInfo.IME_FLAG_NO_EXTRACT_UI`: the input method edits in its own
 /// strip over the drawing, never on a full screen of its own.
@@ -453,7 +457,7 @@ fn field_due() -> bool {
 
 /// Show or hide the phone's keyboard: the field is put in the window and
 /// focused, or taken out again.
-pub fn set_keyboard(app: &AndroidApp, show: bool, focus: Option<u64>) {
+pub fn set_keyboard(app: &AndroidApp, show: bool, focus: Option<egui::Id>) {
     use std::sync::atomic::Ordering;
     let was = KEYBOARD.load(Ordering::Relaxed);
     // A field the keyboard was not asked for yet: the interface moved the
@@ -463,7 +467,9 @@ pub fn set_keyboard(app: &AndroidApp, show: bool, focus: Option<u64>) {
     let moved = {
         let mut last = lock(&FOCUSED);
         let moved = *last != focus;
-        *last = focus;
+        if focus.is_some() {
+            *last = focus;
+        }
         moved
     };
     if was == show && !(show && moved) {
@@ -825,7 +831,22 @@ pub fn pump_typing(ctx: &egui::Context, wants: bool) {
     let Some(phone) = phone() else {
         return;
     };
-    set_keyboard(phone, wants, ctx.memory(|m| m.focused()).map(|id| id.value()));
+    let focused = ctx.memory(|m| m.focused());
+    // A field that lost the focus while nothing was touched gets it back:
+    // the keyboard rising lifts the bar the field sits in, and a frame or
+    // two of that is not the user letting go of it. A touch is, so a touch
+    // never puts the focus back.
+    if focused.is_none() && !ctx.input(|i| i.pointer.any_pressed()) {
+        let recent = lock(&ASKED)
+            .map(|(when, _)| when.elapsed() < FOCUS_RECOVER)
+            .unwrap_or(false);
+        if recent {
+            if let Some(last) = *lock(&FOCUSED) {
+                ctx.memory_mut(|m| m.request_focus(last));
+            }
+        }
+    }
+    set_keyboard(phone, wants, focused);
     for edit in typed(phone.vm_as_ptr()) {
         match edit {
             Typing::Text(text) => {
