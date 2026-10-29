@@ -95,8 +95,8 @@ fn kernel(device: &wgpu::Device, entry: &str, kinds: &[wgpu::BindingType]) -> Ke
     });
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some(entry),
-        bind_group_layouts: &[&layout],
-        push_constant_ranges: &[],
+        bind_group_layouts: &[Some(&layout)],
+        immediate_size: 0,
     });
     let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
         label: Some(entry),
@@ -225,6 +225,7 @@ impl GpuNet {
             let _ = net.run(&Tensor::new(3, 1, 1, vec![0.5; 3]));
             let _ = device.poll(wgpu::PollType::Wait {
                 submission_index: None,
+                timeout: None,
             });
         }
         if let Some(e) = pollster::block_on(scope.pop()) {
@@ -269,6 +270,8 @@ impl GpuNet {
         for (layer, w) in layers.iter().zip(weighed) {
             let bottoms = layer.bottoms.clone();
             let tops = layer.tops.clone();
+            // Read before `tops` goes into the step.
+            let last_top = tops.last().cloned();
             let step = match layer.kind.as_str() {
                 "Input" => Step::Input {
                     top: tops.first().cloned().unwrap_or_default(),
@@ -341,9 +344,9 @@ impl GpuNet {
                     ))
                 }
             };
-            if let Some(top) = tops.last() {
+            if let Some(top) = last_top {
                 if top == "output" {
-                    out = top.clone();
+                    out = top;
                 }
             }
             steps.push(step);
@@ -704,11 +707,14 @@ impl GpuNet {
         });
         let _ = self.device.poll(wgpu::PollType::Wait {
             submission_index: None,
+            timeout: None,
         });
         rx.recv()
             .map_err(|_| "the picture never came back".to_string())?
             .map_err(|e| format!("the picture could not be read: {e}"))?;
-        let data = slice.get_mapped_range();
+        let data = slice
+            .get_mapped_range()
+            .map_err(|e| format!("the picture could not be read: {e}"))?;
         let mut out = Vec::with_capacity(total);
         for i in 0..total {
             let o = i * 4;

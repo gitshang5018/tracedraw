@@ -1134,7 +1134,7 @@ fn save_ai_state(ctx: &egui::Context, st: &crate::ai_tools::AiTools) {
 /// The chip at the left edge over the drawing: the three image tools whose
 /// models the project's bucket serves. A tap opens them just above it, and
 /// one of the three opens its own sheet.
-fn ai_chip(app: &mut App, ui: &mut Ui, m3: &M3, full: Rect, open: &mut Sheet) {
+fn ai_chip(_app: &mut App, ui: &mut Ui, m3: &M3, full: Rect, open: &mut Sheet) {
     let rect = Rect::from_min_max(
         egui::pos2(full.left() + 16.0, full.bottom() - 52.0),
         egui::pos2(full.left() + 92.0, full.bottom() - 16.0),
@@ -1333,7 +1333,7 @@ fn upscale_sheet(app: &mut App, ui: &mut Ui, m3: &M3) {
         ui.add_space(6.0);
     }
     let model = crate::ai_tools::UPSCALE.get(st.upscale).copied();
-    let ready = model.map(crate::ai_tools::ready).unwrap_or(false);
+    let ready = model.map(|m| crate::ai_tools::ready(&m)).unwrap_or(false);
     let label = if ready {
         tr("ai.upscale_run")
     } else {

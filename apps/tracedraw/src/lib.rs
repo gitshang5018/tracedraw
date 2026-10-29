@@ -647,7 +647,7 @@ impl eframe::App for Shell {
         // check keeps the frames after it cheap.
         if !upscale::gpu::available() {
             if let Some(state) = frame.wgpu_render_state() {
-                upscale::gpu::set_device(state.device.as_ref().clone(), state.queue.as_ref().clone());
+                upscale::gpu::set_device(state.device.clone(), state.queue.clone());
             }
         }
         #[cfg(not(target_arch = "wasm32"))]

@@ -91,6 +91,8 @@ impl Net {
         for (layer, w) in layers.iter().zip(weighed) {
             let bottoms = layer.bottoms.clone();
             let tops = layer.tops.clone();
+            // Read before `tops` goes into the step.
+            let last_top = tops.last().cloned();
             let step = match layer.kind.as_str() {
                 "Input" => Step::Input {
                     top: tops.first().cloned().unwrap_or_default(),
@@ -135,9 +137,9 @@ impl Net {
                     ))
                 }
             };
-            if let Some(top) = tops.last() {
+            if let Some(top) = last_top {
                 if top == "output" {
-                    out = top.clone();
+                    out = top;
                 }
             }
             steps.push(step);
@@ -156,11 +158,9 @@ impl Net {
                 })
                 .ok_or("the network has no output")?;
         }
-        Ok(Net {
-            steps,
-            out,
-            frees: free_lists(&steps, &out),
-        })
+        // Read before the steps go into the network.
+        let frees = free_lists(&steps, &out);
+        Ok(Net { steps, out, frees })
     }
 
     /// How many layers the network has.
