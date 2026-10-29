@@ -837,7 +837,7 @@ pub fn pump_typing(ctx: &egui::Context, wants: bool) {
     // a touch is the user letting go, and nothing else is.
     if focused.is_none() && !touched && KEYBOARD.load(std::sync::atomic::Ordering::Relaxed) {
         let last = *lock(&FOCUSED);
-        log::info!("keyboard: focus lost while up, last field {last:?}");
+        log::error!("keyboard: focus lost while up, last field {last:?}");
         if let Some(last) = last {
             ctx.memory_mut(|m| m.request_focus(last));
         }

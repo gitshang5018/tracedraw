@@ -75,10 +75,10 @@ fn made_here() -> Option<Gpu> {
         force_fallback_adapter: false,
         ..Default::default()
     }))
-    .map_err(|e| log::info!("upscaling: no graphics card to make a device on: {e}"))
+    .map_err(|e| log::error!("upscaling: no graphics card to make a device on: {e}"))
     .ok()?;
     let info = adapter.get_info();
-    log::info!(
+    log::error!(
         "upscaling: a device of its own on {} ({:?})",
         info.name,
         info.device_type
@@ -87,7 +87,7 @@ fn made_here() -> Option<Gpu> {
         label: Some("upscale"),
         ..Default::default()
     }))
-    .map_err(|e| log::info!("upscaling: the card would not make a device: {e}"))
+    .map_err(|e| log::error!("upscaling: the card would not make a device: {e}"))
     .ok()?;
     Some(Gpu { device, queue })
 }
