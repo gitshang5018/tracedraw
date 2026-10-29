@@ -6529,3 +6529,6 @@ ai.upscale_digital_art = "Digital Art 4x"
 
 ai.need_picture = "Sélectionnez d'abord une image."
 ai.upscale_done = "Agrandie quatre fois."
+
+ai.upscale_on_card = "Sur la carte graphique"
+ai.upscale_on_cpu = "Sur le processeur"

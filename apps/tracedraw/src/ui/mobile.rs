@@ -1317,6 +1317,17 @@ fn upscale_sheet(app: &mut App, ui: &mut Ui, m3: &M3) {
     property_label(ui, m3, &tr("ai.upscale_scale"));
     ui.label(egui::RichText::new(tr("ai.upscale_x4")).size(13.0).color(m3.on));
     ui.add_space(10.0);
+    // Whether the last run went to the card, so a phone that fell back is
+    // not a mystery.
+    if let Some(card) = ctx.data(|d| d.get_temp::<bool>(Id::new("upscale_card"))) {
+        let key = if card {
+            "ai.upscale_on_card"
+        } else {
+            "ai.upscale_on_cpu"
+        };
+        ui.label(egui::RichText::new(tr(key)).size(11.5).color(m3.variant));
+        ui.add_space(6.0);
+    }
     // A picture already being enlarged says so, tile by tile.
     if let Some((done, total)) = ctx.data(|d| d.get_temp::<(usize, usize)>(Id::new("upscale_progress"))) {
         let share = if total > 0 {
@@ -1387,6 +1398,8 @@ fn upscale_start(app: &mut App, ctx: &egui::Context, model: &crate::ai_tools::Mo
     std::thread::spawn(move || {
         let outcome = (|| -> Result<image::RgbaImage, String> {
             let up = crate::upscale::Upscaler::load(&dir, &key)?;
+            worker.data_mut(|d| d.insert_temp(Id::new("upscale_card"), up.on_card()));
+            worker.request_repaint();
             let img = crate::bitmap_fx::decode(&png).ok_or("the picture could not be read")?;
             let mut last = 0usize;
             up.run(&img, &mut |done, total| {

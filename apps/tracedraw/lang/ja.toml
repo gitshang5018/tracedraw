@@ -6529,3 +6529,6 @@ ai.upscale_digital_art = "Digital Art 4x"
 
 ai.need_picture = "先に画像を選択してください。"
 ai.upscale_done = "4倍に拡大しました。"
+
+ai.upscale_on_card = "GPU で処理"
+ai.upscale_on_cpu = "CPU で処理"

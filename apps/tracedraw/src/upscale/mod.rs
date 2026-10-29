@@ -9,6 +9,7 @@
 //!
 //! See `docs/behavior/ai-tools.md`.
 
+pub mod gpu;
 pub mod net;
 pub mod param;
 
@@ -23,6 +24,12 @@ const MARGIN: usize = 12;
 /// A model read from its `.param` and `.bin`, ready to run.
 pub struct Upscaler {
     net: net::Net,
+    /// The same network on the graphics card, when the window draws with
+    /// one: a phone's card is ten to thirty times its processor.
+    card: Option<gpu::GpuNet>,
+    /// Set once a kernel has been refused, so the rest of the picture is
+    /// not sent to a card that will not take it.
+    card_failed: std::sync::atomic::AtomicBool,
     /// What the network does to one pixel: 4 for both models in the bucket.
     pub scale: usize,
 }
@@ -38,17 +45,58 @@ impl Upscaler {
         let layers = param::parse(&text)?;
         let weighed = param::weigh(&layers, &bin)?;
         let net = net::Net::new(&layers, &weighed)?;
-        // The factor is what the network does to a single pixel, read by
-        // putting one through it: a tile of one is quick even at 351
-        // convolutions.
-        let one = net.forward(net::Tensor::new(3, 1, 1, vec![0.0; 3]))?;
-        if one.c != 3 {
-            return Err(format!("the model makes {} channels, not 3", one.c));
+        // The factor is what the network's resizes multiply to, which is
+        // read from the network itself rather than by running one.
+        let mut scale = 1usize;
+        for layer in &layers {
+            if layer.kind == "Interp" {
+                let s = layer
+                    .floats(1)
+                    .first()
+                    .copied()
+                    .unwrap_or(1.0)
+                    .round()
+                    .max(1.0) as usize;
+                scale = scale.saturating_mul(s);
+            }
         }
+        if scale < 2 {
+            return Err("the model does not enlarge the picture".to_string());
+        }
+        // The card is the fast way; the processor stays the way out when
+        // there is no card or a kernel is refused.
+        let card = gpu::GpuNet::new(&layers, &weighed)
+            .map_err(|e| log::info!("upscaling on the card is not available: {e}"))
+            .ok();
         Ok(Upscaler {
             net,
-            scale: one.w.max(1),
+            card,
+            card_failed: std::sync::atomic::AtomicBool::new(false),
+            scale,
         })
+    }
+
+    /// Whether the picture is enlarged on the graphics card.
+    pub fn on_card(&self) -> bool {
+        self.card.is_some() && !self.card_failed.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// One tile through the network: the card when it takes it, the
+    /// processor when it does not.
+    fn tile(&self, input: &net::Tensor) -> Result<net::Tensor, String> {
+        use std::sync::atomic::Ordering;
+        if let Some(card) = &self.card {
+            if !self.card_failed.load(Ordering::Relaxed) {
+                match card.run(input) {
+                    Ok(out) => return Ok(out),
+                    Err(e) => {
+                        log::warn!("upscaling on the card stopped: {e}");
+                        self.card_failed.store(true, Ordering::Relaxed);
+                    }
+                }
+            }
+        }
+        self.net.forward(input.clone())
     }
 
     /// How many tiles a picture of that size is cut into.
@@ -104,7 +152,7 @@ impl Upscaler {
                         data[i + 2] = p[2] as f32 / 255.0;
                     }
                 }
-                let result = self.net.forward(net::Tensor::new(3, th, tw, data))?;
+                let result = self.tile(&net::Tensor::new(3, th, tw, data))?;
                 // What of the tile's own square, in the enlarged result.
                 let ox = (x0 - sx0) * scale;
                 let oy = (y0 - sy0) * scale;

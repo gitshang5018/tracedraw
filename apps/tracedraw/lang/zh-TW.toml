@@ -6529,3 +6529,6 @@ ai.upscale_digital_art = "插畫 4 倍"
 
 ai.need_picture = "先選取一張圖片。"
 ai.upscale_done = "已放大四倍。"
+
+ai.upscale_on_card = "用顯卡加速"
+ai.upscale_on_cpu = "用處理器"

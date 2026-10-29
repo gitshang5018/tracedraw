@@ -641,7 +641,15 @@ fn paint_probe(ctx: &egui::Context) -> [usize; 2] {
 const RENDERER_CHECK: &str = "renderer-check";
 
 impl eframe::App for Shell {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        // The upscalers run on the card the window draws with, so they need
+        // the device and queue it was made with: handed over once, and the
+        // check keeps the frames after it cheap.
+        if !upscale::gpu::available() {
+            if let Some(state) = frame.wgpu_render_state() {
+                upscale::gpu::set_device(state.device.as_ref().clone(), state.queue.as_ref().clone());
+            }
+        }
         #[cfg(not(target_arch = "wasm32"))]
         self.pacer.pace();
         #[cfg(not(target_arch = "wasm32"))]

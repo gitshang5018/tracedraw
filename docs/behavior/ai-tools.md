@@ -63,6 +63,33 @@ does. A phone runs a tile in seconds, so a large picture takes a while: the
 panel shows the tiles as they finish, and the work is on a thread of its
 own, so the sheet stays live.
 
+### On the graphics card
+
+The window already draws with `wgpu`, so the card is there to use and
+nothing is carried for it: `upscale/gpu.rs` takes the device and queue the
+window was made with (`Shell::ui` hands them over once) and runs the same
+network in compute passes, four kernels in `upscale.wgsl`: a convolution
+with its activation, a weighted add, a channel copy for a concat and a
+nearest resize.
+
+- The whole network goes into **one command buffer** and the picture comes
+  back once at the end, so a thousand layers cost one wait, not a thousand.
+- Feature maps go back into a **pool** as soon as nothing reads them; a
+  split puts one buffer under several names, and a buffer goes back only
+  when the last of them lets go. Without that, a thousand layers would ask
+  for gigabytes.
+- A dispatch is split over **two axes**: a picture four times its size has
+  more elements than one axis of 65535 workgroups can name.
+- A kernel the phone's driver will not take is a **validation error**, and
+  an uncaught one stops the app. The build is wrapped in an error scope and
+  a single pixel is put through the whole network before any picture is
+  sent: a card that refuses leaves the processor to do the work, and the
+  panel says which one ran.
+
+A phone's card is ten to thirty times the arithmetic of its processor
+(an Adreno 840 is a few TFLOPS against a hundred GFLOPS of cores), which is
+what makes an upscaler usable rather than a coffee break.
+
 ## Variable data
 
 The desktop's Print Merge panel, unchanged, in the phone's sheet: a table
