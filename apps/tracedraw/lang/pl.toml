@@ -6550,3 +6550,5 @@ ai.contour_expand = "Na zewnątrz (mm)"
 ai.contour_run = "Utwórz obrys"
 ai.contour_none = "Nie znaleziono obiektu do obrysowania."
 ai.contour_done = "Obrys dodany."
+
+ai.matting_portrait_only = "Model portretowy uczono na ludziach; resztę lepiej wytnie model ogólny."

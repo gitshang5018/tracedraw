@@ -1265,6 +1265,15 @@ fn matting_sheet(app: &mut App, ui: &mut Ui, m3: &M3) {
     for (i, model) in crate::ai_tools::MATTING.iter().enumerate() {
         model_choice(ui, m3, model, st.matting == i, &mut st.matting, i);
     }
+    if st.matting == 0 {
+        // The portrait model was trained on people: it will cut a bee out
+        // of a photo of a bee only roughly, and saying so saves the hunt.
+        ui.label(
+            egui::RichText::new(tr("ai.matting_portrait_only"))
+                .size(11.5)
+                .color(m3.variant),
+        );
+    }
     ui.add_space(6.0);
     property_label(ui, m3, &tr("ai.matting_settings"));
     let mut s = st.matting_settings.clone();

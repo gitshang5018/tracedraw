@@ -6550,3 +6550,5 @@ ai.contour_expand = "Dışa (mm)"
 ai.contour_run = "Konturu oluştur"
 ai.contour_none = "İzlenecek bir konu bulunamadı."
 ai.contour_done = "Kontur eklendi."
+
+ai.matting_portrait_only = "Portre modeli insanlar üzerinde eğitildi; gerisini genel model daha iyi keser."

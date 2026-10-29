@@ -6550,3 +6550,5 @@ ai.contour_expand = "Naar buiten (mm)"
 ai.contour_run = "Contour maken"
 ai.contour_none = "Geen onderwerp gevonden om te volgen."
 ai.contour_done = "Contour toegevoegd."
+
+ai.matting_portrait_only = "Het portretmodel is op mensen getraind; al het andere snijdt het algemene model beter uit."

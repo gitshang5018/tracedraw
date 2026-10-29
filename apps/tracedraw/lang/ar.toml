@@ -6550,3 +6550,5 @@ ai.contour_expand = "توسيع (مم)"
 ai.contour_run = "أنشئ الكفاف"
 ai.contour_none = "لم يُعثر على موضوع يُتتبَّع."
 ai.contour_done = "أُضيف الكفاف."
+
+ai.matting_portrait_only = "طُراز الصور الشخصية دُرِّب على البشر؛ وما سواه يقطعه الطراز العام أفضل."

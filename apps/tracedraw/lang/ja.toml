@@ -6550,3 +6550,5 @@ ai.contour_expand = "外側へ (mm)"
 ai.contour_run = "巡辺線を作成"
 ai.contour_none = "たどる対象が見つかりませんでした。"
 ai.contour_done = "巡辺線を追加しました。"
+
+ai.matting_portrait_only = "人物モデルは人で学習しています。それ以外は汎用モデルをお使いください。"

@@ -6550,3 +6550,5 @@ ai.contour_expand = "Espandi (mm)"
 ai.contour_run = "Crea il contorno"
 ai.contour_none = "Nessun soggetto da seguire trovato."
 ai.contour_done = "Contorno aggiunto."
+
+ai.matting_portrait_only = "Il modello ritratto è addestrato sulle persone; per il resto meglio quello generale."

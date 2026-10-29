@@ -6550,3 +6550,5 @@ ai.contour_expand = "Nach außen (mm)"
 ai.contour_run = "Kontur erzeugen"
 ai.contour_none = "Kein Motiv gefunden, dem zu folgen wäre."
 ai.contour_done = "Kontur hinzugefügt."
+
+ai.matting_portrait_only = "Das Porträtmodell wurde auf Menschen trainiert; alles andere schneidet das allgemeine besser aus."

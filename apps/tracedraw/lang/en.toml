@@ -6550,3 +6550,5 @@ ai.contour_expand = "Grow out (mm)"
 ai.contour_run = "Make the contour"
 ai.contour_none = "No subject was found to follow."
 ai.contour_done = "Contour added."
+
+ai.matting_portrait_only = "The portrait model was trained on people; anything else is better cut by the general one."

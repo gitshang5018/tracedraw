@@ -6550,3 +6550,5 @@ ai.contour_expand = "外擴 (mm)"
 ai.contour_run = "產生巡邊線"
 ai.contour_none = "沒有找到可巡邊的主體。"
 ai.contour_done = "巡邊線已產生。"
+
+ai.matting_portrait_only = "人像模型只訓練過人物；其他主體請選通用模型。"

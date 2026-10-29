@@ -6550,3 +6550,5 @@ ai.contour_expand = "Déborder (mm)"
 ai.contour_run = "Créer le contour"
 ai.contour_none = "Aucun sujet à suivre n'a été trouvé."
 ai.contour_done = "Contour ajouté."
+
+ai.matting_portrait_only = "Le modèle portrait a été entraîné sur des personnes ; pour le reste, prenez le général."

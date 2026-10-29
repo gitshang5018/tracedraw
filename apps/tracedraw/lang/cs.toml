@@ -6550,3 +6550,5 @@ ai.contour_expand = "Ven (mm)"
 ai.contour_run = "Vytvořit obrys"
 ai.contour_none = "Nebyl nalezen žádný objekt k obkreslení."
 ai.contour_done = "Obrys přidán."
+
+ai.matting_portrait_only = "Portrétní model je učený na lidech; ostatní lépe vyřízne obecný."

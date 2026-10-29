@@ -6550,3 +6550,5 @@ ai.contour_expand = "बाहर बढ़ाएँ (mm)"
 ai.contour_run = "कंटूर बनाएँ"
 ai.contour_none = "अनुसरण करने के लिए कोई विषय नहीं मिला।"
 ai.contour_done = "कंटूर जोड़ा गया।"
+
+ai.matting_portrait_only = "पोर्ट्रेट मॉडल इंसानों पर प्रशिक्षित है; बाकी के लिए सामान्य मॉडल चुनें।"

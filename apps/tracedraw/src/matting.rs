@@ -85,7 +85,7 @@ pub fn matte(img: &RgbaImage, path: &Path, key: &str) -> Result<GrayImage, Strin
         let mut out = GrayImage::new(side as u32, side as u32);
         for y in 0..side {
             for x in 0..side {
-                let v = mask.get(y * side + x).copied().unwrap_or(0.0).clamp(0.0, 1.0);
+                let v = refine(mask.get(y * side + x).copied().unwrap_or(0.0));
                 out.put_pixel(x as u32, y as u32, Luma([(v * 255.0).round() as u8]));
             }
         }
@@ -158,6 +158,18 @@ fn run(path: &Path, data: &[f32], side: usize) -> Result<Vec<f32>, String> {
         image::imageops::FilterType::Triangle,
     );
     Ok(big.pixels().map(|p| p[0] as f32 / 255.0).collect())
+}
+
+/// A model's answer with its edge pulled apart: what it was unsure about,
+/// around the half mark, becomes either the subject or the background, so
+/// the cut looks cut rather than smudged. This is a smoothstep over the
+/// narrow band a matte's edge lives in, the same the plugin's edge pass
+/// uses; the middle of the subject and the middle of the background are
+/// left alone.
+fn refine(v: f32) -> f32 {
+    let v = v.clamp(0.0, 1.0);
+    let t = ((v - 0.02) / (0.98 - 0.02)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
 }
 
 /// `img` with its alpha taken from `mask`, which is scaled to fit.

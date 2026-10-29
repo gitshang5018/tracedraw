@@ -6550,3 +6550,5 @@ ai.contour_expand = "Melebar (mm)"
 ai.contour_run = "Buat kontur"
 ai.contour_none = "Tidak ada subjek yang bisa diikuti."
 ai.contour_done = "Kontur ditambahkan."
+
+ai.matting_portrait_only = "Model potret dilatih pada manusia; selain itu lebih baik pakai model umum."
