@@ -427,10 +427,6 @@ static SHOWN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new
 /// How long a keyboard that was just asked for stays up while the
 /// interface reports no field for a frame or two.
 const KEYBOARD_GRACE: std::time::Duration = std::time::Duration::from_millis(1200);
-/// How long after the keyboard was asked for a lost focus is put back. A
-/// phone standing up lifts the bar the field sits in as the keyboard rises,
-/// and the frame or two that takes is not the user letting go of the field.
-const FOCUS_RECOVER: std::time::Duration = std::time::Duration::from_millis(1500);
 
 /// `EditorInfo.IME_FLAG_NO_EXTRACT_UI`: the input method edits in its own
 /// strip over the drawing, never on a full screen of its own.
@@ -832,18 +828,18 @@ pub fn pump_typing(ctx: &egui::Context, wants: bool) {
         return;
     };
     let focused = ctx.memory(|m| m.focused());
-    // A field that lost the focus while nothing was touched gets it back:
-    // the keyboard rising lifts the bar the field sits in, and a frame or
-    // two of that is not the user letting go of it. A touch is, so a touch
-    // never puts the focus back.
-    if focused.is_none() && !ctx.input(|i| i.pointer.any_pressed()) {
-        let recent = lock(&ASKED)
-            .map(|(when, _)| when.elapsed() < FOCUS_RECOVER)
-            .unwrap_or(false);
-        if recent {
-            if let Some(last) = *lock(&FOCUSED) {
-                ctx.memory_mut(|m| m.request_focus(last));
-            }
+    // A field that lost the focus while nothing was touched gets it back.
+    // The keyboard rising lifts the bar the field sits in, and whatever
+    // frames that takes, it is not the user letting go of the field: only a
+    // touch is, and a touch is what is checked. The window this used to
+    // have was shorter than the keyboard's own rise, so it stopped helping
+    // before the keyboard had finished coming up.
+    if focused.is_none()
+        && !ctx.input(|i| i.pointer.any_pressed())
+        && KEYBOARD.load(std::sync::atomic::Ordering::Relaxed)
+    {
+        if let Some(last) = *lock(&FOCUSED) {
+            ctx.memory_mut(|m| m.request_focus(last));
         }
     }
     set_keyboard(phone, wants, focused);
