@@ -35,6 +35,13 @@ pub struct NumField<'a, N: Numeric> {
     /// What the spin arrows and the wheel add or take, in the field's
     /// unit (1 unless given).
     step: f64,
+    /// Where the box was asked for: the call site is what tells two boxes
+    /// that edit the same stack address apart (see `row`).
+    at: &'static std::panic::Location<'static>,
+    /// A key of the caller's own, for a box drawn by a helper: every box the
+    /// helper draws is asked for on one line and edits a local of its own,
+    /// so the call site and the address are the same for all of them.
+    key: Option<u64>,
 }
 
 /// The width of the spin arrows at the right of a field, points.
@@ -44,6 +51,7 @@ pub const SPIN_W: f32 = 11.0;
 pub const DEFAULT_WIDTH: f32 = 64.0;
 
 impl<'a, N: Numeric> NumField<'a, N> {
+    #[track_caller]
     pub fn new(value: &'a mut N) -> Self {
         NumField {
             value,
@@ -56,7 +64,19 @@ impl<'a, N: Numeric> NumField<'a, N> {
             width: DEFAULT_WIDTH,
             mixed: false,
             step: 1.0,
+            at: std::panic::Location::caller(),
+            key: None,
         }
+    }
+
+    /// The key this box is known by, when the value it edits is the helper's
+    /// own local rather than something that stands for it.
+    pub fn key(mut self, key: impl std::hash::Hash) -> Self {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        key.hash(&mut h);
+        self.key = Some(h.finish());
+        self
     }
 
     /// What the spin arrows and the mouse wheel add or take (1 unless
@@ -189,7 +209,20 @@ impl<N: Numeric> NumField<'_, N> {
         // moment the layout does, and a field whose id changed under it has
         // lost the focus, which on a phone closes the keyboard. The value's
         // own address does not move.
-        let id = egui::Id::new(("num_field", &*self.value as *const N as usize));
+        //
+        // Two boxes can still be given one address: two locals whose lives
+        // do not overlap are put in the same stack slot by the compiler, and
+        // two boxes with one id share one text buffer — typing in one shows
+        // the same text in the other. The call site tells them apart: it is
+        // the same every frame, and two boxes that edit two locals are asked
+        // for on two lines. A box asked for in a loop keeps its address
+        // besides, which is what tells the rows apart.
+        let addr = &*self.value as *const N as usize;
+        let at = self.at;
+        let id = match self.key {
+            Some(k) => egui::Id::new(("num_field", k)),
+            None => egui::Id::new(("num_field", at.file(), at.line(), at.column(), addr)),
+        };
         let shown = self.text();
         // While typing, the text lives in memory until it is applied.
         let stored = ui.data(|d| d.get_temp::<String>(id));

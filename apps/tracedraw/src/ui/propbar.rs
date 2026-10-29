@@ -1344,9 +1344,29 @@ pub(crate) fn label_text(ui: &mut Ui, text: &str) {
     );
 }
 
+/// A key for the box drawn at this call site. Every box `distance` draws
+/// edits a local of the helper's own, so they all sit at one address and are
+/// asked for on one line: what tells them apart is where the caller asked.
+/// A helper that draws a box per row adds the row to it.
+fn site_key(at: &std::panic::Location<'_>) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    (at.file(), at.line(), at.column()).hash(&mut h);
+    h.finish()
+}
+
+fn site_key_with(at: &std::panic::Location<'_>, extra: impl std::hash::Hash) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    (at.file(), at.line(), at.column()).hash(&mut h);
+    extra.hash(&mut h);
+    h.finish()
+}
+
 /// A distance field in the ruler unit, through the drawing scale (a
 /// position, a size, an offset); with spin arrows when `step` is given (in
 /// the unit). Returns the new value in mm once committed.
+#[track_caller]
 pub(crate) fn distance(
     ui: &mut Ui,
     app: &App,
@@ -1359,11 +1379,13 @@ pub(crate) fn distance(
 
 /// A page size field: in the ruler unit as printed, not through the
 /// drawing scale.
+#[track_caller]
 fn paper_distance(ui: &mut Ui, app: &App, mm: f64, width: f32, step: Option<f64>) -> Option<f64> {
     distance_in(ui, app, mm, width, step, app.units.mm())
 }
 
 /// A distance field showing `mm` in units of `unit_mm` millimetres.
+#[track_caller]
 fn distance_in(
     ui: &mut Ui,
     app: &App,
@@ -1372,15 +1394,25 @@ fn distance_in(
     step: Option<f64>,
     unit_mm: f64,
 ) -> Option<f64> {
-    distance_in_mixed(ui, app, mm, width, step, unit_mm, false)
+    distance_in_mixed(ui, app, mm, width, step, unit_mm, false, site_key(&std::panic::Location::caller()))
 }
 
 /// [`distance`] for a value the selected objects do not share: the field
 /// is empty, a typed value goes to all of them.
-fn distance_mixed(ui: &mut Ui, app: &App, mm: f64, width: f32, mixed: bool) -> Option<f64> {
-    distance_in_mixed(ui, app, mm, width, Some(1.0), app.units.world_mm(), mixed)
+#[track_caller]
+fn distance_mixed(
+    ui: &mut Ui,
+    app: &App,
+    mm: f64,
+    width: f32,
+    mixed: bool,
+    row: impl std::hash::Hash,
+) -> Option<f64> {
+    let key = site_key_with(&std::panic::Location::caller(), row);
+    distance_in_mixed(ui, app, mm, width, Some(1.0), app.units.world_mm(), mixed, key)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn distance_in_mixed(
     ui: &mut Ui,
     app: &App,
@@ -1389,6 +1421,7 @@ fn distance_in_mixed(
     step: Option<f64>,
     unit_mm: f64,
     mixed: bool,
+    key: u64,
 ) -> Option<f64> {
     let u = app.units;
     let d = app.settings.precision.min(6) as usize;
@@ -1403,6 +1436,7 @@ fn distance_in_mixed(
     let r = ui.add_sized(
         [width, ROW],
         crate::ui::field::NumField::new(&mut v)
+            .key(key)
             .fixed_decimals(d.min(3))
             .max_decimals(d)
             .suffix(format!(" {}", u.short()))
@@ -1934,6 +1968,11 @@ pub fn object_bar(app: &mut App, ui: &mut Ui) {
                     let r = ui.add_sized(
                         [64.0, ROW],
                         crate::ui::field::NumField::new(&mut pct)
+                            // One box per row of this loop: the value is the
+                            // row's own local, so the two are one address and
+                            // one call site, and the row is what tells them
+                            // apart.
+                            .key(key)
                             .speed(0.5)
                             .fixed_decimals(1)
                             .suffix(" %"),
@@ -2875,7 +2914,7 @@ pub fn rectangle_part(app: &mut App, ui: &mut Ui) {
                 crate::ui::tips::tip_over(ui, crate::ui::tips::keyed(key), |ui| {
                     row(ui, |ui| {
                         let mixed = mix.get(i + 1).copied().unwrap_or(false);
-                        if let Some(v) = distance_mixed(ui, app, current.radii[i], 66.0, mixed) {
+                        if let Some(v) = distance_mixed(ui, app, current.radii[i], 66.0, mixed, key) {
                             edit = Some(CornerEdit::Size(i, v));
                         }
                     })
