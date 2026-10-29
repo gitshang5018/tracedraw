@@ -47,7 +47,57 @@ pub fn set_device(device: wgpu::Device, queue: wgpu::Queue) {
     let _ = GPU.set(Gpu { device, queue });
 }
 
-/// Whether the graphics card may be used at all.
+/// The device the upscalers run on: the window's when it draws with wgpu,
+/// and one made here for the work when it does not.
+///
+/// The window draws with OpenGL on this build, so it has no wgpu device to
+/// hand over and the card was reported as missing on a phone that has one
+/// to spare. A device of our own is made instead, which leaves the drawing
+/// exactly as it was: this one is only for arithmetic.
+fn device() -> Option<&'static Gpu> {
+    if let Some(gpu) = GPU.get() {
+        return Some(gpu);
+    }
+    let gpu = made_here()?;
+    let _ = GPU.set(gpu);
+    GPU.get()
+}
+
+/// A device of this build's own, on the fastest adapter there is.
+#[cfg(not(target_arch = "wasm32"))]
+fn made_here() -> Option<Gpu> {
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::default());
+    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+        power_preference: wgpu::PowerPreference::HighPerformance,
+        compatible_surface: None,
+        force_fallback_adapter: false,
+    }))
+    .map_err(|e| log::info!("upscaling: no graphics card to make a device on: {e}"))
+    .ok()?;
+    let info = adapter.get_info();
+    log::info!(
+        "upscaling: a device of its own on {} ({:?})",
+        info.name,
+        info.device_type
+    );
+    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        label: Some("upscale"),
+        ..Default::default()
+    }))
+    .map_err(|e| log::info!("upscaling: the card would not make a device: {e}"))
+    .ok()?;
+    Some(Gpu { device, queue })
+}
+
+/// The browser build always draws with wgpu, so its device is the window's.
+#[cfg(target_arch = "wasm32")]
+fn made_here() -> Option<Gpu> {
+    None
+}
+
+/// Whether the window handed its device over. Only a check: making one
+/// here is left to the work that needs it, so a build without a card does
+/// not try to make one every frame.
 pub fn available() -> bool {
     GPU.get().is_some()
 }
@@ -227,7 +277,7 @@ impl GpuNet {
     /// an uncaught one stops the app. It is caught here instead, and the
     /// processor is what enlarges the picture after that.
     pub fn new(layers: &[Layer], weighed: &[Weighed]) -> Result<GpuNet, String> {
-        let gpu = GPU.get().ok_or("the window draws without a graphics card")?;
+        let gpu = device().ok_or("no graphics card answered")?;
         let device = gpu.device.clone();
         let queue = gpu.queue.clone();
         let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
