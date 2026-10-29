@@ -22,14 +22,19 @@ pub fn quiet_panics(on: bool) {
 pub fn log_path(dir: &Path) -> PathBuf {
     // On a phone the app's own folder cannot be read from outside a release
     // build: `run-as` refuses a package that is not debuggable, so a log
-    // written there is a log nobody can read. It goes to Download instead,
-    // where a file manager and `adb` both reach it.
+    // written there is a log nobody can read. It goes to the shared
+    // storage's Download, where a file manager and `adb` both reach it.
+    //
+    // The path is written out rather than asked of the activity: this runs
+    // before the activity has been handed over, and asking then answered
+    // nothing, which put the log back in the folder nobody can read. The
+    // path is checked, so a phone that keeps its storage elsewhere falls
+    // through to the app's own folder.
     #[cfg(target_os = "android")]
-    if let Some(phone) = crate::android_system::phone() {
-        if let Some(root) = crate::android_system::storage_root(phone) {
-            if root.is_dir() {
-                return root.join("Download").join("tracedraw.log");
-            }
+    {
+        let shared = std::path::Path::new("/storage/emulated/0/Download");
+        if shared.is_dir() {
+            return shared.join("tracedraw.log");
         }
     }
     dir.join("tracedraw.log")
