@@ -1025,14 +1025,21 @@ impl App {
         // transform goes on with the latest pointer position.
         // A Pen or Bezier handle pulled out of the drawing window goes on
         // following the pointer, and its release ends it there (#1014).
-        let hover = response.hover_pos().or_else(|| {
-            let held = response.ctx.input(|i| i.pointer.primary_down());
-            if (self.transforming() && held) || self.curve_drag_running(response) {
-                self.pointer_screen
-            } else {
-                None
-            }
-        });
+        // The finger of a tap is gone by the frame the click is reported on,
+        // and a touch screen has no hover: without the press's own position
+        // the click arrives with no place, and nothing is picked. The
+        // interaction position is the press and the release of that click.
+        let hover = response
+            .hover_pos()
+            .or_else(|| response.interact_pointer_pos())
+            .or_else(|| {
+                let held = response.ctx.input(|i| i.pointer.primary_down());
+                if (self.transforming() && held) || self.curve_drag_running(response) {
+                    self.pointer_screen
+                } else {
+                    None
+                }
+            });
         let pointer = hover.map(|h| self.view.to_page(h));
         self.pointer_page = pointer;
         // A colour picker's eyedropper waits for a click: the colour there
@@ -2718,7 +2725,32 @@ impl App {
                 toggle,
             } => {
                 let r = Rect::from_points(start, current);
-                if r.width() > 0.1 || r.height() > 0.1 {
+                // A finger that taps moves a pixel or two, and egui reads
+                // that as a drag: the marquee it leaves is too small to hold
+                // anything, and a tap on an object picked nothing. A drag
+                // this short is a tap, and what is under it is what was
+                // meant.
+                let tap = 4.0 / self.view.zoom.max(0.01) as f64;
+                if r.width() < tap && r.height() < tap {
+                    match self.pick_at(start) {
+                        Some(id) if toggle && self.selection.contains(&id) => {
+                            let keep: Vec<ShapeId> = self
+                                .selection
+                                .iter()
+                                .copied()
+                                .filter(|s| *s != id)
+                                .collect();
+                            self.select(keep);
+                        }
+                        Some(id) if toggle => self.select_add(id),
+                        Some(id) => self.select(vec![id]),
+                        None if !toggle => {
+                            self.select(Vec::new());
+                            self.deselect_guides();
+                        }
+                        None => {}
+                    }
+                } else {
                     self.select_in_region(crate::select_region::Region::Rect(r), touching, toggle);
                 }
             }
