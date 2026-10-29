@@ -6544,3 +6544,9 @@ ai.model_missing = "Berkas model tidak ada di tempatnya."
 
 ai.trace = "Jiplak"
 ai.trace_hint = "Mengubah gambar terpilih menjadi kurva."
+
+ai.contour_hint = "Jalur tertutup di sekeliling gambar terpilih, diikuti pemotong."
+ai.contour_expand = "Melebar (mm)"
+ai.contour_run = "Buat kontur"
+ai.contour_none = "Tidak ada subjek yang bisa diikuti."
+ai.contour_done = "Kontur ditambahkan."

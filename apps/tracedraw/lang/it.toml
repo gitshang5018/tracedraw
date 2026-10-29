@@ -6544,3 +6544,9 @@ ai.model_missing = "Il file del modello non è dove dovrebbe."
 
 ai.trace = "Ricalco"
 ai.trace_hint = "Trasforma l'immagine scelta in curve."
+
+ai.contour_hint = "Un tracciato chiuso attorno all'immagine scelta, che una taglierina segue."
+ai.contour_expand = "Espandi (mm)"
+ai.contour_run = "Crea il contorno"
+ai.contour_none = "Nessun soggetto da seguire trovato."
+ai.contour_done = "Contorno aggiunto."

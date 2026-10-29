@@ -73,6 +73,11 @@ pub struct AiTools {
     pub crop_marks: bool,
     /// The row the preview shows.
     pub preview_row: usize,
+    /// The contour's own numbers: how far it grows past the subject, in mm,
+    /// and the detail and smoothing a trace would use.
+    pub contour_expand_mm: f64,
+    pub contour_detail: f64,
+    pub contour_smooth: f64,
 }
 
 impl Default for AiTools {
@@ -88,6 +93,9 @@ impl Default for AiTools {
             gap_mm: 5.0,
             crop_marks: false,
             preview_row: 0,
+            contour_expand_mm: 0.0,
+            contour_detail: 60.0,
+            contour_smooth: 40.0,
         }
     }
 }

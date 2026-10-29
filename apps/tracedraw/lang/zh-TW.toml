@@ -6544,3 +6544,9 @@ ai.model_missing = "模型檔案不在預期位置。"
 
 ai.trace = "巡邊"
 ai.trace_hint = "把選取的圖片轉成曲線。"
+
+ai.contour_hint = "沿選取的圖片產生閉合路徑，供切割機走刀。"
+ai.contour_expand = "外擴 (mm)"
+ai.contour_run = "產生巡邊線"
+ai.contour_none = "沒有找到可巡邊的主體。"
+ai.contour_done = "巡邊線已產生。"

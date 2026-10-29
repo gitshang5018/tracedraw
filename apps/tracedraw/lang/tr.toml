@@ -6544,3 +6544,9 @@ ai.model_missing = "Modelin dosyası olması gereken yerde değil."
 
 ai.trace = "İzleme"
 ai.trace_hint = "Seçili resmi eğrilere dönüştürür."
+
+ai.contour_hint = "Seçili resmin çevresinde kesici birimin izleyeceği kapalı bir yol."
+ai.contour_expand = "Dışa (mm)"
+ai.contour_run = "Konturu oluştur"
+ai.contour_none = "İzlenecek bir konu bulunamadı."
+ai.contour_done = "Kontur eklendi."

@@ -6544,3 +6544,9 @@ ai.model_missing = "Die Datei des Modells ist nicht da, wo sie sein sollte."
 
 ai.trace = "Nachzeichnen"
 ai.trace_hint = "Macht aus dem gewählten Bild Kurven."
+
+ai.contour_hint = "Ein geschlossener Pfad um das gewählte Bild, dem ein Schneidegerät folgt."
+ai.contour_expand = "Nach außen (mm)"
+ai.contour_run = "Kontur erzeugen"
+ai.contour_none = "Kein Motiv gefunden, dem zu folgen wäre."
+ai.contour_done = "Kontur hinzugefügt."

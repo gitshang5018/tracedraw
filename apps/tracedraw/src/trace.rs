@@ -96,6 +96,75 @@ pub struct Traced {
     pub closed: bool,
 }
 
+/// The outline of the picture's subject as closed paths, in pixel space
+/// (y down): what a cutter follows, not a fill.
+///
+/// `expand` grows the path out (and shrinks it in when negative), in pixels.
+/// The work is the same a trace does, only the outermost contour of the
+/// subject is kept and no colour is filled in: the mask is the subject, a
+/// round dilation or erosion moves its edge, the contours are traced the
+/// way Suzuki and Abe describe, and each ring becomes a curve the way a
+/// traced region does.
+pub fn contour_paths(img: &RgbaImage, expand: f64, detail: f64, smoothing: f64) -> Vec<BezPath> {
+    let (w, h) = (img.width() as usize, img.height() as usize);
+    if w == 0 || h == 0 {
+        return Vec::new();
+    }
+    let mut mask = subject_mask(img);
+    if !mask.iter().any(|m| *m) {
+        return Vec::new();
+    }
+    let r = expand.abs().round() as usize;
+    if r > 0 && r < w.min(h) {
+        if expand > 0.0 {
+            mask = dilate(&mask, w, h, r);
+        } else {
+            // An erosion is a dilation of the other side of the mask.
+            let inverted: Vec<bool> = mask.iter().map(|m| !m).collect();
+            let grown = dilate(&inverted, w, h, r);
+            mask = grown.iter().map(|m| !m).collect();
+        }
+    }
+    let settings = Settings {
+        detail,
+        smoothing,
+        corner_smoothness: smoothing,
+        colors: 2,
+        black_white: true,
+        remove_background: false,
+        merge_adjacent: false,
+        centerline: false,
+        delete_original: false,
+    };
+    contours(&mask, w, h)
+        .into_iter()
+        .map(|ring| fit_ring(&ring, &settings))
+        .collect()
+}
+
+/// Which pixels are the subject: the opaque ones when the picture's alpha
+/// says so, else the ones far enough from the colours at its four corners.
+fn subject_mask(img: &RgbaImage) -> Vec<bool> {
+    let (w, h) = (img.width(), img.height());
+    if img.pixels().any(|p| p[3] < 250) {
+        return img.pixels().map(|p| p[3] >= 128).collect();
+    }
+    let corners = [
+        img.get_pixel(0, 0),
+        img.get_pixel(w.saturating_sub(1), 0),
+        img.get_pixel(0, h.saturating_sub(1)),
+        img.get_pixel(w.saturating_sub(1), h.saturating_sub(1)),
+    ];
+    img.pixels()
+        .map(|p| {
+            let c = [p[0], p[1], p[2]];
+            corners
+                .iter()
+                .all(|q| distance2(c, [q[0], q[1], q[2]]) > 60 * 60)
+        })
+        .collect()
+}
+
 /// Trace `img` into shapes whose coordinates are in pixel space (y down).
 /// The caller maps them into the bitmap's rectangle.
 pub fn trace(img: &RgbaImage, s: &Settings) -> Vec<Traced> {

@@ -6544,3 +6544,9 @@ ai.model_missing = "モデルのファイルが所定の場所にありません
 
 ai.trace = "トレース"
 ai.trace_hint = "選択した画像を曲線に変換します。"
+
+ai.contour_hint = "選択した画像の周りに閉じたパスを作り、カッターがたどります。"
+ai.contour_expand = "外側へ (mm)"
+ai.contour_run = "巡辺線を作成"
+ai.contour_none = "たどる対象が見つかりませんでした。"
+ai.contour_done = "巡辺線を追加しました。"

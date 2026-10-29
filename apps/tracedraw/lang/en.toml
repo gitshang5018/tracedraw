@@ -6544,3 +6544,9 @@ ai.model_missing = "The model's file is not where it should be."
 
 ai.trace = "Trace"
 ai.trace_hint = "Turns the selected picture into curves."
+
+ai.contour_hint = "A closed path around the selected picture, for a cutter to follow."
+ai.contour_expand = "Grow out (mm)"
+ai.contour_run = "Make the contour"
+ai.contour_none = "No subject was found to follow."
+ai.contour_done = "Contour added."

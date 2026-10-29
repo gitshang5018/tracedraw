@@ -1556,32 +1556,82 @@ fn upscale_apply(app: &mut App, ctx: &egui::Context) {
     }
 }
 
-/// Tracing: a picture turned into curves, by one of the presets the Bitmaps
-/// menu offers. The preset opens the desktop's Trace dialog, which is where
-/// the detail and the smoothing are set.
+/// The contour: the outline of the selected picture as closed paths, which
+/// is what a cutter follows. It grows out of the subject by a distance in
+/// millimetres, or shrinks into it when the distance is negative.
 fn trace_sheet(app: &mut App, ui: &mut Ui, m3: &M3, open: &mut Sheet) {
+    let _ = open;
+    let ctx = ui.ctx().clone();
+    let mut st = ai_state(&ctx);
     ui.label(
-        egui::RichText::new(tr("ai.trace_hint"))
+        egui::RichText::new(tr("ai.contour_hint"))
             .size(12.5)
             .color(m3.variant),
     );
     ui.add_space(8.0);
-    let last = app.last_trace.as_ref().map(|(preset, _)| *preset);
-    let mut chosen = None;
-    for preset in crate::trace::Preset::ALL {
-        let here = last == Some(preset);
-        if toggle_button(ui, m3, &tr(preset.key()), here, ui.available_width()).clicked() {
-            chosen = Some(preset);
-        }
-        ui.add_space(6.0);
+    property_label(ui, m3, &tr("ai.contour_expand"));
+    ui.add(egui::Slider::new(&mut st.contour_expand_mm, -5.0..=5.0).fixed_decimals(2));
+    property_label(ui, m3, &tr("dialog.detail"));
+    ui.add(egui::Slider::new(&mut st.contour_detail, 0.0..=100.0));
+    property_label(ui, m3, &tr("dialog.smoothing"));
+    ui.add(egui::Slider::new(&mut st.contour_smooth, 0.0..=100.0));
+    ui.add_space(10.0);
+    if action_chip(ui, m3, &tr("ai.contour_run")).clicked() {
+        contour_run(app, st.contour_expand_mm, st.contour_detail, st.contour_smooth);
     }
-    if let Some(preset) = chosen {
-        app.dialog = crate::ui::dialogs::Dialog::Trace(crate::ui::dialogs::TraceState::new(
-            preset,
-            &app.settings.tracing,
+    save_ai_state(&ctx, &st);
+}
+
+/// Put the contour of the selected picture in the drawing, on the layer
+/// being drawn on: closed paths, no fill, a hairline to follow.
+fn contour_run(app: &mut App, expand_mm: f64, detail: f64, smoothing: f64) {
+    let Some((_, rect, _, _, png)) = app.bitmap_shapes().into_iter().next() else {
+        app.status = tr("ai.need_picture");
+        return;
+    };
+    let Some(img) = crate::bitmap_fx::decode(&png) else {
+        return;
+    };
+    if img.width() == 0 || img.height() == 0 {
+        return;
+    }
+    // A millimetre in the drawing is this many pixels of the picture.
+    let mm_per_px = (rect.width() / img.width() as f64).max(1e-9);
+    let paths = crate::trace::contour_paths(
+        &img,
+        expand_mm / mm_per_px,
+        detail,
+        smoothing,
+    );
+    if paths.is_empty() {
+        app.status = tr("ai.contour_none");
+        return;
+    }
+    let Some(layer) = app.active_layer() else {
+        return;
+    };
+    let mut cmds = Vec::new();
+    for path in paths {
+        let placed = crate::trace::to_rect(&path, img.width(), img.height(), rect);
+        let id = app.engine.new_shape_id();
+        let mut shape = tracedraw_core::document::Shape::new(
+            id,
+            tracedraw_core::document::ShapeKind::Path {
+                path: placed,
+                closed: true,
+            },
+        );
+        shape.fill = tracedraw_core::Fill::None;
+        shape.stroke = Some(tracedraw_core::Stroke::hairline(
+            tracedraw_core::Color::BLACK,
         ));
-        *open = Sheet::None;
+        cmds.push(tracedraw_core::Command::AddShape { layer, shape });
     }
+    if let Err(e) = app.engine.run_batch("Contour", &cmds) {
+        app.status = e;
+        return;
+    }
+    app.status = tr("ai.contour_done");
 }
 
 /// Variable data: the desktop's Print Merge panel, a copy of the drawing a

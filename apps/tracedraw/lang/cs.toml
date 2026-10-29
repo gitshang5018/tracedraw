@@ -6544,3 +6544,9 @@ ai.model_missing = "Soubor modelu není tam, kde má být."
 
 ai.trace = "Obkreslení"
 ai.trace_hint = "Převede vybraný obrázek na křivky."
+
+ai.contour_hint = "Uzavřená cesta kolem vybraného obrázku, po které jede řezačka."
+ai.contour_expand = "Ven (mm)"
+ai.contour_run = "Vytvořit obrys"
+ai.contour_none = "Nebyl nalezen žádný objekt k obkreslení."
+ai.contour_done = "Obrys přidán."

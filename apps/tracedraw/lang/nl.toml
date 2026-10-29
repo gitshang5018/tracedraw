@@ -6544,3 +6544,9 @@ ai.model_missing = "Het bestand van het model staat niet waar het hoort."
 
 ai.trace = "Natekenen"
 ai.trace_hint = "Maakt van de gekozen afbeelding krommen."
+
+ai.contour_hint = "Een gesloten pad om de gekozen afbeelding, waar een snijder het volgt."
+ai.contour_expand = "Naar buiten (mm)"
+ai.contour_run = "Contour maken"
+ai.contour_none = "Geen onderwerp gevonden om te volgen."
+ai.contour_done = "Contour toegevoegd."
