@@ -561,53 +561,95 @@ fn outline(img: &RgbaImage, s: &Settings) -> Vec<Traced> {
 /// part.
 const UNDERLAP: usize = 2;
 
-/// `mask` grown by `r` pixels in every direction (a square of side
-/// 2r + 1): running maxima along the rows, then down and up the columns
-/// a row at a time.
+/// `mask` grown by `r` pixels in every direction, a disc rather than a
+/// square: the distance from the mask is worked out exactly (a squared
+/// distance transform, one pass along the rows and one down the columns,
+/// Felzenszwalb and Huttenlocher's), and every cell within `r` of it is
+/// set. A square growth leaves the sides of a round subject straight and
+/// pushes its corners out by a further half, which a cut line shows on
+/// every curve.
 fn dilate(mask: &[bool], w: usize, h: usize, r: usize) -> Vec<bool> {
-    let mut out = vec![false; w * h];
     if mask.len() != w * h {
-        return out;
+        return vec![false; w * h];
     }
-    let mut rows = vec![false; w * h];
-    for y in 0..h {
-        let line = &mask[y * w..(y + 1) * w];
-        let row = &mut rows[y * w..(y + 1) * w];
-        let mut last: Option<usize> = None;
-        for x in 0..w {
-            if line[x] {
-                last = Some(x);
-            }
-            row[x] = last.is_some_and(|l| x - l <= r);
-        }
-        last = None;
-        for x in (0..w).rev() {
-            if line[x] {
-                last = Some(x);
-            }
-            row[x] |= last.is_some_and(|l| l - x <= r);
-        }
+    if r == 0 {
+        return mask.to_vec();
     }
-    // The last set row seen in each column, going down, then going up.
-    let mut last: Vec<Option<usize>> = vec![None; w];
+    // Far enough that no place on a line is within reach of it, and small
+    // enough that adding it to a squared index keeps its digits: a value
+    // that loses them makes every crossing point come out at zero, and the
+    // envelope below then walks the whole line for every cell.
+    let far = ((w.max(h) * w.max(h)) as f64) + 1.0;
+    let mut grid = vec![far; w * h];
+    let mut line = vec![0.0f64; w.max(h)];
     for y in 0..h {
         for x in 0..w {
-            if rows[y * w + x] {
-                last[x] = Some(y);
-            }
-            out[y * w + x] = last[x].is_some_and(|l| y - l <= r);
+            line[x] = if mask[y * w + x] { 0.0 } else { far };
+        }
+        let d = distance_1d(&line[..w], far);
+        grid[y * w..(y + 1) * w].copy_from_slice(&d);
+    }
+    for x in 0..w {
+        for y in 0..h {
+            line[y] = grid[y * w + x];
+        }
+        let d = distance_1d(&line[..h], far);
+        for y in 0..h {
+            grid[y * w + x] = d[y];
         }
     }
-    last.fill(None);
-    for y in (0..h).rev() {
-        for x in 0..w {
-            if rows[y * w + x] {
-                last[x] = Some(y);
-            }
-            out[y * w + x] |= last[x].is_some_and(|l| l - y <= r);
-        }
+    let rr = (r * r) as f64;
+    let mut out = vec![false; w * h];
+    for i in 0..w * h {
+        out[i] = grid[i] <= rr;
     }
     out
+}
+
+/// The squared distance from every place on one line to the nearest zero
+/// of `f`, as the lower envelope of the parabolas `(x - q)^2 + f[q]`
+/// (Felzenszwalb and Huttenlocher). A place with no zero in `f` keeps a
+/// distance far past any picture.
+fn distance_1d(f: &[f64], far: f64) -> Vec<f64> {
+    let n = f.len();
+    let mut d = vec![far; n];
+    if n == 0 {
+        return d;
+    }
+    // The parabolas that reach the top of the envelope, and where each of
+    // them starts.
+    let mut v = vec![0usize; n];
+    let mut z = vec![0.0f64; n + 1];
+    let mut k = 0usize;
+    v[0] = 0;
+    z[0] = f64::NEG_INFINITY;
+    z[1] = f64::INFINITY;
+    for q in 1..n {
+        let mut s = cross(f, v[k], q);
+        while k > 0 && s <= z[k] {
+            k -= 1;
+            s = cross(f, v[k], q);
+        }
+        k += 1;
+        v[k] = q;
+        z[k] = s;
+        z[k + 1] = f64::INFINITY;
+    }
+    k = 0;
+    for q in 0..n {
+        while z[k + 1] < q as f64 {
+            k += 1;
+        }
+        let dq = q as f64 - v[k] as f64;
+        d[q] = dq * dq + f[v[k]];
+    }
+    d
+}
+
+/// Where the parabolas of `a` and `b` meet.
+fn cross(f: &[f64], a: usize, b: usize) -> f64 {
+    let (a, b) = (a as f64, b as f64);
+    ((f[b as usize] + b * b) - (f[a as usize] + a * a)) / (2.0 * b - 2.0 * a)
 }
 
 /// How far apart (RGB distance) two colours must be for a thin band
@@ -2001,14 +2043,17 @@ mod tests {
     }
 
     #[test]
-    fn dilation_grows_a_mask_by_a_square() {
+    fn dilation_grows_a_mask_by_a_disc() {
         let (w, h) = (7, 6);
         let mut mask = vec![false; w * h];
         mask[2 * w + 3] = true;
         let d = dilate(&mask, w, h, 2);
         for y in 0..h {
             for x in 0..w {
-                let want = (1..=5).contains(&x) && y <= 4;
+                // Two pixels of a disc, not the corners of a square: the
+                // places at (1, 0) and (1, 1) from the cell are out.
+                let (dx, dy) = (x as i32 - 3, y as i32 - 2);
+                let want = dx * dx + dy * dy <= 4;
                 assert_eq!(d[y * w + x], want, "{x},{y}");
             }
         }
@@ -2143,6 +2188,42 @@ mod tests {
         assert!(
             min_x < -2.0,
             "the outline stops at {min_x} instead of going past the edge"
+        );
+    }
+
+    #[test]
+    fn an_expansion_grows_a_disc_not_a_square() {
+        // A round subject grown by six pixels is round and six pixels
+        // bigger. Grown as a square it reached 20 + 6 * sqrt(2), about
+        // 28.5, at the diagonals and ran straight between them, which is
+        // the flattened side a cut line showed on every curve.
+        let n = 80u32;
+        let mut img = RgbaImage::from_pixel(n, n, image::Rgba([255, 255, 255, 255]));
+        let c = n as f64 / 2.0;
+        for y in 0..n {
+            for x in 0..n {
+                let dx = x as f64 + 0.5 - c;
+                let dy = y as f64 + 0.5 - c;
+                if dx * dx + dy * dy <= 20.0 * 20.0 {
+                    img.put_pixel(x, y, image::Rgba([0, 0, 0, 255]));
+                }
+            }
+        }
+        let paths = contour_paths(&img, 6.0, 100.0, 40.0);
+        assert!(!paths.is_empty(), "no outline was traced");
+        let mut far = 0.0f64;
+        for path in &paths {
+            for el in path.elements() {
+                if let Some(p) = el.end_point() {
+                    let (dx, dy) = (p.x - c, p.y - c);
+                    far = far.max((dx * dx + dy * dy).sqrt());
+                }
+            }
+        }
+        assert!(far > 24.0, "the outline did not grow: it reaches {far}");
+        assert!(
+            far < 27.2,
+            "the outline grew as a square, out to {far} rather than 26"
         );
     }
 }

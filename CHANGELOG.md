@@ -6,6 +6,7 @@ full, row-by-row status.
 
 ## Unreleased
 
+- Contour on a phone, a rounder edge: the outline was grown by a distance as a square, so a round subject came out with straight sides and corners pushed out by a further half, which a cut line shows on every curve. The growth is a disc now, from the exact distance to the subject (`trace::dilate`), so an expanded outline is the subject's own outline moved out by the distance.
 - Contour on a phone, where the picture is: a picture moved, turned or scaled after it was placed keeps the rectangle it was made with and takes the change in its transform, so the outline came out at the place the picture had started from, which is often the middle of the page. The outline takes the picture's transform now and follows it wherever it is.
 - Contour on a phone, growing past the edge: an expansion that reached the picture's border was cut flat along it, since the cells outside the picture count as empty. The picture is given room on every side before the subject grows, and the rings are moved back afterwards, so the outline goes past the edge the way a cutter follows it.
 - The phone's interface is laid out the way a phone's own settings page is: a light grey page with white rounded cards, a hairline between two rows of a card, an arrow at the end of a row that opens something, and one accent blue throughout. The drawer, Tools > Options and every list under them are cards of rows now. The icons are the ones the app already draws, on a tile of their own where a row has one.
