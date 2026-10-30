@@ -83,8 +83,25 @@ fn made_here() -> Option<Gpu> {
         info.name,
         info.device_type
     );
+    // The card's own limits, not the cautious ones a device comes with: a
+    // whole picture goes into one storage buffer, and the default cap of
+    // 128 MiB is under a large one. A bind group over that cap is a
+    // validation error, which this build handles as fatal, so the app
+    // stopped as soon as an upscale of a big picture began.
+    let caps = adapter.limits();
+    let limits = wgpu::Limits {
+        max_storage_buffer_binding_size: caps.max_storage_buffer_binding_size,
+        max_buffer_size: caps.max_buffer_size,
+        ..wgpu::Limits::default()
+    };
+    log::info!(
+        "upscaling: a storage buffer up to {} MiB, a buffer up to {} MiB",
+        limits.max_storage_buffer_binding_size / (1024 * 1024),
+        limits.max_buffer_size / (1024 * 1024)
+    );
     let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
         label: Some("upscale"),
+        required_limits: limits,
         ..Default::default()
     }))
     .map_err(|e| log::error!("upscaling: the card would not make a device: {e}"))
@@ -711,6 +728,16 @@ impl GpuNet {
                         let ow = sw * scale;
                         let total = oh * ow * sc;
                         let size = (total * 4) as u64;
+                        // A buffer larger than the card takes in one binding
+                        // is a validation error, and this build stops the app
+                        // on one: a picture too large for the card is reported
+                        // instead, and the caller shows why.
+                        let cap = self.device.limits().max_storage_buffer_binding_size as u64;
+                        if size > cap {
+                            return Err(format!(
+                                "an enlarged picture of {ow} x {oh} needs {size} bytes in one buffer, and this card takes {cap}"
+                            ));
+                        }
                         let dst = pool.take(&self.device, size);
                         let (gx, gy) = groups(total);
                         let params = self.device.create_buffer(&wgpu::BufferDescriptor {
