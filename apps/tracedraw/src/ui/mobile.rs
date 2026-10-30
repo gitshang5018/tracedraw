@@ -1446,7 +1446,7 @@ fn trace_sheet(app: &mut App, ui: &mut Ui, m3: &M3, open: &mut Sheet) {
 /// Put the contour of the selected picture in the drawing, on the layer
 /// being drawn on: closed paths, no fill, a hairline to follow.
 fn contour_run(app: &mut App, expand_mm: f64, detail: f64, smoothing: f64) {
-    let Some((_, rect, _, _, png)) = app.bitmap_shapes().into_iter().next() else {
+    let Some((bitmap, rect, _, _, png)) = app.bitmap_shapes().into_iter().next() else {
         app.status = tr("ai.need_picture");
         return;
     };
@@ -1468,7 +1468,17 @@ fn contour_run(app: &mut App, expand_mm: f64, detail: f64, smoothing: f64) {
         app.status = tr("ai.contour_none");
         return;
     }
-    let Some(layer) = app.active_layer() else {
+    // The picture's own layer, and after it in that layer: a contour put on
+    // the layer being drawn on lands under the picture whenever that layer
+    // is below it, and a cutter's line is of no use under the picture it
+    // follows.
+    let layer = app
+        .doc()
+        .all_layers()
+        .find(|l| l.shapes.iter().any(|s| s.id == bitmap))
+        .map(|l| l.id)
+        .or_else(|| app.active_layer());
+    let Some(layer) = layer else {
         return;
     };
     let mut cmds = Vec::new();

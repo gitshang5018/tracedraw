@@ -6,6 +6,7 @@ full, row-by-row status.
 
 ## Unreleased
 
+- 巡边 (Contour): the outline follows the picture's own brightness now, split where the two sides are as alike as they can be, with the border saying which side is the paper, rather than the distance from the colours of the four corners, which took in a shadow or a paper that is not flat. Its curves may stray further from the pixels, so a contour comes out with far fewer nodes, and at smoothing 0 it is a simplified polyline instead of a curve fitted to every stair step. The contour lands on the picture's own layer, above it, rather than on the layer being drawn on, which left it under the picture whenever that layer was below.
 - 高清放大 (Upscale) is out of the phone's image tools. The card that would run it is lost by its driver on the second tile of every picture, at every tile size and with tens of megabytes of buffers, and the processor path needs about twenty minutes for one picture. Matting and Variable data stay. The models in `Download/models` are left where they are; nothing reads them now.
 - Opening `.cdr` files: East Asian letters take the style's East Asian font, the one the file sets for them beside the Latin and other scripts' fonts, so a drawing made with a Chinese, Japanese or Korean font shows its text in it instead of in the Latin one (#955).
 - Font list: a filter beside the list narrows it by style, weight, width, technology, scripts, features, rights and folders, and the list shows what is left as the letters are typed (#867).

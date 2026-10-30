@@ -64,6 +64,7 @@ impl Preset {
         };
         Settings {
             detail,
+            tolerance: None,
             smoothing,
             corner_smoothness: 0.0,
             colors,
@@ -79,6 +80,11 @@ impl Preset {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Settings {
     pub detail: f64,
+    /// How far a fitted curve may stray from the pixels, in pixels: `None`
+    /// leaves it to `detail`, which is what a colour trace wants. A contour
+    /// is one line at the size the picture is placed at, and its nodes are
+    /// what a cutter travels, so it asks for a wider one.
+    pub tolerance: Option<f64>,
     pub smoothing: f64,
     pub corner_smoothness: f64,
     pub colors: u32,
@@ -125,8 +131,13 @@ pub fn contour_paths(img: &RgbaImage, expand: f64, detail: f64, smoothing: f64) 
             mask = grown.iter().map(|m| !m).collect();
         }
     }
+    // A contour is a single line at the size the picture sits at, and every
+    // node of it is a place a cutter slows down: the curve may stray as far
+    // as the slider says, which is further than a colour trace allows.
+    let tolerance = 0.4 + (100.0 - detail.clamp(0.0, 100.0)) / 100.0 * 3.0;
     let settings = Settings {
         detail,
+        tolerance: Some(tolerance),
         smoothing,
         corner_smoothness: smoothing,
         colors: 2,
@@ -138,17 +149,109 @@ pub fn contour_paths(img: &RgbaImage, expand: f64, detail: f64, smoothing: f64) 
     };
     contours(&mask, w, h)
         .into_iter()
-        .map(|ring| fit_ring(&ring, &settings))
+        .map(|ring| {
+            // No smoothing asks for the pixels' own edges, steps and all,
+            // which a colour trace gives as a simplified polyline: a curve
+            // fitted to a staircase at that setting is the staircase with
+            // more nodes than it started with.
+            if smoothing <= 0.0 {
+                let simplified = tracedraw_core::geometry::simplify(&ring, tolerance);
+                if simplified.len() >= 3 {
+                    return polyline_closed(&simplified);
+                }
+            }
+            fit_ring(&ring, &settings)
+        })
         .collect()
 }
 
 /// Which pixels are the subject: the opaque ones when the picture's alpha
-/// says so, else the ones far enough from the colours at its four corners.
+/// says so, else the ink side of the brightness the picture splits at.
 fn subject_mask(img: &RgbaImage) -> Vec<bool> {
     let (w, h) = (img.width(), img.height());
     if img.pixels().any(|p| p[3] < 250) {
         return img.pixels().map(|p| p[3] >= 128).collect();
     }
+    let total = w as u64 * h as u64;
+    if total == 0 {
+        return Vec::new();
+    }
+    // Ink and paper are the two sides of one brightness: the split is the
+    // one that leaves each side as alike as it can be, Otsu's. Reading the
+    // edge off the picture's own brightness is what a contour of a logo on
+    // white is after, where a distance from the colours of the four corners
+    // takes in a shadow, a watermark or a paper that is not quite flat.
+    let mut hist = [0u64; 256];
+    for p in img.pixels() {
+        hist[brightness(p) as usize] += 1;
+    }
+    let sum: f64 = (0..256).map(|i| i as f64 * hist[i] as f64).sum();
+    let (mut seen, mut seen_sum, mut best, mut at) = (0u64, 0.0f64, -1.0f64, 128u8);
+    for t in 0..256 {
+        seen += hist[t];
+        if seen == 0 {
+            continue;
+        }
+        let left = total - seen;
+        if left == 0 {
+            break;
+        }
+        seen_sum += t as f64 * hist[t] as f64;
+        let below = seen_sum / seen as f64;
+        let above = (sum - seen_sum) / left as f64;
+        let between = seen as f64 * left as f64 * (below - above) * (below - above);
+        if between > best {
+            best = between;
+            at = t as u8;
+        }
+    }
+    // Which side is the paper: the one the border of the picture is made of.
+    let (mut dark, mut light) = (0u32, 0u32);
+    {
+        let mut tally = |x: u32, y: u32| {
+            if brightness(img.get_pixel(x, y)) <= at {
+                dark += 1;
+            } else {
+                light += 1;
+            }
+        };
+        for x in 0..w {
+            tally(x, 0);
+            if h > 1 {
+                tally(x, h - 1);
+            }
+        }
+        for y in 0..h {
+            tally(0, y);
+            if w > 1 {
+                tally(w - 1, y);
+            }
+        }
+    }
+    let paper_is_dark = dark > light;
+    let ink = |p: &image::Rgba<u8>| {
+        let l = brightness(p);
+        if paper_is_dark {
+            l > at
+        } else {
+            l <= at
+        }
+    };
+    let mut mask: Vec<bool> = img.pixels().map(ink).collect();
+    // A picture one brightness cannot read, a photograph or a gradient,
+    // leaves everything on one side: the colours of the corners then say
+    // which pixels are not the background after all.
+    let marked = mask.iter().filter(|m| **m).count() as u64;
+    if marked == 0 || marked * 50 > total * 49 {
+        mask = corner_mask(img);
+    }
+    mask
+}
+
+/// The pixels far enough from the colours at the picture's four corners:
+/// what the brightness split falls back on.
+fn corner_mask(img: &RgbaImage) -> Vec<bool> {
+    let (w, h) = (img.width(), img.height());
     let corners = [
         img.get_pixel(0, 0),
         img.get_pixel(w.saturating_sub(1), 0),
@@ -163,6 +266,11 @@ fn subject_mask(img: &RgbaImage) -> Vec<bool> {
                 .all(|q| distance2(c, [q[0], q[1], q[2]]) > 60 * 60)
         })
         .collect()
+}
+
+/// How bright a pixel is, as one byte.
+fn brightness(p: &image::Rgba<u8>) -> u8 {
+    ((p[0] as u32 * 299 + p[1] as u32 * 587 + p[2] as u32 * 114) / 1000) as u8
 }
 
 /// Trace `img` into shapes whose coordinates are in pixel space (y down).
@@ -732,7 +840,9 @@ fn fit_ring(ring: &[Point], s: &Settings) -> BezPath {
             );
         }
     }
-    let tolerance = 0.2 + (100.0 - s.detail.clamp(0.0, 100.0)) / 100.0;
+    let tolerance = s
+        .tolerance
+        .unwrap_or_else(|| 0.2 + (100.0 - s.detail.clamp(0.0, 100.0)) / 100.0);
     let mut out = BezPath::new();
     if corners.is_empty() {
         // No corner: quarters meeting smoothly (a cubic bends through a
@@ -1840,6 +1950,33 @@ mod tests {
         assert_eq!(labels[0], usize::MAX);
         assert_eq!(speck_area(100.0), 1);
         assert!(speck_area(35.0) > speck_area(80.0));
+    }
+
+    /// The contour's mask reads the picture's brightness, whichever side of
+    /// it the ink is on, and a picture with transparency is its opaque part.
+    #[test]
+    fn the_subject_is_the_ink_on_either_side_of_the_brightness() {
+        let square = |ink: Rgba<u8>, paper: Rgba<u8>| {
+            ImageBuffer::from_fn(40, 40, |x, y| {
+                if (10..30).contains(&x) && (10..30).contains(&y) {
+                    ink
+                } else {
+                    paper
+                }
+            })
+        };
+        let black_on_white = square(Rgba([0, 0, 0, 255]), Rgba([255, 255, 255, 255]));
+        let m = subject_mask(&black_on_white);
+        assert!(m[20 * 40 + 20], "the black square is the subject");
+        assert!(!m[2 * 40 + 2], "the white ground is not");
+        let white_on_black = square(Rgba([255, 255, 255, 255]), Rgba([0, 0, 0, 255]));
+        let m = subject_mask(&white_on_black);
+        assert!(m[20 * 40 + 20], "the white square is the subject");
+        assert!(!m[2 * 40 + 2], "the black ground is not");
+        let cut_out = square(Rgba([0, 0, 0, 255]), Rgba([0, 0, 0, 0]));
+        let m = subject_mask(&cut_out);
+        assert!(m[20 * 40 + 20], "the opaque part is the subject");
+        assert!(!m[2 * 40 + 2], "the transparent part is not");
     }
 
     #[test]
