@@ -6,6 +6,7 @@ full, row-by-row status.
 
 ## Unreleased
 
+- AI 生成 on a phone, tidied: the four modes are two rows of two buttons of one size; the reset arrows are the word 清除; the reference picture takes the whole width with two buttons of one size under it; the aspect ratio is a label over its list rather than a label squeezed beside it; the fold arrow is the words 隐藏样式和调色板; and the glyphs a phone's fonts lack (the sparkle, the arrows) are gone. The sheet also stops above the gesture bar, which was cutting off the button it is for.
 - AI 生成 on a phone: the modes are words instead of picture buttons, since a glyph's meaning is a tooltip and a phone has no pointer to hover one with; the panel is one scroll instead of a scroll inside a scroll; the prompt box is four lines rather than six; and the button that generates stays in view under the settings instead of at the end of them.
 - 属性面板 (Properties): five labels were showing their own key names, `position`, `object_size`, `outline_none`, `outline_hairline` and `actions`, because those keys were in no language table at all: they read as Chinese now, in all eighteen languages.
 - AI 生成 is in the chip at the left edge of the phone's drawing, beside matting, variable data and the contour, and its panel opens over most of the drawing rather than in a short sheet.

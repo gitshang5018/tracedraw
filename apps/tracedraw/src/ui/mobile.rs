@@ -1825,10 +1825,15 @@ fn sheet_ui(
                     });
             });
     } else {
-        let height = sheet_height(which, screen.height());
+        // Above the gesture bar: a sheet that reaches the bottom of the
+        // screen puts its last row, the button a panel is for, under it.
+        let height = (sheet_height(which, screen.height()) - safe.bottom).max(180.0);
         egui::Area::new(Id::new("mobile_sheet_port"))
             .order(egui::Order::Foreground)
-            .fixed_pos(egui::pos2(screen.left(), screen.bottom() - height))
+            .fixed_pos(egui::pos2(
+                screen.left(),
+                screen.bottom() - safe.bottom - height,
+            ))
             .show(&ctx, |ui| {
                 Frame::new()
                     .fill(m3.surface)
