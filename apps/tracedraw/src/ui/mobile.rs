@@ -1248,7 +1248,7 @@ fn ai_chip(app: &mut App, ui: &mut Ui, m3: &M3, full: Rect, open: &mut Sheet) {
                 }))
                 .inner_margin(egui::Margin::same(6))
                 .show(ui, |ui| {
-                    ui.set_width(172.0);
+                    ui.set_width(140.0);
                     ui.spacing_mut().item_spacing.y = 0.0;
                     for (action, label) in items {
                         let (at, resp) = ui.allocate_exact_size(
