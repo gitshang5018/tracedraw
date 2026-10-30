@@ -6749,6 +6749,8 @@ ai.trace_hint = "把选中的图片转成曲线。"
 
 ai.contour_hint = "沿选中的图片生成闭合路径，供切割机走刀。"
 ai.contour_expand = "外扩 (mm)"
+ai.contour_white_backing = "生成白色底"
+ai.contour_power_clip = "自动置入容器"
 ai.contour_run = "生成巡边线"
 ai.contour_none = "没有找到可巡边的主体。"
 ai.contour_done = "巡边线已生成。"

@@ -6749,6 +6749,8 @@ ai.trace_hint = "Превращает выбранное изображение 
 
 ai.contour_hint = "Замкнутый контур вокруг выбранного изображения, по которому идёт резак."
 ai.contour_expand = "Наружу (мм)"
+ai.contour_white_backing = "Белая подложка"
+ai.contour_power_clip = "Поместить в контейнер"
 ai.contour_run = "Построить контур"
 ai.contour_none = "Не найдено объекта, по которому идти."
 ai.contour_done = "Контур добавлен."

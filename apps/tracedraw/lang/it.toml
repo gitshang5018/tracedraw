@@ -6749,6 +6749,8 @@ ai.trace_hint = "Trasforma l'immagine scelta in curve."
 
 ai.contour_hint = "Un tracciato chiuso attorno all'immagine scelta, che una taglierina segue."
 ai.contour_expand = "Espandi (mm)"
+ai.contour_white_backing = "Fondo bianco"
+ai.contour_power_clip = "Inserisci in un contenitore"
 ai.contour_run = "Crea il contorno"
 ai.contour_none = "Nessun soggetto da seguire trovato."
 ai.contour_done = "Contorno aggiunto."

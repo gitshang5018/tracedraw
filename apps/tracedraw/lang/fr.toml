@@ -6749,6 +6749,8 @@ ai.trace_hint = "Transforme l'image choisie en courbes."
 
 ai.contour_hint = "Un tracé fermé autour de l'image choisie, que suit une découpeuse."
 ai.contour_expand = "Déborder (mm)"
+ai.contour_white_backing = "Fond blanc"
+ai.contour_power_clip = "Placer dans un conteneur"
 ai.contour_run = "Créer le contour"
 ai.contour_none = "Aucun sujet à suivre n'a été trouvé."
 ai.contour_done = "Contour ajouté."

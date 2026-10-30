@@ -6749,6 +6749,8 @@ ai.trace_hint = "Převede vybraný obrázek na křivky."
 
 ai.contour_hint = "Uzavřená cesta kolem vybraného obrázku, po které jede řezačka."
 ai.contour_expand = "Ven (mm)"
+ai.contour_white_backing = "Bílé podložení"
+ai.contour_power_clip = "Vložit do kontejneru"
 ai.contour_run = "Vytvořit obrys"
 ai.contour_none = "Nebyl nalezen žádný objekt k obkreslení."
 ai.contour_done = "Obrys přidán."

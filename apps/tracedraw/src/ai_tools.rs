@@ -62,6 +62,11 @@ pub struct AiTools {
     pub contour_expand_mm: f64,
     pub contour_detail: f64,
     pub contour_smooth: f64,
+    /// The contour filled white under the picture, and the picture put
+    /// inside the contour as a container: what a cutting outline is made
+    /// with when the picture is to be printed on its own white.
+    pub contour_white_backing: bool,
+    pub contour_power_clip: bool,
 }
 
 impl Default for AiTools {
@@ -79,6 +84,8 @@ impl Default for AiTools {
             contour_expand_mm: 0.0,
             contour_detail: 60.0,
             contour_smooth: 40.0,
+            contour_white_backing: false,
+            contour_power_clip: false,
         }
     }
 }

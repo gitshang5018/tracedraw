@@ -1436,16 +1436,35 @@ fn trace_sheet(app: &mut App, ui: &mut Ui, m3: &M3, open: &mut Sheet) {
     ui.add(egui::Slider::new(&mut st.contour_detail, 0.0..=100.0));
     property_label(ui, m3, &tr("dialog.smoothing"));
     ui.add(egui::Slider::new(&mut st.contour_smooth, 0.0..=100.0));
+    ui.add_space(8.0);
+    ui.checkbox(&mut st.contour_white_backing, tr("ai.contour_white_backing"));
+    ui.checkbox(&mut st.contour_power_clip, tr("ai.contour_power_clip"));
     ui.add_space(10.0);
     if action_chip(ui, m3, &tr("ai.contour_run")).clicked() {
-        contour_run(app, st.contour_expand_mm, st.contour_detail, st.contour_smooth);
+        contour_run(
+            app,
+            st.contour_expand_mm,
+            st.contour_detail,
+            st.contour_smooth,
+            st.contour_white_backing,
+            st.contour_power_clip,
+        );
     }
     save_ai_state(&ctx, &st);
 }
 
-/// Put the contour of the selected picture in the drawing, on the layer
-/// being drawn on: closed paths, no fill, a hairline to follow.
-fn contour_run(app: &mut App, expand_mm: f64, detail: f64, smoothing: f64) {
+/// Put the contour of the selected picture in the drawing, on the picture's
+/// own layer and over it: one closed outline with its rings as subpaths, a
+/// hairline to follow, filled white when a backing is asked for, and with
+/// the picture put inside it when the outline is to be a container.
+fn contour_run(
+    app: &mut App,
+    expand_mm: f64,
+    detail: f64,
+    smoothing: f64,
+    white_backing: bool,
+    power_clip: bool,
+) {
     let Some((bitmap, rect, _, _, png)) = app.bitmap_shapes().into_iter().next() else {
         app.status = tr("ai.need_picture");
         return;
@@ -1481,22 +1500,40 @@ fn contour_run(app: &mut App, expand_mm: f64, detail: f64, smoothing: f64) {
     let Some(layer) = layer else {
         return;
     };
-    let mut cmds = Vec::new();
-    for path in paths {
-        let placed = crate::trace::to_rect(&path, img.width(), img.height(), rect);
-        let id = app.engine.new_shape_id();
-        let mut shape = tracedraw_core::document::Shape::new(
-            id,
-            tracedraw_core::document::ShapeKind::Path {
-                path: placed,
-                closed: true,
-            },
-        );
-        shape.fill = tracedraw_core::Fill::None;
-        shape.stroke = Some(tracedraw_core::Stroke::hairline(
-            tracedraw_core::Color::BLACK,
-        ));
-        cmds.push(tracedraw_core::Command::AddShape { layer, shape });
+    // One object for the whole outline, its rings as subpaths: a cutter
+    // follows it as one line, and a picture put inside it is clipped by the
+    // outline and its holes together, which a ring of its own could not do.
+    let mut outline = tracedraw_core::geometry::BezPath::new();
+    for path in &paths {
+        outline.extend(crate::trace::to_rect(path, img.width(), img.height(), rect));
+    }
+    let id = app.engine.new_shape_id();
+    let mut shape = tracedraw_core::document::Shape::new(
+        id,
+        tracedraw_core::document::ShapeKind::Path {
+            path: outline,
+            closed: true,
+        },
+    );
+    // The white backing is the outline itself filled white, under the
+    // picture, so the picture is printed on its own white rather than on
+    // whatever the page shows through it.
+    shape.fill = if white_backing {
+        tracedraw_core::Fill::Solid(tracedraw_core::Color::WHITE)
+    } else {
+        tracedraw_core::Fill::None
+    };
+    shape.stroke = Some(tracedraw_core::Stroke::hairline(
+        tracedraw_core::Color::BLACK,
+    ));
+    let mut cmds = vec![tracedraw_core::Command::AddShape { layer, shape }];
+    if power_clip {
+        // The picture goes inside the outline, which becomes its container:
+        // what is outside the cut line is not printed and not cut.
+        cmds.push(tracedraw_core::Command::PlaceInside {
+            contents: vec![bitmap],
+            frame: id,
+        });
     }
     if let Err(e) = app.engine.run_batch("Contour", &cmds) {
         app.status = e.to_string();

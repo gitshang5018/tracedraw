@@ -6749,6 +6749,8 @@ ai.trace_hint = "নির্বাচিত ছবিকে বক্ররে�
 
 ai.contour_hint = "নির্বাচিত ছবির চারপাশে বন্ধ পথ, যা কাটার অনুসরণ করে।"
 ai.contour_expand = "বাইরে বাড়ান (mm)"
+ai.contour_white_backing = "সাদা পটভূমি"
+ai.contour_power_clip = "কন্টেইনারে রাখুন"
 ai.contour_run = "কনট্যুর তৈরি করুন"
 ai.contour_none = "অনুসরণ করার মতো কিছু পাওয়া যায়নি।"
 ai.contour_done = "কনট্যুর যোগ হয়েছে।"

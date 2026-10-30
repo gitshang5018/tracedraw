@@ -6749,6 +6749,8 @@ ai.trace_hint = "Zamienia wybrany obraz w krzywe."
 
 ai.contour_hint = "Zamknięta ścieżka wokół wybranego obrazu, po której idzie ploter."
 ai.contour_expand = "Na zewnątrz (mm)"
+ai.contour_white_backing = "Białe podłoże"
+ai.contour_power_clip = "Umieść w kontenerze"
 ai.contour_run = "Utwórz obrys"
 ai.contour_none = "Nie znaleziono obiektu do obrysowania."
 ai.contour_done = "Obrys dodany."

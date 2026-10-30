@@ -6749,6 +6749,8 @@ ai.trace_hint = "Convierte la imagen elegida en curvas."
 
 ai.contour_hint = "Un trazado cerrado alrededor de la imagen elegida, que sigue una cortadora."
 ai.contour_expand = "Expandir (mm)"
+ai.contour_white_backing = "Fondo blanco"
+ai.contour_power_clip = "Colocar en un contenedor"
 ai.contour_run = "Crear el contorno"
 ai.contour_none = "No se encontró ningún motivo que seguir."
 ai.contour_done = "Contorno añadido."

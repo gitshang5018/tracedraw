@@ -6749,6 +6749,8 @@ ai.trace_hint = "يحوّل الصورة المحددة إلى منحنيات."
 
 ai.contour_hint = "مسار مغلق حول الصورة المحددة يتبعه القاطع."
 ai.contour_expand = "توسيع (مم)"
+ai.contour_white_backing = "خلفية بيضاء"
+ai.contour_power_clip = "الوضع في حاوية"
 ai.contour_run = "أنشئ الكفاف"
 ai.contour_none = "لم يُعثر على موضوع يُتتبَّع."
 ai.contour_done = "أُضيف الكفاف."

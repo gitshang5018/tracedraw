@@ -6749,6 +6749,8 @@ ai.trace_hint = "Mengubah gambar terpilih menjadi kurva."
 
 ai.contour_hint = "Jalur tertutup di sekeliling gambar terpilih, diikuti pemotong."
 ai.contour_expand = "Melebar (mm)"
+ai.contour_white_backing = "Latar putih"
+ai.contour_power_clip = "Tempatkan dalam wadah"
 ai.contour_run = "Buat kontur"
 ai.contour_none = "Tidak ada subjek yang bisa diikuti."
 ai.contour_done = "Kontur ditambahkan."

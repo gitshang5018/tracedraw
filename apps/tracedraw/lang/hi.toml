@@ -6749,6 +6749,8 @@ ai.trace_hint = "चुनी गई तस्वीर को वक्रो�
 
 ai.contour_hint = "चुनी गई तस्वीर के चारों ओर बंद पथ, जिस पर कटर चलता है।"
 ai.contour_expand = "बाहर बढ़ाएँ (mm)"
+ai.contour_white_backing = "सफ़ेद पृष्ठभूमि"
+ai.contour_power_clip = "कंटेनर में रखें"
 ai.contour_run = "कंटूर बनाएँ"
 ai.contour_none = "अनुसरण करने के लिए कोई विषय नहीं मिला।"
 ai.contour_done = "कंटूर जोड़ा गया।"

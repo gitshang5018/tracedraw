@@ -6749,6 +6749,8 @@ ai.trace_hint = "Macht aus dem gewählten Bild Kurven."
 
 ai.contour_hint = "Ein geschlossener Pfad um das gewählte Bild, dem ein Schneidegerät folgt."
 ai.contour_expand = "Nach außen (mm)"
+ai.contour_white_backing = "Weiße Unterlage"
+ai.contour_power_clip = "In einen Container setzen"
 ai.contour_run = "Kontur erzeugen"
 ai.contour_none = "Kein Motiv gefunden, dem zu folgen wäre."
 ai.contour_done = "Kontur hinzugefügt."

@@ -6749,6 +6749,8 @@ ai.trace_hint = "Maakt van de gekozen afbeelding krommen."
 
 ai.contour_hint = "Een gesloten pad om de gekozen afbeelding, waar een snijder het volgt."
 ai.contour_expand = "Naar buiten (mm)"
+ai.contour_white_backing = "Witte achtergrond"
+ai.contour_power_clip = "In een container plaatsen"
 ai.contour_run = "Contour maken"
 ai.contour_none = "Geen onderwerp gevonden om te volgen."
 ai.contour_done = "Contour toegevoegd."
