@@ -1257,6 +1257,69 @@ fn model_choice(
     ui.add_space(4.0);
 }
 
+/// The way an identification photo is made: the size of the paper, the
+/// colour behind the person, and how much of the height the person takes.
+fn id_photo_settings(ui: &mut Ui, how: &mut crate::matting::IdPhoto) {
+    use crate::matting::ID_SIZES;
+    let current = ID_SIZES.get(how.size).unwrap_or(&ID_SIZES[0]);
+    let mut picked = how.size;
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new(tr("ai.id_photo_size")).size(13.0));
+        egui::ComboBox::from_id_salt("id_photo_size")
+            .selected_text(format!(
+                "{} {}x{} mm",
+                tr(current.key),
+                current.width_mm,
+                current.height_mm
+            ))
+            .show_ui(ui, |ui| {
+                for (i, size) in ID_SIZES.iter().enumerate() {
+                    ui.selectable_value(
+                        &mut picked,
+                        i,
+                        format!(
+                            "{} {}x{} mm",
+                            tr(size.key),
+                            size.width_mm,
+                            size.height_mm
+                        ),
+                    );
+                }
+            });
+    });
+    how.size = picked;
+    ui.horizontal_wrapped(|ui| {
+        ui.label(egui::RichText::new(tr("ai.id_photo_background")).size(13.0));
+        for (key, rgb) in [
+            ("idphoto.white", [255u8, 255, 255, 255]),
+            ("idphoto.blue", [67, 142, 219, 255]),
+            ("idphoto.red", [214, 0, 0, 255]),
+        ] {
+            let on = how.background == rgb;
+            if ui.add(egui::Button::new(tr(key)).selected(on)).clicked() {
+                how.background = rgb;
+            }
+        }
+        let mut custom = egui::Color32::from_rgba_unmultiplied(
+            how.background[0],
+            how.background[1],
+            how.background[2],
+            how.background[3],
+        );
+        if ui.color_edit_button_srgba(&mut custom).changed() {
+            how.background = custom.to_array();
+        }
+    });
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new(tr("ai.id_photo_head")).size(13.0));
+        ui.add(egui::Slider::new(&mut how.head_margin, 0.0..=0.25).fixed_decimals(2));
+    });
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new(tr("ai.id_photo_fill")).size(13.0));
+        ui.add(egui::Slider::new(&mut how.fill, 0.5..=1.0).fixed_decimals(2));
+    });
+}
+
 /// Matting: the background of the selected pictures goes, by the colours
 /// learnt from their border or by the model picked.
 fn matting_sheet(app: &mut App, ui: &mut Ui, m3: &M3) {
@@ -1282,6 +1345,21 @@ fn matting_sheet(app: &mut App, ui: &mut Ui, m3: &M3) {
                 .size(11.5)
                 .color(m3.variant),
         );
+    }
+    ui.add_space(6.0);
+    property_label(ui, m3, &tr("ai.matting_cut"));
+    ui.checkbox(&mut st.matting_split, tr("ai.matting_split"));
+    ui.checkbox(&mut st.matting_trim, tr("ai.matting_trim"));
+    if st.matting == 0 {
+        // An identification photo is made from the portrait model: its
+        // subject is a person, and the photo has rules of its own about
+        // the size of the paper and what stands behind the person.
+        ui.add_space(6.0);
+        property_label(ui, m3, &tr("ai.id_photo"));
+        ui.checkbox(&mut st.id_photo_on, tr("ai.id_photo_make"));
+        if st.id_photo_on {
+            id_photo_settings(ui, &mut st.id_photo);
+        }
     }
     ui.add_space(6.0);
     property_label(ui, m3, &tr("ai.matting_settings"));
@@ -1329,7 +1407,7 @@ fn matting_sheet(app: &mut App, ui: &mut Ui, m3: &M3) {
     }
     if action_chip(ui, m3, &tr("ai.apply")).clicked() {
         match model {
-            Some(m) if ready => matting_start(app, &ctx, &m),
+            Some(m) if ready => matting_start(app, &ctx, &m, &st),
             _ => {
                 let settings = st.matting_settings.clone();
                 app.apply_to_bitmaps("Remove Background", move |img, _| {
@@ -1344,7 +1422,12 @@ fn matting_sheet(app: &mut App, ui: &mut Ui, m3: &M3) {
 /// Take the background out of the selected pictures with the model chosen,
 /// on a thread of its own: a model over a picture takes seconds, and the
 /// sheet has to stay live while it runs.
-fn matting_start(app: &mut App, ctx: &egui::Context, model: &crate::ai_tools::Model) {
+fn matting_start(
+    app: &mut App,
+    ctx: &egui::Context,
+    model: &crate::ai_tools::Model,
+    how: &crate::ai_tools::AiTools,
+) {
     let shapes = app.bitmap_shapes();
     if shapes.is_empty() {
         app.status = tr("ai.need_picture");
@@ -1362,26 +1445,70 @@ fn matting_start(app: &mut App, ctx: &egui::Context, model: &crate::ai_tools::Mo
     }
     let total = shapes.len();
     ctx.data_mut(|d| {
-        d.remove::<Vec<(tracedraw_core::ShapeId, image::RgbaImage)>>(Id::new("matting_done"));
+        d.remove::<Vec<(tracedraw_core::ShapeId, Vec<crate::matting::Piece>)>>(Id::new(
+            "matting_done",
+        ));
         d.remove::<String>(Id::new("matting_error"));
         d.insert_temp(Id::new("matting_progress"), (0usize, total));
     });
     let key = model.key.to_string();
+    let split = how.matting_split;
+    let trim = how.matting_trim;
+    // An identification photo is made from the portrait model alone: the
+    // general one does not know where a person's head is.
+    let id_photo = if how.id_photo_on && !key.starts_with("rmbg") {
+        Some(how.id_photo.clone())
+    } else {
+        None
+    };
     let worker = ctx.clone();
     std::thread::spawn(move || {
-        let mut done: Vec<(tracedraw_core::ShapeId, image::RgbaImage)> = Vec::new();
+        let mut done: Vec<(tracedraw_core::ShapeId, Vec<crate::matting::Piece>)> = Vec::new();
         let mut error = None;
         for (i, (id, _rect, _, _, png)) in shapes.into_iter().enumerate() {
             let Some(img) = crate::bitmap_fx::decode(&png) else {
                 continue;
             };
-            match crate::matting::matte(&img, &path, &key) {
-                Ok(mask) => done.push((id, crate::matting::applied(&img, &mask))),
+            let mask = match crate::matting::matte(&img, &path, &key) {
+                Ok(mask) => mask,
                 Err(e) => {
                     error = Some(e);
                     break;
                 }
-            }
+            };
+            let (w, h) = img.dimensions();
+            let whole = (0, 0, w, h);
+            let pieces = match &id_photo {
+                Some(how) => {
+                    let cut = crate::matting::applied(&img, &mask);
+                    match crate::matting::id_photo(&cut, how) {
+                        Ok(photo) => vec![crate::matting::Piece {
+                            img: photo,
+                            bounds: whole,
+                        }],
+                        Err(e) => {
+                            error = Some(e);
+                            break;
+                        }
+                    }
+                }
+                // A picture whose background is already transparent has
+                // its separate subjects taken apart, each cut to what it
+                // fills: a scanned sheet of several pieces becomes the
+                // pieces, not one picture with holes between them.
+                None if split => {
+                    // A subject smaller than a two thousandth of the
+                    // picture is a speck the matte left behind.
+                    let min_area = (w as u64 * h as u64 / 2000).max(100) as u32;
+                    crate::matting::split(&img, &mask, 8, min_area)
+                }
+                None if trim => vec![crate::matting::trimmed(&img, &mask, 8)],
+                None => vec![crate::matting::Piece {
+                    img: crate::matting::applied(&img, &mask),
+                    bounds: whole,
+                }],
+            };
+            done.push((id, pieces));
             worker.data_mut(|d| d.insert_temp(Id::new("matting_progress"), (i + 1, total)));
             worker.request_repaint();
         }
@@ -1399,19 +1526,53 @@ fn matting_start(app: &mut App, ctx: &egui::Context, model: &crate::ai_tools::Mo
 /// Put the cut-out pictures where the ones they came from were.
 fn matting_apply(app: &mut App, ctx: &egui::Context) {
     let Some(done) = ctx.data(|d| {
-        d.get_temp::<Vec<(tracedraw_core::ShapeId, image::RgbaImage)>>(Id::new("matting_done"))
+        d.get_temp::<Vec<(tracedraw_core::ShapeId, Vec<crate::matting::Piece>)>>(Id::new(
+            "matting_done",
+        ))
     }) else {
         return;
     };
-    ctx.data_mut(|d| d.remove::<Vec<(tracedraw_core::ShapeId, image::RgbaImage)>>(Id::new("matting_done")));
+    ctx.data_mut(|d| {
+        d.remove::<Vec<(tracedraw_core::ShapeId, Vec<crate::matting::Piece>)>>(Id::new(
+            "matting_done",
+        ))
+    });
     let mut cut = 0;
-    for (id, img) in done {
-        if let Some((_, rect, ..)) = app
+    for (id, pieces) in done {
+        let Some((_, rect, w, h, _)) = app
             .bitmap_shapes()
             .into_iter()
             .find(|(shape, ..)| *shape == id)
-        {
-            app.replace_bitmap(id, rect, &img);
+        else {
+            continue;
+        };
+        let per_x = rect.width() / (w.max(1) as f64);
+        let per_y = rect.height() / (h.max(1) as f64);
+        let mut first = true;
+        for piece in pieces {
+            let (bx, by, bw, bh) = piece.bounds;
+            // Where the piece sat in the picture, on the page.
+            let sub = tracedraw_core::geometry::Rect::new(
+                rect.x0 + bx as f64 * per_x,
+                rect.y0 + by as f64 * per_y,
+                rect.x0 + (bx + bw) as f64 * per_x,
+                rect.y0 + (by + bh) as f64 * per_y,
+            );
+            if first {
+                // The picture keeps its place and its id: the pieces that
+                // came apart from it are the new objects.
+                app.replace_bitmap(id, sub, &piece.img);
+                first = false;
+            } else if let Some(png) = crate::bitmap_fx::encode(&piece.img) {
+                let (width_px, height_px) = piece.size();
+                let _ = app.new_shape(tracedraw_core::document::ShapeKind::Bitmap {
+                    rect: sub,
+                    width_px,
+                    height_px,
+                    png: png.into(),
+                    fx: None,
+                });
+            }
             cut += 1;
         }
     }
@@ -1541,6 +1702,12 @@ fn contour_run(
     if let Err(e) = app.engine.run_batch("Contour", &cmds) {
         app.status = e.to_string();
         return;
+    }
+    if power_clip {
+        // The picture sits where the outline follows it, so the container
+        // is one that keeps what is put in it where it is: a piece added
+        // later belongs to the outline it was cut for, not to its middle.
+        app.clip_frames_keeping_place.insert(id);
     }
     app.status = tr("ai.contour_done");
 }

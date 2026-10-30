@@ -67,6 +67,15 @@ pub struct AiTools {
     /// with when the picture is to be printed on its own white.
     pub contour_white_backing: bool,
     pub contour_power_clip: bool,
+    /// The cut-out picture split into its separate subjects, each an
+    /// object of its own.
+    pub matting_split: bool,
+    /// Each piece cut to what it fills, with no transparent room around it.
+    pub matting_trim: bool,
+    /// The identification photo made of a cut-out person, and the way it
+    /// is made.
+    pub id_photo_on: bool,
+    pub id_photo: crate::matting::IdPhoto,
 }
 
 impl Default for AiTools {
@@ -86,6 +95,10 @@ impl Default for AiTools {
             contour_smooth: 40.0,
             contour_white_backing: false,
             contour_power_clip: false,
+            matting_split: true,
+            matting_trim: true,
+            id_photo_on: false,
+            id_photo: crate::matting::IdPhoto::default(),
         }
     }
 }

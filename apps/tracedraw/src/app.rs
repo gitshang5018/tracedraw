@@ -1216,6 +1216,11 @@ pub struct App {
     /// Clip frame being edited in place: (frame id, the page's other
     /// objects when editing began; see `clip_edit_contents`).
     pub clip_frame_edit: Option<(ShapeId, std::collections::HashSet<ShapeId>)>,
+    /// The containers the contour made: content put inside one of them
+    /// keeps the place it was drawn at, whatever Options > Clip Frames
+    /// says, since the picture it was made from is already where it
+    /// belongs and moving the pieces that follow would break the outline.
+    pub clip_frames_keeping_place: std::collections::HashSet<ShapeId>,
     /// The undo steps that began and finished editing a clip frame's
     /// contents, so undo and redo across them leave or enter the edit
     /// (#851).
@@ -2360,6 +2365,7 @@ impl App {
             pdf_text_chosen: false,
             text_link_drag: None,
             clip_frame_edit: None,
+            clip_frames_keeping_place: std::collections::HashSet::new(),
             clip_edit_marks: Vec::new(),
             symmetry_edit: None,
             symmetry_step: None,
@@ -6523,7 +6529,8 @@ impl App {
 
     /// Put `contents` inside `frame` (a clip frame), centring them in the
     /// frame first when Options > Clip Frames asks for it: always, or when
-    /// they lie completely outside the frame (the default).
+    /// they lie completely outside the frame (the default). A container
+    /// the contour made never centres what goes into it.
     pub fn place_inside(&mut self, contents: Vec<ShapeId>, frame: ShapeId) {
         use crate::settings::AutoCenter;
         let bounds = |app: &App, ids: &[ShapeId]| -> Option<Rect> {
@@ -6533,11 +6540,12 @@ impl App {
         };
         let mut cmds = Vec::new();
         if let (Some(c), Some(f)) = (bounds(self, &contents), bounds(self, &[frame])) {
-            let center = match self.settings.clip_frame.auto_center {
-                AutoCenter::Always => true,
-                AutoCenter::Never => false,
-                AutoCenter::WhenOutside => c.intersect(f).area() <= 0.0,
-            };
+            let center = !self.clip_frames_keeping_place.contains(&frame)
+                && match self.settings.clip_frame.auto_center {
+                    AutoCenter::Always => true,
+                    AutoCenter::Never => false,
+                    AutoCenter::WhenOutside => c.intersect(f).area() <= 0.0,
+                };
             if center {
                 let d = f.center() - c.center();
                 cmds.push(Command::TransformShapes {
@@ -8511,6 +8519,22 @@ mod tests {
             panic!("not a ClipFrame");
         };
         assert!((contents[0].bounds().x0 - 90.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_contour_container_keeps_what_goes_into_it_where_it_is() {
+        let mut app = App::headless();
+        let frame = rect_shape(&mut app, Rect::new(0.0, 0.0, 100.0, 100.0), true);
+        // The container the contour makes: what goes in keeps its place,
+        // even though it lies completely outside the frame.
+        app.clip_frames_keeping_place.insert(frame);
+        let far = rect_shape(&mut app, Rect::new(200.0, 200.0, 220.0, 220.0), true);
+        app.place_inside(vec![far], frame);
+        let ShapeKind::ClipFrame { contents, .. } = &app.doc().find_shape(frame).unwrap().kind
+        else {
+            panic!("not a ClipFrame");
+        };
+        assert!((contents[0].bounds().x0 - 200.0).abs() < 1e-9);
     }
 
     #[test]

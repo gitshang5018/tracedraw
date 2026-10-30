@@ -6763,3 +6763,20 @@ ai.contour_none = "अनुसरण करने के लिए कोई �
 ai.contour_done = "कंटूर जोड़ा गया।"
 
 ai.matting_portrait_only = "पोर्ट्रेट मॉडल इंसानों पर प्रशिक्षित है; बाकी के लिए सामान्य मॉडल चुनें।"
+
+ai.matting_cut = "Cutting" # mt
+ai.matting_split = "Separate subjects" # mt
+ai.matting_trim = "Trim transparent edges" # mt
+ai.id_photo = "ID photo" # mt
+ai.id_photo_make = "Make an ID photo" # mt
+ai.id_photo_size = "Size" # mt
+ai.id_photo_background = "Background" # mt
+ai.id_photo_head = "Room above the head" # mt
+ai.id_photo_fill = "Person's height" # mt
+idphoto.one_inch = "One inch" # mt
+idphoto.small_one_inch = "Small one inch" # mt
+idphoto.two_inch = "Two inch" # mt
+idphoto.small_two_inch = "Small two inch" # mt
+idphoto.white = "White" # mt
+idphoto.blue = "Blue" # mt
+idphoto.red = "Red" # mt
