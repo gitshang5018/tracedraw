@@ -134,11 +134,13 @@ pub fn contour_paths(img: &RgbaImage, expand: f64, detail: f64, smoothing: f64) 
     // The ring is simplified before it is fitted, which a colour trace does
     // not do: a contour follows a picture at one size, and a curve fitted
     // straight to the pixels' stair steps has a node for every step. The
-    // steps go first, then the curve, which is what a cutting tool's own
-    // outline does: a pixel of simplification, then a curve within one.
+    // steps go first, at about a pixel, then the curve, within less than
+    // one, which is how a cutting outline is made. The slider's marks are
+    // that outline's three precisions: 100 a curve within 0.2 px, 60 the
+    // one most are made at, within 0.5, and 0 the coarse one, within 1.
     let keep = detail.clamp(0.0, 100.0);
-    let epsilon = 0.5 + (100.0 - keep) / 100.0 * 2.5;
-    let tolerance = 0.5 + (100.0 - keep) / 100.0 * 1.0;
+    let epsilon = 0.5 + (100.0 - keep) / 100.0 * 1.25;
+    let tolerance = 0.2 + (100.0 - keep) / 100.0 * 0.75;
     let settings = Settings {
         detail,
         tolerance: Some(tolerance),
