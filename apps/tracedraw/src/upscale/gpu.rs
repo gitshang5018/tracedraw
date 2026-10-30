@@ -106,6 +106,11 @@ fn made_here() -> Option<Gpu> {
     }))
     .map_err(|e| log::error!("upscaling: the card would not make a device: {e}"))
     .ok()?;
+    // A card that goes away says why, in the driver's own words: a tile that
+    // reads back as nothing is otherwise the only sign of it.
+    device.set_device_lost_callback(|reason, message| {
+        log::error!("upscaling: the card was lost: {reason:?}: {message}");
+    });
     Some(Gpu { device, queue })
 }
 
@@ -844,6 +849,16 @@ impl GpuNet {
         }
         drop(data);
         staging.unmap();
+        // What the tile still holds goes back for the next one. A picture is
+        // cut into tiles of a few sizes, and the first of each size would
+        // otherwise leave the card holding its buffers for good: a tile two
+        // pixels wider than the one before asked for buffers of its own, and
+        // the two sizes together ran the card out.
+        for (_, (buffer, h, w, c)) in blobs.drain() {
+            if Arc::strong_count(&buffer) == 1 {
+                pool.give((h * w * c * 4) as u64, buffer);
+            }
+        }
         Ok(Tensor::new(oc, oh, ow, out))
     }
 }
