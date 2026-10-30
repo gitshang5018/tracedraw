@@ -6,6 +6,12 @@ full, row-by-row status.
 
 ## Unreleased
 
+- Opening `.cdr` files: East Asian letters take the style's East Asian font, the one the file sets for them beside the Latin and other scripts' fonts, so a drawing made with a Chinese, Japanese or Korean font shows its text in it instead of in the Latin one (#955).
+- Font list: a filter beside the list narrows it by style, weight, width, technology, scripts, features, rights and folders, and the list shows what is left as the letters are typed (#867).
+- Eyedroppers: the colour under the pointer shows beside it while it is picked, so it is read where it is taken rather than after the click (#990).
+- Segment Delete: a freehand stroke takes every stretch of a curve the rectangle it draws crosses, chosen by the bar or with Alt, rather than one stretch per click (#1150).
+- Welcome Screen: a recent drawing goes off the list by the x on its row or by Remove from list in its menu; the file itself stays where it is (#1152).
+- Page bar: a Multipage View button turns the grid of pages on and off, as the menu row does (#1019).
 - The update files go to a Cloudflare R2 bucket instead of EdgeOne: `UPDATE_HOST` (a repository variable) is the bucket's public address and is baked in as `APK_HOST`, the workflow uploads the APKs and the manifest with `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` and `R2_BUCKET`, and clears what was there before. EdgeOne's deploy kept answering "Failed Operation" and left the site a build behind.
 - Every ABI goes to the bucket, the emulator's included: the 25 MiB limit was a page size of the host before it, and a bucket has none. Each file goes up with the type it is (`text/html`, `application/json`, `application/vnd.android.package-archive`) rather than the one its name suggests, so a phone's browser offers an APK as a file to install.
 - 检查更新 asks GitHub first: the releases are written by the same run that builds the APK, while a bucket is only as fresh as its last upload. The manifest answers only when GitHub cannot be read at all, and each request waits 12 seconds so the three attempts fit inside the box's patience.
