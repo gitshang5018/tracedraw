@@ -509,6 +509,39 @@ impl App {
         }
     }
 
+    /// Ctrl+click with the Pick tool on a clip frame on a layer: its
+    /// contents are taken out for editing (Edit Contents), the object of
+    /// the contents under the pointer selected (all of them when the
+    /// click is off them). Nothing happens while contents are edited
+    /// already, or off a clip frame; then `false` (#982).
+    pub fn ctrl_click_edits_clip_frame(&mut self, p: Point) -> bool {
+        if self.clip_frame_edit.is_some() {
+            return false;
+        }
+        let chain = self.hit_chain(p);
+        let Some(&clip) = chain.first() else {
+            return false;
+        };
+        let doc = self.doc();
+        let on_layer = doc.top_level_of(clip) == Some(clip);
+        let is_clip = doc
+            .find_shape(clip)
+            .is_some_and(|s| matches!(s.kind, ShapeKind::ClipFrame { .. }));
+        if !on_layer || !is_clip {
+            return false;
+        }
+        let under = chain.get(1).copied();
+        self.select(vec![clip]);
+        self.edit_clip_frame();
+        if self.clip_frame_edit.is_none() {
+            return false;
+        }
+        if let Some(id) = under.filter(|id| self.doc().find_shape(*id).is_some()) {
+            self.select(vec![id]);
+        }
+        true
+    }
+
     /// Ctrl+click: one group level further in at `p` than what is selected
     /// there (the first level inside the topmost group when nothing of it
     /// is), down to the innermost object.
@@ -1654,6 +1687,10 @@ impl App {
                     return;
                 }
             }
+            // Ctrl+click on a clip frame: editing its contents (#982).
+            if mods.ctrl && !mods.shift && self.ctrl_click_edits_clip_frame(p) {
+                return;
+            }
             // Ctrl: one group level further in.
             let hit = if mods.ctrl {
                 self.hit_test_step(p)
@@ -2180,11 +2217,14 @@ impl App {
             .curve
             .as_ref()
             .is_some_and(|c| c.closes_at_first() && c.nodes.first().is_some_and(|n| near(n.0)));
+        // The last node, or the one a curve going on from an end starts
+        // at with that end's mirrored handle (#1138).
         let on_last = smooth
-            && self
-                .curve
-                .as_ref()
-                .is_some_and(|c| c.nodes.len() >= 2 && c.nodes.last().is_some_and(|n| near(n.0)));
+            && self.curve.as_ref().is_some_and(|c| {
+                c.nodes
+                    .last()
+                    .is_some_and(|n| near(n.0) && (c.nodes.len() >= 2 || n.1.is_some()))
+            });
         if response.clicked_by(PointerButton::Primary) {
             // A line going on from an end of the selected curve: a click
             // on that curve's other end closes it (#631).
@@ -2214,22 +2254,9 @@ impl App {
                 }
                 return;
             }
-            // The Pen's automatic adding and deleting: a click on a node of
-            // the curve being drawn deletes it, on a segment adds a node.
-            if let Some(auto) = self.pen_auto_at(raw) {
-                if let Some(c) = &mut self.curve {
-                    match auto {
-                        crate::pen_look::PenAuto::Delete(i) => {
-                            c.delete_node(i);
-                        }
-                        crate::pen_look::PenAuto::Add(k, t) => {
-                            c.insert_node(k, t);
-                        }
-                    }
-                    c.dragging_handle = false;
-                }
-                return;
-            }
+            // While a curve is drawn the Pen's automatic adding and
+            // deleting is off: a click on a node or a segment, of this
+            // curve or another, places the next node there (#1143).
         }
         if response.drag_started_by(PointerButton::Primary) && start_close {
             // Dragging from the first node shapes the closing segment.

@@ -463,6 +463,9 @@ pub fn status_bar(app: &mut App, ui: &mut Ui) {
             .min((fill_x - text_x) * 0.45)
     };
     let left_max = fill_x - 16.0 - if info_w > 0.0 { info_w + 24.0 } else { 0.0 };
+    // Cut off at the right, it shows whole on hover (#1126).
+    let left_cut = cut_off(&painter, &left, left_max - text_x);
+    let left_full = left_cut.then(|| left.clone());
     let left_galley = elided(&painter, left, left_max - text_x);
     let left_w = left_galley.size().x.min(left_max - text_x).max(0.0);
     let clip = Rect::from_min_max(Pos2::new(text_x, row.min.y), Pos2::new(left_max, row.max.y));
@@ -479,11 +482,22 @@ pub fn status_bar(app: &mut App, ui: &mut Ui) {
         let resp = ui
             .interact(r, egui::Id::new("status_opens_options"), Sense::click())
             .on_hover_cursor(egui::CursorIcon::PointingHand);
+        let resp = match &left_full {
+            Some(t) => resp.on_hover_text(t.as_str()),
+            None => resp,
+        };
         if resp.clicked() {
             app.status_opens_options = None;
             app.status.clear();
             app.open_general_options();
         }
+    } else if let Some(t) = &left_full {
+        let r = Rect::from_min_max(
+            Pos2::new(text_x, row.min.y),
+            Pos2::new(text_x + left_w, row.max.y),
+        );
+        ui.interact(r, egui::Id::new("status_left_text"), Sense::hover())
+            .on_hover_text(t.as_str());
     }
     if info_w > 0.0 {
         // After the left field, never closer than a placeholder's width.
@@ -656,6 +670,20 @@ fn part_positions(
 
 /// `text` on one line in the bar's font, cut with an ellipsis when it is
 /// wider than `width`.
+/// Whether `text` is wider than `width` in the status bar's font, so
+/// [`elided`] cuts it off.
+fn cut_off(painter: &egui::Painter, text: &str, width: f32) -> bool {
+    painter
+        .layout_no_wrap(
+            text.to_string(),
+            egui::FontId::proportional(TEXT),
+            Tokens::text(),
+        )
+        .size()
+        .x
+        > width.max(0.0) + 0.5
+}
+
 fn elided(painter: &egui::Painter, text: String, width: f32) -> std::sync::Arc<egui::Galley> {
     let mut job = egui::text::LayoutJob::simple_singleline(
         text,
@@ -755,6 +783,35 @@ mod tests {
     /// On a wide bar the fill and outline sit at their usual places; on a
     /// narrow one they move left so their swatches and values stay whole
     /// before the buttons, and the hints give way (#1004).
+    /// A tool hint the bar cuts off at the right shows whole on hover; one
+    /// that fits needs no tip (#1126).
+    #[test]
+    fn a_cut_off_hint_shows_whole_on_hover() {
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        app.show_welcome = false;
+        app.settings.status_info = StatusInfo::ToolHints;
+        let mut has_tip = |app: &mut App, width: f32| {
+            let mut out = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(width, 60.0))),
+                    ..Default::default()
+                },
+                |ui| status_bar(app, ui),
+            );
+            out.textures_delta.clear();
+            ctx.read_response(egui::Id::new("status_left_text"))
+                .is_some()
+        };
+        app.status =
+            "Saved /home/someone/a/very/long/folder/name/that/goes/on/and/on/drawing.tdraw".into();
+        assert!(has_tip(&mut app, 700.0));
+        assert!(has_tip(&mut app, 700.0));
+        app.status = "Saved".into();
+        has_tip(&mut app, 3000.0);
+        assert!(!has_tip(&mut app, 3000.0));
+    }
+
     #[test]
     fn fill_and_outline_stay_whole_on_a_narrow_bar() {
         let bar = |w: f32| Rect::from_min_size(Pos2::new(4.0, 0.0), Vec2::new(w, 41.0));

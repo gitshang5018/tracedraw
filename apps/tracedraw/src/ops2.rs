@@ -51,6 +51,10 @@ pub struct StepRepeat {
     /// 0 = offset, 1 = spacing between copies (uses object size).
     pub mode_x: u8,
     pub mode_y: u8,
+    /// The objects these values were set for, in id order. Another
+    /// selection, the copies an Apply made among them, starts again from
+    /// the defaults (#1032).
+    pub for_selection: Vec<ShapeId>,
 }
 
 impl Default for StepRepeat {
@@ -61,6 +65,7 @@ impl Default for StepRepeat {
             dy: 0.0,
             mode_x: 0,
             mode_y: 0,
+            for_selection: Vec::new(),
         }
     }
 }
@@ -1377,11 +1382,29 @@ impl App {
         }
     }
 
+    /// The Fit Objects to Path panel for the objects selected now: values
+    /// set for other objects (or in another drawing) are not carried
+    /// over; the panel starts again from the defaults, with no preview
+    /// until a value is entered (#1136).
+    pub fn fit_path_follow_selection(&mut self) {
+        let drawing = self.docs.get(self.active_doc).map(|d| d.drawing);
+        let same = self
+            .fit_path_for
+            .as_ref()
+            .is_some_and(|(d, sel)| *d == drawing && *sel == self.selection);
+        if !same {
+            self.fit_path = FitPathSettings::default();
+            self.fit_path_edited = false;
+            self.fit_path_for = Some((drawing, self.selection.clone()));
+        }
+    }
+
     /// The outlines the selected objects would have after
     /// [`Self::fit_objects_to_path`], for the panel's preview; empty when
-    /// the selection cannot be fitted or is too large to preview cheaply.
+    /// the selection cannot be fitted or is too large to preview cheaply,
+    /// and until a value was entered for these objects (#1136).
     pub fn fit_objects_to_path_preview(&self) -> Vec<BezPath> {
-        if self.selection.len() < 2 || self.selection.len() > 200 {
+        if !self.fit_path_edited || self.selection.len() < 2 || self.selection.len() > 200 {
             return Vec::new();
         }
         let shapes = self.selected_shapes();
@@ -2814,7 +2837,9 @@ impl App {
         self.rebuild_palette();
     }
 
-    /// The bottom palette strip shows the first visible palette.
+    /// The main palette strip shows the first visible palette, and each
+    /// further visible palette gets a strip of its own (#1164), keeping
+    /// how far it was scrolled.
     pub fn rebuild_palette(&mut self) {
         if let Some(i) = self.visible_palettes.first() {
             if let Some(p) = self.palettes.get(*i) {
@@ -2823,6 +2848,25 @@ impl App {
                 self.palette_scroll = 0;
             }
         }
+        let old = std::mem::take(&mut self.extra_palettes);
+        self.extra_palettes = self
+            .visible_palettes
+            .iter()
+            .skip(1)
+            .filter_map(|&index| {
+                let p = self.palettes.get(index)?;
+                let scroll = old
+                    .iter()
+                    .find(|r| r.index == index)
+                    .map_or(0, |r| r.scroll);
+                Some(crate::ui::palette::ExtraRow {
+                    index,
+                    rgb: crate::ui::palette::as_rgb(&p.colors),
+                    colors: p.colors.clone(),
+                    scroll,
+                })
+            })
+            .collect();
     }
 
     pub fn open_palette_file(&mut self) {
@@ -2950,7 +2994,25 @@ impl App {
 
     // ----- step and repeat ---------------------------------------------------------------
 
+    /// The Step and Repeat values belong to the objects they were set
+    /// for: when the selection is other objects (a new object picked, or
+    /// the copies the last Apply made), the copies, distances and modes go
+    /// back to their defaults, so a count or a distance typed for one
+    /// object is never used again on the next one (#1032).
+    pub fn step_repeat_follow_selection(&mut self) {
+        let mut sel = self.selection.clone();
+        sel.sort();
+        sel.dedup();
+        if self.step_repeat.for_selection != sel {
+            self.step_repeat = StepRepeat {
+                for_selection: sel,
+                ..StepRepeat::default()
+            };
+        }
+    }
+
     pub fn step_and_repeat_apply(&mut self) {
+        self.step_repeat_follow_selection();
         let shapes = self.selected_shapes();
         if shapes.is_empty() {
             return;
@@ -3543,6 +3605,61 @@ mod tests {
             ShapeKind::SymbolInstance { index } => index,
             ref k => panic!("{k:?}"),
         }
+    }
+
+    /// Step and Repeat values set for one object are not used on the next
+    /// one: a new selection, or the copies an Apply made, starts again
+    /// from the defaults, so the next Apply makes one copy (#1032).
+    #[test]
+    fn step_and_repeat_starts_fresh_for_each_object() {
+        let mut app = App::headless();
+        let rect = |x: f64| ShapeKind::Rect {
+            rect: kurbo::Rect::new(x, 0.0, x + 10.0, 10.0),
+            radius: 0.0,
+            corners: None,
+        };
+        let a = app.new_shape(rect(0.0)).expect("a");
+        let b = app.new_shape(rect(100.0)).expect("b");
+        let count = |app: &App| {
+            app.doc()
+                .all_layers()
+                .map(|l| l.shapes.len())
+                .sum::<usize>()
+        };
+        let before = count(&app);
+        app.select(vec![a]);
+        app.step_repeat_follow_selection();
+        app.step_repeat.copies = 3;
+        app.step_repeat.dx = 20.0;
+        app.step_repeat.mode_x = 1;
+        app.step_and_repeat_apply();
+        assert_eq!(count(&app), before + 3);
+        assert_eq!(app.selection.len(), 3);
+        // The copies are selected: the values went back to the defaults.
+        app.step_repeat_follow_selection();
+        assert_eq!(
+            app.step_repeat,
+            StepRepeat {
+                for_selection: {
+                    let mut s = app.selection.clone();
+                    s.sort();
+                    s
+                },
+                ..StepRepeat::default()
+            }
+        );
+        // A new object picked gets one copy at the default offset.
+        app.select(vec![b]);
+        app.step_and_repeat_apply();
+        assert_eq!(count(&app), before + 4);
+        let copy = app
+            .doc()
+            .find_shape(app.selection[0])
+            .expect("copy")
+            .bounds();
+        let orig = app.doc().find_shape(b).expect("b").bounds();
+        assert!((copy.x0 - orig.x0 - StepRepeat::default().dx).abs() < 1e-9);
+        assert!((copy.y0 - orig.y0).abs() < 1e-9);
     }
 
     /// New Symbol is one step to undo: the symbol goes with its instance.
@@ -4243,12 +4360,15 @@ mod tests {
         app.open_docker(crate::app::DockerTab::FitToPath);
         assert!(app.open_dockers.contains(&crate::app::DockerTab::FitToPath));
         assert_eq!(app.docker_tab, crate::app::DockerTab::FitToPath);
-        // The panel draws and previews three outlines.
+        // The panel draws; it previews the three outlines once a value is
+        // entered for these objects (#1136).
         let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
             crate::ui::dockers2::show(&mut app, ui, crate::app::DockerTab::FitToPath);
         });
         out.textures_delta.clear();
-        assert_eq!(app.docker_preview.len(), 3);
+        assert!(app.docker_preview.is_empty());
+        app.fit_path_edited = true;
+        assert_eq!(app.fit_objects_to_path_preview().len(), 3);
         assert!(
             (centre(&app, a) - Point::new(52.0, 51.0)).hypot() < 1e-9,
             "nothing moved yet"
@@ -4278,6 +4398,66 @@ mod tests {
             );
         }
         assert_eq!(app.engine.undo_label(), Some("Fit Objects to Path"));
+    }
+
+    /// The panel starts from the defaults, with no preview, for objects it
+    /// was not used on: values entered for other objects or in another
+    /// drawing are not carried over; for the same objects they stay, and
+    /// the preview shows once a value is entered (#1136).
+    #[test]
+    fn fit_objects_to_path_starts_from_the_defaults_for_other_objects() {
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        let show = |app: &mut App| {
+            app.docker_preview.clear();
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                crate::ui::dockers2::show(app, ui, crate::app::DockerTab::FitToPath);
+            });
+            out.textures_delta.clear();
+        };
+        let a = square_at(&mut app, 50.0, 50.0);
+        let line = line_path(&mut app, &[(0.0, 0.0), (100.0, 0.0)], false);
+        app.select(vec![a, line]);
+        app.open_docker(crate::app::DockerTab::FitToPath);
+        show(&mut app);
+        assert!(app.docker_preview.is_empty(), "no preview before a value");
+        // Values entered for these objects (as the panel's fields do).
+        let entered = FitPathSettings {
+            spacing: FitSpacing::Distance,
+            distance: 20.0,
+            offset: 30.0,
+            rotate: true,
+            reverse: true,
+        };
+        app.fit_path = entered;
+        app.fit_path_edited = true;
+        show(&mut app);
+        assert_eq!(app.fit_path, entered);
+        assert_eq!(app.docker_preview.len(), 1);
+        app.fit_objects_to_path();
+        // Another object on the path: the defaults, no preview.
+        let b = square_at(&mut app, 80.0, 80.0);
+        app.select(vec![b, line]);
+        show(&mut app);
+        assert_eq!(app.fit_path, FitPathSettings::default());
+        assert!(app.docker_preview.is_empty());
+        // Back to the first objects: the defaults too (the panel follows
+        // the objects selected, it does not remember every selection).
+        app.select(vec![a, line]);
+        show(&mut app);
+        assert_eq!(app.fit_path, FitPathSettings::default());
+        // Another drawing with objects of the same ids.
+        app.fit_path = entered;
+        app.fit_path_edited = true;
+        show(&mut app);
+        assert_eq!(app.fit_path, entered);
+        app.new_document();
+        let a2 = square_at(&mut app, 50.0, 50.0);
+        let line2 = line_path(&mut app, &[(0.0, 0.0), (100.0, 0.0)], false);
+        app.select(vec![a2, line2]);
+        show(&mut app);
+        assert_eq!(app.fit_path, FitPathSettings::default());
+        assert!(app.docker_preview.is_empty());
     }
 
     /// With Rotate the objects turn with the path; on a closed path they go

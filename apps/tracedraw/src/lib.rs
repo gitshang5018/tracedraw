@@ -89,6 +89,8 @@ mod hunspell;
 mod i18n;
 mod image_dpi;
 mod imposition;
+#[cfg(test)]
+mod input_method_tests;
 #[cfg(not(target_arch = "wasm32"))]
 mod instance;
 mod interaction;
@@ -153,6 +155,7 @@ mod straighten;
 mod styles;
 mod symbol_paste;
 mod symmetry_edit;
+mod system_chars;
 mod system_prefs;
 mod table;
 mod table_tool;
@@ -205,6 +208,7 @@ pub fn desktop_main() -> eframe::Result<()> {
     // console to show them (#570).
     startup_log::init();
     tracedraw_text::install();
+    tracedraw_io::emf::install();
     // Fonts kept in a folder of the user's own (see fonts_folder.rs).
     fonts_folder::scan();
     // `tracedraw --mcp`: no window, a Model Context Protocol server on
@@ -296,6 +300,10 @@ pub fn desktop_main() -> eframe::Result<()> {
         centered: splash,
         renderer,
         wgpu_options,
+        // Characters keyboard programs send that the windowing layer
+        // would lose (#1151).
+        #[cfg(windows)]
+        event_loop_builder: Some(Box::new(system_chars::install)),
         ..Default::default()
     };
     // A panic before the window opens is this renderer failing (eframe's
@@ -308,6 +316,7 @@ pub fn desktop_main() -> eframe::Result<()> {
             options,
             Box::new(move |cc| {
                 gpu::note_renderer(cc, mode);
+                system_chars::set_context(&cc.egui_ctx);
                 if let Some(w) = &wake {
                     let _ = w.set(cc.egui_ctx.clone());
                 }
@@ -384,6 +393,7 @@ pub fn web_main() {
 #[cfg(target_os = "android")]
 pub fn android_run(android_app: winit::platform::android::activity::AndroidApp) -> eframe::Result<()> {
     tracedraw_text::install();
+    tracedraw_io::emf::install();
     // The app's own folders: preferences, logs, autosaves, and the
     // documents the file list of `files.rs` shows. A phone grants no
     // access to the rest of the storage without asking the user.
@@ -644,6 +654,12 @@ fn paint_probe(ctx: &egui::Context) -> [usize; 2] {
 const RENDERER_CHECK: &str = "renderer-check";
 
 impl eframe::App for Shell {
+    /// Characters the windowing layer lost (input methods on Windows,
+    /// #1151) join the frame's input as typed text.
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        system_chars::take_into(raw_input);
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         // The upscalers run on the card the window draws with, so they need
         // the device and queue it was made with: handed over once, and the

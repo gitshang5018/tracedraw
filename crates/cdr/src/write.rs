@@ -127,13 +127,17 @@ pub fn document_to_cdr_version_with(doc: &Document, version: u16, previews: &Pre
     if !v.zip() {
         tree.push(chunk(b"sumi", sumi(v, doc)));
     }
+    // Blends drawn as groups open live again in TraceDraw from the
+    // package's own member (#986); a RIFF file has no place for it.
+    let own = crate::kept_blends::encode(&w.blends, &w.static_ids);
+    let own = own.as_deref();
     if v.redirects() {
         let (root, files) = pack_redirected(v, &tree);
-        zip_v16(v, doc, &root, &files, previews, &font_ids)
+        zip_v16(v, doc, &root, &files, previews, &font_ids, own)
     } else {
         let riff = riff_file(v.form(), &tree);
         if v.zip() {
-            zip_v14(v, doc, &riff, previews)
+            zip_v14(v, doc, &riff, previews, own)
         } else {
             riff
         }
@@ -853,7 +857,14 @@ fn summary_xml(v: Ver, doc: &Document) -> String {
 /// Versions 14 and 15: the RIFF stream stored, its pictures as BMP files,
 /// a summary, the names and an empty link list, as files of these versions
 /// hold them.
-fn zip_v14(v: Ver, doc: &Document, riff: &[u8], previews: &Previews) -> Vec<u8> {
+/// `own`: the package's member of TraceDraw's own (see [`crate::kept_blends`]).
+fn zip_v14(
+    v: Ver,
+    doc: &Document,
+    riff: &[u8],
+    previews: &Previews,
+    own: Option<&[u8]>,
+) -> Vec<u8> {
     let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
     let stored =
         zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
@@ -890,6 +901,10 @@ fn zip_v14(v: Ver, doc: &Document, riff: &[u8], previews: &Previews) -> Vec<u8> 
     ];
     for (name, text) in members {
         ok &= zip.start_file(name, deflated).is_ok() && zip.write_all(text.as_bytes()).is_ok();
+    }
+    if let Some(b) = own {
+        ok &= zip.start_file(crate::kept_blends::MEMBER, deflated).is_ok()
+            && zip.write_all(b).is_ok();
     }
     match zip.finish() {
         Ok(c) if ok => c.into_inner(),
@@ -1088,6 +1103,7 @@ fn zip_v16(
     files: &DataFiles,
     previews: &Previews,
     font_ids: &[(u16, String)],
+    own: Option<&[u8]>,
 ) -> Vec<u8> {
     let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
     let deflated = zip::write::SimpleFileOptions::default()
@@ -1139,6 +1155,10 @@ fn zip_v16(
     ];
     for (name, text) in members {
         ok &= zip.start_file(name, deflated).is_ok() && zip.write_all(text.as_bytes()).is_ok();
+    }
+    if let Some(b) = own {
+        ok &= zip.start_file(crate::kept_blends::MEMBER, deflated).is_ok()
+            && zip.write_all(b).is_ok();
     }
     match zip.finish() {
         Ok(c) if ok => c.into_inner(),
@@ -2503,16 +2523,31 @@ fn curve_coords_typed(
     let mut types: Vec<u8> = Vec::new();
     let mut last_start = 0usize;
     let mut last = Point::ZERO;
+    // A subpath that is only its move draws nothing: dropped.
+    let drop_lone_move = |pts: &mut Vec<(i32, i32)>, types: &mut Vec<u8>, start: usize| {
+        if pts.len() == start + 1 && types.get(start).is_some_and(|t| t & 0xc0 == 0) {
+            pts.pop();
+            types.pop();
+        }
+    };
     for (i, el) in path.elements().iter().enumerate() {
         match el {
             PathEl::MoveTo(p) => {
+                drop_lone_move(&mut pts, &mut types, last_start);
                 pts.push((units(p.x), units(p.y)));
                 types.push(node_bits(i));
                 last_start = pts.len() - 1;
                 last = *p;
             }
             PathEl::LineTo(p) => {
-                pts.push((units(p.x), units(p.y)));
+                // A line of no length (a file of an earlier version read
+                // back: a curve to the start, then the closing line) is
+                // left out.
+                let q = (units(p.x), units(p.y));
+                if pts.len() > last_start && pts.last() == Some(&q) {
+                    continue;
+                }
+                pts.push(q);
                 types.push(0x40 | node_bits(i));
                 last = *p;
             }
@@ -2538,13 +2573,30 @@ fn curve_coords_typed(
                 last = *p;
             }
             PathEl::ClosePath => {
-                // A closing line back to the subpath start, flagged.
+                // A closing line back to the subpath start, flagged. A
+                // subpath already back at its start (letters' outlines
+                // end so) closes on its last node instead: a closing
+                // line of no length beside a smooth start node made the
+                // program that opens the file close when the curve was
+                // clicked (#1130).
                 let s = pts.get(last_start).copied().unwrap_or((0, 0));
-                pts.push(s);
-                types.push(0x48);
+                if pts.len() <= last_start + 1 {
+                    drop_lone_move(&mut pts, &mut types, last_start);
+                    last_start = pts.len();
+                    continue;
+                }
+                let back = pts.last() == Some(&s) && types.last().is_some_and(|t| t & 0xc0 != 0xc0);
+                match types.last_mut() {
+                    Some(t) if back => *t |= 0x08,
+                    _ => {
+                        pts.push(s);
+                        types.push(0x48);
+                    }
+                }
             }
         }
     }
+    drop_lone_move(&mut pts, &mut types, last_start);
     if pts.is_empty() {
         return None;
     }
@@ -2878,6 +2930,11 @@ struct Writer<'a> {
     /// which each page's entries for them repeat.
     master_guids: [[u8; 16]; 3],
     has_text: bool,
+    /// The static id each object was written with, by shape (the
+    /// outermost list written for it), and the blends written as groups:
+    /// the package's own member names them (#986).
+    static_ids: HashMap<tracedraw_core::ShapeId, u32>,
+    blends: Vec<crate::kept_blends::Written>,
     /// The faces the text uses, with their font files (see
     /// [`Previews::fonts`]), and what [`fonts::split_family`] said for
     /// each family named with a weight.
@@ -2945,6 +3002,8 @@ impl<'a> Writer<'a> {
             fonts: Vec::new(),
             bitmaps: Vec::new(),
             next_usdn: 1,
+            static_ids: HashMap::new(),
+            blends: Vec::new(),
             next_object: 1,
             graded: std::collections::HashMap::new(),
             next_fill: 1,
@@ -3323,7 +3382,13 @@ impl<'a> Writer<'a> {
             return Placed { nodes, bounds };
         }
         for s in shapes.iter().rev() {
+            let before = self.next_usdn;
             let p = self.object(s, centre, depth);
+            // One list for the shape: the last static id given is its
+            // own (a group's head follows its children).
+            if p.nodes.len() == 1 && self.next_usdn > before {
+                self.static_ids.insert(s.id, self.next_usdn - 1);
+            }
             if let Some(b) = p.bounds {
                 bounds = Some(bounds.map_or(b, |c| c.union(b)));
             }
@@ -3650,7 +3715,25 @@ impl<'a> Writer<'a> {
                 .iter()
                 .any(|e| matches!(e, tracedraw_core::live::Effect::Blend { .. }));
             if blends && all.len() > 1 {
-                return self.group(&all, centre, depth + 1);
+                let start = ev.below.len();
+                let before = self.next_usdn;
+                let placed = self.group(&all, centre, depth + 1);
+                // A blend that is the object's only effect opens live
+                // again in TraceDraw: the package names the group (#986).
+                if let [blend @ tracedraw_core::live::Effect::Blend { end_id, .. }] =
+                    s.effects.as_slice()
+                {
+                    if placed.nodes.len() == 1 && self.next_usdn > before {
+                        self.blends.push(crate::kept_blends::Written {
+                            group: self.next_usdn - 1,
+                            count: all.len(),
+                            start,
+                            end: *end_id,
+                            blend: blend.clone(),
+                        });
+                    }
+                }
+                return placed;
             }
             return self.objects(&all, centre, depth + 1);
         }

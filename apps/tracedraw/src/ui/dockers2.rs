@@ -70,8 +70,32 @@ pub fn show(app: &mut App, ui: &mut Ui, tab: DockerTab) {
 }
 
 fn step_and_repeat(app: &mut App, ui: &mut Ui) {
+    app.step_repeat_follow_selection();
     let u = app.units;
-    let sr = &mut app.step_repeat;
+    let has = !app.selection.is_empty();
+    // With nothing selected the values stay at their defaults (#1032).
+    ui.add_enabled_ui(has, |ui| {
+        step_and_repeat_fields(&mut app.step_repeat, u, ui)
+    });
+    if ui
+        .add_enabled(
+            has,
+            egui::Button::new(tr("docker.apply")).min_size(egui::vec2(
+                ui.available_width(),
+                if crate::ui::mobile::phone() { 40.0 } else { 26.0 },
+            )),
+        )
+        .rich_tip(crate::ui::tips::pair(
+            "docker.apply",
+            "docker.sr_apply_desc",
+        ))
+        .clicked()
+    {
+        app.step_and_repeat_apply();
+    }
+}
+
+fn step_and_repeat_fields(sr: &mut crate::ops2::StepRepeat, u: crate::app::Units, ui: &mut Ui) {
     ui.horizontal(|ui| {
         ui.label(tr("docker.copies"));
         ui.add(crate::ui::field::NumField::new(&mut sr.copies).range(1..=999))
@@ -126,23 +150,6 @@ fn step_and_repeat(app: &mut App, ui: &mut Ui) {
         .changed()
     {
         sr.dy = u.world_to_mm(dy);
-    }
-    let has = !app.selection.is_empty();
-    if ui
-        .add_enabled(
-            has,
-            egui::Button::new(tr("docker.apply")).min_size(egui::vec2(
-                ui.available_width(),
-                if crate::ui::mobile::phone() { 40.0 } else { 26.0 },
-            )),
-        )
-        .rich_tip(crate::ui::tips::pair(
-            "docker.apply",
-            "docker.sr_apply_desc",
-        ))
-        .clicked()
-    {
-        app.step_and_repeat_apply();
     }
 }
 
@@ -2554,6 +2561,7 @@ fn join_curves(app: &mut App, ui: &mut Ui) {
 fn fit_to_path(app: &mut App, ui: &mut Ui) {
     use crate::ops2::FitSpacing;
     let u = app.units;
+    app.fit_path_follow_selection();
     let mut f = app.fit_path;
     let field = |ui: &mut Ui, key: &str, mm: &mut f64, min: f64| {
         ui.horizontal(|ui| {
@@ -2602,6 +2610,9 @@ fn fit_to_path(app: &mut App, ui: &mut Ui) {
         .rich_tip(crate::ui::tips::keyed("docker.fit_to_path_rotate"));
     ui.checkbox(&mut f.reverse, tr("docker.fit_to_path_reverse"))
         .rich_tip(crate::ui::tips::keyed("docker.fit_to_path_reverse"));
+    if f != app.fit_path {
+        app.fit_path_edited = true;
+    }
     app.fit_path = f;
     let preview = app.fit_objects_to_path_preview();
     let valid = app.selection.len() >= 2;

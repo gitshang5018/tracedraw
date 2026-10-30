@@ -1314,7 +1314,11 @@ mod tests {
         app.show_welcome = false;
         let size = app.doc().pages[0].size;
         for _ in 0..4 {
-            app.run(tracedraw_core::Command::AddPage { name: None, size });
+            app.run(tracedraw_core::Command::AddPage {
+                name: None,
+                size,
+                layer: None,
+            });
         }
         let n = app.doc().pages.len();
         assert_eq!(n, 5);
