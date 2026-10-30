@@ -215,11 +215,17 @@ fn storage(device: &wgpu::Device, size: u64) -> wgpu::Buffer {
 /// buffer goes back only when the last name that held it lets go.
 struct Pool {
     free: Vec<(u64, Arc<wgpu::Buffer>)>,
+    /// The most the pool has held, as last said in the log: a picture that
+    /// runs the card out of memory says how much it was holding.
+    reported: u64,
 }
 
 impl Pool {
     fn new() -> Pool {
-        Pool { free: Vec::new() }
+        Pool {
+            free: Vec::new(),
+            reported: 0,
+        }
     }
 
     fn take(&mut self, device: &wgpu::Device, size: u64) -> Arc<wgpu::Buffer> {
@@ -244,6 +250,11 @@ impl Pool {
         if size <= 128 * 1024 * 1024 && self.free.len() < 64 {
             self.free.push((size.max(4), buffer));
         }
+    }
+
+    /// What the card holds for the next tile, in bytes.
+    fn held(&self) -> u64 {
+        self.free.iter().map(|(size, _)| *size).sum()
     }
 }
 
@@ -858,6 +869,14 @@ impl GpuNet {
             if Arc::strong_count(&buffer) == 1 {
                 pool.give((h * w * c * 4) as u64, buffer);
             }
+        }
+        let held = pool.held();
+        if held > pool.reported {
+            pool.reported = held;
+            log::info!(
+                "upscaling: the card holds {} MiB for the next tile",
+                held / (1024 * 1024)
+            );
         }
         Ok(Tensor::new(oc, oh, ow, out))
     }

@@ -26,7 +26,7 @@ const TILE: usize = 224;
 /// large as the tile four times over with 64 channels each. At the size the
 /// processor takes, three of those are a gigabyte: the phone ran out, the
 /// card was lost, and the picture came back over the processor only.
-const CARD_TILE: usize = 96;
+const CARD_TILE: usize = 64;
 /// What a tile carries beyond its own side, thrown away at the join.
 const MARGIN: usize = 12;
 
