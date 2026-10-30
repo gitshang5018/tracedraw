@@ -6,6 +6,7 @@ full, row-by-row status.
 
 ## Unreleased
 
+- AI 生成 on a phone: the modes are words instead of picture buttons, since a glyph's meaning is a tooltip and a phone has no pointer to hover one with; the panel is one scroll instead of a scroll inside a scroll; the prompt box is four lines rather than six; and the button that generates stays in view under the settings instead of at the end of them.
 - 属性面板 (Properties): five labels were showing their own key names, `position`, `object_size`, `outline_none`, `outline_hairline` and `actions`, because those keys were in no language table at all: they read as Chinese now, in all eighteen languages.
 - AI 生成 is in the chip at the left edge of the phone's drawing, beside matting, variable data and the contour, and its panel opens over most of the drawing rather than in a short sheet.
 - 巡边 (Contour): the outline is the pixels further from the background than a cutting outline's own colour tolerance, the background being the colour the picture's border is mostly made of, and falls back on a brightness split for a photograph or a gradient. The ring is simplified before it is curved, a pixel of steps and then a curve within one, so a contour comes out with a fraction of the nodes it had, and at smoothing 0 it is a simplified polyline rather than a curve fitted to every stair step. The contour lands on the picture's own layer, above it, rather than on the layer being drawn on, which left it under the picture whenever that layer was below.

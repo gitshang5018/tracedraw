@@ -52,6 +52,9 @@ fn model_note(model: &str) -> String {
 }
 
 pub fn ai_generate(app: &mut App, ui: &mut Ui) {
+    if crate::ui::mobile::phone() {
+        return phone_layout(app, ui);
+    }
     // The modes as picture buttons, and the information page at the right.
     ui.horizontal(|ui| {
         for (mode, glyph, key) in [
@@ -146,6 +149,94 @@ pub fn ai_generate(app: &mut App, ui: &mut Ui) {
                     .size(11.0),
             );
         });
+    footer(app, ui, mode, ready);
+}
+
+/// The panel on a phone: the modes as words, since a picture button's
+/// meaning is a tooltip, and a phone has no pointer to hover one with. The
+/// settings and the results are one scroll, the sheet's own, and the button
+/// that generates is kept under it, where it stays in view.
+fn phone_layout(app: &mut App, ui: &mut Ui) {
+    ui.horizontal_wrapped(|ui| {
+        for (mode, key) in [
+            (Mode::Create, "aigen.mode_create"),
+            (Mode::Remix, "aigen.mode_remix"),
+            (Mode::Vector, "aigen.mode_vector"),
+            (Mode::Draw, "aigen.mode_draw"),
+        ] {
+            let on = app.ai_image.mode == mode && !app.ai_image.info;
+            if ui
+                .selectable_label(on, RichText::new(tr(key)).size(13.0))
+                .clicked()
+            {
+                app.ai_image.mode = mode;
+                app.ai_image.info = false;
+            }
+        }
+        let info = app.ai_image.info;
+        if ui
+            .selectable_label(info, RichText::new("\u{2139}").size(15.0))
+            .rich_tip(tr("aigen.info"))
+            .clicked()
+        {
+            app.ai_image.info = !info;
+        }
+    });
+    if app.ai_image.info {
+        ui.add_space(6.0);
+        info_page(app, ui);
+        return;
+    }
+    let mode = app.ai_image.mode;
+    if mode == Mode::Draw {
+        ui.add_space(6.0);
+        crate::ui::ai_docker::ai_drawing(app, ui);
+        return;
+    }
+    let svg = mode == Mode::Vector && app.ai_image.vector_engine == VectorEngine::Svg;
+    let need = if svg { Need::Drawing } else { Need::Images };
+    banner(app, ui, need);
+    let ready = if svg {
+        app.ai_drawing_ready()
+    } else {
+        app.ai_image_ready()
+    };
+    // What the chosen mode does, in one line under the buttons that chose it.
+    ui.label(
+        RichText::new(tr(match mode {
+            Mode::Create => "aigen.create_about",
+            Mode::Remix => "aigen.remix_about",
+            Mode::Vector => "aigen.vector_about",
+            Mode::Draw => "aigen.draw_about",
+        }))
+        .color(Tokens::text_dim())
+        .size(11.0),
+    );
+    ui.add_space(4.0);
+    ui.add_enabled_ui(ready && !app.ai_image.busy(), |ui| body(app, ui, mode, svg));
+    results(app, ui);
+    ui.add_space(6.0);
+    ui.label(
+        RichText::new(tr("aigen.privacy"))
+            .color(Tokens::text_dim())
+            .size(11.0),
+    );
+}
+
+/// The bar under the panel's own scroll: the count, the note on what a run
+/// costs and the button that generates. A phone keeps it in view while the
+/// settings above it scroll.
+pub fn ai_generate_footer(app: &mut App, ui: &mut Ui) {
+    let mode = app.ai_image.mode;
+    if mode == Mode::Draw || app.ai_image.info {
+        return;
+    }
+    let svg = mode == Mode::Vector && app.ai_image.vector_engine == VectorEngine::Svg;
+    let ready = if svg {
+        app.ai_drawing_ready()
+    } else {
+        app.ai_image_ready()
+    };
     footer(app, ui, mode, ready);
 }
 
@@ -253,7 +344,7 @@ fn body(app: &mut App, ui: &mut Ui, mode: Mode, svg: bool) {
                 Mode::Remix => "aigen.remix_hint",
                 _ => "aigen.prompt_hint",
             }))
-            .desired_rows(6)
+            .desired_rows(if crate::ui::mobile::phone() { 4 } else { 6 })
             .desired_width(f32::INFINITY),
     );
     if mode == Mode::Remix {
@@ -414,6 +505,22 @@ fn source(app: &mut App, ui: &mut Ui, mode: Mode) {
     }
     ui.vertical_centered(|ui| {
         ui.horizontal(|ui| {
+            if crate::ui::mobile::phone() {
+                // Words: a phone has no pointer to hover a glyph's tip with.
+                if ui
+                    .button(format!("\u{2B1A} {}", tr("export_docker.selection")))
+                    .clicked()
+                {
+                    app.ai_source_from_selection();
+                }
+                if ui
+                    .button(format!("\u{1F4C2} {}", tr("options.import_section")))
+                    .clicked()
+                {
+                    app.ai_source_from_file();
+                }
+                return;
+            }
             ui.add_space((ui.available_width() - 64.0).max(0.0) / 2.0);
             if ui
                 .small_button("\u{2B1A}")

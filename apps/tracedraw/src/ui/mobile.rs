@@ -1882,9 +1882,17 @@ fn sheet_content(
     if sheet_header(ui, which, m3) {
         *open = Sheet::None;
     }
+    // The generate panel keeps its button in view under its own scroll: a
+    // phone should not have to scroll past the settings to reach the one
+    // thing the panel is for.
+    let bar = if matches!(which, Sheet::AiGenerate) {
+        118.0
+    } else {
+        0.0
+    };
     egui::ScrollArea::vertical()
         .id_salt(("mobile_sheet_scroll", sheet_title(which)))
-        .max_height(height - 92.0)
+        .max_height(height - 92.0 - bar)
         .auto_shrink([false, false])
         .show(ui, |ui| {
             Frame::new()
@@ -1899,6 +1907,9 @@ fn sheet_content(
                     sheet_body(app, ui, which, m3, open);
                 });
         });
+    if bar > 0.0 {
+        crate::ui::ai_generate_docker::ai_generate_footer(app, ui);
+    }
 }
 
 /// The dimmed drawing behind a sheet, a drawer or a page: a tap there puts
