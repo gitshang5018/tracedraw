@@ -70,6 +70,22 @@ pub(crate) struct M3 {
     pub(crate) chevron: Color32,
 }
 
+/// The phone's own light or dark setting, as the system last said it: 1
+/// dark, 0 light, and -1 while nothing has said yet. The interface on a
+/// phone follows the phone rather than the app's own theme, which the
+/// desktop picks by hand.
+static SYSTEM_THEME: std::sync::atomic::AtomicI8 = std::sync::atomic::AtomicI8::new(-1);
+
+/// Take the system's light or dark setting for this frame.
+fn note_system_theme(ctx: &egui::Context) {
+    let said = match ctx.system_theme() {
+        Some(egui::Theme::Dark) => 1,
+        Some(egui::Theme::Light) => 0,
+        None => -1,
+    };
+    SYSTEM_THEME.store(said, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// The colours of the tiles at the head of a list's rows: warm to cool, the
 /// way the phone's own settings page sets its icons, so a list reads as a
 /// set of destinations rather than a block of text.
@@ -87,7 +103,12 @@ pub(crate) const TILES: [Color32; 9] = [
 
 impl M3 {
     pub(crate) fn of() -> Self {
-        let dark = crate::theme::theme().is_dark();
+        let dark = match SYSTEM_THEME.load(std::sync::atomic::Ordering::Relaxed) {
+            1 => true,
+            0 => false,
+            // Nothing has said yet: the app's own theme stands in.
+            _ => crate::theme::theme().is_dark(),
+        };
         let c = |r: u8, g: u8, b: u8| Color32::from_rgb(r, g, b);
         if dark {
             Self {
@@ -416,6 +437,7 @@ fn landscape(screen: Rect) -> bool {
 pub fn frame(app: &mut App, ui: &mut Ui) -> bool {
     let ctx = ui.ctx().clone();
     let window = ui.max_rect();
+    note_system_theme(&ctx);
     let m3 = M3::of();
     // A finger is not a mouse pointer: bigger targets and room between
     // them, whatever size the desktop was set to.
@@ -1168,10 +1190,20 @@ fn save_ai_state(ctx: &egui::Context, st: &crate::ai_tools::AiTools) {
     ctx.data_mut(|d| d.insert_temp(Id::new("ai_tools_state"), st.clone()));
 }
 
-/// The chip at the left edge over the drawing: the three image tools whose
-/// models the project's bucket serves. A tap opens them just above it, and
-/// one of the three opens its own sheet.
-fn ai_chip(_app: &mut App, ui: &mut Ui, m3: &M3, full: Rect, open: &mut Sheet) {
+/// What a row of the AI chip's menu does: open a sheet, or act on the
+/// drawing at once.
+#[derive(Clone, Copy)]
+enum AiMenu {
+    Sheet(Sheet),
+    Arrange,
+    Group,
+}
+
+/// The chip at the left edge over the drawing: the image tools whose models
+/// the project's bucket serves, and the two ways of tidying a set of objects
+/// they leave behind. A tap opens them just above it, and a row either opens
+/// its own sheet or works on what is selected.
+fn ai_chip(app: &mut App, ui: &mut Ui, m3: &M3, full: Rect, open: &mut Sheet) {
     let rect = Rect::from_min_max(
         egui::pos2(full.left() + 16.0, full.bottom() - 52.0),
         egui::pos2(full.left() + 92.0, full.bottom() - 16.0),
@@ -1188,12 +1220,14 @@ fn ai_chip(_app: &mut App, ui: &mut Ui, m3: &M3, full: Rect, open: &mut Sheet) {
         return;
     }
     let items = [
-        (Sheet::AiGenerate, "docker.ai_generate"),
-        (Sheet::Matting, "ai.matting"),
-        (Sheet::Variable, "ai.variable"),
-        (Sheet::Trace, "ai.trace"),
+        (AiMenu::Sheet(Sheet::AiGenerate), "docker.ai_generate"),
+        (AiMenu::Sheet(Sheet::Matting), "ai.matting"),
+        (AiMenu::Sheet(Sheet::Variable), "ai.variable"),
+        (AiMenu::Sheet(Sheet::Trace), "ai.trace"),
+        (AiMenu::Arrange, "docker.smart_arrange"),
+        (AiMenu::Group, "docker.smart_group"),
     ];
-    let row = 44.0;
+    let row = 46.0;
     let height = row * items.len() as f32 + 12.0;
     let top = (rect.top() - height - 8.0).max(full.top() + 8.0);
     let ctx = ui.ctx().clone();
@@ -1201,20 +1235,43 @@ fn ai_chip(_app: &mut App, ui: &mut Ui, m3: &M3, full: Rect, open: &mut Sheet) {
         .order(egui::Order::Foreground)
         .fixed_pos(egui::pos2(rect.left(), top))
         .show(&ctx, |ui| {
+            // The same card the tool strip opens with: the same corner, the
+            // same shadow, and rows that light up the way its buttons do.
             Frame::new()
                 .fill(m3.container)
-                .corner_radius(16.0)
-                .inner_margin(egui::Margin::symmetric(8, 6))
+                .corner_radius(20.0)
+                .shadow(crate::theme::shadow(egui::epaint::Shadow {
+                    offset: [0, 6],
+                    blur: 24,
+                    spread: 0,
+                    color: Color32::from_black_alpha(70),
+                }))
+                .inner_margin(egui::Margin::same(6))
                 .show(ui, |ui| {
-                    ui.set_width(136.0);
-                    for (sheet, label) in items {
-                        let text = egui::RichText::new(tr(label)).size(14.0).color(m3.on);
-                        let button = egui::Button::new(text)
-                            .corner_radius(12.0)
-                            .fill(m3.high)
-                            .min_size(Vec2::new(120.0, row - 8.0));
-                        if ui.add(button).clicked() {
-                            *open = sheet;
+                    ui.set_width(172.0);
+                    ui.spacing_mut().item_spacing.y = 0.0;
+                    for (action, label) in items {
+                        let (at, resp) = ui.allocate_exact_size(
+                            Vec2::new(ui.available_width(), row),
+                            Sense::click(),
+                        );
+                        let hot = resp.hovered() || resp.is_pointer_button_down_on();
+                        if hot {
+                            ui.painter().rect_filled(at, 14.0, m3.primary_container);
+                        }
+                        ui.painter().text(
+                            egui::pos2(at.left() + 14.0, at.center().y),
+                            egui::Align2::LEFT_CENTER,
+                            tr(label),
+                            egui::FontId::proportional(15.0),
+                            if hot { m3.primary } else { m3.on },
+                        );
+                        if resp.clicked() {
+                            match action {
+                                AiMenu::Sheet(sheet) => *open = sheet,
+                                AiMenu::Arrange => app.arrange_selection(),
+                                AiMenu::Group => app.smart_group(),
+                            }
                             ui.ctx().data_mut(|d| d.insert_temp(menu_key, false));
                         }
                     }

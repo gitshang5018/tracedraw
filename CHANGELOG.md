@@ -6,6 +6,9 @@ full, row-by-row status.
 
 ## Unreleased
 
+- The phone's interface follows the phone's own light and dark setting: turning the system dark turns the page, the cards, the bars and the accent dark with it, and turning it back brings the light ones. It was drawn from the app's own theme, which is picked by hand in Options and was left behind when the phone changed.
+- The AI chip's menu is drawn as the card the tool strip opens: the same corner, the same shadow, and rows that light up in the accent as the strip's buttons do. It was a smaller card of filled chips, which read as another kind of menu.
+- 智能排布 and 智能群组 are in the AI chip's menu now, beside the image tools they are used with, instead of the bar along the bottom of the drawing.
 - Contour on a phone, a rounder edge: the outline was grown by a distance as a square, so a round subject came out with straight sides and corners pushed out by a further half, which a cut line shows on every curve. The growth is a disc now, from the exact distance to the subject (`trace::dilate`), so an expanded outline is the subject's own outline moved out by the distance.
 - Contour on a phone, where the picture is: a picture moved, turned or scaled after it was placed keeps the rectangle it was made with and takes the change in its transform, so the outline came out at the place the picture had started from, which is often the middle of the page. The outline takes the picture's transform now and follows it wherever it is.
 - Contour on a phone, growing past the edge: an expansion that reached the picture's border was cut flat along it, since the cells outside the picture count as empty. The picture is given room on every side before the subject grows, and the rings are moved back afterwards, so the outline goes past the edge the way a cutter follows it.

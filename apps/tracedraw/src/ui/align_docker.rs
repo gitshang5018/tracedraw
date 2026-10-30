@@ -507,12 +507,10 @@ pub fn align_part(app: &mut App, ui: &mut Ui) {
         nav_command(ui, icon, label, enabled)
     };
     ui.spacing_mut().item_spacing.x = 2.0;
-    // 智能排布 and 居中 come before the edges, as they do in the floating
-    // toolbar of CorelDRAW: what is done to the set of objects first, then
-    // how they line up.
-    if put(ui, Icon::Arrange, &tr("docker.smart_arrange"), two).clicked() {
-        app.arrange_selection();
-    }
+    // 居中 comes before the edges, as it does in the floating toolbar of
+    // CorelDRAW: what is done to the set of objects first, then how they
+    // line up. 智能排布 and 智能群组 are in the AI chip's menu, beside the
+    // image tools they are used with.
     if put(ui, Icon::CenterPage, &tr("docker.center_page"), true).clicked() {
         app.center_selection();
     }
@@ -556,9 +554,6 @@ pub fn align_part(app: &mut App, ui: &mut Ui) {
     gap(ui);
     if put(ui, Icon::Group, &tr("menu.object.group_group"), two).clicked() {
         app.group_selection();
-    }
-    if put(ui, Icon::SmartGroup, &tr("docker.smart_group"), two).clicked() {
-        app.smart_group();
     }
     // Selecting by kind, as the same toolbar offers beside them.
     gap(ui);
