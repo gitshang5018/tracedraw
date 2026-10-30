@@ -424,9 +424,19 @@ static FOCUSED: std::sync::Mutex<Option<egui::Id>> = std::sync::Mutex::new(None)
 /// Whether the keyboard has been seen up since it was asked for: once it
 /// has, putting it away is the user's doing and it is not asked again.
 static SHOWN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// When the interface last reported no field at all, for a keyboard that is
+/// up: moving from one field to the next leaves a frame or two with none,
+/// and the keyboard is not put away for those.
+static NO_FIELD_SINCE: std::sync::Mutex<Option<web_time::Instant>> =
+    std::sync::Mutex::new(None);
 /// How long a keyboard that was just asked for stays up while the
 /// interface reports no field for a frame or two.
 const KEYBOARD_GRACE: std::time::Duration = std::time::Duration::from_millis(1200);
+/// How long the keyboard stays up with no field at all before it is put
+/// away: long enough for a tap that moves the focus from one field to the
+/// next, which reports none for a frame or two, and short enough that a tap
+/// on the drawing closes it at once.
+const NO_FIELD_GRACE: std::time::Duration = std::time::Duration::from_millis(400);
 
 /// `EditorInfo.IME_FLAG_NO_EXTRACT_UI`: the input method edits in its own
 /// strip over the drawing, never on a full screen of its own.
@@ -474,6 +484,18 @@ pub fn set_keyboard(app: &AndroidApp, show: bool, focus: Option<egui::Id>) {
         }
         None => false,
     };
+    // When no field has the focus at all, the clock the keyboard is put away
+    // on starts: a move from one field to the next reports none for a frame
+    // or two, and the keyboard stays for those.
+    match focus {
+        Some(_) => *lock(&NO_FIELD_SINCE) = None,
+        None => {
+            let mut since = lock(&NO_FIELD_SINCE);
+            if since.is_none() {
+                *since = Some(web_time::Instant::now());
+            }
+        }
+    }
     if was == show && !(show && moved) {
         // The keyboard is wanted and believed up. It is up only if the
         // field it types into is still in the window: one taken out while
@@ -501,7 +523,10 @@ pub fn set_keyboard(app: &AndroidApp, show: bool, focus: Option<egui::Id>) {
         let lost = field_due();
         *lock(&ASKED) = Some((web_time::Instant::now(), 0));
         if lost {
+            log::info!("keyboard: the focus moved, and the field went with it");
             open_keyboard(app);
+        } else {
+            log::info!("keyboard: the focus moved to another field");
         }
         return;
     }
@@ -514,6 +539,16 @@ pub fn set_keyboard(app: &AndroidApp, show: bool, focus: Option<egui::Id>) {
                 return;
             }
         }
+        // A tap that moves the focus from one field to the next reports no
+        // field for a frame or two, and the field it went to is known on the
+        // frame after: the keyboard is not put away for those either.
+        let gone = match *lock(&NO_FIELD_SINCE) {
+            Some(since) => since.elapsed(),
+            None => std::time::Duration::ZERO,
+        };
+        if gone < NO_FIELD_GRACE {
+            return;
+        }
     }
     KEYBOARD.store(show, Ordering::Relaxed);
     lock(&TYPED).clear();
@@ -524,6 +559,7 @@ pub fn set_keyboard(app: &AndroidApp, show: bool, focus: Option<egui::Id>) {
     } else {
         *lock(&ASKED) = None;
         SHOWN.store(false, Ordering::Relaxed);
+        log::info!("keyboard put away: no field has the focus");
         close_keyboard(app);
     }
 }
@@ -750,6 +786,7 @@ fn input_method<'a>(env: &mut jni::JNIEnv<'a>, activity: &JObject<'a>) -> Option
 
 /// Take the field out of the window, keyboard first.
 fn close_field(vm: *mut c_void, activity: *mut c_void) {
+    log::info!("keyboard field taken out: the interface wants no keyboard");
     with_env(vm, |env| {
         let field = lock(&FIELD).take()?;
         let field = field.as_obj();
