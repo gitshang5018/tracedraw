@@ -21,6 +21,12 @@ use std::path::Path;
 /// as large as a phone's memory takes, since every tile costs a dispatch
 /// of a thousand layers and a wait of its own.
 const TILE: usize = 224;
+/// The side a tile is cut at on the card: its feature maps are a whole
+/// network's worth for the tile being worked, and the last ones are as
+/// large as the tile four times over with 64 channels each. At the size the
+/// processor takes, three of those are a gigabyte: the phone ran out, the
+/// card was lost, and the picture came back over the processor only.
+const CARD_TILE: usize = 128;
 /// What a tile carries beyond its own side, thrown away at the join.
 const MARGIN: usize = 12;
 
@@ -144,6 +150,16 @@ impl Upscaler {
         x.max(1) * y.max(1)
     }
 
+    /// The side a tile is cut at: smaller on the card, whose feature maps
+    /// for one tile are larger than the phone has to spare.
+    fn tile_side(&self) -> usize {
+        use std::sync::atomic::Ordering;
+        match &self.card {
+            Some(_) if !self.card_failed.load(Ordering::Relaxed) => CARD_TILE,
+            _ => TILE,
+        }
+    }
+
     /// The picture, `scale` times its size. `progress` is called after each
     /// tile with how many are done and how many there are.
     pub fn run(
@@ -164,19 +180,20 @@ impl Upscaler {
         }
         let started = std::time::Instant::now();
         let mut out = RgbaImage::new(out_w as u32, out_h as u32);
-        let tiles_x = (w + TILE - 1) / TILE;
-        let tiles_y = (h + TILE - 1) / TILE;
+        let tile = self.tile_side();
+        let tiles_x = (w + tile - 1) / tile;
+        let tiles_y = (h + tile - 1) / tile;
         let total = (tiles_x * tiles_y).max(1);
         log::info!(
-            "upscaling: a {w} x {h} picture to {out_w} x {out_h}, {total} tiles of {TILE} px"
+            "upscaling: a {w} x {h} picture to {out_w} x {out_h}, {total} tiles of {tile} px"
         );
         let mut done = 0;
         for ty in 0..tiles_y {
             for tx in 0..tiles_x {
-                let x0 = tx * TILE;
-                let y0 = ty * TILE;
-                let x1 = (x0 + TILE).min(w);
-                let y1 = (y0 + TILE).min(h);
+                let x0 = tx * tile;
+                let y0 = ty * tile;
+                let x1 = (x0 + tile).min(w);
+                let y1 = (y0 + tile).min(h);
                 // The tile with the margin it reads beyond its own edge.
                 let sx0 = x0.saturating_sub(MARGIN);
                 let sy0 = y0.saturating_sub(MARGIN);
@@ -242,7 +259,7 @@ impl Upscaler {
         log::error!(
             "upscale: {} tiles of {} px in {} ms on the {}",
             total,
-            TILE,
+            tile,
             started.elapsed().as_millis(),
             if self.on_card() { "card" } else { "processor" }
         );

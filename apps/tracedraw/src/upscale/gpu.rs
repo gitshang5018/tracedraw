@@ -231,7 +231,10 @@ impl Pool {
     }
 
     fn give(&mut self, size: u64, buffer: Arc<wgpu::Buffer>) {
-        if self.free.len() < 64 {
+        // Only small ones are kept: a buffer of a hundred megabytes held for
+        // a later step is memory the phone does not have to spare, and the
+        // last layers of a tile ask for three of them at once.
+        if size <= 8 * 1024 * 1024 && self.free.len() < 64 {
             self.free.push((size.max(4), buffer));
         }
     }
