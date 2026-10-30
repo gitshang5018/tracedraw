@@ -835,6 +835,15 @@ pub fn pump_typing(ctx: &egui::Context, wants: bool) {
     };
     let focused = ctx.memory(|m| m.focused());
     let touched = ctx.input(|i| i.pointer.any_pressed());
+    // A touch on a field whose keyboard was put away is the user asking for
+    // it again. `SHOWN` says the phone answered once, and a field that keeps
+    // the focus after the keyboard goes (the back gesture leaves it where it
+    // was) is not a move to another field, so nothing else would ask: the
+    // field tapped a second time never got a keyboard back. A touch while
+    // the keyboard is up changes nothing, since the retry stays quiet then.
+    if touched && focused.is_some() {
+        SHOWN.store(false, std::sync::atomic::Ordering::Relaxed);
+    }
     // The band the keyboard's height is taken in is right now, and the field
     // still loses the focus on the way up: something in the frames the
     // keyboard rises through takes it, and a field without one closes the
