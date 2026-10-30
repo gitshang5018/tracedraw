@@ -231,10 +231,12 @@ impl Pool {
     }
 
     fn give(&mut self, size: u64, buffer: Arc<wgpu::Buffer>) {
-        // Only small ones are kept: a buffer of a hundred megabytes held for
-        // a later step is memory the phone does not have to spare, and the
-        // last layers of a tile ask for three of them at once.
-        if size <= 8 * 1024 * 1024 && self.free.len() < 64 {
+        // A buffer of the size the next tile asks for is kept, so the tile
+        // after this one reuses it instead of asking the card for another:
+        // the card does not hand a buffer back when it is dropped, and a
+        // picture of forty tiles ran it out of memory that way. Anything
+        // larger is left to the driver.
+        if size <= 128 * 1024 * 1024 && self.free.len() < 64 {
             self.free.push((size.max(4), buffer));
         }
     }
@@ -292,6 +294,10 @@ pub struct GpuNet {
     steps: Vec<Step>,
     out: String,
     frees: Vec<Vec<String>>,
+    /// The buffers the last tile used, kept for the next one: a picture is
+    /// a few dozen tiles of nearly one size, and making them afresh for
+    /// every tile grew what the card held until it was lost.
+    pool: std::sync::Mutex<Pool>,
     /// What the network does to one pixel: four for both models.
     pub scale: usize,
     /// The channels it reads.
@@ -471,6 +477,7 @@ impl GpuNet {
             steps,
             out,
             frees,
+            pool: std::sync::Mutex::new(Pool::new()),
             scale,
             channels,
         };
@@ -536,7 +543,7 @@ impl GpuNet {
             input.c,
             self.steps.len()
         );
-        let mut pool = Pool::new();
+        let mut pool = self.pool.lock().unwrap_or_else(|e| e.into_inner());
         let mut blobs: HashMap<String, (Arc<wgpu::Buffer>, usize, usize, usize)> = HashMap::new();
         let mut encoder = self
             .device
