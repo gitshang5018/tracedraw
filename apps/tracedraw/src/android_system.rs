@@ -460,13 +460,19 @@ pub fn set_keyboard(app: &AndroidApp, show: bool, focus: Option<egui::Id>) {
     // focus from one field to the next. Nothing is rebuilt for that, since
     // the keyboard is usually still up; the retry below asks again if the
     // phone put it away in between.
-    let moved = {
-        let mut last = lock(&FOCUSED);
-        let moved = *last != focus;
-        if focus.is_some() {
-            *last = focus;
+    //
+    // No focus at all is not a move: the field it was on is gone, and a
+    // move there would rebuild the field and ask again on every frame the
+    // interface reports no focus, which is what a text on the page being
+    // edited looks like.
+    let moved = match focus {
+        Some(id) => {
+            let mut last = lock(&FOCUSED);
+            let moved = *last != Some(id);
+            *last = Some(id);
+            moved
         }
-        moved
+        None => false,
     };
     if was == show && !(show && moved) {
         // The keyboard is wanted and believed up. It is up only if the
@@ -835,11 +841,28 @@ pub fn pump_typing(ctx: &egui::Context, wants: bool) {
     // keyboard with it. The focus is put back while the keyboard is up and
     // nothing has been touched, which a touch is what tells the two apart:
     // a touch is the user letting go, and nothing else is.
+    //
+    // Only while the keyboard is on its way up, though: a field that has
+    // lost the focus for longer than that is gone (its sheet closed, or the
+    // text on the page is being edited, which has no widget of its own and
+    // no focus to keep). Putting the focus back on one of those made the
+    // interface want a keyboard again on the next frame, which the keyboard
+    // then opened and lost again, and the two went round for as long as the
+    // text was edited: the keyboard closed and opened, over and over, and
+    // the back gesture that put it away was answered with another ask.
     if focused.is_none() && !touched && KEYBOARD.load(std::sync::atomic::Ordering::Relaxed) {
         let last = *lock(&FOCUSED);
-        log::error!("keyboard: focus lost while up, last field {last:?}");
-        if let Some(last) = last {
-            ctx.memory_mut(|m| m.request_focus(last));
+        let rising = match *lock(&ASKED) {
+            Some((when, _)) => when.elapsed() < KEYBOARD_GRACE,
+            None => false,
+        };
+        match last {
+            Some(last) if rising => ctx.memory_mut(|m| m.request_focus(last)),
+            Some(_) => {
+                log::error!("keyboard: the field is gone, the keyboard is left to the interface");
+                *lock(&FOCUSED) = None;
+            }
+            None => {}
         }
     }
     set_keyboard(phone, wants, focused);
