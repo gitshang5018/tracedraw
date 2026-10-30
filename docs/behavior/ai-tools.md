@@ -72,6 +72,28 @@ from the knees up are both framed by their own outline. The room the crop
 needs beyond the picture is filled with the background colour, which is what
 the photo is printed on.
 
+## Contour
+
+The outline a cutter follows, made from the selected picture by
+`trace::contour_paths`: the subject's outermost ring, grown out by the
+distance in millimetres the panel asks for (or shrunk into it when the
+distance is negative), simplified and fitted as curves.
+
+The rings come out of the picture's own pixels, in the space the picture was
+made in, and then take the picture's transform: a picture moved, turned or
+scaled after it was placed keeps the rectangle it was made with, so without
+that transform the outline landed where the picture had started from.
+
+An expansion is worked out in a room the picture is given on every side
+(`pad`, two pixels more than the distance), because the cells outside a
+picture count as empty: grown in the picture's own cells, an outline that
+reached the border ran along it and came out with a flat side. The rings are
+moved back by the same room before they are fitted.
+
+`Power clip` puts the picture inside the outline, which becomes its
+container, and that container keeps whatever is put in it where it is (see
+`App::clip_frames_keeping_place`).
+
 ## Variable data
 
 The desktop's Print Merge panel, unchanged, in the phone's sheet: a table

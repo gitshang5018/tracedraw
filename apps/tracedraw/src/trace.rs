@@ -116,18 +116,38 @@ pub fn contour_paths(img: &RgbaImage, expand: f64, detail: f64, smoothing: f64) 
     if w == 0 || h == 0 {
         return Vec::new();
     }
-    let mut mask = subject_mask(img);
+    let r = expand.abs().round() as usize;
+    // An expansion that reaches the picture's edge would be cut flat along
+    // it, since the cells outside the picture count as empty: the picture is
+    // given room on every side first, so the outline grows past its edge the
+    // way a cutter follows it, and the rings are moved back afterwards. The
+    // two spare pixels keep the dilated edge off the room's own border.
+    let pad = if expand > 0.0 && r > 0 { r + 2 } else { 0 };
+    let (pw, ph) = (w + 2 * pad, h + 2 * pad);
+    let mut mask = if pad == 0 {
+        subject_mask(img)
+    } else {
+        let inner = subject_mask(img);
+        let mut room = vec![false; pw * ph];
+        for y in 0..h {
+            for x in 0..w {
+                if inner[y * w + x] {
+                    room[(y + pad) * pw + (x + pad)] = true;
+                }
+            }
+        }
+        room
+    };
     if !mask.iter().any(|m| *m) {
         return Vec::new();
     }
-    let r = expand.abs().round() as usize;
     if r > 0 && r < w.min(h) {
         if expand > 0.0 {
-            mask = dilate(&mask, w, h, r);
+            mask = dilate(&mask, pw, ph, r);
         } else {
             // An erosion is a dilation of the other side of the mask.
             let inverted: Vec<bool> = mask.iter().map(|m| !m).collect();
-            let grown = dilate(&inverted, w, h, r);
+            let grown = dilate(&inverted, pw, ph, r);
             mask = grown.iter().map(|m| !m).collect();
         }
     }
@@ -153,9 +173,18 @@ pub fn contour_paths(img: &RgbaImage, expand: f64, detail: f64, smoothing: f64) 
         centerline: false,
         delete_original: false,
     };
-    contours(&mask, w, h)
+    contours(&mask, pw, ph)
         .into_iter()
         .map(|ring| {
+            // The rings are in the room the picture was given: moved back to
+            // the picture's own pixels, which is the space `to_rect` maps.
+            let ring: Vec<Point> = if pad > 0 {
+                ring.into_iter()
+                    .map(|p| Point::new(p.x - pad as f64, p.y - pad as f64))
+                    .collect()
+            } else {
+                ring
+            };
             let steps = tracedraw_core::geometry::simplify(&ring, epsilon);
             if steps.len() < 3 {
                 return fit_ring(&ring, &settings);
@@ -2082,5 +2111,38 @@ mod tests {
         }
         let rings = contours(&mask, w, 10);
         assert_eq!(rings.len(), 2);
+    }
+
+    #[test]
+    fn an_expansion_past_the_edge_is_not_cut_flat() {
+        // A subject that touches the picture's left edge. Grown by four
+        // pixels, the ring goes four pixels past that edge; traced in the
+        // picture's own cells it ran along the edge instead, and the outline
+        // came out with a straight side where it should have been round.
+        let mut img = RgbaImage::from_pixel(32, 32, image::Rgba([255, 255, 255, 255]));
+        for y in 8..24 {
+            for x in 0..16 {
+                img.put_pixel(x, y, image::Rgba([0, 0, 0, 255]));
+            }
+        }
+        let paths = contour_paths(&img, 4.0, 60.0, 40.0);
+        assert!(!paths.is_empty(), "no outline was traced");
+        let mut min_x = f64::MAX;
+        let mut closed = 0;
+        for path in &paths {
+            for el in path.elements() {
+                if matches!(el, tracedraw_core::geometry::PathEl::ClosePath) {
+                    closed += 1;
+                }
+                if let Some(p) = el.end_point() {
+                    min_x = min_x.min(p.x);
+                }
+            }
+        }
+        assert!(closed > 0, "the outline is not a closed ring");
+        assert!(
+            min_x < -2.0,
+            "the outline stops at {min_x} instead of going past the edge"
+        );
     }
 }

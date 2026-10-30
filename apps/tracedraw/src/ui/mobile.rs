@@ -1674,8 +1674,26 @@ fn contour_run(
     if img.width() == 0 || img.height() == 0 {
         return;
     }
-    // A millimetre in the drawing is this many pixels of the picture.
-    let mm_per_px = (rect.width() / img.width() as f64).max(1e-9);
+    // The rect a picture carries is where it was drawn, not where it is: a
+    // move, a turn or a scale goes into the shape's transform, and the rect
+    // stays as it was made. The outline follows the picture, so it takes the
+    // same transform; without this a picture dragged away from the middle of
+    // the page got its contour back where it was first made.
+    let place = app
+        .doc()
+        .parent_transform(bitmap)
+        .unwrap_or(tracedraw_core::geometry::Affine::IDENTITY)
+        * app
+            .doc()
+            .shape(bitmap)
+            .map(|(_, s)| s.transform)
+            .unwrap_or(tracedraw_core::geometry::Affine::IDENTITY);
+    // A millimetre in the drawing is this many pixels of the picture, taken
+    // on the page, where the picture is now and at the size it is now.
+    let page_w = (place * tracedraw_core::geometry::Point::new(rect.x1, rect.y0)
+        - place * tracedraw_core::geometry::Point::new(rect.x0, rect.y0))
+    .hypot();
+    let mm_per_px = (page_w / img.width() as f64).max(1e-9);
     let paths = crate::trace::contour_paths(
         &img,
         expand_mm / mm_per_px,
@@ -1706,6 +1724,9 @@ fn contour_run(
     for path in &paths {
         outline.extend(crate::trace::to_rect(path, img.width(), img.height(), rect));
     }
+    // The rings are on the picture as it was made; the transform is what took
+    // it to the page.
+    let outline = place * outline;
     let id = app.engine.new_shape_id();
     let mut shape = tracedraw_core::document::Shape::new(
         id,
@@ -4046,6 +4067,64 @@ mod tests {
         assert!(
             (picture.x0 - 300.0).abs() < 3.0 && (picture.y0 - 400.0).abs() < 3.0,
             "the picture moved to {picture:?} instead of staying at 300, 400"
+        );
+    }
+
+    #[test]
+    fn a_moved_picture_gets_its_contour_where_it_is_now() {
+        // A picture moved after it was made keeps its rect and takes the move
+        // in its transform. The contour follows the picture, not the place it
+        // started from, which is what put every outline in the middle of the
+        // page once the picture had been dragged away.
+        let mut app = App::headless();
+        let mut img = image::RgbaImage::from_pixel(64, 64, image::Rgba([255, 255, 255, 255]));
+        for y in 16..48 {
+            for x in 16..48 {
+                img.put_pixel(x, y, image::Rgba([0, 0, 0, 255]));
+            }
+        }
+        let Some(png) = crate::bitmap_fx::encode(&img) else {
+            panic!("a picture");
+        };
+        let rect = tracedraw_core::geometry::Rect::new(300.0, 400.0, 340.0, 440.0);
+        let id = app
+            .new_shape(tracedraw_core::document::ShapeKind::Bitmap {
+                rect,
+                width_px: 64,
+                height_px: 64,
+                png: png.into(),
+                fx: None,
+            })
+            .expect("a bitmap");
+        app.engine
+            .run_batch(
+                "Move",
+                &[tracedraw_core::Command::TransformShapes {
+                    shapes: vec![id],
+                    transform: tracedraw_core::geometry::Affine::translate((100.0, 60.0)),
+                }],
+            )
+            .expect("a move");
+        app.select(vec![id]);
+        contour_run(&mut app, 0.0, 60.0, 40.0, false, false);
+        let outline = app
+            .doc()
+            .all_layers()
+            .flat_map(|l| l.shapes.iter())
+            .find(|s| matches!(s.kind, tracedraw_core::document::ShapeKind::Path { .. }))
+            .map(|s| s.bounds());
+        let Some(outline) = outline else {
+            panic!("no outline was made: {}", app.status);
+        };
+        assert!(
+            (outline.x0 - 410.0).abs() < 3.0,
+            "the outline starts at {} rather than at the moved picture's 410",
+            outline.x0
+        );
+        assert!(
+            (outline.y0 - 470.0).abs() < 3.0,
+            "the outline starts at {} rather than at the moved picture's 470",
+            outline.y0
         );
     }
 }
