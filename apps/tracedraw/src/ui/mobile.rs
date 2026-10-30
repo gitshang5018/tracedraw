@@ -3964,4 +3964,88 @@ mod tests {
             assert!((row.width() - width).abs() < 0.5);
         }
     }
+
+    #[test]
+    fn the_contour_follows_its_picture_and_is_not_centred_on_the_page() {
+        // A picture away from the middle of the page: the outline it is cut
+        // for sits on the picture, not in the middle of the page.
+        let mut app = App::headless();
+        let mut img = image::RgbaImage::from_pixel(64, 64, image::Rgba([255, 255, 255, 255]));
+        for y in 16..48 {
+            for x in 16..48 {
+                img.put_pixel(x, y, image::Rgba([0, 0, 0, 255]));
+            }
+        }
+        let Some(png) = crate::bitmap_fx::encode(&img) else {
+            panic!("a picture");
+        };
+        let rect = tracedraw_core::geometry::Rect::new(300.0, 400.0, 340.0, 440.0);
+        let id = app
+            .new_shape(tracedraw_core::document::ShapeKind::Bitmap {
+                rect,
+                width_px: 64,
+                height_px: 64,
+                png: png.clone().into(),
+                fx: None,
+            })
+            .expect("a bitmap");
+        app.select(vec![id]);
+        contour_run(&mut app, 0.0, 60.0, 40.0, false, false);
+        let outline = app
+            .doc()
+            .all_layers()
+            .flat_map(|l| l.shapes.iter())
+            .find(|s| matches!(s.kind, tracedraw_core::document::ShapeKind::Path { .. }))
+            .map(|s| s.bounds());
+        let Some(outline) = outline else {
+            panic!("no outline was made: {}", app.status);
+        };
+        // The black square is the middle half of the picture, so its outline
+        // is the middle half of the rect: from 310 to 330 across.
+        assert!(
+            (outline.x0 - 310.0).abs() < 3.0,
+            "the outline starts at {} rather than at the picture's 310",
+            outline.x0
+        );
+        assert!(
+            (outline.x1 - 330.0).abs() < 3.0,
+            "the outline ends at {} rather than at the picture's 330",
+            outline.x1
+        );
+        // Put inside the outline as a container, the picture keeps its
+        // place too: nothing about the contour moves anything.
+        let mut app = App::headless();
+        let id = app
+            .new_shape(tracedraw_core::document::ShapeKind::Bitmap {
+                rect,
+                width_px: 64,
+                height_px: 64,
+                png: png.clone().into(),
+                fx: None,
+            })
+            .expect("a bitmap");
+        app.select(vec![id]);
+        contour_run(&mut app, 0.0, 60.0, 40.0, false, true);
+        let picture = app
+            .doc()
+            .all_layers()
+            .flat_map(|l| l.shapes.iter())
+            .find_map(|s| match &s.kind {
+                tracedraw_core::document::ShapeKind::ClipFrame { frame, contents } => contents
+                    .iter()
+                    .find_map(|c| match &c.kind {
+                        tracedraw_core::document::ShapeKind::Bitmap { rect, .. } => Some(*rect),
+                        _ => None,
+                    })
+                    .or(Some(frame.bounds())),
+                _ => None,
+            });
+        let Some(picture) = picture else {
+            panic!("the picture was not put in the outline");
+        };
+        assert!(
+            (picture.x0 - 300.0).abs() < 3.0 && (picture.y0 - 400.0).abs() < 3.0,
+            "the picture moved to {picture:?} instead of staying at 300, 400"
+        );
+    }
 }
