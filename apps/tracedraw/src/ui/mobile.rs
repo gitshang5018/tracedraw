@@ -111,8 +111,6 @@ pub enum Sheet {
     Tools(usize),
     /// The chip at the left edge: the background taken out of a picture.
     Matting,
-    /// The chip at the left edge: a picture made four times its size.
-    Upscale,
     /// The chip at the left edge: one drawing filled from a table.
     Variable,
     /// The chip at the left edge: a picture turned into curves.
@@ -1154,7 +1152,6 @@ fn ai_chip(_app: &mut App, ui: &mut Ui, m3: &M3, full: Rect, open: &mut Sheet) {
     }
     let items = [
         (Sheet::Matting, "ai.matting"),
-        (Sheet::Upscale, "ai.upscale"),
         (Sheet::Variable, "ai.variable"),
         (Sheet::Trace, "ai.trace"),
     ];
@@ -1417,182 +1414,6 @@ fn matting_apply(app: &mut App, ctx: &egui::Context) {
     }
     if cut > 0 {
         app.status = tr("ai.matting_done");
-    }
-}
-
-/// Upscaling: one of the two 4x models, and the picture made four times
-/// its size with it.
-fn upscale_sheet(app: &mut App, ui: &mut Ui, m3: &M3) {
-    let ctx = ui.ctx().clone();
-    // An enlargement that finished since the last frame goes in first, so
-    // the panel below is drawn over the picture it made.
-    upscale_apply(app, &ctx);
-    let mut st = ai_state(&ctx);
-    ui.label(
-        egui::RichText::new(tr("ai.upscale_hint"))
-            .size(12.5)
-            .color(m3.variant),
-    );
-    ui.add_space(6.0);
-    property_label(ui, m3, &tr("ai.model"));
-    for (i, model) in crate::ai_tools::UPSCALE.iter().enumerate() {
-        model_choice(ui, m3, model, st.upscale == i, &mut st.upscale, i);
-    }
-    ui.add_space(6.0);
-    property_label(ui, m3, &tr("ai.upscale_scale"));
-    ui.label(egui::RichText::new(tr("ai.upscale_x4")).size(13.0).color(m3.on));
-    ui.add_space(10.0);
-    // Whether the last run went to the card, so a phone that fell back is
-    // not a mystery.
-    if let Some(card) = ctx.data(|d| d.get_temp::<bool>(Id::new("upscale_card"))) {
-        let key = if card {
-            "ai.upscale_on_card"
-        } else {
-            "ai.upscale_on_cpu"
-        };
-        ui.label(egui::RichText::new(tr(key)).size(11.5).color(m3.variant));
-        ui.add_space(6.0);
-    }
-    if let Some(why) = ctx.data(|d| d.get_temp::<String>(Id::new("upscale_card_error"))) {
-        ui.label(
-            egui::RichText::new(elide(&why, 110))
-                .size(11.0)
-                .color(m3.variant),
-        );
-        ui.add_space(6.0);
-    }
-    // A picture already being enlarged says so, tile by tile.
-    if let Some((done, total)) = ctx.data(|d| d.get_temp::<(usize, usize)>(Id::new("upscale_progress"))) {
-        let share = if total > 0 {
-            done as f32 / total as f32
-        } else {
-            0.0
-        };
-        ui.add(egui::ProgressBar::new(share).text(format!("{done} / {total}")));
-        ui.add_space(8.0);
-    }
-    if let Some(e) = ctx.data(|d| d.get_temp::<String>(Id::new("upscale_error"))) {
-        ui.label(egui::RichText::new(elide(&e, 80)).size(11.5).color(m3.variant));
-        ui.add_space(6.0);
-    }
-    let model = crate::ai_tools::UPSCALE.get(st.upscale).copied();
-    let ready = model.map(|m| crate::ai_tools::ready(&m)).unwrap_or(false);
-    let label = if ready {
-        tr("ai.upscale_run")
-    } else {
-        tr("ai.download_model")
-    };
-    if action_chip(ui, m3, &label).clicked() {
-        if let Some(model) = model {
-            if ready {
-                upscale_start(app, &ctx, &model);
-            } else {
-                crate::ai_tools::download(&ctx, &model);
-            }
-        }
-    }
-    save_ai_state(&ctx, &st);
-}
-
-/// Start enlarging the selected picture on a thread of its own: a thousand
-/// layers over a phone's picture takes a while, and the sheet has to stay
-/// live while it runs. The result waits in the context until the next frame
-/// puts it in place.
-fn upscale_start(app: &mut App, ctx: &egui::Context, model: &crate::ai_tools::Model) {
-    let Some(id) = app.selected_bitmap() else {
-        app.status = tr("ai.need_picture");
-        return;
-    };
-    let Some((_, _, _, _, png)) = app
-        .bitmap_shapes()
-        .into_iter()
-        .find(|(shape, ..)| *shape == id)
-    else {
-        app.status = tr("ai.need_picture");
-        return;
-    };
-    let Some(dir) = crate::ai_tools::dir() else {
-        return;
-    };
-    if ctx
-        .data(|d| d.get_temp::<(usize, usize)>(Id::new("upscale_progress")))
-        .is_some()
-    {
-        return;
-    }
-    ctx.data_mut(|d| {
-        d.remove::<image::RgbaImage>(Id::new("upscale_done"));
-        d.remove::<String>(Id::new("upscale_error"));
-        d.insert_temp(Id::new("upscale_progress"), (0usize, 1usize));
-        d.insert_temp(Id::new("upscale_shape"), id);
-    });
-    let key = model.key.to_string();
-    let worker = ctx.clone();
-    std::thread::spawn(move || {
-        let outcome = (|| -> Result<image::RgbaImage, String> {
-            let up = crate::upscale::loaded(&dir, &key)?;
-            worker.data_mut(|d| {
-                d.insert_temp(Id::new("upscale_card"), up.on_card());
-                if let Some(why) = &up.card_error {
-                    d.insert_temp(Id::new("upscale_card_error"), why.clone());
-                } else {
-                    d.remove::<String>(Id::new("upscale_card_error"));
-                }
-            });
-            worker.request_repaint();
-            let img = crate::bitmap_fx::decode(&png).ok_or("the picture could not be read")?;
-            let mut last = 0usize;
-            let mut logged = 0usize;
-            up.run(&img, &mut |done, total| {
-                if done != last {
-                    last = done;
-                    // Every tenth: a run that stops part way says where.
-                    let pct = done * 100 / total.max(1);
-                    if pct / 10 != logged / 10 {
-                        logged = pct;
-                        log::info!("upscaling: {done} of {total} tiles, {pct}%");
-                    }
-                    worker.data_mut(|d| d.insert_temp(Id::new("upscale_progress"), (done, total)));
-                    worker.request_repaint();
-                }
-            })
-        })();
-        worker.data_mut(|d| {
-            d.remove::<(usize, usize)>(Id::new("upscale_progress"));
-            match outcome {
-                Ok(img) => {
-                    d.insert_temp(Id::new("upscale_done"), img);
-                }
-                Err(e) => {
-                    d.insert_temp(Id::new("upscale_error"), e);
-                }
-            }
-        });
-        worker.request_repaint();
-    });
-}
-
-/// Put an enlarged picture where the one it came from was, once the thread
-/// that made it has finished.
-fn upscale_apply(app: &mut App, ctx: &egui::Context) {
-    let Some(img) = ctx.data(|d| d.get_temp::<image::RgbaImage>(Id::new("upscale_done"))) else {
-        return;
-    };
-    let id = ctx.data(|d| {
-        d.get_temp::<tracedraw_core::ShapeId>(Id::new("upscale_shape"))
-    });
-    ctx.data_mut(|d| {
-        d.remove::<image::RgbaImage>(Id::new("upscale_done"));
-        d.remove::<tracedraw_core::ShapeId>(Id::new("upscale_shape"));
-    });
-    let Some(id) = id else { return };
-    if let Some((_, rect, ..)) = app
-        .bitmap_shapes()
-        .into_iter()
-        .find(|(shape, ..)| *shape == id)
-    {
-        app.replace_bitmap(id, rect, &img);
-        app.status = tr("ai.upscale_done");
     }
 }
 
@@ -2054,7 +1875,7 @@ fn sheet_height(which: Sheet, screen: f32) -> f32 {
         Sheet::Panels | Sheet::Tools(_) => 0.62,
         Sheet::Files | Sheet::Drawings => 0.52,
         Sheet::Properties => 0.46,
-        Sheet::Matting | Sheet::Upscale | Sheet::Variable | Sheet::Trace => 0.52,
+        Sheet::Matting | Sheet::Variable | Sheet::Trace => 0.52,
         Sheet::Palette => 0.24,
         Sheet::None | Sheet::Drawer | Sheet::MenuPage(_) | Sheet::Settings | Sheet::SettingsPage(_) => 0.0,
     };
@@ -2141,7 +1962,6 @@ fn sheet_title(which: Sheet) -> String {
             .map(|g| g.tools[0].name())
             .unwrap_or_default(),
         Sheet::Matting => tr("ai.matting"),
-        Sheet::Upscale => tr("ai.upscale"),
         Sheet::Variable => tr("ai.variable"),
         Sheet::Trace => tr("ai.trace"),
         Sheet::None
@@ -2161,7 +1981,6 @@ fn sheet_body(app: &mut App, ui: &mut Ui, which: Sheet, m3: &M3, open: &mut Shee
         Sheet::Drawings => drawings_sheet(app, ui, m3),
         Sheet::Tools(gi) => tools_sheet(app, ui, m3, gi, open),
         Sheet::Matting => matting_sheet(app, ui, m3),
-        Sheet::Upscale => upscale_sheet(app, ui, m3),
         Sheet::Variable => variable_sheet(app, ui, m3),
         Sheet::Trace => trace_sheet(app, ui, m3, open),
         Sheet::None

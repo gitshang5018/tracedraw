@@ -6,6 +6,7 @@ full, row-by-row status.
 
 ## Unreleased
 
+- 高清放大 (Upscale) is out of the phone's image tools. The card that would run it is lost by its driver on the second tile of every picture, at every tile size and with tens of megabytes of buffers, and the processor path needs about twenty minutes for one picture. Matting and Variable data stay. The models in `Download/models` are left where they are; nothing reads them now.
 - Opening `.cdr` files: East Asian letters take the style's East Asian font, the one the file sets for them beside the Latin and other scripts' fonts, so a drawing made with a Chinese, Japanese or Korean font shows its text in it instead of in the Latin one (#955).
 - Font list: a filter beside the list narrows it by style, weight, width, technology, scripts, features, rights and folders, and the list shows what is left as the letters are typed (#867).
 - Eyedroppers: the colour under the pointer shows beside it while it is picked, so it is read where it is taken rather than after the click (#990).

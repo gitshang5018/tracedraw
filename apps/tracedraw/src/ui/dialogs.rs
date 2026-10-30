@@ -785,11 +785,7 @@ fn models_page(ui: &mut egui::Ui) {
     ui.label(egui::RichText::new(tr("ai.models")).strong());
     ui.label(egui::RichText::new(tr("ai.models_hint")).small());
     ui.add_space(4.0);
-    let models = || {
-        crate::ai_tools::MATTING
-            .iter()
-            .chain(crate::ai_tools::UPSCALE.iter())
-    };
+    let models = || crate::ai_tools::MATTING.iter();
     let mut running = false;
     for model in models() {
         ui.horizontal(|ui| {

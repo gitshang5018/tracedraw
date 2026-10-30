@@ -178,7 +178,6 @@ mod tools2;
 mod trace;
 mod ui;
 mod updates;
-mod upscale;
 mod variable_outline;
 mod vector_mosaic;
 mod view;
@@ -660,15 +659,7 @@ impl eframe::App for Shell {
         system_chars::take_into(raw_input);
     }
 
-    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
-        // The upscalers run on the card the window draws with, so they need
-        // the device and queue it was made with: handed over once, and the
-        // check keeps the frames after it cheap.
-        if !upscale::gpu::available() {
-            if let Some(state) = frame.wgpu_render_state() {
-                upscale::gpu::set_device(state.device.clone(), state.queue.clone());
-            }
-        }
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         #[cfg(not(target_arch = "wasm32"))]
         self.pacer.pace();
         #[cfg(not(target_arch = "wasm32"))]

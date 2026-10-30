@@ -36,28 +36,12 @@ pub const MATTING: &[Model] = &[
     },
 ];
 
-/// The upscalers the phone offers: both 4x.
-pub const UPSCALE: &[Model] = &[
-    Model {
-        key: "ultrasharp-4x",
-        files: &["ultrasharp-4x.param", "ultrasharp-4x.bin"],
-        title: "ai.upscale_ultrasharp",
-    },
-    Model {
-        key: "digital-art-4x",
-        files: &["digital-art-4x.param", "digital-art-4x.bin"],
-        title: "ai.upscale_digital_art",
-    },
-];
-
 /// What the user picked in the chip's three panels, kept across frames and
 /// panels being closed.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AiTools {
     /// The index into [`MATTING`].
     pub matting: usize,
-    /// The index into [`UPSCALE`].
-    pub upscale: usize,
     /// The matting settings, the same the desktop dialog uses.
     pub matting_settings: crate::bg_remove::BgSettings,
     /// The variable data: the header and the rows read from a table, the
@@ -84,7 +68,6 @@ impl Default for AiTools {
     fn default() -> Self {
         AiTools {
             matting: 0,
-            upscale: 0,
             matting_settings: crate::bg_remove::BgSettings::default(),
             table: None,
             bindings: Vec::new(),
@@ -384,12 +367,5 @@ mod tests {
     fn empty_rows_are_dropped() {
         let t = Table::parse("a,b\n1,2\n,\n3,4\n", "t.csv").unwrap();
         assert_eq!(t.rows.len(), 2);
-    }
-
-    #[test]
-    fn the_two_upscalers_are_the_two_asked_for() {
-        let keys: Vec<&str> = UPSCALE.iter().map(|m| m.key).collect();
-        assert_eq!(keys, vec!["ultrasharp-4x", "digital-art-4x"]);
-        assert!(UPSCALE.iter().all(|m| m.files.len() == 2));
     }
 }
