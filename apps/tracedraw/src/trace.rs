@@ -64,6 +64,7 @@ impl Preset {
         };
         Settings {
             detail,
+            tolerance: None,
             smoothing,
             corner_smoothness: 0.0,
             colors,
@@ -79,6 +80,11 @@ impl Preset {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Settings {
     pub detail: f64,
+    /// How far a fitted curve may stray from the pixels, in pixels: `None`
+    /// leaves it to `detail`, which is what a colour trace wants. A contour
+    /// is one line at the size the picture is placed at, and its nodes are
+    /// what a cutter travels, so it asks for a wider one.
+    pub tolerance: Option<f64>,
     pub smoothing: f64,
     pub corner_smoothness: f64,
     pub colors: u32,
@@ -125,8 +131,19 @@ pub fn contour_paths(img: &RgbaImage, expand: f64, detail: f64, smoothing: f64) 
             mask = grown.iter().map(|m| !m).collect();
         }
     }
+    // The ring is simplified before it is fitted, which a colour trace does
+    // not do: a contour follows a picture at one size, and a curve fitted
+    // straight to the pixels' stair steps has a node for every step. The
+    // steps go first, at about a pixel, then the curve, within less than
+    // one, which is how a cutting outline is made. The slider's marks are
+    // that outline's three precisions: 100 a curve within 0.2 px, 60 the
+    // one most are made at, within 0.5, and 0 the coarse one, within 1.
+    let keep = detail.clamp(0.0, 100.0);
+    let epsilon = 0.5 + (100.0 - keep) / 100.0 * 1.25;
+    let tolerance = 0.2 + (100.0 - keep) / 100.0 * 0.75;
     let settings = Settings {
         detail,
+        tolerance: Some(tolerance),
         smoothing,
         corner_smoothness: smoothing,
         colors: 2,
@@ -138,17 +155,182 @@ pub fn contour_paths(img: &RgbaImage, expand: f64, detail: f64, smoothing: f64) 
     };
     contours(&mask, w, h)
         .into_iter()
-        .map(|ring| fit_ring(&ring, &settings))
+        .map(|ring| {
+            let steps = tracedraw_core::geometry::simplify(&ring, epsilon);
+            if steps.len() < 3 {
+                return fit_ring(&ring, &settings);
+            }
+            // No smoothing asks for the pixels' own edges, steps and all,
+            // which a colour trace gives as a simplified polyline: a curve
+            // fitted to a staircase at that setting is the staircase with
+            // more nodes than it started with.
+            if smoothing <= 0.0 {
+                return polyline_closed(&steps);
+            }
+            fit_ring(&steps, &settings)
+        })
         .collect()
 }
 
 /// Which pixels are the subject: the opaque ones when the picture's alpha
-/// says so, else the ones far enough from the colours at its four corners.
+/// says so, else the ones further from the background than a cutting
+/// outline's colour tolerance.
 fn subject_mask(img: &RgbaImage) -> Vec<bool> {
     let (w, h) = (img.width(), img.height());
     if img.pixels().any(|p| p[3] < 250) {
         return img.pixels().map(|p| p[3] >= 128).collect();
     }
+    let total = w as u64 * h as u64;
+    if total == 0 {
+        return Vec::new();
+    }
+    // The background is the colour the picture's border is mostly made of,
+    // and a pixel is ink once it is further from it than the tolerance: the
+    // edge lands at the outside of the ink rather than in the middle of it,
+    // so a cut takes the whole of the ink and no more.
+    let background = border_colour(img);
+    let far = COLOUR_TOLERANCE * COLOUR_TOLERANCE;
+    let mut mask: Vec<bool> = img
+        .pixels()
+        .map(|p| distance2([p[0], p[1], p[2]], background) > far)
+        .collect();
+    let marked = mask.iter().filter(|m| **m).count() as u64;
+    // A photograph or a gradient is ink everywhere by that rule, which is no
+    // edge at all: the brightness split reads those. Nothing past the
+    // tolerance, on the other hand, is a picture of its own background, and
+    // a contour of it is empty rather than made up.
+    if marked * 50 > total * 49 {
+        mask = brightness_mask(img);
+    }
+    mask
+}
+
+/// How far a pixel's colour may be from the background's, as a distance in
+/// red, green and blue, and still be background: a cutting outline's own
+/// tolerance.
+const COLOUR_TOLERANCE: u32 = 25;
+
+/// The colour the picture's border is mostly made of, averaged over the
+/// pixels of that colour, so one odd corner does not move it.
+fn border_colour(img: &RgbaImage) -> [u8; 3] {
+    let (w, h) = (img.width(), img.height());
+    let mut bins: std::collections::HashMap<(u8, u8, u8), (u64, u64, u64, u64)> =
+        std::collections::HashMap::new();
+    {
+        let mut count = |x: u32, y: u32| {
+            let p = img.get_pixel(x, y);
+            // Coarse bins, so a paper that is not quite flat still counts as
+            // one colour.
+            let key = (p[0] & 0xf8, p[1] & 0xf8, p[2] & 0xf8);
+            let e = bins.entry(key).or_insert((0, 0, 0, 0));
+            e.0 += p[0] as u64;
+            e.1 += p[1] as u64;
+            e.2 += p[2] as u64;
+            e.3 += 1;
+        };
+        for x in 0..w {
+            count(x, 0);
+            if h > 1 {
+                count(x, h - 1);
+            }
+        }
+        for y in 0..h {
+            count(0, y);
+            if w > 1 {
+                count(w - 1, y);
+            }
+        }
+    }
+    bins.into_values()
+        .max_by_key(|e| e.3)
+        .map(|(r, g, b, n)| [(r / n) as u8, (g / n) as u8, (b / n) as u8])
+        .unwrap_or([255, 255, 255])
+}
+
+/// The ink side of the brightness the picture splits at: what the colour
+/// rule falls back on.
+fn brightness_mask(img: &RgbaImage) -> Vec<bool> {
+    let (w, h) = (img.width(), img.height());
+    let total = w as u64 * h as u64;
+    if total == 0 {
+        return Vec::new();
+    }
+    // Ink and paper are the two sides of one brightness: the split is the
+    // one that leaves each side as alike as it can be, Otsu's. Reading the
+    // edge off the picture's own brightness is what a contour of a logo on
+    // white is after, where a distance from the colours of the four corners
+    // takes in a shadow, a watermark or a paper that is not quite flat.
+    let mut hist = [0u64; 256];
+    for p in img.pixels() {
+        hist[brightness(p) as usize] += 1;
+    }
+    let sum: f64 = (0..256).map(|i| i as f64 * hist[i] as f64).sum();
+    let (mut seen, mut seen_sum, mut best, mut at) = (0u64, 0.0f64, -1.0f64, 128u8);
+    for t in 0..256 {
+        seen += hist[t];
+        if seen == 0 {
+            continue;
+        }
+        let left = total - seen;
+        if left == 0 {
+            break;
+        }
+        seen_sum += t as f64 * hist[t] as f64;
+        let below = seen_sum / seen as f64;
+        let above = (sum - seen_sum) / left as f64;
+        let between = seen as f64 * left as f64 * (below - above) * (below - above);
+        if between > best {
+            best = between;
+            at = t as u8;
+        }
+    }
+    // Which side is the paper: the one the border of the picture is made of.
+    let (mut dark, mut light) = (0u32, 0u32);
+    {
+        let mut tally = |x: u32, y: u32| {
+            if brightness(img.get_pixel(x, y)) <= at {
+                dark += 1;
+            } else {
+                light += 1;
+            }
+        };
+        for x in 0..w {
+            tally(x, 0);
+            if h > 1 {
+                tally(x, h - 1);
+            }
+        }
+        for y in 0..h {
+            tally(0, y);
+            if w > 1 {
+                tally(w - 1, y);
+            }
+        }
+    }
+    let paper_is_dark = dark > light;
+    let ink = |p: &image::Rgba<u8>| {
+        let l = brightness(p);
+        if paper_is_dark {
+            l > at
+        } else {
+            l <= at
+        }
+    };
+    let mut mask: Vec<bool> = img.pixels().map(ink).collect();
+    // A picture one brightness cannot read, a photograph or a gradient,
+    // leaves everything on one side: the colours of the corners then say
+    // which pixels are not the background after all.
+    let marked = mask.iter().filter(|m| **m).count() as u64;
+    if marked == 0 || marked * 50 > total * 49 {
+        mask = corner_mask(img);
+    }
+    mask
+}
+
+/// The pixels far enough from the colours at the picture's four corners:
+/// what the brightness split falls back on.
+fn corner_mask(img: &RgbaImage) -> Vec<bool> {
+    let (w, h) = (img.width(), img.height());
     let corners = [
         img.get_pixel(0, 0),
         img.get_pixel(w.saturating_sub(1), 0),
@@ -163,6 +345,11 @@ fn subject_mask(img: &RgbaImage) -> Vec<bool> {
                 .all(|q| distance2(c, [q[0], q[1], q[2]]) > 60 * 60)
         })
         .collect()
+}
+
+/// How bright a pixel is, as one byte.
+fn brightness(p: &image::Rgba<u8>) -> u8 {
+    ((p[0] as u32 * 299 + p[1] as u32 * 587 + p[2] as u32 * 114) / 1000) as u8
 }
 
 /// Trace `img` into shapes whose coordinates are in pixel space (y down).
@@ -732,7 +919,9 @@ fn fit_ring(ring: &[Point], s: &Settings) -> BezPath {
             );
         }
     }
-    let tolerance = 0.2 + (100.0 - s.detail.clamp(0.0, 100.0)) / 100.0;
+    let tolerance = s
+        .tolerance
+        .unwrap_or_else(|| 0.2 + (100.0 - s.detail.clamp(0.0, 100.0)) / 100.0);
     let mut out = BezPath::new();
     if corners.is_empty() {
         // No corner: quarters meeting smoothly (a cubic bends through a
@@ -1840,6 +2029,41 @@ mod tests {
         assert_eq!(labels[0], usize::MAX);
         assert_eq!(speck_area(100.0), 1);
         assert!(speck_area(35.0) > speck_area(80.0));
+    }
+
+    /// The contour's mask is what is far enough from the background's
+    /// colour, whichever side of it the ink is on, and a picture with
+    /// transparency is its opaque part.
+    #[test]
+    fn the_subject_is_the_ink_on_either_side_of_the_background() {
+        let square = |ink: Rgba<u8>, paper: Rgba<u8>| {
+            ImageBuffer::from_fn(40, 40, |x, y| {
+                if (10..30).contains(&x) && (10..30).contains(&y) {
+                    ink
+                } else {
+                    paper
+                }
+            })
+        };
+        let black_on_white = square(Rgba([0, 0, 0, 255]), Rgba([255, 255, 255, 255]));
+        let m = subject_mask(&black_on_white);
+        assert!(m[20 * 40 + 20], "the black square is the subject");
+        assert!(!m[2 * 40 + 2], "the white ground is not");
+        let white_on_black = square(Rgba([255, 255, 255, 255]), Rgba([0, 0, 0, 255]));
+        let m = subject_mask(&white_on_black);
+        assert!(m[20 * 40 + 20], "the white square is the subject");
+        assert!(!m[2 * 40 + 2], "the black ground is not");
+        let cut_out = square(Rgba([0, 0, 0, 255]), Rgba([0, 0, 0, 0]));
+        let m = subject_mask(&cut_out);
+        assert!(m[20 * 40 + 20], "the opaque part is the subject");
+        assert!(!m[2 * 40 + 2], "the transparent part is not");
+        // Near the paper's colour: the tolerance decides, not the brightness.
+        let faint = square(Rgba([243, 243, 243, 255]), Rgba([255, 255, 255, 255]));
+        let m = subject_mask(&faint);
+        assert!(!m[20 * 40 + 20], "within the tolerance it is paper");
+        let grey = square(Rgba([232, 232, 232, 255]), Rgba([255, 255, 255, 255]));
+        let m = subject_mask(&grey);
+        assert!(m[20 * 40 + 20], "past the tolerance it is ink");
     }
 
     #[test]

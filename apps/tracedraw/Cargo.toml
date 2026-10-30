@@ -89,6 +89,14 @@ pollster = "0.4"
 ureq = { version = "3", features = ["platform-verifier"] }
 webp = { version = "0.3", default-features = false }
 
+# Where the pointer is while files are dragged over the window: the
+# system drag sends no pointer moves (#1142).
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.52", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
+# The window's message hook: characters input methods send that the
+# windowing layer drops (#1151). The same winit eframe uses.
+winit = { version = "0.30", default-features = false }
+
 # The browser build: WebGL canvas, file pickers and downloads through the
 # DOM, randomness and time from JavaScript.
 [target.'cfg(target_arch = "wasm32")'.dependencies]

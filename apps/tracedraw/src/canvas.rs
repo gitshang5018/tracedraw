@@ -269,22 +269,19 @@ pub fn draw_canvas(app: &App, painter: &Painter, rect: ERect) {
             }
         }
         if let Some(seg) = &look.preview {
-            // A white line under the dashes keeps the preview one line
-            // over any colour, as in the reference program (#489): as wide
-            // as the dashes, so it only shows in their short gaps (#560).
-            // Plain segments: a path shape here cost a third of the Pen's
-            // frame and the preview lagged behind the pointer (#560).
+            // A solid line: white, and the preview colour on top at half
+            // its width, so it shows over any colour (#489, #670); the
+            // dashes are the control handles' look. Plain segments: a
+            // path shape here cost a third of the Pen's frame and the
+            // preview lagged behind the pointer (#560).
             for (pts, _) in flatten(seg, view) {
                 for w in pts.windows(2) {
-                    painter.line_segment([w[0], w[1]], EStroke::new(1.0, Color32::WHITE));
+                    painter.line_segment([w[0], w[1]], EStroke::new(HALO_WIDTH, Color32::WHITE));
                 }
-                dashed_polyline(
-                    painter,
-                    &pts,
-                    EStroke::new(1.0, look.preview_color),
-                    5.0,
-                    2.0,
-                );
+                for w in pts.windows(2) {
+                    painter
+                        .line_segment([w[0], w[1]], EStroke::new(HALO_INNER, look.preview_color));
+                }
             }
         }
         for (node, h) in &look.handles {
@@ -1184,9 +1181,15 @@ fn draw_blend_controls(app: &App, painter: &Painter) {
             ));
         }
     }
-    for p in [a, z] {
+    for (h, p) in [(BlendHandle::Start, a), (BlendHandle::End, z)] {
         let rect = ERect::from_center_size(p, egui::vec2(9.0, 9.0));
-        painter.rect_filled(rect, 0.0, Color32::WHITE);
+        // The square being dragged is filled in the selection colour.
+        let fill = if app.blend_handle_drag == Some(h) {
+            Tokens::SELECTION
+        } else {
+            Color32::WHITE
+        };
+        painter.rect_filled(rect, 0.0, fill);
         painter.rect_stroke(
             rect,
             0.0,
@@ -1934,9 +1937,10 @@ fn draw_control_handle(painter: &Painter, node: Pos2, ctrl: Pos2, color: Color32
     let head = 7.0_f32.min(len);
     let base = ctrl - u * head;
     if len > head {
-        // Dashes on a white line and a head with a white edge, so the
+        // Dashes in the colour and white in turn, as wide as the Pen
+        // preview's inner line, and a head with a white edge, so the
         // handle shows on any colour (#670).
-        painter.line_segment([node, base], EStroke::new(HALO_WIDTH, Color32::WHITE));
+        painter.line_segment([node, base], EStroke::new(HALO_INNER, Color32::WHITE));
         dashed_polyline(
             painter,
             &[node, base],
@@ -2092,6 +2096,13 @@ fn draw_nodes(app: &App, painter: &Painter) {
     let [r, g, b] = prefs.secondary_rgb;
     let secondary = Color32::from_rgb(r, g, b);
     let size = prefs.size.px();
+    // Several objects: the one picked last has its outline in the node
+    // colour, the others in the second colour (#1007).
+    let key = app.shape_tool_key_curve();
+    let outline_of = |id: tracedraw_core::ShapeId| match key {
+        Some(k) if k != id => secondary,
+        _ => main,
+    };
     // A clip frame shows its frame's nodes.
     for s in app.shape_tool_shapes() {
         // A picture shows a node at each corner; dragging one crops it.
@@ -2127,7 +2138,7 @@ fn draw_nodes(app: &App, painter: &Painter) {
         // control points as nodes; the curve's own nodes do not show.
         if s.spline.is_some() {
             for (pts, _) in flatten(&s.page_path(), view) {
-                painter.add(egui::Shape::line(pts, EStroke::new(1.0, main)));
+                painter.add(egui::Shape::line(pts, EStroke::new(1.0, outline_of(s.id))));
             }
             let own = crate::kind_nodes::nodes(&s);
             let poly: Vec<Pos2> = own.iter().map(|(_, p)| view.to_screen(*p)).collect();
@@ -2184,14 +2195,16 @@ fn draw_nodes(app: &App, painter: &Painter) {
             }
             continue;
         };
-        // The curve being edited shows its outline in the node colour.
+        // The curve being edited shows its outline in the node colour
+        // (the second colour for the objects picked before the last one).
+        let outline = outline_of(s.id);
         for (mut pts, closed) in flatten(&s.page_path(), view) {
             if closed {
                 if let Some(first) = pts.first().copied() {
                     pts.push(first);
                 }
             }
-            painter.add(egui::Shape::line(pts, EStroke::new(1.0, main)));
+            painter.add(egui::Shape::line(pts, EStroke::new(1.0, outline)));
         }
         let all = nodes::nodes(path);
         if prefs.show_direction {

@@ -424,30 +424,19 @@ static FOCUSED: std::sync::Mutex<Option<egui::Id>> = std::sync::Mutex::new(None)
 /// Whether the keyboard has been seen up since it was asked for: once it
 /// has, putting it away is the user's doing and it is not asked again.
 static SHOWN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-/// What the last frame asked of the keyboard, so a change is logged once.
-static LAST_WANT: std::sync::Mutex<Option<(bool, Option<egui::Id>)>> = std::sync::Mutex::new(None);
-/// When the keyboard was first seen down while a field still had the focus:
-/// the strip moves as it rises and `ime_bottom` reads nothing for a frame,
-/// which is not the user putting the keyboard away.
-static DOWN_SINCE: std::sync::Mutex<Option<web_time::Instant>> = std::sync::Mutex::new(None);
-/// When the screen was last touched. A field tapped a moment ago is the one
-/// the user wants, and the hand that keeps a field focused through the
-/// keyboard's rise must not take it back from them.
-static LAST_TOUCH: std::sync::Mutex<Option<web_time::Instant>> = std::sync::Mutex::new(None);
-/// What `ime_bottom` last said, so a change is logged once.
-static LAST_UP: std::sync::Mutex<Option<bool>> = std::sync::Mutex::new(None);
-/// When no field last wanted the keyboard. The focus drops for a frame or
-/// two while the strip of properties moves from one field to the next, and
-/// that is not the user leaving the field: the keyboard is put away only
-/// once nothing has wanted it for a while.
-static UNWANTED_SINCE: std::sync::Mutex<Option<web_time::Instant>> = std::sync::Mutex::new(None);
-/// The keyboard was put away on purpose, because the phone's own back took
-/// it: it is not held up by the wait that keeps it through a focus that
-/// flickers, and it is not asked for again until a field is tapped.
-static DISMISSED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// When the interface last reported no field at all, for a keyboard that is
+/// up: moving from one field to the next leaves a frame or two with none,
+/// and the keyboard is not put away for those.
+static NO_FIELD_SINCE: std::sync::Mutex<Option<web_time::Instant>> =
+    std::sync::Mutex::new(None);
 /// How long a keyboard that was just asked for stays up while the
 /// interface reports no field for a frame or two.
 const KEYBOARD_GRACE: std::time::Duration = std::time::Duration::from_millis(1200);
+/// How long the keyboard stays up with no field at all before it is put
+/// away: long enough for a tap that moves the focus from one field to the
+/// next, which reports none for a frame or two, and short enough that a tap
+/// on the drawing closes it at once.
+const NO_FIELD_GRACE: std::time::Duration = std::time::Duration::from_millis(400);
 
 /// `EditorInfo.IME_FLAG_NO_EXTRACT_UI`: the input method edits in its own
 /// strip over the drawing, never on a full screen of its own.
@@ -481,14 +470,32 @@ pub fn set_keyboard(app: &AndroidApp, show: bool, focus: Option<egui::Id>) {
     // focus from one field to the next. Nothing is rebuilt for that, since
     // the keyboard is usually still up; the retry below asks again if the
     // phone put it away in between.
-    let moved = {
-        let mut last = lock(&FOCUSED);
-        let moved = *last != focus;
-        if focus.is_some() {
-            *last = focus;
+    //
+    // No focus at all is not a move: the field it was on is gone, and a
+    // move there would rebuild the field and ask again on every frame the
+    // interface reports no focus, which is what a text on the page being
+    // edited looks like.
+    let moved = match focus {
+        Some(id) => {
+            let mut last = lock(&FOCUSED);
+            let moved = *last != Some(id);
+            *last = Some(id);
+            moved
         }
-        moved
+        None => false,
     };
+    // When no field has the focus at all, the clock the keyboard is put away
+    // on starts: a move from one field to the next reports none for a frame
+    // or two, and the keyboard stays for those.
+    match focus {
+        Some(_) => *lock(&NO_FIELD_SINCE) = None,
+        None => {
+            let mut since = lock(&NO_FIELD_SINCE);
+            if since.is_none() {
+                *since = Some(web_time::Instant::now());
+            }
+        }
+    }
     if was == show && !(show && moved) {
         // The keyboard is wanted and believed up. It is up only if the
         // field it types into is still in the window: one taken out while
@@ -508,35 +515,18 @@ pub fn set_keyboard(app: &AndroidApp, show: bool, focus: Option<egui::Id>) {
         return;
     }
     if was == show {
-        // The focus moved from one field to the next while the keyboard is
-        // believed up. The field in the window types for whichever field has
-        // the focus, so nothing is rebuilt and the keyboard is not asked for
-        // again: an ask closes it and opens it over the new field, which is
-        // a flicker the user did not ask for. It is asked for only when the
-        // phone is showing no keyboard at all, which is what a keyboard the
-        // user put away before tapping another field leaves behind.
-        let up = ime_active(app.vm_as_ptr(), app.activity_as_ptr()).unwrap_or_else(|| {
-            ime_bottom(
-                app.activity_as_ptr(),
-                app.vm_as_ptr(),
-                AndroidApp::sdk_version(),
-            ) > 0
-        });
-        if !up {
-            SHOWN.store(false, Ordering::Relaxed);
-            let lost = field_due();
-            *lock(&ASKED) = Some((web_time::Instant::now(), 0));
-            if lost {
-                open_keyboard(app);
-            } else if !DISMISSED.load(Ordering::Relaxed) {
-                // The phone put the keyboard away with the tap that moved the
-                // focus — the drawing surface takes it, being the view the
-                // finger landed on — and it is asked for again now rather
-                // than by the retry a fifth of a second later: the field is
-                // otherwise typed in with no keyboard over it. A keyboard the
-                // user put away with the phone's own back is left alone.
-                ask_again(app);
-            }
+        SHOWN.store(false, Ordering::Relaxed);
+        // The field may have gone with a keyboard that was put away in
+        // between: then there is nothing to ask again, and a new field has
+        // to be made. Asking the phone again would answer nothing, and the
+        // next field tapped would get no keyboard at all.
+        let lost = field_due();
+        *lock(&ASKED) = Some((web_time::Instant::now(), 0));
+        if lost {
+            log::info!("keyboard: the focus moved, and the field went with it");
+            open_keyboard(app);
+        } else {
+            log::info!("keyboard: the focus moved to another field");
         }
         return;
     }
@@ -549,24 +539,27 @@ pub fn set_keyboard(app: &AndroidApp, show: bool, focus: Option<egui::Id>) {
                 return;
             }
         }
+        // A tap that moves the focus from one field to the next reports no
+        // field for a frame or two, and the field it went to is known on the
+        // frame after: the keyboard is not put away for those either.
+        let gone = match *lock(&NO_FIELD_SINCE) {
+            Some(since) => since.elapsed(),
+            None => std::time::Duration::ZERO,
+        };
+        if gone < NO_FIELD_GRACE {
+            return;
+        }
     }
     KEYBOARD.store(show, Ordering::Relaxed);
     lock(&TYPED).clear();
     if show {
         *lock(&ASKED) = Some((web_time::Instant::now(), 0));
         SHOWN.store(false, Ordering::Relaxed);
-        // Asked for again: the retry that makes the ask good has to run.
-        DISMISSED.store(false, Ordering::Relaxed);
         open_keyboard(app);
     } else {
         *lock(&ASKED) = None;
         SHOWN.store(false, Ordering::Relaxed);
-        // Put away because the focus left the box: only a finger on a field
-        // asks for it again, and a focus that comes back on its own — the
-        // strip moves down as the keyboard goes and the box under it takes
-        // it again — is not a finger.
-        DISMISSED.store(true, Ordering::Relaxed);
-        log::info!("set_keyboard: closing the keyboard (focus {focus:?})");
+        log::info!("keyboard put away: no field has the focus");
         close_keyboard(app);
     }
 }
@@ -759,45 +752,6 @@ fn open_field(vm: *mut c_void, activity: *mut c_void) -> Result<(), String> {
             &[JValue::Object(&field), JValue::Object(&params)],
         );
         let _ = env.call_method(&field, "bringToFront", "()V", &[]);
-        // The drawing is a view of its own, and a finger on it takes the
-        // focus from the field: the phone then puts the keyboard away, and
-        // every tap on the drawing closes it. Every other view in the window
-        // is made unable to take the focus, so the field is the only one that
-        // can have it, and a tap on the drawing stays a tap in the app.
-        let children = env
-            .call_method(&decor, "getChildCount", "()I", &[])
-            .ok()
-            .and_then(|v| v.i().ok())
-            .unwrap_or(0);
-        for i in 0..children {
-            let Ok(child) = env
-                .call_method(
-                    &decor,
-                    "getChildAt",
-                    "(I)Landroid/view/View;",
-                    &[JValue::Int(i)],
-                )
-                .and_then(|v| v.l())
-            else {
-                continue;
-            };
-            if child.is_null() || env.is_same_object(&child, &field).unwrap_or(false) {
-                continue;
-            }
-            let _ = env.call_method(&child, "setFocusable", "(Z)V", &[JValue::Bool(0)]);
-            let _ = env.call_method(
-                &child,
-                "setFocusableInTouchMode",
-                "(Z)V",
-                &[JValue::Bool(0)],
-            );
-            let _ = env.call_method(
-                &child,
-                "setDescendantFocusability",
-                "(I)V",
-                &[JValue::Int(0x0006_0000)],
-            );
-        }
         let focused = env
             .call_method(&field, "requestFocus", "()Z", &[])
             .ok()
@@ -832,6 +786,7 @@ fn input_method<'a>(env: &mut jni::JNIEnv<'a>, activity: &JObject<'a>) -> Option
 
 /// Take the field out of the window, keyboard first.
 fn close_field(vm: *mut c_void, activity: *mut c_void) {
+    log::info!("keyboard field taken out: the interface wants no keyboard");
     with_env(vm, |env| {
         let field = lock(&FIELD).take()?;
         let field = field.as_obj();
@@ -885,40 +840,6 @@ pub fn typed(vm: *mut c_void) -> Vec<Typing> {
     out
 }
 
-/// Whether the phone's keyboard is up over the field. The input method is
-/// asked which view it is editing, rather than the window's insets: the
-/// insets read zero for a frame while the strip of properties moves, and a
-/// keyboard that is up was taken for one the user had put away.
-fn ime_active(vm: *mut c_void, activity: *mut c_void) -> Option<bool> {
-    with_env(vm, |env| {
-        let field = lock(&FIELD);
-        let field = field.as_ref()?;
-        let activity = activity_ref(env, activity)?;
-        let service = input_method(env, &activity)?;
-        env.call_method(
-            &service,
-            "isActive",
-            "(Landroid/view/View;)Z",
-            &[JValue::Object(field.as_obj())],
-        )
-        .ok()
-        .and_then(|v| v.z().ok())
-    })
-}
-
-/// Whether the field in the window holds the focus the phone gives a view:
-/// a keyboard put away with nothing typed is either this going false or the
-/// window losing it, and the two are fixed in different places.
-fn field_has_focus(vm: *mut c_void) -> Option<bool> {
-    with_env(vm, |env| {
-        let field = lock(&FIELD);
-        let field = field.as_ref()?;
-        env.call_method(field.as_obj(), "hasFocus", "()Z", &[])
-            .ok()
-            .and_then(|v| v.z().ok())
-    })
-}
-
 /// The text the field holds now.
 fn field_text(vm: *mut c_void) -> Option<String> {
     with_env(vm, |env| {
@@ -951,46 +872,46 @@ pub fn pump_typing(ctx: &egui::Context, wants: bool) {
     };
     let focused = ctx.memory(|m| m.focused());
     let touched = ctx.input(|i| i.pointer.any_pressed());
-    if touched {
-        *lock(&LAST_TOUCH) = Some(web_time::Instant::now());
+    // A touch on a field whose keyboard was put away is the user asking for
+    // it again. `SHOWN` says the phone answered once, and a field that keeps
+    // the focus after the keyboard goes (the back gesture leaves it where it
+    // was) is not a move to another field, so nothing else would ask: the
+    // field tapped a second time never got a keyboard back. A touch while
+    // the keyboard is up changes nothing, since the retry stays quiet then.
+    if touched && focused.is_some() {
+        SHOWN.store(false, std::sync::atomic::Ordering::Relaxed);
     }
-    {
-        let mut last = lock(&LAST_WANT);
-        if *last != Some((wants, focused)) {
-            let at = ctx.input(|i| i.pointer.interact_pos());
-            log::info!(
-                "typing: wants {wants}, focused {focused:?}, touched {touched}, at {at:?}"
-            );
-            *last = Some((wants, focused));
+    // The band the keyboard's height is taken in is right now, and the field
+    // still loses the focus on the way up: something in the frames the
+    // keyboard rises through takes it, and a field without one closes the
+    // keyboard with it. The focus is put back while the keyboard is up and
+    // nothing has been touched, which a touch is what tells the two apart:
+    // a touch is the user letting go, and nothing else is.
+    //
+    // Only while the keyboard is on its way up, though: a field that has
+    // lost the focus for longer than that is gone (its sheet closed, or the
+    // text on the page is being edited, which has no widget of its own and
+    // no focus to keep). Putting the focus back on one of those made the
+    // interface want a keyboard again on the next frame, which the keyboard
+    // then opened and lost again, and the two went round for as long as the
+    // text was edited: the keyboard closed and opened, over and over, and
+    // the back gesture that put it away was answered with another ask.
+    if focused.is_none() && !touched && KEYBOARD.load(std::sync::atomic::Ordering::Relaxed) {
+        let last = *lock(&FOCUSED);
+        let rising = match *lock(&ASKED) {
+            Some((when, _)) => when.elapsed() < KEYBOARD_GRACE,
+            None => false,
+        };
+        match last {
+            Some(last) if rising => ctx.memory_mut(|m| m.request_focus(last)),
+            Some(_) => {
+                log::error!("keyboard: the field is gone, the keyboard is left to the interface");
+                *lock(&FOCUSED) = None;
+            }
+            None => {}
         }
     }
-    // Only a finger on a field asks for the keyboard: a focus that comes back
-    // on its own, after the box was left and the keyboard put away, is the
-    // strip moving down under it, not the user asking to type again.
-    let touched_recently = lock(&LAST_TOUCH)
-        .map(|t| t.elapsed() < std::time::Duration::from_millis(500))
-        .unwrap_or(false);
-    if touched_recently && focused.is_some() {
-        DISMISSED.store(false, std::sync::atomic::Ordering::Relaxed);
-    }
-    // Nothing wanting the keyboard for a frame is the focus moving from one
-    // field to the next: for that moment nothing is done, and a focus that
-    // stays away closes it, which is what leaving the box means.
-    let mut hold = false;
-    if wants {
-        *lock(&UNWANTED_SINCE) = None;
-    } else if !DISMISSED.load(std::sync::atomic::Ordering::Relaxed) {
-        let mut since = lock(&UNWANTED_SINCE);
-        let when = *since.get_or_insert_with(web_time::Instant::now);
-        if when.elapsed() < std::time::Duration::from_millis(200) {
-            drop(since);
-            hold = true;
-            ctx.request_repaint_after(std::time::Duration::from_millis(60));
-        }
-    }
-    if !hold {
-        set_keyboard(phone, wants, focused);
-    }
+    set_keyboard(phone, wants, focused);
     for edit in typed(phone.vm_as_ptr()) {
         match edit {
             Typing::Text(text) => {
@@ -1016,64 +937,15 @@ pub fn pump_typing(ctx: &egui::Context, wants: bool) {
         // ask went out. An ask the phone missed is asked again; one it
         // answered and the user then put away is left alone until another
         // field takes the focus.
-        let up = ime_active(phone.vm_as_ptr(), phone.activity_as_ptr()).unwrap_or_else(|| {
-            ime_bottom(
-                phone.activity_as_ptr(),
-                phone.vm_as_ptr(),
-                AndroidApp::sdk_version(),
-            ) > 0
-        });
-        {
-            let mut last = lock(&LAST_UP);
-            if *last != Some(up) {
-                log::info!(
-                    "ime up {up}, shown {}, field focus {:?}, touched {touched}",
-                    SHOWN.load(std::sync::atomic::Ordering::Relaxed),
-                    field_has_focus(phone.vm_as_ptr())
-                );
-                *last = Some(up);
-            }
-        }
-        // The keyboard was up over this field and is not any more, and
-        // nothing here asked it to go: the phone's own back took it away.
-        // The field keeps the focus, so the retry below would put the
-        // keyboard straight back up and the user could not put it away at
-        // all. The focus is let go instead, and the next field tapped asks
-        // for a keyboard of its own.
-        let mut put_away = false;
+        let up = ime_bottom(
+            phone.activity_as_ptr(),
+            phone.vm_as_ptr(),
+            AndroidApp::sdk_version(),
+        ) > 0;
         if up {
             SHOWN.store(true, std::sync::atomic::Ordering::Relaxed);
-            *lock(&DOWN_SINCE) = None;
-        } else if SHOWN.load(std::sync::atomic::Ordering::Relaxed) {
-            // Down for a frame is not down: the strip of properties moves as
-            // the keyboard rises and the band it is measured in reads zero
-            // for a frame or two, and a field tapped in the meantime looked
-            // like a keyboard the user had put away.
-            let mut since = lock(&DOWN_SINCE);
-            let when = *since.get_or_insert_with(web_time::Instant::now);
-            // Nor is a keyboard that went down just after a tap the user's
-            // doing: a tap is a field being chosen, and the keyboard is being
-            // moved over to it, not put away.
-            let tapped = lock(&LAST_TOUCH)
-                .map(|t| t.elapsed() < std::time::Duration::from_millis(800))
-                .unwrap_or(false);
-            if when.elapsed() < std::time::Duration::from_millis(400) || tapped {
-                drop(since);
-                ctx.request_repaint_after(std::time::Duration::from_millis(80));
-                return;
-            }
-            SHOWN.store(false, std::sync::atomic::Ordering::Relaxed);
-            DISMISSED.store(true, std::sync::atomic::Ordering::Relaxed);
-            *lock(&ASKED) = None;
-            ctx.memory_mut(|m| m.stop_text_input());
-            log::info!("keyboard: put away by the phone, the field lets go");
-            put_away = true;
         }
-        let retry = if put_away
-            || up
-            || SHOWN.load(std::sync::atomic::Ordering::Relaxed)
-            || DISMISSED.load(std::sync::atomic::Ordering::Relaxed)
-        {
+        let retry = if up || SHOWN.load(std::sync::atomic::Ordering::Relaxed) {
             false
         } else {
             // The locks are taken one at a time, in the order every other

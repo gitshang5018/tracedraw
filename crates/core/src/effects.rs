@@ -143,6 +143,12 @@ pub fn blend_from_nodes(
     if let Some((sa, sb)) = paired_nodes(a, b, [a0, a1, b0, b1]) {
         return node_steps(&sa, &sb, steps);
     }
+    // Two open lines (arcs blended in a .cdr file) morph end to end and
+    // stay open: run as a ring and closed, each step gained a chord back
+    // to its start and the steps crossed over (#980).
+    if let Some((sa, sb)) = open_paired_nodes(a, b) {
+        return open_node_steps(&sa, &sb, steps);
+    }
     let (Some(pa), Some(pb)) = (
         run_from(&resample(a, samples), a0, a1),
         run_from(&resample(b, samples), b0, b1),
@@ -1088,11 +1094,12 @@ const SMOOTH_SPAN: f64 = 0.25;
 const SMOOTH_EASE: f64 = 0.75;
 
 /// `path` fitted with as few curves as keep within `accuracy` mm of it
-/// (kurbo's fitter); the path itself when the fit fails.
+/// (our own fitter, [`crate::fit::fit_path`], which is bounded: a
+/// general-purpose fitter tried before could hang or panic on the
+/// tight curves a long brush stroke builds up, #1133); the path itself
+/// when the fit fails.
 fn fit_within(path: &BezPath, accuracy: f64) -> BezPath {
-    use kurbo::simplify::{simplify_bezpath, SimplifyOptLevel, SimplifyOptions};
-    let options = SimplifyOptions::default().opt_level(SimplifyOptLevel::Optimize);
-    let fitted = simplify_bezpath(path.elements().iter().copied(), accuracy, &options);
+    let fitted = crate::fit::fit_path(path, accuracy);
     let sane = !fitted.elements().is_empty()
         && fitted.elements().iter().all(|e| match *e {
             PathEl::MoveTo(p) | PathEl::LineTo(p) => p.is_finite(),
@@ -1720,6 +1727,45 @@ mod tests {
         assert_eq!(steps[0].elements().len(), 3, "{:?}", steps[0]);
     }
 
+    /// The same two arcs paired from their first nodes, as a blend read
+    /// from a .cdr file is: the steps are open arcs too, end to end. They
+    /// were run as rings and closed, so each step carried a straight chord
+    /// back to its start and the steps crossed over (#980).
+    #[test]
+    fn blend_of_two_open_arcs_from_nodes_stays_open() {
+        let mut a = BezPath::new();
+        a.move_to((0.0, 100.0));
+        a.curve_to((-30.0, 70.0), (-30.0, 30.0), (0.0, 0.0));
+        let mut b = BezPath::new();
+        b.move_to((40.0, 0.0));
+        b.curve_to((70.0, 30.0), (70.0, 70.0), (40.0, 100.0));
+        let nodes = [
+            Point::new(0.0, 100.0),
+            Point::new(-10.0, 80.0),
+            Point::new(40.0, 0.0),
+            Point::new(50.0, 20.0),
+        ];
+        let steps = blend_from_nodes(&a, &b, 3, 120, Some(nodes));
+        assert_eq!(steps.len(), 3);
+        for (k, p) in steps.iter().enumerate() {
+            let els = p.elements();
+            assert!(!els.iter().any(|e| matches!(e, PathEl::ClosePath)), "{p:?}");
+            assert_eq!(els.len(), 2, "one curve, as the arcs: {p:?}");
+            let t = (k + 1) as f64 / 4.0;
+            let (PathEl::MoveTo(top), PathEl::CurveTo(_, _, bottom)) = (els[0], els[1]) else {
+                panic!("{p:?}");
+            };
+            assert!(
+                (top - Point::new(40.0 * t, 100.0)).hypot() < 1e-9,
+                "{top:?}"
+            );
+            assert!(
+                (bottom - Point::new(40.0 * t, 0.0)).hypot() < 1e-9,
+                "{bottom:?}"
+            );
+        }
+    }
+
     #[test]
     fn blend_between_offset_ellipses_keeps_their_size_midway() {
         // Two equal ellipses, one down and to the right of the other: the
@@ -1766,5 +1812,37 @@ mod tests {
         let (sides, back) = extrude(&a, Vec2::new(5.0, 5.0));
         assert!(!sides.is_empty());
         assert!((back.bounding_box().x0 - 5.0).abs() < 1e-6);
+    }
+
+    /// #1133: a long Smudge or Twirl stroke circling a square ends, keeps
+    /// a handful of nodes and stays finite. The curve fitter used before
+    /// hung or panicked partway through such a stroke.
+    #[test]
+    fn long_smudge_and_twirl_strokes_stay_light() {
+        let mut square = BezPath::new();
+        square.move_to((0.0, 0.0));
+        square.line_to((40.0, 0.0));
+        square.line_to((40.0, 40.0));
+        square.line_to((0.0, 40.0));
+        square.close_path();
+        for smudge in [true, false] {
+            let mut q = square.clone();
+            for k in 0..600 {
+                let a = k as f64 * 0.05;
+                let at = Point::new(20.0 + 22.0 * a.cos(), 20.0 + 22.0 * a.sin());
+                q = if smudge {
+                    let d = Vec2::new(-0.55 * a.sin(), 0.55 * a.cos());
+                    smear(&smooth(&q, at, 10.0, 0.2), at, d, 10.0)
+                } else {
+                    twirl(&q, at, 0.1, 10.0)
+                };
+                assert!(q.elements().len() < 200, "step {k}: {}", q.elements().len());
+            }
+            assert!(q.elements().iter().all(|e| match *e {
+                PathEl::MoveTo(p) | PathEl::LineTo(p) => p.is_finite(),
+                PathEl::CurveTo(a, b, p) => a.is_finite() && b.is_finite() && p.is_finite(),
+                _ => true,
+            }));
+        }
     }
 }

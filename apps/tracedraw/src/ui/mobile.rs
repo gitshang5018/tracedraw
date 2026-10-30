@@ -109,10 +109,10 @@ pub enum Sheet {
     Drawings,
     /// The other tools of toolbox group `n`.
     Tools(usize),
+    /// The chip at the left edge: pictures and drawings from a prompt.
+    AiGenerate,
     /// The chip at the left edge: the background taken out of a picture.
     Matting,
-    /// The chip at the left edge: a picture made four times its size.
-    Upscale,
     /// The chip at the left edge: one drawing filled from a table.
     Variable,
     /// The chip at the left edge: a picture turned into curves.
@@ -1153,8 +1153,8 @@ fn ai_chip(_app: &mut App, ui: &mut Ui, m3: &M3, full: Rect, open: &mut Sheet) {
         return;
     }
     let items = [
+        (Sheet::AiGenerate, "docker.ai_generate"),
         (Sheet::Matting, "ai.matting"),
-        (Sheet::Upscale, "ai.upscale"),
         (Sheet::Variable, "ai.variable"),
         (Sheet::Trace, "ai.trace"),
     ];
@@ -1420,175 +1420,6 @@ fn matting_apply(app: &mut App, ctx: &egui::Context) {
     }
 }
 
-/// Upscaling: one of the two 4x models, and the picture made four times
-/// its size with it.
-fn upscale_sheet(app: &mut App, ui: &mut Ui, m3: &M3) {
-    let ctx = ui.ctx().clone();
-    // An enlargement that finished since the last frame goes in first, so
-    // the panel below is drawn over the picture it made.
-    upscale_apply(app, &ctx);
-    let mut st = ai_state(&ctx);
-    ui.label(
-        egui::RichText::new(tr("ai.upscale_hint"))
-            .size(12.5)
-            .color(m3.variant),
-    );
-    ui.add_space(6.0);
-    property_label(ui, m3, &tr("ai.model"));
-    for (i, model) in crate::ai_tools::UPSCALE.iter().enumerate() {
-        model_choice(ui, m3, model, st.upscale == i, &mut st.upscale, i);
-    }
-    ui.add_space(6.0);
-    property_label(ui, m3, &tr("ai.upscale_scale"));
-    ui.label(egui::RichText::new(tr("ai.upscale_x4")).size(13.0).color(m3.on));
-    ui.add_space(10.0);
-    // Whether the last run went to the card, so a phone that fell back is
-    // not a mystery.
-    if let Some(card) = ctx.data(|d| d.get_temp::<bool>(Id::new("upscale_card"))) {
-        let key = if card {
-            "ai.upscale_on_card"
-        } else {
-            "ai.upscale_on_cpu"
-        };
-        ui.label(egui::RichText::new(tr(key)).size(11.5).color(m3.variant));
-        ui.add_space(6.0);
-    }
-    if let Some(why) = ctx.data(|d| d.get_temp::<String>(Id::new("upscale_card_error"))) {
-        ui.label(
-            egui::RichText::new(elide(&why, 110))
-                .size(11.0)
-                .color(m3.variant),
-        );
-        ui.add_space(6.0);
-    }
-    // A picture already being enlarged says so, tile by tile.
-    if let Some((done, total)) = ctx.data(|d| d.get_temp::<(usize, usize)>(Id::new("upscale_progress"))) {
-        let share = if total > 0 {
-            done as f32 / total as f32
-        } else {
-            0.0
-        };
-        ui.add(egui::ProgressBar::new(share).text(format!("{done} / {total}")));
-        ui.add_space(8.0);
-    }
-    if let Some(e) = ctx.data(|d| d.get_temp::<String>(Id::new("upscale_error"))) {
-        ui.label(egui::RichText::new(elide(&e, 80)).size(11.5).color(m3.variant));
-        ui.add_space(6.0);
-    }
-    let model = crate::ai_tools::UPSCALE.get(st.upscale).copied();
-    let ready = model.map(|m| crate::ai_tools::ready(&m)).unwrap_or(false);
-    let label = if ready {
-        tr("ai.upscale_run")
-    } else {
-        tr("ai.download_model")
-    };
-    if action_chip(ui, m3, &label).clicked() {
-        if let Some(model) = model {
-            if ready {
-                upscale_start(app, &ctx, &model);
-            } else {
-                crate::ai_tools::download(&ctx, &model);
-            }
-        }
-    }
-    save_ai_state(&ctx, &st);
-}
-
-/// Start enlarging the selected picture on a thread of its own: a thousand
-/// layers over a phone's picture takes a while, and the sheet has to stay
-/// live while it runs. The result waits in the context until the next frame
-/// puts it in place.
-fn upscale_start(app: &mut App, ctx: &egui::Context, model: &crate::ai_tools::Model) {
-    let Some(id) = app.selected_bitmap() else {
-        app.status = tr("ai.need_picture");
-        return;
-    };
-    let Some((_, _, _, _, png)) = app
-        .bitmap_shapes()
-        .into_iter()
-        .find(|(shape, ..)| *shape == id)
-    else {
-        app.status = tr("ai.need_picture");
-        return;
-    };
-    let Some(dir) = crate::ai_tools::dir() else {
-        return;
-    };
-    if ctx
-        .data(|d| d.get_temp::<(usize, usize)>(Id::new("upscale_progress")))
-        .is_some()
-    {
-        return;
-    }
-    ctx.data_mut(|d| {
-        d.remove::<image::RgbaImage>(Id::new("upscale_done"));
-        d.remove::<String>(Id::new("upscale_error"));
-        d.insert_temp(Id::new("upscale_progress"), (0usize, 1usize));
-        d.insert_temp(Id::new("upscale_shape"), id);
-    });
-    let key = model.key.to_string();
-    let worker = ctx.clone();
-    std::thread::spawn(move || {
-        let outcome = (|| -> Result<image::RgbaImage, String> {
-            let up = crate::upscale::loaded(&dir, &key)?;
-            worker.data_mut(|d| {
-                d.insert_temp(Id::new("upscale_card"), up.on_card());
-                if let Some(why) = &up.card_error {
-                    d.insert_temp(Id::new("upscale_card_error"), why.clone());
-                } else {
-                    d.remove::<String>(Id::new("upscale_card_error"));
-                }
-            });
-            worker.request_repaint();
-            let img = crate::bitmap_fx::decode(&png).ok_or("the picture could not be read")?;
-            let mut last = 0usize;
-            up.run(&img, &mut |done, total| {
-                if done != last {
-                    last = done;
-                    worker.data_mut(|d| d.insert_temp(Id::new("upscale_progress"), (done, total)));
-                    worker.request_repaint();
-                }
-            })
-        })();
-        worker.data_mut(|d| {
-            d.remove::<(usize, usize)>(Id::new("upscale_progress"));
-            match outcome {
-                Ok(img) => {
-                    d.insert_temp(Id::new("upscale_done"), img);
-                }
-                Err(e) => {
-                    d.insert_temp(Id::new("upscale_error"), e);
-                }
-            }
-        });
-        worker.request_repaint();
-    });
-}
-
-/// Put an enlarged picture where the one it came from was, once the thread
-/// that made it has finished.
-fn upscale_apply(app: &mut App, ctx: &egui::Context) {
-    let Some(img) = ctx.data(|d| d.get_temp::<image::RgbaImage>(Id::new("upscale_done"))) else {
-        return;
-    };
-    let id = ctx.data(|d| {
-        d.get_temp::<tracedraw_core::ShapeId>(Id::new("upscale_shape"))
-    });
-    ctx.data_mut(|d| {
-        d.remove::<image::RgbaImage>(Id::new("upscale_done"));
-        d.remove::<tracedraw_core::ShapeId>(Id::new("upscale_shape"));
-    });
-    let Some(id) = id else { return };
-    if let Some((_, rect, ..)) = app
-        .bitmap_shapes()
-        .into_iter()
-        .find(|(shape, ..)| *shape == id)
-    {
-        app.replace_bitmap(id, rect, &img);
-        app.status = tr("ai.upscale_done");
-    }
-}
-
 /// The contour: the outline of the selected picture as closed paths, which
 /// is what a cutter follows. It grows out of the subject by a distance in
 /// millimetres, or shrinks into it when the distance is negative.
@@ -1608,17 +1439,36 @@ fn trace_sheet(app: &mut App, ui: &mut Ui, m3: &M3, open: &mut Sheet) {
     ui.add(egui::Slider::new(&mut st.contour_detail, 0.0..=100.0));
     property_label(ui, m3, &tr("dialog.smoothing"));
     ui.add(egui::Slider::new(&mut st.contour_smooth, 0.0..=100.0));
+    ui.add_space(8.0);
+    ui.checkbox(&mut st.contour_white_backing, tr("ai.contour_white_backing"));
+    ui.checkbox(&mut st.contour_power_clip, tr("ai.contour_power_clip"));
     ui.add_space(10.0);
     if action_chip(ui, m3, &tr("ai.contour_run")).clicked() {
-        contour_run(app, st.contour_expand_mm, st.contour_detail, st.contour_smooth);
+        contour_run(
+            app,
+            st.contour_expand_mm,
+            st.contour_detail,
+            st.contour_smooth,
+            st.contour_white_backing,
+            st.contour_power_clip,
+        );
     }
     save_ai_state(&ctx, &st);
 }
 
-/// Put the contour of the selected picture in the drawing, on the layer
-/// being drawn on: closed paths, no fill, a hairline to follow.
-fn contour_run(app: &mut App, expand_mm: f64, detail: f64, smoothing: f64) {
-    let Some((_, rect, _, _, png)) = app.bitmap_shapes().into_iter().next() else {
+/// Put the contour of the selected picture in the drawing, on the picture's
+/// own layer and over it: one closed outline with its rings as subpaths, a
+/// hairline to follow, filled white when a backing is asked for, and with
+/// the picture put inside it when the outline is to be a container.
+fn contour_run(
+    app: &mut App,
+    expand_mm: f64,
+    detail: f64,
+    smoothing: f64,
+    white_backing: bool,
+    power_clip: bool,
+) {
+    let Some((bitmap, rect, _, _, png)) = app.bitmap_shapes().into_iter().next() else {
         app.status = tr("ai.need_picture");
         return;
     };
@@ -1640,25 +1490,53 @@ fn contour_run(app: &mut App, expand_mm: f64, detail: f64, smoothing: f64) {
         app.status = tr("ai.contour_none");
         return;
     }
-    let Some(layer) = app.active_layer() else {
+    // The picture's own layer, and after it in that layer: a contour put on
+    // the layer being drawn on lands under the picture whenever that layer
+    // is below it, and a cutter's line is of no use under the picture it
+    // follows.
+    let layer = app
+        .doc()
+        .all_layers()
+        .find(|l| l.shapes.iter().any(|s| s.id == bitmap))
+        .map(|l| l.id)
+        .or_else(|| app.active_layer());
+    let Some(layer) = layer else {
         return;
     };
-    let mut cmds = Vec::new();
-    for path in paths {
-        let placed = crate::trace::to_rect(&path, img.width(), img.height(), rect);
-        let id = app.engine.new_shape_id();
-        let mut shape = tracedraw_core::document::Shape::new(
-            id,
-            tracedraw_core::document::ShapeKind::Path {
-                path: placed,
-                closed: true,
-            },
-        );
-        shape.fill = tracedraw_core::Fill::None;
-        shape.stroke = Some(tracedraw_core::Stroke::hairline(
-            tracedraw_core::Color::BLACK,
-        ));
-        cmds.push(tracedraw_core::Command::AddShape { layer, shape });
+    // One object for the whole outline, its rings as subpaths: a cutter
+    // follows it as one line, and a picture put inside it is clipped by the
+    // outline and its holes together, which a ring of its own could not do.
+    let mut outline = tracedraw_core::geometry::BezPath::new();
+    for path in &paths {
+        outline.extend(crate::trace::to_rect(path, img.width(), img.height(), rect));
+    }
+    let id = app.engine.new_shape_id();
+    let mut shape = tracedraw_core::document::Shape::new(
+        id,
+        tracedraw_core::document::ShapeKind::Path {
+            path: outline,
+            closed: true,
+        },
+    );
+    // The white backing is the outline itself filled white, under the
+    // picture, so the picture is printed on its own white rather than on
+    // whatever the page shows through it.
+    shape.fill = if white_backing {
+        tracedraw_core::Fill::Solid(tracedraw_core::Color::WHITE)
+    } else {
+        tracedraw_core::Fill::None
+    };
+    shape.stroke = Some(tracedraw_core::Stroke::hairline(
+        tracedraw_core::Color::BLACK,
+    ));
+    let mut cmds = vec![tracedraw_core::Command::AddShape { layer, shape }];
+    if power_clip {
+        // The picture goes inside the outline, which becomes its container:
+        // what is outside the cut line is not printed and not cut.
+        cmds.push(tracedraw_core::Command::PlaceInside {
+            contents: vec![bitmap],
+            frame: id,
+        });
     }
     if let Err(e) = app.engine.run_batch("Contour", &cmds) {
         app.status = e.to_string();
@@ -1947,10 +1825,15 @@ fn sheet_ui(
                     });
             });
     } else {
-        let height = sheet_height(which, screen.height());
+        // Above the gesture bar: a sheet that reaches the bottom of the
+        // screen puts its last row, the button a panel is for, under it.
+        let height = (sheet_height(which, screen.height()) - safe.bottom).max(180.0);
         egui::Area::new(Id::new("mobile_sheet_port"))
             .order(egui::Order::Foreground)
-            .fixed_pos(egui::pos2(screen.left(), screen.bottom() - height))
+            .fixed_pos(egui::pos2(
+                screen.left(),
+                screen.bottom() - safe.bottom - height,
+            ))
             .show(&ctx, |ui| {
                 Frame::new()
                     .fill(m3.surface)
@@ -2004,9 +1887,17 @@ fn sheet_content(
     if sheet_header(ui, which, m3) {
         *open = Sheet::None;
     }
+    // The generate panel keeps its button in view under its own scroll: a
+    // phone should not have to scroll past the settings to reach the one
+    // thing the panel is for.
+    let bar = if matches!(which, Sheet::AiGenerate) {
+        118.0
+    } else {
+        0.0
+    };
     egui::ScrollArea::vertical()
         .id_salt(("mobile_sheet_scroll", sheet_title(which)))
-        .max_height(height - 92.0)
+        .max_height(height - 92.0 - bar)
         .auto_shrink([false, false])
         .show(ui, |ui| {
             Frame::new()
@@ -2021,6 +1912,9 @@ fn sheet_content(
                     sheet_body(app, ui, which, m3, open);
                 });
         });
+    if bar > 0.0 {
+        crate::ui::ai_generate_docker::ai_generate_footer(app, ui);
+    }
 }
 
 /// The dimmed drawing behind a sheet, a drawer or a page: a tap there puts
@@ -2047,7 +1941,10 @@ fn sheet_height(which: Sheet, screen: f32) -> f32 {
         Sheet::Panels | Sheet::Tools(_) => 0.62,
         Sheet::Files | Sheet::Drawings => 0.52,
         Sheet::Properties => 0.46,
-        Sheet::Matting | Sheet::Upscale | Sheet::Variable | Sheet::Trace => 0.52,
+        Sheet::Matting | Sheet::Variable | Sheet::Trace => 0.52,
+        // The generate panel carries a prompt, a source image, styles and a
+        // strip of results: it opens over most of the drawing.
+        Sheet::AiGenerate => 0.88,
         Sheet::Palette => 0.24,
         Sheet::None | Sheet::Drawer | Sheet::MenuPage(_) | Sheet::Settings | Sheet::SettingsPage(_) => 0.0,
     };
@@ -2133,8 +2030,8 @@ fn sheet_title(which: Sheet) -> String {
             .get(gi)
             .map(|g| g.tools[0].name())
             .unwrap_or_default(),
+        Sheet::AiGenerate => tr("docker.ai_generate"),
         Sheet::Matting => tr("ai.matting"),
-        Sheet::Upscale => tr("ai.upscale"),
         Sheet::Variable => tr("ai.variable"),
         Sheet::Trace => tr("ai.trace"),
         Sheet::None
@@ -2153,8 +2050,8 @@ fn sheet_body(app: &mut App, ui: &mut Ui, which: Sheet, m3: &M3, open: &mut Shee
         Sheet::Files => files_sheet(app, ui, m3),
         Sheet::Drawings => drawings_sheet(app, ui, m3),
         Sheet::Tools(gi) => tools_sheet(app, ui, m3, gi, open),
+        Sheet::AiGenerate => crate::ui::ai_generate_docker::ai_generate(app, ui),
         Sheet::Matting => matting_sheet(app, ui, m3),
-        Sheet::Upscale => upscale_sheet(app, ui, m3),
         Sheet::Variable => variable_sheet(app, ui, m3),
         Sheet::Trace => trace_sheet(app, ui, m3, open),
         Sheet::None

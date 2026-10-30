@@ -800,6 +800,13 @@ pub const IMPORT_EXTENSIONS: &[&str] = &[
     "gif", "webp", "tif", "tiff",
 ];
 
+/// The memory the undo steps of one drawing may hold before the oldest
+/// go (the newest always stays), next to Undo levels' step count.
+#[cfg(not(target_arch = "wasm32"))]
+pub const UNDO_MEMORY: usize = 1 << 30;
+#[cfg(target_arch = "wasm32")]
+pub const UNDO_MEMORY: usize = 256 << 20;
+
 /// Auto-backups being written on a thread: the folder, and each file's
 /// name with how its write went.
 struct AutoBackupJob {
@@ -963,8 +970,10 @@ pub struct App {
     /// The Contour tool's and panel's values and the tool's drag.
     pub contour: crate::contour_tool::ContourSettings,
     pub contour_drag: Option<crate::contour_tool::ContourDrag>,
-    /// The Blend tool's slider being dragged on the canvas.
+    /// The Blend tool's control being dragged on the canvas, and the
+    /// start or end square's drag of its object.
     pub blend_handle_drag: Option<crate::blend_tool::BlendHandle>,
+    pub blend_end_drag: Option<crate::blend_tool::EndDrag>,
     pub spiral_revolutions: u32,
     pub spiral_logarithmic: bool,
     pub common_shape: crate::tools2::CommonShape,
@@ -1026,6 +1035,8 @@ pub struct App {
     pub eyedropper_apply: bool,
     /// Bitmap sample box side in pixels: 1, 2 or 5.
     pub eyedropper_sample: u32,
+    /// The colour eyedroppers' readout beside the pointer (#990).
+    pub eyedropper_hover: crate::eyedropper::HoverReadout,
     pub canvas_rect: egui::Rect,
     pub pointer_page: Option<Point>,
     /// The palette shown in the bottom strip (the first visible one).
@@ -1037,6 +1048,11 @@ pub struct App {
     pub palette_scroll: usize,
     /// The same for the document palette row.
     pub doc_palette_scroll: usize,
+    /// The palettes shown after the first one (Window > Color Palettes),
+    /// a strip each (#1164).
+    pub extra_palettes: Vec<crate::ui::palette::ExtraRow>,
+    /// What a strip no longer there scrolls (nothing reads it).
+    pub palette_scroll_spare: usize,
     /// The document palette swatch clicked last (Delete color acts on it).
     pub doc_palette_current: Option<usize>,
     /// Pop-up of a palette colour's shades (click and hold a swatch): the
@@ -1107,6 +1123,12 @@ pub struct App {
     pub join_settings: crate::corners::JoinSettings,
     /// The Fit Objects to Path docker's spacing, offset and turning.
     pub fit_path: crate::ops2::FitPathSettings,
+    /// The objects (the drawing and the selection, the path last) the
+    /// Fit Objects to Path docker's values were set for, and whether a
+    /// value was entered for them: other objects start from the defaults
+    /// with no preview (#1136).
+    pub fit_path_for: Option<(Option<u64>, Vec<ShapeId>)>,
+    pub fit_path_edited: bool,
     /// Outlines a docker previews on the canvas this frame (page space).
     pub docker_preview: Vec<tracedraw_core::geometry::BezPath>,
     /// A point a docker marks on the drawing (the Coordinates docker's
@@ -1525,10 +1547,16 @@ pub struct App {
     pub fill_node: Option<usize>,
     /// A font shown in the drawing while a font list points at it.
     pub live_font: Option<crate::ui::font_list::LiveFont>,
+    /// A variable font axis slider is being dragged: the text shows its
+    /// value as a preview the history does not keep (#870).
+    pub live_axis: bool,
     pub blend_accel_objects: f64,
     pub blend_accel_colors: f64,
     /// The Knife's mode, gap and pieces (its bar).
     pub knife: crate::knife::KnifeSettings,
+    /// Segment Delete drags a freehand stroke rather than a box (its
+    /// bar; Alt at the press takes the other, #1150).
+    pub segment_freehand: bool,
     /// Properties docker section to expand: 0 fill, 1 outline.
     /// A section of the Properties docker to expand on the next frame
     /// (0 fill, 1 outline), set by F11 and F12.
@@ -2182,6 +2210,7 @@ impl App {
             contour: Default::default(),
             contour_drag: None,
             blend_handle_drag: None,
+            blend_end_drag: None,
             spiral_revolutions: 4,
             spiral_logarithmic: false,
             common_shape: crate::tools2::CommonShape::RightArrow,
@@ -2225,12 +2254,15 @@ impl App {
             eyedropper_groups: Default::default(),
             eyedropper_apply: false,
             eyedropper_sample: 1,
+            eyedropper_hover: Default::default(),
             canvas_rect: egui::Rect::NOTHING,
             pointer_page: None,
             palette: crate::palette::default_cmyk(),
             palette_rgb: crate::ui::palette::as_rgb(&crate::palette::default_cmyk()),
             palette_scroll: 0,
             doc_palette_scroll: 0,
+            extra_palettes: Vec::new(),
+            palette_scroll_spare: 0,
             doc_palette_current: None,
             palette_shades: None,
             palette_expanded: None,
@@ -2264,6 +2296,8 @@ impl App {
             corners: Default::default(),
             join_settings: Default::default(),
             fit_path: Default::default(),
+            fit_path_for: None,
+            fit_path_edited: false,
             docker_preview: Vec::new(),
             docker_preview_point: None,
             dialog: crate::ui::dialogs::Dialog::None,
@@ -2473,9 +2507,11 @@ impl App {
             blend_rotation: 0.0,
             fill_node: None,
             live_font: None,
+            live_axis: false,
             blend_accel_objects: 0.0,
             blend_accel_colors: 0.0,
             knife: Default::default(),
+            segment_freehand: false,
             properties_open: None,
             area_fill_color: Color::cmyk_pct(0.0, 0.0, 100.0, 0.0),
             area_fill_mode: 0,
@@ -2549,6 +2585,17 @@ impl App {
     }
 
     /// A new document with localised default page and layer names.
+    /// A command adding a page of `size` at the end, named in the
+    /// interface's language as the first page is, with its layer (#1127).
+    pub fn localized_page(&self, size: Size) -> Command {
+        let n = self.doc().pages.len() + 1;
+        Command::AddPage {
+            name: Some(crate::i18n::trf("doc.page_n", &[("n", &n.to_string())])),
+            size,
+            layer: Some(crate::i18n::trf("docker.layer_n", &[("n", "1")])),
+        }
+    }
+
     pub fn localized_document(title: impl Into<String>, size: Size) -> tracedraw_core::Document {
         let mut doc = tracedraw_core::Document::new(title, size);
         for (i, p) in doc.pages.iter_mut().enumerate() {
@@ -2611,9 +2658,12 @@ impl App {
         }
         self.raster.borrow_mut().invalidate();
         let levels = self.settings.undo_levels.max(1);
+        let bytes = UNDO_MEMORY;
         self.engine.set_max_history(levels);
+        self.engine.set_max_history_bytes(bytes);
         for slot in &mut self.docs {
             slot.engine.set_max_history(levels);
+            slot.engine.set_max_history_bytes(bytes);
         }
     }
 
@@ -3012,6 +3062,7 @@ impl App {
             recognize: self.recognize,
             sketch: self.sketch,
             knife: self.knife,
+            segment_freehand: self.segment_freehand,
         }
     }
 
@@ -3083,6 +3134,7 @@ impl App {
             gap: finite(t.knife.gap, 0.0, 1000.0, 0.0),
             ..t.knife
         };
+        self.segment_freehand = t.segment_freehand;
         self.sketch = crate::recognize::SketchSettings {
             join_distance: finite(t.sketch.join_distance, 0.0, 1000.0, 5.0),
             smoothing: t.sketch.smoothing.min(5),
@@ -3732,10 +3784,10 @@ impl App {
             return;
         }
         // One step: the copies and their move (#471).
-        let depth = self.engine.history_labels().0.len();
+        let mark = self.engine.begin_group();
         self.duplicate_in_place();
         self.transform_selection(t);
-        self.engine.squash_since(depth, "Duplicate");
+        self.engine.end_group(mark, "Duplicate");
         self.note_repeatable(Repeatable::Copy(t));
     }
 
@@ -5195,27 +5247,35 @@ impl App {
 
     /// Add a colour to the document palette as a step of its own (its
     /// eyedropper, Add from selection); nothing when it is there already.
+    /// Either way its swatch gets the white frame of the last colour used,
+    /// so a colour picked again shows where it is (#1125).
     pub fn add_to_document_palette(&mut self, c: Color) {
-        if self.doc().palette.contains(&c) {
+        if let Some(i) = self.doc().palette.iter().position(|x| *x == c) {
+            self.doc_palette_current = Some(i);
             return;
         }
         let mut colors = self.doc().palette.clone();
         colors.push(c);
         self.run(Command::SetDocumentPalette { colors });
+        self.doc_palette_current = self.doc().palette.iter().position(|x| *x == c);
     }
 
     /// The document palette collects the colours applied to objects; the addition joins the step that applied it.
     pub fn remember_color(&mut self, c: Color) {
-        if !self.settings.palette.auto_update_document
-            || matches!(c, Color::Registration)
-            || self.doc().palette.contains(&c)
-        {
+        // A colour of the palette applied again: its swatch is the last
+        // used (#1125).
+        if let Some(i) = self.doc().palette.iter().position(|x| *x == c) {
+            self.doc_palette_current = Some(i);
+            return;
+        }
+        if !self.settings.palette.auto_update_document || matches!(c, Color::Registration) {
             return;
         }
         let mut colors = self.doc().palette.clone();
         colors.push(c);
-        if let Err(e) = self.engine.amend(&Command::SetDocumentPalette { colors }) {
-            self.status = e.to_string();
+        match self.engine.amend(&Command::SetDocumentPalette { colors }) {
+            Ok(_) => self.doc_palette_current = Some(self.doc().palette.len() - 1),
+            Err(e) => self.status = e.to_string(),
         }
     }
 
@@ -7296,7 +7356,7 @@ impl App {
 
     pub fn add_page(&mut self) {
         let size = self.page_size();
-        self.run(Command::AddPage { name: None, size });
+        self.run(self.localized_page(size));
         if let Some(p) = self.doc().pages.last() {
             self.page = p.id;
         }
@@ -7309,7 +7369,7 @@ impl App {
     pub fn insert_page(&mut self, after: bool) {
         let idx = self.page_index();
         let size = self.page_size();
-        self.run(Command::AddPage { name: None, size });
+        self.run(self.localized_page(size));
         let Some(new) = self.doc().pages.last().map(|p| p.id) else {
             return;
         };

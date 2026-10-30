@@ -785,11 +785,7 @@ fn models_page(ui: &mut egui::Ui) {
     ui.label(egui::RichText::new(tr("ai.models")).strong());
     ui.label(egui::RichText::new(tr("ai.models_hint")).small());
     ui.add_space(4.0);
-    let models = || {
-        crate::ai_tools::MATTING
-            .iter()
-            .chain(crate::ai_tools::UPSCALE.iter())
-    };
+    let models = || crate::ai_tools::MATTING.iter();
     let mut running = false;
     for model in models() {
         ui.horizontal(|ui| {
@@ -1462,6 +1458,7 @@ pub fn show(app: &mut App, ctx: &Context) {
                                 &[("n", &(base + k as usize + 1).to_string())],
                             )),
                             size,
+                            layer: Some(trf("docker.layer_n", &[("n", "1")])),
                         })
                         .collect();
                     let _ = app.engine.run_batch("Insert Page", &cmds);
@@ -3471,9 +3468,11 @@ pub fn export_with_file_dialog(app: &mut App, st: &ExportState) {
         });
 }
 
-/// The Export dialog's presets (#547): a list of the saved ones of the
-/// chosen format (#612), "+" to save the choices under a name, rename and
-/// delete for the chosen one.
+/// The Export dialog's presets (#547): a list of every saved one, each
+/// with its format, "+" to save the choices under a name, rename and
+/// delete for the chosen one. Choosing a preset brings its format along;
+/// changing the format leaves the preset unchosen while the whole list
+/// stays (#612).
 fn export_presets_row(app: &mut App, ui: &mut Ui, st: &mut ExportState) {
     // A preset of another format no longer describes the choices.
     if !st.preset.is_empty()
@@ -3489,11 +3488,10 @@ fn export_presets_row(app: &mut App, ui: &mut Ui, st: &mut ExportState) {
     ui.horizontal(|ui| {
         ui.label(tr("dialog.export_preset"));
         let presets = presets_for(&app.settings.formats.export_presets, st);
-        // Every preset listed is of the chosen format: its name says it.
-        let label = |p: &crate::prefs::ExportPreset| p.name.clone();
+        let label = preset_label;
         let shown = presets
             .iter()
-            .find(|p| p.name == st.preset)
+            .find(|p| p.name == st.preset && preset_fits(p, st))
             .map(label)
             .unwrap_or_else(|| tr("dialog.export_preset_none"));
         egui::ComboBox::from_id_salt("export_preset")
@@ -3507,7 +3505,8 @@ fn export_presets_row(app: &mut App, ui: &mut Ui, st: &mut ExportState) {
                     st.preset.clear();
                 }
                 for p in &presets {
-                    if ui.selectable_label(p.name == st.preset, label(p)).clicked() {
+                    let chosen = p.name == st.preset && preset_fits(p, st);
+                    if ui.selectable_label(chosen, label(p)).clicked() {
                         p.apply(st);
                     }
                 }
@@ -3595,18 +3594,30 @@ fn export_presets_row(app: &mut App, ui: &mut Ui, st: &mut ExportState) {
     }
 }
 
-/// Whether the Export dialog lists `p`: it was saved for the format
-/// chosen (a script filter has none).
+/// Whether the preset `p` describes the dialog's format: it was saved
+/// for the format chosen (a script filter fits none). The list shows
+/// every preset; this says which one can be the chosen one.
 fn preset_fits(p: &crate::prefs::ExportPreset, st: &ExportState) -> bool {
     st.script.is_none() && p.fits(st.format)
 }
 
-/// The presets the Export dialog lists for its chosen format.
+/// The presets the Export dialog lists: every saved one, whatever its
+/// format, so they are all in sight from the start and choosing one
+/// of another format switches to it (#612).
 pub(crate) fn presets_for(
     all: &[crate::prefs::ExportPreset],
-    st: &ExportState,
+    _st: &ExportState,
 ) -> Vec<crate::prefs::ExportPreset> {
-    all.iter().filter(|p| preset_fits(p, st)).cloned().collect()
+    all.to_vec()
+}
+
+/// A preset as the list shows it: its name and, in brackets, the format
+/// it was saved for (a format this version does not know: the name).
+pub(crate) fn preset_label(p: &crate::prefs::ExportPreset) -> String {
+    match EXPORT_FORMATS.get(p.format) {
+        Some((name, _)) => format!("{} ({name})", p.name),
+        None => p.name.clone(),
+    }
 }
 
 fn export_options(app: &mut App, ui: &mut Ui, st: &mut ExportState, estimate: Option<usize>) {
@@ -4138,6 +4149,13 @@ pub(crate) fn print_layout_fields(app: &App, ui: &mut Ui, st: &mut PrintState) {
         let mut doc_pages: Vec<Size> = app.doc().pages.iter().map(|p| p.size).collect();
         if !st.all_pages {
             doc_pages = vec![app.page_size()];
+        }
+        // The selection prints as a page the size of the area it covers
+        // (#1001).
+        if st.range == 3 {
+            if let Some(size) = selection_print_size(app) {
+                doc_pages = vec![size];
+            }
         }
         let options = crate::export::print_layout(app, st, app.doc());
         let plan = crate::imposition::plan(&doc_pages, &options);
@@ -6846,4 +6864,31 @@ pub(crate) mod tests {
             }
         }
     }
+}
+
+/// The size of the area the selection prints on (#1001), worked out once
+/// for a drawing, its revision and the selection (the Print dialog's
+/// sketch asks every frame, and text has to be laid out for it).
+fn selection_print_size(app: &App) -> Option<Size> {
+    type Key = (u64, u64, Vec<tracedraw_core::ShapeId>);
+    thread_local! {
+        static CACHE: std::cell::RefCell<Option<(Key, Option<Size>)>> =
+            const { std::cell::RefCell::new(None) };
+    }
+    let key: Key = (
+        app.engine.instance(),
+        app.engine.revision(),
+        app.selection.clone(),
+    );
+    CACHE.with(|c| {
+        if let Some((k, size)) = c.borrow().as_ref() {
+            if *k == key {
+                return *size;
+            }
+        }
+        let selected = app.selected_rc();
+        let size = crate::export::print_area(selected.iter()).map(|r| r.size());
+        *c.borrow_mut() = Some((key, size));
+        size
+    })
 }

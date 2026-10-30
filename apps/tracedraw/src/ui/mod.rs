@@ -56,6 +56,7 @@ pub mod font_sampler;
 pub mod fx_icons;
 pub mod github_dialogs;
 pub mod glyphs_docker;
+pub mod hint_pics;
 pub mod hints;
 pub mod icons;
 pub mod lab_dialog;
@@ -462,6 +463,18 @@ fn desktop(app: &mut App, ui: &mut Ui, ctx: &egui::Context) {
             )
             .frame(palette_frame)
             .show(ui, |ui| palette::palette_column(app, ui));
+            // A column for each further palette shown, inside it (#1164).
+            for which in palette::extra_rows(app) {
+                let id = egui::Id::new(("palette_extra", which));
+                let panel = if palette_dock == Dock::Left {
+                    Panel::left(id)
+                } else {
+                    Panel::right(id)
+                };
+                side(panel, palette::thickness(app, which))
+                    .frame(palette_frame)
+                    .show(ui, |ui| palette::extra_palette_column(app, ui, which));
+            }
         }
     }
 
@@ -572,6 +585,18 @@ fn desktop(app: &mut App, ui: &mut Ui, ctx: &egui::Context) {
             )
             .frame(palette_frame)
             .show(ui, |ui| palette::palette_row(app, ui));
+            // A row for each further palette shown, next to it (#1164).
+            for which in palette::extra_rows(app) {
+                let id = egui::Id::new(("palette_extra", which));
+                let panel = if palette_dock == Dock::Top {
+                    Panel::top(id)
+                } else {
+                    Panel::bottom(id)
+                };
+                side(panel, palette::thickness(app, which))
+                    .frame(palette_frame)
+                    .show(ui, |ui| palette::extra_palette_row(app, ui, which));
+            }
         }
     }
     // The AI prompt bar, over the palette rows, while a service is set up.
@@ -830,7 +855,7 @@ fn canvas_window(app: &mut App, ui: &mut Ui, full: egui::Rect, bare: bool) {
     envelope_ui::draw_envelopes(app, &painter);
     dimension_bar::draw_preview(app, &painter);
     callout_bar::draw_preview(app, &painter);
-    distort_bar::draw_centers(app, &painter);
+    distort_bar::draw_handles(app, &painter);
     extrude_bar::draw_handles(app, &painter);
     crop_bar::draw_area(app, &painter, canvas_rect);
     canvas::draw_docker_preview(app, &painter);
@@ -864,6 +889,18 @@ fn canvas_window(app: &mut App, ui: &mut Ui, full: egui::Rect, bare: bool) {
         });
         let cursor = cursors::for_tool(app, shift, primary, middle, pos);
         cursors::show(ui.ctx(), cursor, pos);
+        // A colour eyedropper waiting to sample: the colour under the
+        // pointer beside it (#990).
+        let picker = crate::ui::color_picker::picking(ui.ctx());
+        if let (true, Some(at), Some(p)) = (
+            (picker || app.eyedropper_sampling()) && !primary && !middle,
+            pos,
+            app.pointer_page,
+        ) {
+            if let Some(r) = app.hover_reading(p, shift, picker) {
+                cursors::paint_color_readout(ui.ctx(), at, r);
+            }
+        }
         // A scale, turn or slant that leaves the original (after a right
         // click): the plus a move's pointer carries, beside the pointer.
         if app.drag_copy && app.transforming() && !matches!(app.drag, crate::app::Drag::Move { .. })

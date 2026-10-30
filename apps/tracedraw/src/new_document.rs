@@ -171,6 +171,7 @@ impl NewDocSettings {
             let add = tracedraw_core::Command::AddPage {
                 name: Some(crate::i18n::trf("doc.page_n", &[("n", &n.to_string())])),
                 size,
+                layer: None,
             };
             if add.apply(&mut doc).is_err() {
                 break;

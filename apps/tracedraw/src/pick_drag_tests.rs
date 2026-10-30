@@ -748,6 +748,61 @@ fn objects_dropped_on_the_document_palette_give_their_colours() {
         .contains(&tracedraw_core::Color::rgb8(200, 30, 30)));
 }
 
+/// #1164: every palette ticked in Window > Color Palettes gets a strip,
+/// not only the first. With three shown, a click on the third one's
+/// strip paints with its colour; closing the second leaves the third.
+#[test]
+fn every_palette_shown_gets_a_strip() {
+    use crate::ui::palette::Row;
+    let (ctx, mut app, id) = setup();
+    let gray = app
+        .palettes
+        .iter()
+        .position(|p| p.key == "palette.grayscale")
+        .expect("grayscale palette");
+    let process = app
+        .palettes
+        .iter()
+        .position(|p| p.key == "palette.process")
+        .expect("process palette");
+    app.toggle_palette(process);
+    app.toggle_palette(gray);
+    assert_eq!(app.extra_palettes.len(), 2);
+    for _ in 0..3 {
+        frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    }
+    let strip = |ctx: &egui::Context, which: Row| {
+        egui::PanelState::load(ctx, egui::Id::new(("palette_extra", which))).map(|s| s.outer_rect)
+    };
+    let third = strip(&ctx, Row::Extra(1)).expect("the third palette shows");
+    assert!(strip(&ctx, Row::Extra(0)).is_some());
+    assert!(
+        third.height() >= crate::ui::palette::ROW_H - 1.0,
+        "{third:?}"
+    );
+    // The fourth swatch slot of the grayscale strip.
+    let at = Pos2::new(third.left() + 77.0 + 21.0 * 3.5, third.center().y);
+    click_at(&ctx, &mut app, at, Modifiers::NONE);
+    let fill = app
+        .doc()
+        .find_shape(id)
+        .and_then(|s| s.fill.preview_color())
+        .expect("a solid fill");
+    let grays: Vec<_> = app.palettes[gray].colors.iter().map(|(_, c)| *c).collect();
+    let rgb_grays: Vec<_> = crate::ui::palette::as_rgb(&app.palettes[gray].colors)
+        .into_iter()
+        .map(|(_, c)| c)
+        .collect();
+    assert!(
+        grays.contains(&fill) || rgb_grays.contains(&fill),
+        "{fill:?} is not a grey of the third palette"
+    );
+    // Closing the second palette leaves the third in a strip.
+    app.toggle_palette(process);
+    assert_eq!(app.extra_palettes.len(), 1);
+    assert_eq!(app.extra_palettes[0].index, gray);
+}
+
 fn click_at(ctx: &egui::Context, app: &mut App, at: Pos2, mods: Modifiers) {
     frame(ctx, app, vec![Event::PointerMoved(at)], mods);
     frame(
@@ -1434,6 +1489,118 @@ fn two_open_curves(ctx: &egui::Context, app: &mut App, id: ShapeId) -> (ShapeId,
     app.set_tool(Tool::Shape);
     frame(ctx, app, Vec::new(), Modifiers::NONE);
     (a, b)
+}
+
+/// The colours of the outlines one frame draws through `point` (screen),
+/// with `events` sent in that frame.
+fn outline_colors_through(
+    ctx: &egui::Context,
+    app: &mut App,
+    events: Vec<Event>,
+    point: Pos2,
+) -> Vec<egui::Color32> {
+    let input = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            Pos2::ZERO,
+            egui::vec2(1600.0, 1000.0),
+        )),
+        events,
+        ..Default::default()
+    };
+    let mut out = ctx.run_ui(input, |ui| crate::ui::root(app, ui));
+    out.textures_delta.clear();
+    let mut found = Vec::new();
+    fn walk(s: &egui::Shape, point: Pos2, found: &mut Vec<egui::Color32>) {
+        match s {
+            egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, point, found)),
+            egui::Shape::Path(p) if !p.closed && p.points.len() >= 2 => {
+                if p.points.iter().any(|q| q.distance(point) < 0.5) {
+                    if let egui::epaint::ColorMode::Solid(c) = p.stroke.color {
+                        found.push(c);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out.shapes
+        .iter()
+        .for_each(|c| walk(&c.shape, point, &mut found));
+    found
+}
+
+/// Shape tool with several objects selected (#1007): the object picked
+/// last has its outline in the node colour (blue), the others in the
+/// second node colour (red), also while a node of the red one is being
+/// dragged; that node moves and the other object stays as it was.
+#[test]
+fn shape_tool_marks_the_last_picked_object_blue_and_the_others_red() {
+    let (ctx, mut app, id) = setup();
+    let (a, b) = two_open_curves(&ctx, &mut app, id);
+    let blue = {
+        let [r, g, b] = app.settings.nodes.main_rgb;
+        egui::Color32::from_rgb(r, g, b)
+    };
+    let red = {
+        let [r, g, b] = app.settings.nodes.secondary_rgb;
+        egui::Color32::from_rgb(r, g, b)
+    };
+    assert_ne!(blue, red);
+    let at = |app: &App, x: f64, y: f64| app.view.to_screen(Point::new(x, y));
+    let start_a = at(&app, 10.0, 10.0);
+    let start_b = at(&app, 44.0, 10.0);
+    let colors = outline_colors_through(&ctx, &mut app, Vec::new(), start_a);
+    assert_eq!(colors, vec![red], "a, picked first");
+    let colors = outline_colors_through(&ctx, &mut app, Vec::new(), start_b);
+    assert_eq!(colors, vec![blue], "b, picked last");
+    // Drag the start node of a: while dragging it stays red and b blue.
+    let b_before = curve_path(&app, b);
+    let to = start_a + egui::vec2(0.0, 40.0);
+    frame(
+        &ctx,
+        &mut app,
+        vec![Event::PointerMoved(start_a)],
+        Modifiers::NONE,
+    );
+    frame(
+        &ctx,
+        &mut app,
+        vec![button(
+            start_a,
+            true,
+            PointerButton::Primary,
+            Modifiers::NONE,
+        )],
+        Modifiers::NONE,
+    );
+    frame(
+        &ctx,
+        &mut app,
+        vec![Event::PointerMoved(start_a + egui::vec2(0.0, 20.0))],
+        Modifiers::NONE,
+    );
+    let colors = outline_colors_through(&ctx, &mut app, vec![Event::PointerMoved(to)], start_b);
+    assert_eq!(colors, vec![blue], "b while a node of a is dragged");
+    let colors = outline_colors_through(&ctx, &mut app, Vec::new(), to);
+    assert_eq!(colors, vec![red], "a while its node is dragged");
+    frame(
+        &ctx,
+        &mut app,
+        vec![button(to, false, PointerButton::Primary, Modifiers::NONE)],
+        Modifiers::NONE,
+    );
+    let moved = tracedraw_core::nodes::nodes(&curve_path(&app, a))[0].pos;
+    assert!(
+        (moved.y - 10.0).abs() > 1.0,
+        "the node of a moved: {moved:?}"
+    );
+    assert_eq!(curve_path(&app, b), b_before);
+    // One object alone: its outline in the node colour.
+    app.select(vec![a]);
+    frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    let p = app.view.to_screen(moved);
+    let colors = outline_colors_through(&ctx, &mut app, Vec::new(), p);
+    assert_eq!(colors, vec![blue], "a alone");
 }
 
 fn curve_path(app: &App, id: ShapeId) -> tracedraw_core::BezPath {
@@ -3826,8 +3993,12 @@ fn dropping_on_a_clip_frame_with_w_or_k_puts_the_objects_in() {
     assert_eq!(app.tool, Tool::Pick);
 }
 
+/// Ctrl+click on a clip frame edits its contents (#982): the contents
+/// come out of the frame, the one under the pointer selected, and only
+/// they can be picked; Finish puts them back. Off the contents the click
+/// edits too, with all of them selected. A plain click selects the frame.
 #[test]
-fn ctrl_click_takes_the_contents_of_a_clip_frame() {
+fn ctrl_click_on_a_clip_frame_edits_its_contents() {
     let (ctx, mut app, first) = setup();
     app.select(vec![first]);
     app.delete_selection();
@@ -3837,15 +4008,47 @@ fn ctrl_click_takes_the_contents_of_a_clip_frame() {
     let inside = app.view.to_screen(text_middle(&app, text));
     click_at(&ctx, &mut app, inside, Modifiers::NONE);
     assert_eq!(app.selection, vec![clip]);
-    click_at(&ctx, &mut app, inside, Modifiers::CTRL);
-    assert_eq!(app.selection, vec![text]);
+    assert!(app.clip_frame_edit.is_none());
     // Ctrl+Alt digs through the contents to the frame.
     assert_eq!(app.hits_at(text_middle(&app, text), true), vec![text, clip]);
-    // Inside the frame but off the text: the frame.
+    click_at(&ctx, &mut app, inside, Modifiers::CTRL);
+    assert_eq!(app.clip_frame_edit.as_ref().map(|e| e.0), Some(clip));
+    assert_eq!(app.selection, vec![text]);
+    assert_eq!(app.doc().top_level_of(text), Some(text), "out of the frame");
+    assert!(app.outside_clip_edit(clip));
+    // A second Ctrl+click while editing picks among the contents.
+    click_at(&ctx, &mut app, inside, Modifiers::CTRL);
+    assert_eq!(app.selection, vec![text]);
+    app.finish_clip_frame_edit();
+    assert!(app.clip_frame_edit.is_none());
+    assert_eq!(app.doc().top_level_of(text), Some(clip), "back inside");
+    // Inside the frame but off the text: editing, every content selected.
     app.select(Vec::new());
     let off = app.view.to_screen(Point::new(12.0, 12.0));
     click_at(&ctx, &mut app, off, Modifiers::CTRL);
-    assert_eq!(app.selection, vec![clip]);
+    assert_eq!(app.clip_frame_edit.as_ref().map(|e| e.0), Some(clip));
+    assert_eq!(app.selection, vec![text]);
+    app.finish_clip_frame_edit();
+    // On an ordinary group Ctrl+click still takes the member.
+    let r = |app: &mut App, x: f64| {
+        app.new_shape(ShapeKind::Rect {
+            rect: Rect::new(x, 100.0, x + 20.0, 120.0),
+            radius: 0.0,
+            corners: None,
+        })
+        .expect("rect")
+    };
+    let (a, b) = (r(&mut app, 100.0), r(&mut app, 130.0));
+    app.select(vec![a, b]);
+    app.apply_fill(tracedraw_core::Fill::Solid(tracedraw_core::Color::rgb8(
+        0, 0, 200,
+    )));
+    app.group_selection();
+    app.select(Vec::new());
+    let on_a = app.view.to_screen(Point::new(110.0, 110.0));
+    click_at(&ctx, &mut app, on_a, Modifiers::CTRL);
+    assert!(app.clip_frame_edit.is_none());
+    assert_eq!(app.selection, vec![a]);
 }
 
 #[test]
@@ -3982,16 +4185,18 @@ fn the_pen_deletes_a_node_of_the_selected_curve_and_the_toggle_turns_it_off() {
     assert!(node_count(&app, id) >= 3);
 }
 
+/// Pen with automatic adding and deleting on: a click on a segment or a
+/// middle node of the curve being drawn places the next node there, it
+/// neither adds on the segment nor deletes the node (#1143).
 #[test]
-fn the_pen_adds_and_deletes_nodes_on_the_curve_being_drawn() {
-    use crate::ui::cursors::CurveMark;
+fn the_pen_places_nodes_on_the_curve_being_drawn() {
     let (ctx, mut app, _) = setup();
     app.select(Vec::new());
     app.set_tool(Tool::Pen);
+    app.settings.curves.pen_auto_add_delete = true;
     for x in [100.0, 140.0, 180.0] {
         click_page(&ctx, &mut app, Point::new(x, 150.0));
     }
-    assert_eq!(app.curve.as_ref().map(|c| c.nodes.len()), Some(3));
     let on_segment = app.view.to_screen(Point::new(120.0, 150.0));
     let on_node = app.view.to_screen(Point::new(140.0, 150.0));
     frame(
@@ -4002,30 +4207,20 @@ fn the_pen_adds_and_deletes_nodes_on_the_curve_being_drawn() {
     );
     assert_eq!(
         for_tool(&app, false, false, false, Some(on_segment)),
-        ToolCursor::PenNib(Some(CurveMark::AddNode))
+        ToolCursor::PenNib(None)
     );
     assert_eq!(
         for_tool(&app, false, false, false, Some(on_node)),
-        ToolCursor::PenNib(Some(CurveMark::DeleteNode))
+        ToolCursor::PenNib(None)
     );
     click_page(&ctx, &mut app, Point::new(120.0, 150.0));
-    let xs: Vec<f64> = app
-        .curve
-        .as_ref()
-        .map(|c| c.nodes.iter().map(|n| n.0.x.round()).collect())
-        .unwrap_or_default();
-    assert_eq!(xs, vec![100.0, 120.0, 140.0, 180.0]);
     click_page(&ctx, &mut app, Point::new(140.0, 150.0));
     let xs: Vec<f64> = app
         .curve
         .as_ref()
         .map(|c| c.nodes.iter().map(|n| n.0.x.round()).collect())
         .unwrap_or_default();
-    assert_eq!(xs, vec![100.0, 120.0, 180.0]);
-    // Off: a click there places a node.
-    app.settings.curves.pen_auto_add_delete = false;
-    click_page(&ctx, &mut app, Point::new(110.0, 150.0));
-    assert_eq!(app.curve.as_ref().map(|c| c.nodes.len()), Some(4));
+    assert_eq!(xs, vec![100.0, 140.0, 180.0, 120.0, 140.0]);
 }
 
 #[test]
@@ -5219,6 +5414,18 @@ fn frame_times_on_a_heavy_page() {
             Modifiers::NONE,
         );
     });
+    // A colour dragged in a picker: an Undo and a step per pointer move.
+    let one = app.doc().pages[0].layers[0].shapes.last().map(|s| s.id);
+    app.select(one.into_iter().collect());
+    let mut k = 0u8;
+    time("live fill drag", &mut app, &mut |app| {
+        k = k.wrapping_add(7);
+        app.apply_fill_live(tracedraw_core::Fill::Solid(tracedraw_core::Color::rgb8(
+            k, 40, 90,
+        )));
+        frame(&ctx, app, Vec::new(), Modifiers::NONE);
+    });
+    app.end_live_fill();
 }
 
 /// A symmetry made from one object, edited: a click on the object shows
@@ -7931,8 +8138,10 @@ fn overlays_are_drawn_on_a_white_line() {
         })
         .count();
     assert!(heads >= 2, "{heads}");
+    // The handle line: white under blue dashes of the same width, so
+    // the dashes go blue and white in turn (#670).
     assert!(shapes.iter().any(|s| matches!(s, egui::Shape::LineSegment { stroke, .. }
-        if stroke.color == egui::Color32::WHITE && (stroke.width - crate::canvas::HALO_WIDTH).abs() < 1e-3)));
+        if stroke.color == egui::Color32::WHITE && (stroke.width - crate::canvas::HALO_INNER).abs() < 1e-3)));
 }
 
 /// An idle window asks for no frame (#616): once the start has settled,
@@ -8232,9 +8441,13 @@ fn the_edge_of_the_shape_being_drawn_shows_over_a_wide_outline() {
     }
 }
 
+/// The Export dialog lists every saved preset, with its format, from
+/// the start; changing the format leaves the chosen preset unchosen
+/// while the list stays whole, and choosing a preset of another format
+/// switches to that format (#612, the reporter's second request).
 #[test]
-fn the_export_dialog_lists_only_the_presets_of_its_format() {
-    use crate::ui::dialogs::{presets_for, Dialog, ExportState};
+fn the_export_dialog_lists_every_preset_and_a_format_change_unchooses() {
+    use crate::ui::dialogs::{preset_label, presets_for, Dialog, ExportState};
     let (ctx, mut app, _) = setup();
     let f = &mut app.settings.formats;
     for (name, format) in [("Web PNG", 2), ("Print JPG", 3), ("Big PNG", 2)] {
@@ -8247,19 +8460,26 @@ fn the_export_dialog_lists_only_the_presets_of_its_format() {
     let names = |st: &ExportState, app: &App| {
         presets_for(&app.settings.formats.export_presets, st)
             .into_iter()
-            .map(|p| p.name)
+            .map(|p| preset_label(&p))
             .collect::<Vec<_>>()
     };
+    let all = vec!["Web PNG (PNG)", "Print JPG (JPEG)", "Big PNG (PNG)"];
     app.export();
-    // A PNG preset chosen, then the format changed to JPEG: the list holds
-    // only the JPEG preset and the PNG one is no longer chosen.
+    // The dialog opens at SVG, which has no preset of its own: the list
+    // still holds every preset.
+    let Dialog::Export(st) = &app.dialog else {
+        panic!("no Export dialog");
+    };
+    let opened = st.clone();
+    assert_eq!(names(&opened, &app), all);
+    // A PNG preset chosen, then the format changed to JPEG: the PNG one
+    // is no longer chosen and the list is still whole.
     let Dialog::Export(st) = &mut app.dialog else {
         panic!("no Export dialog");
     };
     st.format = 2;
     st.preset = "Web PNG".into();
     let png = st.clone();
-    assert_eq!(names(&png, &app), vec!["Web PNG", "Big PNG"]);
     frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
     let Dialog::Export(st) = &mut app.dialog else {
         panic!("no Export dialog");
@@ -8271,16 +8491,37 @@ fn the_export_dialog_lists_only_the_presets_of_its_format() {
         panic!("no Export dialog");
     };
     assert!(st.preset.is_empty(), "{:?}", st.preset);
+    assert_eq!(st.format, 3);
     let jpg = st.clone();
-    assert_eq!(names(&jpg, &app), vec!["Print JPG"]);
-    // Saving a PNG preset under the hidden JPEG preset's name keeps the
-    // JPEG one: each format has its own names.
+    assert_eq!(names(&jpg, &app), all);
+    // Choosing a preset of another format brings that format along.
+    let Dialog::Export(st) = &mut app.dialog else {
+        panic!("no Export dialog");
+    };
+    let web_png = app.settings.formats.export_presets[0].clone();
+    web_png.apply(st);
+    assert_eq!((st.format, st.preset.as_str()), (2, "Web PNG"));
+    frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    let Dialog::Export(st) = &app.dialog else {
+        panic!("no Export dialog");
+    };
+    assert_eq!(st.preset, "Web PNG");
+    // Saving a PNG preset under the JPEG preset's name keeps the JPEG
+    // one: each format has its own names.
     assert!(app.settings.formats.save_preset("Print JPG", &png));
-    assert_eq!(names(&jpg, &app), vec!["Print JPG"]);
-    assert_eq!(names(&png, &app), vec!["Web PNG", "Big PNG", "Print JPG"]);
+    assert_eq!(
+        names(&jpg, &app),
+        vec![
+            "Web PNG (PNG)",
+            "Print JPG (JPEG)",
+            "Big PNG (PNG)",
+            "Print JPG (PNG)"
+        ]
+    );
     assert_eq!(app.settings.formats.export_presets.len(), 4);
-    // An installed script filter chosen: no presets, and nothing typed
-    // for "+" is saved under the last built-in format, out of sight.
+    // An installed script filter chosen: the list stays, none is chosen,
+    // and nothing typed for "+" is saved under the last built-in format,
+    // out of sight.
     app.settings
         .script_filters
         .push(crate::scripting::ScriptFilter {
@@ -8298,13 +8539,14 @@ fn the_export_dialog_lists_only_the_presets_of_its_format() {
     st.script = Some("Plotter".into());
     st.preset_name = Some(("Web PNG".into(), false));
     let scripted = st.clone();
-    assert!(names(&scripted, &app).is_empty());
+    assert_eq!(names(&scripted, &app).len(), 4);
     frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
     frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
     let Dialog::Export(st) = &app.dialog else {
         panic!("no Export dialog");
     };
     assert_eq!(st.script.as_deref(), Some("Plotter"));
+    assert!(st.preset.is_empty(), "{:?}", st.preset);
     assert!(st.preset_name.is_none());
     assert_eq!(app.settings.formats.export_presets, before);
 }
@@ -11040,4 +11282,622 @@ fn corner_widgets_round_stretched_curves_on_the_page() {
     drag_widget(&ctx, &mut app, centre, 5.0);
     let found = fillets(&page_of(&app, id));
     assert_eq!(found.len(), 4, "{found:?}");
+}
+
+/// Pen with automatic adding and deleting on: once a curve is being
+/// drawn (new or going on from an end), a click on another curve's
+/// segment or node places the next node there and leaves that curve as
+/// it is (#1143).
+#[test]
+fn the_pen_never_edits_another_curve_while_drawing() {
+    let (ctx, mut app, _) = setup();
+    let other = line_curve(&ctx, &mut app);
+    app.settings.curves.pen_auto_add_delete = true;
+    app.set_tool(Tool::Pen);
+    // A new curve.
+    click_page(&ctx, &mut app, Point::new(100.0, 160.0));
+    assert_eq!(app.curve.as_ref().map(|c| c.nodes.len()), Some(1));
+    click_page(&ctx, &mut app, Point::new(125.0, 100.0));
+    assert_eq!(
+        node_count(&app, other),
+        3,
+        "nothing added to the other curve"
+    );
+    click_page(&ctx, &mut app, Point::new(150.0, 100.0));
+    assert_eq!(
+        node_count(&app, other),
+        3,
+        "nothing deleted from the other curve"
+    );
+    assert_eq!(app.curve.as_ref().map(|c| c.nodes.len()), Some(3));
+    // Going on from the end of a curve: the same.
+    app.finish_curve();
+    let drawn = app.selection[0];
+    click_page(&ctx, &mut app, Point::new(150.0, 100.0));
+    assert_eq!(
+        app.curve.as_ref().map(|c| c.nodes.len()),
+        Some(1),
+        "goes on"
+    );
+    assert_eq!(app.selection, vec![drawn]);
+    click_page(&ctx, &mut app, Point::new(175.0, 100.0));
+    click_page(&ctx, &mut app, Point::new(100.0, 100.0));
+    assert_eq!(
+        node_count(&app, other),
+        3,
+        "the other curve is left as it is"
+    );
+    assert_eq!(app.curve.as_ref().map(|c| c.nodes.len()), Some(3));
+}
+
+/// Pen going on from the end of a curve: the start keeps the mirrored
+/// handle, and a second click on that node makes it a cusp, so the new
+/// segment leaves it straight (#1138).
+#[test]
+fn the_pen_makes_the_start_of_a_continued_curve_a_cusp() {
+    use crate::ui::cursors::CurveMark;
+    let (ctx, mut app, first) = setup();
+    app.select(vec![first]);
+    app.delete_selection();
+    app.set_tool(Tool::Pen);
+    let a = Point::new(100.0, 150.0);
+    let b = Point::new(140.0, 150.0);
+    pull(&ctx, &mut app, a, Point::new(110.0, 140.0));
+    pull(&ctx, &mut app, b, Point::new(150.0, 160.0));
+    app.finish_curve();
+    let before = shape_count(&app);
+    app.set_tool(Tool::Pen);
+    click_page(&ctx, &mut app, b);
+    let c = app.curve.clone().expect("a curve going on");
+    assert!(c.nodes[0].1.is_some(), "smooth by default: {c:?}");
+    let at_b = app.view.to_screen(b);
+    assert_eq!(
+        for_tool(&app, false, false, false, Some(at_b)),
+        ToolCursor::PenNib(Some(CurveMark::EditNode))
+    );
+    // Not a double click: the second click comes later.
+    for _ in 0..30 {
+        frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    }
+    click_page(&ctx, &mut app, b);
+    let c = app.curve.clone().expect("still going on");
+    assert_eq!(c.nodes.len(), 1, "no node added: {c:?}");
+    assert_eq!(c.nodes[0].1, None, "a cusp: {c:?}");
+    let pointer = Point::new(180.0, 150.0);
+    click_page(&ctx, &mut app, pointer);
+    app.finish_curve();
+    assert_eq!(shape_count(&app), before, "no new object");
+    let segs: Vec<_> = last_path(&app).segments().collect();
+    assert_eq!(segs.len(), 2, "{segs:?}");
+    // The new segment leaves b straight.
+    match segs[1] {
+        tracedraw_core::geometry::PathSeg::Line(l) => assert!(near(l.p0, b), "{l:?}"),
+        tracedraw_core::geometry::PathSeg::Cubic(k) => {
+            assert!(near(k.p1, b) || near(k.p1, k.p0), "{k:?}")
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+/// #670: the Pen's preview segment to the pointer is a solid line, the
+/// selection blue on top of a white line twice as wide, unbroken from
+/// the last node to the pointer; dashes are for the handles.
+#[test]
+fn the_pen_preview_is_a_blue_line_on_a_white_one() {
+    let (ctx, mut app, _) = setup();
+    app.select(Vec::new());
+    app.set_tool(Tool::Pen);
+    let a = Pos2::new(500.0, 400.0);
+    click_at(&ctx, &mut app, a, Modifiers::NONE);
+    let b = Pos2::new(700.0, 400.0);
+    frame(
+        &ctx,
+        &mut app,
+        vec![Event::PointerMoved(b)],
+        Modifiers::NONE,
+    );
+    let input = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            Pos2::ZERO,
+            egui::vec2(1600.0, 1000.0),
+        )),
+        events: vec![Event::PointerMoved(b)],
+        ..Default::default()
+    };
+    let out = ctx.run_ui(input, |ui| crate::ui::root(&mut app, ui));
+    fn flat(s: &egui::Shape, f: &mut dyn FnMut(&egui::Shape)) {
+        match s {
+            egui::Shape::Vec(v) => v.iter().for_each(|s| flat(s, f)),
+            s => f(s),
+        }
+    }
+    // Segments along y = 400 between the node and the pointer.
+    let (mut blue, mut white) = (0.0f32, 0.0f32);
+    for c in &out.shapes {
+        flat(&c.shape, &mut |s| {
+            if let egui::Shape::LineSegment { points, stroke } = s {
+                let along = points
+                    .iter()
+                    .all(|p| (p.y - 400.0).abs() < 1.0 && p.x > a.x - 1.0);
+                if !along {
+                    return;
+                }
+                let len = (points[1] - points[0]).length();
+                if stroke.color == crate::theme::Tokens::SELECTION {
+                    assert_eq!(stroke.width, crate::canvas::HALO_INNER);
+                    blue += len;
+                } else if stroke.color == egui::Color32::WHITE {
+                    assert_eq!(stroke.width, crate::canvas::HALO_WIDTH);
+                    white += len;
+                }
+            }
+        });
+    }
+    let span = b.x - a.x;
+    assert!(
+        (blue - span).abs() < 2.0,
+        "blue {blue} of {span}: not dashed"
+    );
+    assert!((white - span).abs() < 2.0, "white {white} of {span}");
+    assert_eq!(crate::canvas::HALO_INNER * 2.0, crate::canvas::HALO_WIDTH);
+}
+
+/// Pages added to a drawing (Layout > Insert Page, the + of the page
+/// tabs, the navigator's insert buttons) are named in the interface's
+/// language, as the first page is, and so is their layer (#1127).
+#[test]
+fn added_pages_are_named_in_the_interface_language() {
+    crate::i18n::with_thread_language("de", || {
+        let (_, mut app, _) = setup();
+        app.add_page();
+        app.insert_page(true);
+        let names: Vec<(String, String)> = app
+            .doc()
+            .pages
+            .iter()
+            .map(|p| (p.name.clone(), p.layers[0].name.clone()))
+            .collect();
+        assert_eq!(names.len(), 3);
+        for (name, layer) in &names[1..] {
+            assert!(name.starts_with("Seite "), "{names:?}");
+            assert_eq!(layer, "Ebene 1", "{names:?}");
+        }
+        assert_eq!(names[1].0, "Seite 2", "{names:?}");
+        // Undo takes the page away again.
+        app.undo();
+        assert_eq!(app.doc().pages.len(), 2);
+    });
+}
+
+/// One frame, returning the texts drawn when the readout shows (none
+/// when it does not).
+fn readout_texts(ctx: &egui::Context, app: &mut App, events: Vec<Event>) -> Vec<String> {
+    let input = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            Pos2::ZERO,
+            egui::vec2(1600.0, 1000.0),
+        )),
+        events,
+        ..Default::default()
+    };
+    let mut out = ctx.run_ui(input, |ui| crate::ui::root(app, ui));
+    out.textures_delta.clear();
+    // The readout's texts: its hex value and the lines of values ("C: 0",
+    // one pair a line), which nothing else on the screen shows; and the
+    // name, which the caller looks for next to them.
+    let mut all = Vec::new();
+    for s in &out.shapes {
+        if let egui::Shape::Text(t) = &s.shape {
+            all.push(t.galley.text().to_string());
+        }
+    }
+    let readout = all.iter().any(|t| {
+        t.len() == 7 && t.starts_with('#') && t[1..].chars().all(|c| c.is_ascii_hexdigit())
+    });
+    if readout {
+        all
+    } else {
+        Vec::new()
+    }
+}
+
+/// The Colour Eyedropper shows the colour under the pointer beside it
+/// while it hovers in Select mode: the palette name and the values and
+/// hex; nothing off the objects, nor in Apply mode. A colour picker's
+/// eyedropper shows it too, white over the empty page (#990).
+#[test]
+fn the_colour_eyedropper_reads_out_the_colour_under_the_pointer() {
+    let (ctx, mut app, id) = setup();
+    let (name, c) = app
+        .palette
+        .iter()
+        .find(|(n, c)| !n.is_empty() && matches!(c, tracedraw_core::Color::Cmyk { .. }))
+        .cloned()
+        .expect("a named colour");
+    app.select(vec![id]);
+    app.apply_fill(tracedraw_core::Fill::Solid(c));
+    app.set_tool(Tool::ColorEyedropper);
+    let over = app.view.to_screen(Point::new(35.0, 25.0));
+    readout_texts(&ctx, &mut app, vec![Event::PointerMoved(over)]);
+    let texts = readout_texts(&ctx, &mut app, Vec::new());
+    let hex = c.to_hex().to_uppercase();
+    assert!(texts.contains(&name), "{texts:?}");
+    assert!(texts.contains(&hex), "{texts:?}");
+    assert!(texts.iter().any(|t| t.starts_with("C:")), "{texts:?}");
+    // Off the objects: nothing to read.
+    let off = app.view.to_screen(Point::new(150.0, 200.0));
+    let texts = readout_texts(&ctx, &mut app, vec![Event::PointerMoved(off)]);
+    assert!(texts.is_empty(), "{texts:?}");
+    // A sample taken: Apply mode shows no readout.
+    readout_texts(&ctx, &mut app, vec![Event::PointerMoved(over)]);
+    readout_texts(
+        &ctx,
+        &mut app,
+        vec![button(over, true, PointerButton::Primary, Modifiers::NONE)],
+    );
+    readout_texts(
+        &ctx,
+        &mut app,
+        vec![button(over, false, PointerButton::Primary, Modifiers::NONE)],
+    );
+    assert_eq!(app.eyedropper_color, Some(c));
+    let texts = readout_texts(
+        &ctx,
+        &mut app,
+        vec![Event::PointerMoved(over + egui::vec2(2.0, 0.0))],
+    );
+    assert!(texts.is_empty(), "{texts:?}");
+    // A picker's eyedropper, with the Pick tool.
+    app.eyedropper_reset();
+    app.set_tool(Tool::Pick);
+    crate::ui::color_picker::start_pick(&ctx, egui::Id::new("some picker"));
+    let texts = readout_texts(&ctx, &mut app, vec![Event::PointerMoved(off)]);
+    assert!(texts.contains(&"#FFFFFF".to_string()), "{texts:?}");
+    let texts = readout_texts(&ctx, &mut app, vec![Event::PointerMoved(over)]);
+    assert!(texts.contains(&hex), "{texts:?}");
+    crate::ui::color_picker::finish_pick(&ctx, None);
+    let texts = readout_texts(
+        &ctx,
+        &mut app,
+        vec![Event::PointerMoved(over + egui::vec2(2.0, 0.0))],
+    );
+    assert!(texts.is_empty(), "{texts:?}");
+}
+
+/// Frame times of the eyedropper readout (#990): hovering a heavy page
+/// with the Pick tool and with the Colour Eyedropper, over objects and
+/// over a picture. Run with `cargo test --release -p tracedraw --
+/// --ignored frame_times_of_the_eyedropper_readout --nocapture`.
+#[test]
+#[ignore]
+fn frame_times_of_the_eyedropper_readout() {
+    let (ctx, mut app, _) = setup();
+    let mut s = 11u64;
+    let mut r = || {
+        s = s
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        ((s >> 33) as f64) / (1u64 << 31) as f64
+    };
+    for _ in 0..3000 {
+        let (x, y) = (r() * 200.0, r() * 280.0);
+        let id = app.new_shape(ShapeKind::Rect {
+            rect: Rect::new(x, y, x + 8.0, y + 6.0),
+            radius: 0.0,
+            corners: None,
+        });
+        if let Some(id) = id {
+            app.select(vec![id]);
+            app.apply_fill(tracedraw_core::Fill::Solid(tracedraw_core::Color::rgb8(
+                (r() * 255.0) as u8,
+                90,
+                30,
+            )));
+        }
+    }
+    let img = image::RgbaImage::from_fn(1200, 900, |x, y| {
+        image::Rgba([(x % 256) as u8, (y % 256) as u8, 128, 255])
+    });
+    // 50.8 x 38.1 mm in the middle of the page, clear of (40, 60).
+    app.place_image_at(img, None, Some((600.0, 600.0)))
+        .expect("picture");
+    app.select(Vec::new());
+    frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    let pic = app
+        .doc()
+        .pages
+        .first()
+        .and_then(|p| p.layers.first())
+        .and_then(|l| l.shapes.last())
+        .map(|s| s.bounds())
+        .expect("picture bounds");
+    let n = 40;
+    let time = |label: &str, app: &mut App, from: Pos2| {
+        frame(&ctx, app, vec![Event::PointerMoved(from)], Modifiers::NONE);
+        let t = std::time::Instant::now();
+        for i in 0..n {
+            let p = from + egui::vec2(i as f32 * 2.0, (i % 5) as f32);
+            frame(&ctx, app, vec![Event::PointerMoved(p)], Modifiers::NONE);
+        }
+        let per = t.elapsed() / n;
+        eprintln!("{label}: {per:?} per frame");
+        per
+    };
+    let objects = app.view.to_screen(Point::new(40.0, 60.0));
+    let picture = app.view.to_screen(Point::new(pic.x0 + 5.0, pic.center().y));
+    app.set_tool(Tool::Pick);
+    let pick = time("pick tool, hover over objects", &mut app, objects);
+    let pick_pic = time("pick tool, hover over the picture", &mut app, picture);
+    app.set_tool(Tool::ColorEyedropper);
+    let eye = time("colour eyedropper, hover over objects", &mut app, objects);
+    let decoded = app.eyedropper_hover.decoded;
+    let eye_pic = time(
+        "colour eyedropper, hover over the picture",
+        &mut app,
+        picture,
+    );
+    eprintln!(
+        "readouts worked out: {}, pictures decoded while hovering the picture: {}",
+        app.eyedropper_hover.computed,
+        app.eyedropper_hover.decoded - decoded
+    );
+    // The picture was read (its blue channel is 128) and decoded once.
+    let last = app
+        .eyedropper_hover
+        .reading
+        .as_ref()
+        .map(|r| r.color.to_rgb8());
+    assert_eq!(last.map(|c| c[2]), Some(128), "{last:?}");
+    assert_eq!(app.eyedropper_hover.decoded - decoded, 1);
+    let _ = (pick, pick_pic, eye, eye_pic);
+}
+
+/// Segment Delete: with Alt held a drag is a freehand stroke and takes
+/// only the stretches it crosses; the bar's Freehand makes that the plain
+/// drag, and Alt then drags the box, which takes every stretch it touches
+/// (#1150).
+#[test]
+fn segment_delete_drags_a_freehand_stroke_with_alt_or_the_bar() {
+    use tracedraw_core::geometry::{ParamCurve as _, Shape as _};
+    let lines = |app: &mut App| -> ShapeId {
+        let mut ids = Vec::new();
+        for (a, b) in [
+            ((0.0, 0.0), (30.0, 0.0)),
+            ((10.0, -5.0), (10.0, 5.0)),
+            ((20.0, -5.0), (20.0, 5.0)),
+        ] {
+            let mut p = tracedraw_core::BezPath::new();
+            p.move_to(a);
+            p.line_to(b);
+            ids.push(
+                app.new_shape(ShapeKind::Path {
+                    path: p,
+                    closed: false,
+                })
+                .expect("line"),
+            );
+        }
+        ids[0]
+    };
+    let has_middle = |app: &App, h: ShapeId| {
+        app.doc().find_shape(h).is_some_and(|s| {
+            s.page_path().segments().any(|seg| {
+                let (x0, x1) = (
+                    seg.start().x.min(seg.end().x),
+                    seg.start().x.max(seg.end().x),
+                );
+                x0 < 15.0 && x1 > 15.0
+            })
+        })
+    };
+    for (bar_freehand, mods, freehand) in [
+        (false, Modifiers::ALT, true),
+        (true, Modifiers::NONE, true),
+        (true, Modifiers::ALT, false),
+        (false, Modifiers::NONE, false),
+    ] {
+        let (ctx, mut app, rect) = setup();
+        app.run(tracedraw_core::Command::DeleteShapes { shapes: vec![rect] });
+        let h = lines(&mut app);
+        app.set_tool(Tool::SegmentDelete);
+        app.segment_freehand = bar_freehand;
+        frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+        // From above left of the first upright, down across h left of it
+        // and across the upright's lower arm.
+        let from = app.view.to_screen(Point::new(4.0, 4.0));
+        let to = app.view.to_screen(Point::new(14.0, -4.0));
+        drag(&ctx, &mut app, from, to, mods, Vec::new());
+        let b = app
+            .doc()
+            .find_shape(h)
+            .map(|s| s.page_path().bounding_box())
+            .expect("h keeps its right end");
+        assert!(
+            (b.x0 - 10.0).abs() < 1e-6 || (b.x0 - 20.0).abs() < 1e-6,
+            "{b:?}"
+        );
+        // The stroke leaves the stretch between the uprights; the box
+        // reaches into it and takes it.
+        assert_eq!(has_middle(&app, h), freehand, "{bar_freehand} {mods:?}");
+    }
+}
+
+/// The page bar has a Multipage View button after the page controls,
+/// before the page tabs: a click turns the view on and lights the
+/// button, another turns it off; it follows the View menu too (#1019).
+#[test]
+fn the_page_bar_turns_the_multipage_view_on_and_off() {
+    use crate::ui::window_bars::MULTIPAGE_BUTTON;
+    let (ctx, mut app, _) = setup();
+    app.add_page();
+    frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    let button = || {
+        ctx.read_response(egui::Id::new(MULTIPAGE_BUTTON))
+            .map(|r| r.rect)
+            .expect("the button")
+    };
+    let r = button();
+    // In the page bar at the bottom, left of the page tabs.
+    assert!(r.min.y > 850.0 && r.max.x < 400.0, "{r:?}");
+    assert!(!app.multipage);
+    let lit = |ctx: &egui::Context, app: &mut App| -> bool {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                Pos2::ZERO,
+                egui::vec2(1600.0, 1000.0),
+            )),
+            ..Default::default()
+        };
+        let out = ctx.run_ui(input, |ui| crate::ui::root(app, ui));
+        let on = crate::theme::Tokens::tool_active();
+        out.shapes.iter().any(|s| match &s.shape {
+            egui::Shape::Rect(b) => b.fill == on && r.contains(b.rect.center()),
+            _ => false,
+        })
+    };
+    assert!(!lit(&ctx, &mut app));
+    click_at(&ctx, &mut app, r.center(), Modifiers::NONE);
+    frame(
+        &ctx,
+        &mut app,
+        vec![Event::PointerMoved(Pos2::new(800.0, 500.0))],
+        Modifiers::NONE,
+    );
+    assert!(app.multipage);
+    assert!(lit(&ctx, &mut app), "lit while on");
+    click_at(&ctx, &mut app, button().center(), Modifiers::NONE);
+    frame(
+        &ctx,
+        &mut app,
+        vec![Event::PointerMoved(Pos2::new(800.0, 500.0))],
+        Modifiers::NONE,
+    );
+    assert!(!app.multipage);
+    assert!(!lit(&ctx, &mut app));
+    // Turned on elsewhere (the View menu), the button shows it.
+    app.set_multipage(true);
+    frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    assert!(lit(&ctx, &mut app));
+}
+
+/// On the Welcome Screen a recent document comes off the list by the x
+/// that shows while the pointer is on its row, or by Remove from List in
+/// its right-click menu, missing files too; the others stay, and the
+/// document is not opened (#1152).
+#[test]
+fn a_recent_document_comes_off_the_list_by_itself() {
+    use crate::ui::welcome::{recent_row_id, remove_recent_id};
+    let (ctx, mut app, _) = setup();
+    let dir = std::env::temp_dir().join(format!("td-recent-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("dir");
+    let paths: Vec<std::path::PathBuf> = ["a", "b", "c"]
+        .iter()
+        .map(|n| dir.join(format!("{n}.tdraw")))
+        .collect();
+    for p in &paths[..2] {
+        tracedraw_io::save_native(app.doc(), p).expect("save");
+    }
+    // c is gone from the disk: it stays on the list, greyed out.
+    app.settings.recent_files = paths.clone();
+    app.show_welcome = true;
+    frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    let row = |ctx: &egui::Context, p: &std::path::Path| {
+        ctx.read_response(recent_row_id(p))
+            .map(|r| r.rect)
+            .expect("row")
+    };
+    let b = row(&ctx, &paths[1]);
+    assert!(
+        ctx.read_response(remove_recent_id(&paths[1])).is_none(),
+        "no x yet"
+    );
+    // On the row the x shows at its right; a click on it takes b off.
+    frame(
+        &ctx,
+        &mut app,
+        vec![Event::PointerMoved(b.center())],
+        Modifiers::NONE,
+    );
+    frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    let x = ctx
+        .read_response(remove_recent_id(&paths[1]))
+        .expect("the x")
+        .rect;
+    assert!(
+        b.contains(x.center()) && x.center().x > b.center().x,
+        "{x:?} {b:?}"
+    );
+    assert!(ctx.read_response(remove_recent_id(&paths[0])).is_none());
+    frame(
+        &ctx,
+        &mut app,
+        vec![Event::PointerMoved(x.center())],
+        Modifiers::NONE,
+    );
+    click_at(&ctx, &mut app, x.center(), Modifiers::NONE);
+    frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    assert_eq!(
+        app.settings.recent_files,
+        vec![paths[0].clone(), paths[2].clone()]
+    );
+    assert!(app.show_welcome && app.file.is_none(), "nothing opened");
+    // Right-click on the missing c: Remove from list.
+    let c = row(&ctx, &paths[2]);
+    frame(
+        &ctx,
+        &mut app,
+        vec![Event::PointerMoved(c.center())],
+        Modifiers::NONE,
+    );
+    frame(
+        &ctx,
+        &mut app,
+        vec![
+            button(c.center(), true, PointerButton::Secondary, Modifiers::NONE),
+            button(c.center(), false, PointerButton::Secondary, Modifiers::NONE),
+        ],
+        Modifiers::NONE,
+    );
+    let input = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            Pos2::ZERO,
+            egui::vec2(1600.0, 1000.0),
+        )),
+        ..Default::default()
+    };
+    let out = ctx.run_ui(input, |ui| crate::ui::root(&mut app, ui));
+    let label = crate::i18n::tr("welcome.remove_recent");
+    let at = out
+        .shapes
+        .iter()
+        .find_map(|s| match &s.shape {
+            egui::Shape::Text(t) if t.galley.text() == label => {
+                Some(t.pos + t.galley.rect.center().to_vec2())
+            }
+            _ => None,
+        })
+        .expect("the menu's Remove from list");
+    frame(
+        &ctx,
+        &mut app,
+        vec![Event::PointerMoved(at)],
+        Modifiers::NONE,
+    );
+    click_at(&ctx, &mut app, at, Modifiers::NONE);
+    frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    assert_eq!(app.settings.recent_files, vec![paths[0].clone()]);
+    assert!(app.show_welcome && app.file.is_none());
+    // A click on the row itself still opens it.
+    let a = row(&ctx, &paths[0]);
+    frame(
+        &ctx,
+        &mut app,
+        vec![Event::PointerMoved(a.center())],
+        Modifiers::NONE,
+    );
+    click_at(&ctx, &mut app, a.center(), Modifiers::NONE);
+    frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    assert_eq!(app.file.as_deref(), Some(paths[0].as_path()));
+    let _ = std::fs::remove_dir_all(&dir);
 }

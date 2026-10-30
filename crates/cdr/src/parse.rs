@@ -368,6 +368,12 @@ struct Ctx<'a> {
     /// Pictures of objects embedded from other programs, by storage name
     /// (`ole2` chunks).
     embedded: HashMap<String, crate::ole::Picture>,
+    /// The metafile pictures embedded objects were last drawn as, by
+    /// storage name (`ole2` chunks), for those without a picture above.
+    embedded_metafiles: HashMap<String, Vec<u8>>,
+    /// The object just read drew a metafile: its objects need ids from
+    /// the document's source.
+    pending_renumber: bool,
     /// Two-colour pattern tiles (`bmpf`), 1 bit per pixel: true = front.
     pattern_tiles: HashMap<u32, PatternBits>,
     /// Vector pattern drawings (`vpat`): an id, then a CMX file.
@@ -423,6 +429,9 @@ struct Ctx<'a> {
     cmyk_profile: Option<tracedraw_core::icc::Profile>,
     /// CMYK to RGB through that profile, built for the first CMYK bitmap.
     cmyk_lut: Option<tracedraw_core::icc::CmykLut>,
+    /// The shape each static id (`usdn`) was read as, gathered only when
+    /// the package names blends by them (#986).
+    static_ids: Option<HashMap<u32, tracedraw_core::ShapeId>>,
     report: ParseReport,
 }
 
@@ -455,6 +464,8 @@ impl<'a> Ctx<'a> {
             outlines: HashMap::new(),
             bitmaps: HashMap::new(),
             embedded: HashMap::new(),
+            embedded_metafiles: HashMap::new(),
+            pending_renumber: false,
             pattern_tiles: HashMap::new(),
             vector_patterns: HashMap::new(),
             fonts: HashMap::new(),
@@ -480,6 +491,7 @@ impl<'a> Ctx<'a> {
             pending_node_types: Default::default(),
             cmyk_profile: None,
             cmyk_lut: None,
+            static_ids: None,
             report: ParseReport::default(),
         }
     }
@@ -498,7 +510,22 @@ pub fn parse_document_with(
     version: Version,
     cmyk_profile: Option<&[u8]>,
 ) -> (Document, ParseReport) {
+    parse_document_kept(tree, main, version, cmyk_profile, &[])
+}
+
+/// [`parse_document_with`] that turns the groups `kept` names back into
+/// live blends (see [`crate::kept_blends`]).
+pub(crate) fn parse_document_kept(
+    tree: &Tree,
+    main: &[u8],
+    version: Version,
+    cmyk_profile: Option<&[u8]>,
+    kept: &[crate::kept_blends::KeptBlend],
+) -> (Document, ParseReport) {
     let mut ctx = Ctx::new(main, tree, version.0);
+    if !kept.is_empty() {
+        ctx.static_ids = Some(HashMap::new());
+    }
     ctx.report.version = Some(version);
     ctx.cmyk_profile = cmyk_profile
         .and_then(|b| tracedraw_core::icc::Profile::parse(b).ok())
@@ -557,6 +584,8 @@ pub fn parse_document_with(
         } else if c.is(b"ole2") {
             let pictures = crate::ole::embedded_pictures(ctx.data(c));
             ctx.embedded.extend(pictures);
+            let metafiles = crate::ole::embedded_metafiles(ctx.data(c));
+            ctx.embedded_metafiles.extend(metafiles);
         }
     });
     ctx.read_bitmaps(&bitmaps);
@@ -706,6 +735,16 @@ pub fn parse_document_with(
         });
     }
 
+    if let Some(ids) = ctx.static_ids.take() {
+        let n = crate::kept_blends::restore(&mut doc, kept, &ids);
+        if n < kept.len() {
+            log::warn!(
+                "{} of the file's {} blends open as drawn: their groups changed",
+                kept.len() - n,
+                kept.len()
+            );
+        }
+    }
     if !ctx.library_inks.is_empty() {
         let n = ctx.library_inks.len();
         for (palette, number) in &ctx.library_inks {
@@ -1659,6 +1698,14 @@ impl<'a> Ctx<'a> {
             self.report.warn(w);
         }
         for (id, rec) in recs {
+            log::debug!(
+                "style {id}: parent {} font {:?} size {:?} align {:?} fill {:?}",
+                rec.parent,
+                rec.style.font_id,
+                rec.style.size_pt,
+                rec.style.align,
+                rec.style.fill_id
+            );
             self.styles.insert(id, rec);
         }
     }
@@ -1894,23 +1941,37 @@ impl<'a> Ctx<'a> {
                     text.push('\n');
                 }
                 chars += text.chars().count();
-                let span = self.make_span(text, &style, object_fill);
-                match spans.last_mut() {
-                    Some(last)
-                        if last.font_family == span.font_family
-                            && last.size_pt == span.size_pt
-                            && last.bold == span.bold
-                            && last.italic == span.italic
-                            && last.underline == span.underline
-                            && last.strikethrough == span.strikethrough
-                            && last.fill == span.fill
-                            && last.angle_deg == span.angle_deg
-                            && last.offset_x_pct == span.offset_x_pct
-                            && last.baseline_shift_pt == span.baseline_shift_pt =>
-                    {
-                        last.text.push_str(&span.text)
+                // East Asian letters take the style's East Asian font
+                // when it is another one (a version 14 file sets its
+                // Chinese titles in a 54 pt script font with Arial at
+                // 12 pt in the Latin slot, #955).
+                let pieces = match &style.asian {
+                    Some(a) if a.differs_from(&style) => text::split_scripts(&text),
+                    _ => vec![(text, false)],
+                };
+                for (piece, asian) in pieces {
+                    let span = if asian {
+                        self.make_span(piece, &style.for_east_asian(), object_fill)
+                    } else {
+                        self.make_span(piece, &style, object_fill)
+                    };
+                    match spans.last_mut() {
+                        Some(last)
+                            if last.font_family == span.font_family
+                                && last.size_pt == span.size_pt
+                                && last.bold == span.bold
+                                && last.italic == span.italic
+                                && last.underline == span.underline
+                                && last.strikethrough == span.strikethrough
+                                && last.fill == span.fill
+                                && last.angle_deg == span.angle_deg
+                                && last.offset_x_pct == span.offset_x_pct
+                                && last.baseline_shift_pt == span.baseline_shift_pt =>
+                        {
+                            last.text.push_str(&span.text)
+                        }
+                        _ => spans.push(span),
                     }
-                    _ => spans.push(span),
                 }
             }
         }
@@ -2245,18 +2306,38 @@ impl<'a> Ctx<'a> {
                 .warn("an object embedded from another program is not shown");
             return None;
         };
-        let Some((w, h, png)) = self.embedded.get(name).cloned() else {
-            self.report.warn(format!(
-                "embedded object \"{name}\" has no picture we can show"
-            ));
-            return None;
+        let rect = || -> Option<Rect> {
+            let mut r = self.reader_at(d, coords?.off + 8);
+            let (x0, y0, x1, y1) = (r.coord()?, r.coord()?, r.coord()?, r.coord()?);
+            let rect = Rect::new(x0.min(x1), y0.min(y1), x0.max(x1), y0.max(y1));
+            (rect.width() > 0.0 && rect.height() > 0.0).then_some(rect)
         };
-        let mut r = self.reader_at(d, coords?.off + 8);
-        let (x0, y0, x1, y1) = (r.coord()?, r.coord()?, r.coord()?, r.coord()?);
-        let rect = Rect::new(x0.min(x1), y0.min(y1), x0.max(x1), y0.max(y1));
-        if !(rect.width() > 0.0 && rect.height() > 0.0) {
-            return None;
-        }
+        let Some((w, h, png)) = self.embedded.get(name).cloned() else {
+            // The picture the object's program last drew, a metafile
+            // (barcodes, #1131), stretched over the object's rectangle.
+            let drawn = self.embedded_metafiles.get(name).and_then(|m| {
+                let mut ids = tracedraw_core::id::IdSource::default();
+                tracedraw_core::document::metafile::play(m, &mut ids)
+            });
+            let Some((mut shapes, size)) = drawn else {
+                self.report.warn(format!(
+                    "embedded object \"{name}\" has no picture we can show"
+                ));
+                return None;
+            };
+            let rect = rect()?;
+            if !(size.width > 0.0 && size.height > 0.0) {
+                return None;
+            }
+            let fit = Affine::translate((rect.x0, rect.y0))
+                * Affine::scale_non_uniform(rect.width() / size.width, rect.height() / size.height);
+            for s in &mut shapes {
+                s.absorb(fit);
+            }
+            self.pending_renumber = true;
+            return Some(ShapeKind::Group { children: shapes });
+        };
+        let rect = rect()?;
         Some(ShapeKind::Bitmap {
             rect,
             width_px: w,
@@ -2809,10 +2890,13 @@ impl<'a> Ctx<'a> {
     }
 
     /// The step count of a blend's linked group (`LIST lnkg` whose own
-    /// `lgob` holds a `loda` of object type 7): the first u32 of its
-    /// argument of type 3000. `None` for other linked groups (a contour's
-    /// is of type 15). Read from two files saved by versions 9 and 13 with
-    /// the default 20 steps (see CLEANROOM.md).
+    /// `lgob` holds a `loda` of object type 7): the first u16 of its
+    /// argument of type 3000 (the u16 after it is 0 in versions 9 and 13
+    /// and holds another value in version 25). `None` for other linked
+    /// groups (a contour's is of type 15, and a type 7 record with a style
+    /// string is an object of its own). Read from two files saved by
+    /// versions 9 and 13 with the default 20 steps and the version 25 file
+    /// of #980 (see CLEANROOM.md).
     ///
     /// A value outside 1..=999 is no step count the program can save: the
     /// field holds something else in this file (another version's layout),
@@ -2827,8 +2911,17 @@ impl<'a> Ctx<'a> {
         if l.kind != 7 {
             return None;
         }
+        // A record with a style string of its own, as the drawing's
+        // objects have, is an object the file counts, not the record of a
+        // blend between its neighbours: drawn as one, it floods the
+        // picture (a version 25 file, #980).
+        if l.args.iter().any(|a| a.ty == ARG_STYLE_STRING) {
+            return None;
+        }
         let arg = l.args.iter().find(|a| a.ty == 3000)?;
-        let raw = self.reader_at(d, arg.off).uint();
+        // The count is the low 16 bits: versions 9 and 13 leave the high
+        // ones 0, version 25 keeps another value there (#980).
+        let raw = self.reader_at(d, arg.off).u16().map(u32::from);
         Some(match raw {
             Some(n @ 1..=tracedraw_core::live::MAX_BLEND_STEPS) => n,
             other => {
@@ -2844,6 +2937,23 @@ impl<'a> Ctx<'a> {
                 BLEND_DEFAULT_STEPS
             }
         })
+    }
+
+    /// Remember that the object list `c` was read as `shape`, by its
+    /// static id (`usdn`), when the package names blends (#986).
+    fn note_static_id(&mut self, c: &Chunk, shape: tracedraw_core::ShapeId) {
+        if self.static_ids.is_none() {
+            return;
+        }
+        let Some(k) = c.children.iter().find(|k| k.is(b"usdn")) else {
+            return;
+        };
+        let Some(u) = self.reader_at(self.data(k), 0).uint() else {
+            return;
+        };
+        if let Some(m) = self.static_ids.as_mut() {
+            m.insert(u, shape);
+        }
     }
 
     /// `steps` for the next blend of the file, within what the file's
@@ -3007,7 +3117,10 @@ impl<'a> Ctx<'a> {
                 self.build_text(kind_code, d, coords, oc, style_id, &fill, frame)
             }
             OBJ_CONNECTOR => self.read_connector(oc),
-            OBJ_EMBEDDED => self.read_embedded(d, coords, name.as_deref()),
+            OBJ_EMBEDDED => {
+                let storage = name.clone().or_else(|| ole_link_storage(self, oc));
+                self.read_embedded(d, coords, storage.as_deref())
+            }
             // A mesh fill object's outline is a curve.
             OBJ_MESH => coords.and_then(|a| self.read_geometry(OBJ_CURVE, d, a, polygon)),
             _ => coords.and_then(|a| self.read_geometry(kind_code, d, a, polygon)),
@@ -3103,6 +3216,11 @@ impl<'a> Ctx<'a> {
         shape.visible = !hidden;
         shape.fill = fill;
         shape.stroke = stroke;
+        // A drawn embedded object's objects carry their own colours.
+        if matches!(shape.kind, ShapeKind::Group { .. }) {
+            shape.fill = Fill::None;
+            shape.stroke = None;
+        }
         // Rounded corners keep their size when the rectangle is resized,
         // as new rectangles do, rather than stretch with it (#619); after
         // the outline, which decides whether the stretch may move.
@@ -3232,12 +3350,16 @@ impl<'a> Ctx<'a> {
                 let id = ids.shape();
                 match self.read_object(c, id, page_size) {
                     Some(mut shape) => {
+                        if std::mem::take(&mut self.pending_renumber) {
+                            renumber(&mut shape, ids);
+                        }
                         if let Some(crop) = self.pending_crop.take() {
                             shape = crop_to_clip_frame(shape, crop, ids);
                         }
                         if let Some(clip) = self.pending_clip.take() {
                             shape = self.with_clip_contents(shape, clip, ids, page_size, depth);
                         }
+                        self.note_static_id(c, shape.id);
                         out.push(shape);
                     }
                     None if std::mem::take(&mut self.last_was_guide) => {}
@@ -3270,6 +3392,7 @@ impl<'a> Ctx<'a> {
                         let mut g = Shape::new(ids.shape(), ShapeKind::Group { children });
                         g.fill = Fill::None;
                         g.stroke = None;
+                        self.note_static_id(c, g.id);
                         out.push(g);
                     }
                 }
@@ -4071,6 +4194,38 @@ fn cmyk_pixel(ink: [u8; 4], lut: Option<&tracedraw_core::icc::CmykLut>) -> [u8; 
 
 /// A bitmap with a crop outline becomes a clip frame whose frame is that
 /// outline.
+/// The storage of an embedded object named by its `olel` chunk (version
+/// 26: no name argument): byte 4 holds n of "Embedding n". The u32 before
+/// it (256) and the bytes after it are not known.
+fn ole_link_storage(ctx: &Ctx, oc: &Chunk) -> Option<String> {
+    let mut found = None;
+    oc.walk(&mut |c, _| {
+        if c.is(b"olel") && found.is_none() {
+            found = Some(c);
+        }
+    });
+    let mut r = ctx.reader(ctx.data(found?));
+    r.skip(4);
+    let n = r.u32()?;
+    Some(format!("Embedding {n}"))
+}
+
+/// New ids for the objects inside a shape, from the document's source.
+fn renumber(shape: &mut Shape, ids: &mut tracedraw_core::id::IdSource) {
+    let mut each = |c: &mut Shape| {
+        c.id = ids.shape();
+        renumber(c, ids);
+    };
+    match &mut shape.kind {
+        ShapeKind::Group { children } => children.iter_mut().for_each(&mut each),
+        ShapeKind::ClipFrame { frame, contents } => {
+            each(frame);
+            contents.iter_mut().for_each(each);
+        }
+        _ => {}
+    }
+}
+
 fn crop_to_clip_frame(
     mut shape: Shape,
     crop: BezPath,
@@ -7184,6 +7339,16 @@ mod tests {
     /// object type 7 with the given first u32 of its 3000 argument each:
     /// the step count of each live blend read, and the report.
     fn read_blends(v: u16, counts: &[u32]) -> (Vec<u32>, ParseReport) {
+        read_blends_with(v, counts, &[])
+    }
+
+    /// [`read_blends`] with `extra` arguments added to every blend
+    /// record's `loda`.
+    fn read_blends_with(
+        v: u16,
+        counts: &[u32],
+        extra: &[(u32, Vec<u8>)],
+    ) -> (Vec<u32>, ParseReport) {
         let identity = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
         let ellipse = |x: i32| {
             let mut c = i32s(&[x, -100_000, x + 200_000, 100_000]);
@@ -7200,13 +7365,9 @@ mod tests {
         let group = |steps: u32| {
             let mut a = u32s(&[steps, 254_000]);
             a.extend_from_slice(&[0; 80]);
-            list(
-                b"lnkg",
-                &list(
-                    b"lgob",
-                    &chunk(b"loda", &loda(7, &[(12020, u32s(&[2, 0, 0])), (3000, a)])),
-                ),
-            )
+            let mut args = vec![(12020, u32s(&[2, 0, 0])), (3000, a)];
+            args.extend_from_slice(extra);
+            list(b"lnkg", &list(b"lgob", &chunk(b"loda", &loda(7, &args))))
         };
         let mut objects = Vec::new();
         for &n in counts {
@@ -7235,18 +7396,18 @@ mod tests {
         (steps, rep)
     }
 
-    /// A step count field holding no count a blend can have (0, or the
-    /// 254000 that follows it in the sample files, as another layout
-    /// would put there) gives the default 20 steps and a warning naming
-    /// the value; it was kept to 999, so such files drew every blend with
-    /// 999 steps (#980). Counts of 1 to 999 are kept as read.
+    /// A step count field holding no count a blend can have (0, or a
+    /// value past 999, as another layout would put there) gives the
+    /// default 20 steps and a warning naming the value; it was kept to
+    /// 999, so such files drew every blend with 999 steps (#980). Counts
+    /// of 1 to 999 are kept as read.
     #[test]
     fn a_blend_step_count_out_of_range_gives_the_default() {
         for v in [9u16, 13, 15] {
-            let (steps, rep) = read_blends(v, &[254_000, 0, u32::MAX, 1, 999, 35]);
+            let (steps, rep) = read_blends(v, &[60_000, 0, 65_535, 1, 999, 35]);
             assert_eq!(steps, [20, 20, 20, 1, 999, 35], "version {v}");
             assert!(
-                rep.warnings.iter().any(|w| w.contains("254000")),
+                rep.warnings.iter().any(|w| w.contains("60000")),
                 "{:?}",
                 rep.warnings
             );
@@ -7257,6 +7418,32 @@ mod tests {
                 rep.warnings
             );
         }
+    }
+
+    /// Version 25 keeps the step count in the first u16 of the 3000
+    /// argument and another value in the u16 after it (the file of #980:
+    /// 0x3a05_0004 for 4 steps, 0x28ae_0096 for 150). Read as one u32 the
+    /// count fell out of range and every blend got 20 steps.
+    #[test]
+    fn a_version_25_blend_keeps_its_count_in_the_low_half() {
+        let (steps, rep) = read_blends(25, &[0x3a05_0004, 0x28ae_0096, 0x40fa_000f, 20]);
+        assert_eq!(steps, [4, 150, 15, 20]);
+        assert!(rep.warnings.is_empty(), "{:?}", rep.warnings);
+    }
+
+    /// A type 7 record with a style string of its own, as the drawing's
+    /// objects carry (the version 25 file of #980 counts it among its
+    /// objects), is no blend between its neighbours: drawn as one with its
+    /// 150 steps, it flooded the picture the file's program shows as a
+    /// grid. Its neighbours stay plain objects.
+    #[test]
+    fn a_counted_linked_group_record_makes_no_blend() {
+        let style = (ARG_STYLE_STRING, [u32s(&[1, 2]), b"{}".to_vec()].concat());
+        let (steps, rep) = read_blends_with(25, &[150], &[style]);
+        assert!(steps.is_empty(), "{steps:?}");
+        assert!(rep.warnings.is_empty(), "{:?}", rep.warnings);
+        let (steps, _) = read_blends_with(25, &[150], &[]);
+        assert_eq!(steps, [150]);
     }
 
     /// The blends of one file take at most `FILE_BLEND_STEPS` steps
@@ -8314,6 +8501,121 @@ mod tests {
                 assert!((para.left_indent - 25.4).abs() < 1e-9, "{para:?}");
                 assert!((para.first_line_indent - 6.35).abs() < 1e-9);
                 assert!((para.right_indent - 12.7).abs() < 1e-9);
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// A version 14 style table whose font entry sets Arial at 12 pt in
+    /// the Latin slot and another font at 54 pt in the East Asian slot,
+    /// as the file of #955 does for its Chinese titles: the Chinese
+    /// letters take the East Asian font and size, the Latin ones Arial.
+    #[test]
+    fn style_table_east_asian_slot_sets_the_cjk_letters() {
+        let v = 14u16;
+        let mut st = u32s(&[1]); // one record
+        st.extend_from_slice(&u32s(&[0])); // fills
+        st.extend_from_slice(&u32s(&[0])); // outlines
+        st.extend_from_slice(&u32s(&[1, 100])); // one font entry, id 100
+        st.extend_from_slice(&[0; 20]);
+        st.extend_from_slice(&u16s(&[3, 0])); // Latin: font 3
+        st.extend_from_slice(&u16s(&[4, 0x86])); // East Asian: font 4
+        st.extend_from_slice(&u16s(&[3, 0xb2])); // other: font 3
+        st.extend_from_slice(&i32s(&[42_333, 190_500, 42_333])); // 12, 54, 12 pt
+        st.extend_from_slice(&u32s(&[0x40, 0x1000, 0x40])); // regular, bold, regular
+        st.extend_from_slice(&u32s(&[1, 200, 0, 2])); // one align entry: centre
+        st.extend_from_slice(&u32s(&[0])); // intervals
+        for _ in 0..6 {
+            st.extend_from_slice(&u32s(&[0])); // set5 .. drop caps
+        }
+        st.extend_from_slice(&u32s(&[0])); // set11
+        st.extend_from_slice(&u32s(&[2, 77, 0, 0, 0, 0])); // num 2, style 77, no name
+        st.extend_from_slice(&u32s(&[0, 0])); // fill, outline refs
+        st.extend_from_slice(&u32s(&[100, 200, 0, 0, 0])); // font, align, interval, set5, set11
+        let styles = [Style7 {
+            chars: 8,
+            font: None,
+            flags: None,
+            size_units: None,
+            fill: None,
+        }];
+        let tables = [
+            chunk(b"font", &font_chunk(3, "Arial")),
+            chunk(b"font", &font_chunk(4, "Script Han")),
+            list(b"stlt", &st),
+        ]
+        .concat();
+        let (doc, rep) = text_doc(
+            v,
+            b"CDRE",
+            tables,
+            OBJ_ARTISTIC_TEXT,
+            &[(ARG_COORDS, i32s(&[0, 0])), (ARG_STYLE, u32s(&[77]))],
+            txsm7(v, false, &styles, "Ab 荣誉证书"),
+        );
+        assert_eq!(rep.shapes, 1, "{:?}", rep.warnings);
+        match &first_shape(&doc).kind {
+            ShapeKind::Text { spans, align, .. } => {
+                assert_eq!(*align, TextAlign::Center);
+                assert_eq!(spans.len(), 2, "{spans:?}");
+                assert_eq!(spans[0].text, "Ab ");
+                assert_eq!(spans[0].font_family, "Arial");
+                assert!((spans[0].size_pt - 12.0).abs() < 1e-3);
+                assert!(!spans[0].bold);
+                assert_eq!(spans[1].text, "荣誉证书");
+                assert_eq!(spans[1].font_family, "Script Han");
+                assert!(
+                    (spans[1].size_pt - 54.0).abs() < 1e-3,
+                    "{}",
+                    spans[1].size_pt
+                );
+                assert!(spans[1].bold);
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// The same entry with the three slots alike (as most files have
+    /// them) keeps the text in one run.
+    #[test]
+    fn style_table_alike_slots_keep_one_run() {
+        let v = 14u16;
+        let mut st = u32s(&[1]);
+        st.extend_from_slice(&u32s(&[0, 0]));
+        st.extend_from_slice(&u32s(&[1, 100]));
+        st.extend_from_slice(&[0; 20]);
+        for _ in 0..3 {
+            st.extend_from_slice(&u16s(&[3, 0]));
+        }
+        st.extend_from_slice(&i32s(&[42_333; 3]));
+        st.extend_from_slice(&u32s(&[0x40; 3]));
+        st.extend_from_slice(&u32s(&[0, 0]));
+        for _ in 0..8 {
+            st.extend_from_slice(&u32s(&[0]));
+        }
+        st.extend_from_slice(&u32s(&[2, 77, 0, 0, 0, 0, 0, 0, 100, 0, 0, 0, 0]));
+        let styles = [Style7 {
+            chars: 8,
+            font: None,
+            flags: None,
+            size_units: None,
+            fill: None,
+        }];
+        let tables = [chunk(b"font", &font_chunk(3, "Arial")), list(b"stlt", &st)].concat();
+        let (doc, rep) = text_doc(
+            v,
+            b"CDRE",
+            tables,
+            OBJ_ARTISTIC_TEXT,
+            &[(ARG_COORDS, i32s(&[0, 0])), (ARG_STYLE, u32s(&[77]))],
+            txsm7(v, false, &styles, "Ab 荣誉证书"),
+        );
+        assert_eq!(rep.shapes, 1, "{:?}", rep.warnings);
+        match &first_shape(&doc).kind {
+            ShapeKind::Text { spans, .. } => {
+                assert_eq!(spans.len(), 1, "{spans:?}");
+                assert_eq!(spans[0].text, "Ab 荣誉证书");
+                assert_eq!(spans[0].font_family, "Arial");
             }
             other => panic!("{other:?}"),
         }
@@ -9519,5 +9821,60 @@ mod tests {
         let (_, rep) = parse(&riff(b"CDRC", &body), 12);
         assert!(rep.warnings.iter().any(|w| w.contains("not shown")));
         assert!(!rep.warnings.iter().any(|w| w.contains("0x0a")));
+    }
+
+    #[test]
+    fn embedded_metafile_pictures_are_drawn_over_their_objects_rectangle() {
+        // A player drawing every metafile as a 10 by 5 frame filled by
+        // one rectangle (the import crate's player is registered by the
+        // app).
+        tracedraw_core::document::metafile::set(|_, ids| {
+            let path = Rect::new(0.0, 0.0, 10.0, 5.0).to_path(0.1);
+            let mut bar = Shape::new(ids.shape(), ShapeKind::Path { path, closed: true });
+            bar.fill = Fill::Solid(tracedraw_core::Color::BLACK);
+            Some((vec![bar], Size::new(10.0, 5.0)))
+        });
+        let mut stream = crate::ole::tests::presentation(&[1, 0, 9, 0, 0, 3]);
+        stream.resize(4096, 0);
+        let ole = crate::ole::tests::compound_named("\u{2}OlePres000", &stream);
+        // A version 26 barcode (#1131): no name argument; its `olel`
+        // names storage 3. 20 by 10 mm around the page centre.
+        let mut coords = i32s(&[200_000, 100_000]);
+        coords.extend_from_slice(&i32s(&[-100_000, 50_000, 100_000, -50_000]));
+        let mut olel = vec![0, 1, 0, 0, 3, 0, 0, 0, 1, 0, 0, 0];
+        olel.extend_from_slice(&[0, 0, 1, 0, 0, 0]);
+        let obj = list(
+            b"obj ",
+            &[
+                chunk(b"loda", &loda(OBJ_EMBEDDED, &[(ARG_COORDS, coords)])),
+                chunk(b"olel", &olel),
+            ]
+            .concat(),
+        );
+        let body = [
+            chunk(b"mcfg", &mcfg(12, 2_540_000, 2_540_000)),
+            chunk(b"ole2", &ole),
+            list(b"page", &list(b"layr", &obj)),
+        ]
+        .concat();
+        let (doc, rep) = parse(&riff(b"CDRC", &body), 12);
+        assert_eq!(rep.skipped_objects, 0, "{:?}", rep.warnings);
+        let shape = first_shape(&doc);
+        let ShapeKind::Group { children } = &shape.kind else {
+            panic!("{:?}", shape.kind);
+        };
+        assert_eq!(children.len(), 1);
+        assert!(matches!(shape.fill, Fill::None) && shape.stroke.is_none());
+        assert_ne!(children[0].id, shape.id);
+        let b = shape.transform.transform_rect_bbox(children[0].bounds());
+        let c = 127.0;
+        for (got, want) in [
+            (b.x0, c - 10.0),
+            (b.x1, c + 10.0),
+            (b.y0, c - 5.0),
+            (b.y1, c + 5.0),
+        ] {
+            assert!((got - want).abs() < 1e-6, "{b:?}");
+        }
     }
 }

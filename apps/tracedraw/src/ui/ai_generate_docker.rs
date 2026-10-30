@@ -25,10 +25,15 @@ fn heading(ui: &mut Ui, key: &str, reset: bool) -> bool {
         ui.label(RichText::new(tr(key)).strong());
         if reset {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                pressed = ui
-                    .small_button("\u{21BA}")
-                    .rich_tip(tr("aigen.reset"))
-                    .clicked();
+                // A phone shows no tooltip, so the arrow says what it does
+                // in a word there.
+                pressed = if crate::ui::mobile::phone() {
+                    ui.small_button(tr("docker.clear")).clicked()
+                } else {
+                    ui.small_button("\u{21BA}")
+                        .rich_tip(tr("aigen.reset"))
+                        .clicked()
+                };
             });
         }
     });
@@ -52,6 +57,9 @@ fn model_note(model: &str) -> String {
 }
 
 pub fn ai_generate(app: &mut App, ui: &mut Ui) {
+    if crate::ui::mobile::phone() {
+        return phone_layout(app, ui);
+    }
     // The modes as picture buttons, and the information page at the right.
     ui.horizontal(|ui| {
         for (mode, glyph, key) in [
@@ -146,6 +154,118 @@ pub fn ai_generate(app: &mut App, ui: &mut Ui) {
                     .size(11.0),
             );
         });
+    footer(app, ui, mode, ready);
+}
+
+/// The panel on a phone: the modes as words, since a picture button's
+/// meaning is a tooltip, and a phone has no pointer to hover one with. The
+/// settings and the results are one scroll, the sheet's own, and the button
+/// that generates is kept under it, where it stays in view.
+fn phone_layout(app: &mut App, ui: &mut Ui) {
+    // Four modes, two to a row, each the same size: a row of four words at a
+    // phone's width sets them all at different lengths.
+    let width = ui.available_width();
+    let half = ((width - 8.0) / 2.0).max(60.0);
+    let mut picked = None;
+    egui::Grid::new("aigen_modes_phone")
+        .num_columns(2)
+        .spacing([8.0, 6.0])
+        .show(ui, |ui| {
+            for (i, (mode, key)) in [
+                (Mode::Create, "aigen.mode_create"),
+                (Mode::Remix, "aigen.mode_remix"),
+                (Mode::Vector, "aigen.mode_vector"),
+                (Mode::Draw, "aigen.mode_draw"),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let on = app.ai_image.mode == mode && !app.ai_image.info;
+                let button = egui::Button::new(RichText::new(tr(key)).size(13.0))
+                    .selected(on)
+                    .min_size(Vec2::new(half, 34.0));
+                if ui.add(button).clicked() {
+                    picked = Some(mode);
+                }
+                if i % 2 == 1 {
+                    ui.end_row();
+                }
+            }
+        });
+    if let Some(mode) = picked {
+        app.ai_image.mode = mode;
+        app.ai_image.info = false;
+    }
+    // What the chosen mode does, and the way into the information page.
+    let info = app.ai_image.info;
+    ui.horizontal(|ui| {
+        let note = width - 40.0;
+        ui.add_sized(
+            [note, 18.0],
+            egui::Label::new(
+                RichText::new(tr(match app.ai_image.mode {
+                    Mode::Create => "aigen.create_about",
+                    Mode::Remix => "aigen.remix_about",
+                    Mode::Vector => "aigen.vector_about",
+                    Mode::Draw => "aigen.draw_about",
+                }))
+                .color(Tokens::text_dim())
+                .size(11.0),
+            )
+            .truncate(),
+        );
+        if ui
+            .add(egui::Button::new(RichText::new("?").size(12.0)).selected(info))
+            .rich_tip(tr("aigen.info"))
+            .clicked()
+        {
+            app.ai_image.info = !info;
+        }
+    });
+    if app.ai_image.info {
+        ui.add_space(6.0);
+        info_page(app, ui);
+        return;
+    }
+    let mode = app.ai_image.mode;
+    if mode == Mode::Draw {
+        ui.add_space(6.0);
+        crate::ui::ai_docker::ai_drawing(app, ui);
+        return;
+    }
+    let svg = mode == Mode::Vector && app.ai_image.vector_engine == VectorEngine::Svg;
+    let need = if svg { Need::Drawing } else { Need::Images };
+    banner(app, ui, need);
+    let ready = if svg {
+        app.ai_drawing_ready()
+    } else {
+        app.ai_image_ready()
+    };
+    ui.add_space(4.0);
+    ui.add_enabled_ui(ready && !app.ai_image.busy(), |ui| body(app, ui, mode, svg));
+    results(app, ui);
+    ui.add_space(6.0);
+    ui.label(
+        RichText::new(tr("aigen.privacy"))
+            .color(Tokens::text_dim())
+            .size(11.0),
+    );
+}
+
+/// The bar under the panel's own scroll: the count, the note on what a run
+/// costs and the button that generates. A phone keeps it in view while the
+/// settings above it scroll.
+pub fn ai_generate_footer(app: &mut App, ui: &mut Ui) {
+    let mode = app.ai_image.mode;
+    if mode == Mode::Draw || app.ai_image.info {
+        return;
+    }
+    let svg = mode == Mode::Vector && app.ai_image.vector_engine == VectorEngine::Svg;
+    let ready = if svg {
+        app.ai_drawing_ready()
+    } else {
+        app.ai_image_ready()
+    };
     footer(app, ui, mode, ready);
 }
 
@@ -253,7 +373,7 @@ fn body(app: &mut App, ui: &mut Ui, mode: Mode, svg: bool) {
                 Mode::Remix => "aigen.remix_hint",
                 _ => "aigen.prompt_hint",
             }))
-            .desired_rows(6)
+            .desired_rows(if crate::ui::mobile::phone() { 4 } else { 6 })
             .desired_width(f32::INFINITY),
     );
     if mode == Mode::Remix {
@@ -266,10 +386,12 @@ fn body(app: &mut App, ui: &mut Ui, mode: Mode, svg: bool) {
             }
         });
     } else {
-        if ui
-            .button(format!("\u{1F4A1} {}", tr("aigen.inspire")))
-            .clicked()
-        {
+        let inspire = if crate::ui::mobile::phone() {
+            egui::Button::new(tr("aigen.inspire")).min_size(Vec2::new(ui.available_width(), 34.0))
+        } else {
+            egui::Button::new(format!("\u{1F4A1} {}", tr("aigen.inspire")))
+        };
+        if ui.add(inspire).clicked() {
             let n = app.ai_image.prompt.len() + app.ai_image.results.len() * 7;
             let mut pick = IDEAS[n % IDEAS.len()];
             if pick == app.ai_image.prompt {
@@ -277,37 +399,51 @@ fn body(app: &mut App, ui: &mut Ui, mode: Mode, svg: bool) {
             }
             app.ai_image.prompt = pick.to_string();
         }
-        ui.horizontal(|ui| {
-            ui.label(tr("aigen.aspect"));
-            let current = app.ai_image.aspect;
+        let current = app.ai_image.aspect;
+        if crate::ui::mobile::phone() {
+            // A label over its list, the way every other group here is set.
+            ui.add_space(6.0);
+            ui.label(RichText::new(tr("aigen.aspect")).strong());
             egui::ComboBox::from_id_salt("aigen_aspect")
-                .width(ui.available_width() - 8.0)
+                .width(ui.available_width())
                 .selected_text(tr(current.key()))
-                .show_ui(ui, |ui| {
-                    if app.ai_image.source.is_some() {
-                        ui.selectable_value(
-                            &mut app.ai_image.aspect,
-                            Aspect::MatchSource,
-                            tr(Aspect::MatchSource.key()),
-                        );
-                    }
-                    for a in Aspect::ALL {
-                        ui.selectable_value(&mut app.ai_image.aspect, a, tr(a.key()));
-                    }
-                });
-        });
+                .show_ui(ui, |ui| aspects(app, ui));
+        } else {
+            ui.horizontal(|ui| {
+                ui.label(tr("aigen.aspect"));
+                egui::ComboBox::from_id_salt("aigen_aspect")
+                    .width(ui.available_width() - 8.0)
+                    .selected_text(tr(current.key()))
+                    .show_ui(ui, |ui| aspects(app, ui));
+            });
+        }
     }
     // Style and palette fold away to make room for the results.
     let folded = app.ai_image.folded;
-    ui.vertical_centered(|ui| {
+    let fold_key = if folded { "aigen.unfold" } else { "aigen.fold" };
+    if crate::ui::mobile::phone() {
+        // The arrow a desk folds this with is a tooltip's worth of meaning:
+        // a phone gets the words.
         if ui
-            .small_button(if folded { "\u{2304}" } else { "\u{2303}" })
-            .rich_tip(tr(if folded { "aigen.unfold" } else { "aigen.fold" }))
+            .add_sized(
+                [ui.available_width(), 32.0],
+                egui::Button::new(tr(fold_key)),
+            )
             .clicked()
         {
             app.ai_image.folded = !folded;
         }
-    });
+    } else {
+        ui.vertical_centered(|ui| {
+            if ui
+                .small_button(if folded { "\u{2304}" } else { "\u{2303}" })
+                .rich_tip(tr(fold_key))
+                .clicked()
+            {
+                app.ai_image.folded = !folded;
+            }
+        });
+    }
     if folded {
         return;
     }
@@ -363,6 +499,21 @@ fn body(app: &mut App, ui: &mut Ui, mode: Mode, svg: bool) {
         });
 }
 
+/// The shapes a picture can be made at, with the source's own when there is
+/// one to follow.
+fn aspects(app: &mut App, ui: &mut Ui) {
+    if app.ai_image.source.is_some() {
+        ui.selectable_value(
+            &mut app.ai_image.aspect,
+            Aspect::MatchSource,
+            tr(Aspect::MatchSource.key()),
+        );
+    }
+    for a in Aspect::ALL {
+        ui.selectable_value(&mut app.ai_image.aspect, a, tr(a.key()));
+    }
+}
+
 /// The reference picture with Use Selection and Import File under it.
 fn source(app: &mut App, ui: &mut Ui, mode: Mode) {
     let shown = app.ai_image.source.clone().or_else(|| {
@@ -380,7 +531,12 @@ fn source(app: &mut App, ui: &mut Ui, mode: Mode) {
                 })
             })
     });
-    let w = ui.available_width().min(240.0);
+    let phone = crate::ui::mobile::phone();
+    let w = if phone {
+        ui.available_width()
+    } else {
+        ui.available_width().min(240.0)
+    };
     match shown.as_ref().and_then(|s| texture(ui.ctx(), &s.png)) {
         Some(tex) => {
             let s = tex.size_vec2();
@@ -391,7 +547,8 @@ fn source(app: &mut App, ui: &mut Ui, mode: Mode) {
         }
         None => {
             ui.vertical_centered(|ui| {
-                let (r, _) = ui.allocate_exact_size(Vec2::new(w, 70.0), Sense::hover());
+                let box_h = if phone { 84.0 } else { 70.0 };
+                let (r, _) = ui.allocate_exact_size(Vec2::new(w, box_h), Sense::hover());
                 ui.painter().rect_stroke(
                     r,
                     3.0,
@@ -414,6 +571,28 @@ fn source(app: &mut App, ui: &mut Ui, mode: Mode) {
     }
     ui.vertical_centered(|ui| {
         ui.horizontal(|ui| {
+            if phone {
+                // Words, and two of one size: a phone has no pointer to
+                // hover a glyph's tip with, and two buttons of different
+                // widths under a box look like an accident.
+                let half = ((ui.available_width() - 8.0) / 2.0).max(60.0);
+                if ui
+                    .add_sized(
+                        [half, 34.0],
+                        egui::Button::new(tr("export_docker.selection")),
+                    )
+                    .clicked()
+                {
+                    app.ai_source_from_selection();
+                }
+                if ui
+                    .add_sized([half, 34.0], egui::Button::new(tr("options.import_section")))
+                    .clicked()
+                {
+                    app.ai_source_from_file();
+                }
+                return;
+            }
             ui.add_space((ui.available_width() - 64.0).max(0.0) / 2.0);
             if ui
                 .small_button("\u{2B1A}")
@@ -546,9 +725,13 @@ fn footer(app: &mut App, ui: &mut Ui, mode: Mode, ready: bool) {
                 Mode::Remix => has_source && !app.ai_image.remix_prompt.trim().is_empty(),
                 _ => !app.ai_image.prompt.trim().is_empty(),
             };
-        let button =
-            egui::Button::new(RichText::new(format!("\u{2726} {}", tr("aigen.generate"))).strong())
-                .min_size(Vec2::new(ui.available_width(), gen_btn_h));
+        let label = if mobile {
+            tr("aigen.generate")
+        } else {
+            format!("\u{2726} {}", tr("aigen.generate"))
+        };
+        let button = egui::Button::new(RichText::new(label).strong())
+            .min_size(Vec2::new(ui.available_width(), gen_btn_h));
         if ui.add_enabled(can, button).clicked() {
             app.ai_generate();
         }
