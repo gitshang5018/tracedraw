@@ -86,11 +86,15 @@ pub fn init() {
     crate::frame_stats::mark_start();
     // wgpu's own lines on which backends started and which adapters it
     // left out come at debug; they are few and only at the start (#616).
-    env_logger::Builder::from_env(
+    // A start in a process that already has its logger, an activity made
+    // again after one was put away, finds it set: `init` panics there and
+    // the app stopped before its first frame. `try_init` leaves the first
+    // one in place.
+    let _ = env_logger::Builder::from_env(
         env_logger::Env::default().default_filter_or("info,wgpu_core::instance=debug"),
     )
     .target(env_logger::Target::Pipe(Box::new(Tee { file })))
-    .init();
+    .try_init();
     log::info!(
         "TraceDraw {} on {} {}",
         env!("CARGO_PKG_VERSION"),
