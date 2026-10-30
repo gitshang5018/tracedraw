@@ -6,6 +6,7 @@ full, row-by-row status.
 
 ## Unreleased
 
+- The phone's interface is laid out the way a phone's own settings page is: a light grey page with white rounded cards, a hairline between two rows of a card, an arrow at the end of a row that opens something, and one accent blue throughout. The drawer, Tools > Options and every list under them are cards of rows now. The icons are the ones the app already draws, on a tile of their own where a row has one.
 - Matting on a phone, cut apart: a picture whose background came out transparent is split into its separate subjects, each an object of its own at the place it filled, and every piece is cut to what it fills instead of keeping the transparent room around it. A subject smaller than a two thousandth of the picture is left out, so the specks a matte leaves behind do not become objects.
 - Matting on a phone, an identification photo: with the portrait model, the cut-out person is made into an identification photo instead, at one inch 25 x 35 mm, small one inch 22 x 32, two inch 35 x 49 or small two inch 33 x 48, printed at 300 pixels to the inch, on a white, blue, red or chosen background, with the room above the head and the share of the height the person takes set by two sliders. The person is framed by their own outline, so the top of the mask is the top of the hair.
 - Contour on a phone: the container it makes keeps what is put in it where it is, so a piece added after the outline is not moved to the middle of the frame and away from the line it was cut for.

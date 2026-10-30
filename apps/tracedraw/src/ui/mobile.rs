@@ -21,7 +21,6 @@
 
 use crate::app::{App, DockerPlace, DockerTab};
 use crate::i18n::{tr, trf};
-use crate::theme::Tokens;
 use crate::ui::icons::{draw_action, Action};
 use egui::{Color32, CornerRadius, Frame, Id, Rect, Response, Sense, Stroke, Ui, Vec2};
 
@@ -49,11 +48,11 @@ const ICON: f32 = 24.0;
 /// The colours of the interface, in the roles Material gives them: the
 /// theme's own panels and text, so the phone follows the desktop theme.
 pub(crate) struct M3 {
-    /// The background of the bars and of a sheet.
+    /// The page behind the cards and the bars.
     pub(crate) surface: Color32,
-    /// A step up from the surface: the tool strip and the navigation bar.
+    /// A card, a bar, a sheet: white on the page.
     pub(crate) container: Color32,
-    /// A step up again: fields and chips.
+    /// A field or a chip inside a card.
     pub(crate) high: Color32,
     /// Text and icons on the surface.
     pub(crate) on: Color32,
@@ -65,21 +64,57 @@ pub(crate) struct M3 {
     pub(crate) primary_container: Color32,
     /// The frames of fields and chips.
     pub(crate) outline: Color32,
+    /// The hairline between two rows of a card.
+    pub(crate) separator: Color32,
+    /// The arrow at the end of a row that opens something.
+    pub(crate) chevron: Color32,
 }
+
+/// The colours of the tiles at the head of a list's rows: warm to cool, the
+/// way the phone's own settings page sets its icons, so a list reads as a
+/// set of destinations rather than a block of text.
+pub(crate) const TILES: [Color32; 9] = [
+    Color32::from_rgb(0xFF, 0x9F, 0x0A),
+    Color32::from_rgb(0xFF, 0x5B, 0x2E),
+    Color32::from_rgb(0xA8, 0x55, 0xF7),
+    Color32::from_rgb(0x2A, 0xC7, 0xF0),
+    Color32::from_rgb(0x4A, 0x7C, 0xFF),
+    Color32::from_rgb(0x34, 0xC7, 0x59),
+    Color32::from_rgb(0x5B, 0x6C, 0xFF),
+    Color32::from_rgb(0x1F, 0xB6, 0xE8),
+    Color32::from_rgb(0x2E, 0xC4, 0x8A),
+];
 
 impl M3 {
     pub(crate) fn of() -> Self {
-        let surface = Tokens::panel();
-        let primary = Tokens::ACCENT;
-        Self {
-            surface,
-            container: Tokens::panel_dark(),
-            high: Tokens::field(),
-            on: Tokens::text(),
-            variant: Tokens::text_dim(),
-            primary,
-            primary_container: mix(primary, surface, 0.16),
-            outline: Tokens::border(),
+        let dark = crate::theme::theme().is_dark();
+        let c = |r: u8, g: u8, b: u8| Color32::from_rgb(r, g, b);
+        if dark {
+            Self {
+                surface: c(0x0E, 0x0E, 0x10),
+                container: c(0x1C, 0x1C, 0x1E),
+                high: c(0x2C, 0x2C, 0x2E),
+                on: c(0xF5, 0xF5, 0xF7),
+                variant: c(0x9A, 0x9A, 0xA0),
+                primary: c(0x5B, 0x8B, 0xFF),
+                primary_container: c(0x1E, 0x2A, 0x44),
+                outline: c(0x2C, 0x2C, 0x2E),
+                separator: c(0x2C, 0x2C, 0x2E),
+                chevron: c(0x5A, 0x5A, 0x5E),
+            }
+        } else {
+            Self {
+                surface: c(0xF2, 0xF3, 0xF5),
+                container: c(0xFF, 0xFF, 0xFF),
+                high: c(0xF2, 0xF3, 0xF5),
+                on: c(0x17, 0x17, 0x1A),
+                variant: c(0x8A, 0x8A, 0x8F),
+                primary: c(0x3D, 0x6D, 0xFF),
+                primary_container: c(0xE9, 0xEF, 0xFF),
+                outline: c(0xED, 0xED, 0xF0),
+                separator: c(0xED, 0xED, 0xF0),
+                chevron: c(0xC4, 0xC4, 0xC8),
+            }
         }
     }
 }
@@ -923,7 +958,7 @@ fn tool_pop(app: &mut App, ctx: &egui::Context, m3: &M3) {
         .interactable(!held)
         .show(ctx, |ui| {
             Frame::new()
-                .fill(m3.high)
+                .fill(m3.container)
                 .corner_radius(20.0)
                 .shadow(crate::theme::shadow(egui::epaint::Shadow {
                     offset: [0, 6],
@@ -1167,7 +1202,7 @@ fn ai_chip(_app: &mut App, ui: &mut Ui, m3: &M3, full: Rect, open: &mut Sheet) {
         .fixed_pos(egui::pos2(rect.left(), top))
         .show(&ctx, |ui| {
             Frame::new()
-                .fill(m3.surface)
+                .fill(m3.container)
                 .corner_radius(16.0)
                 .inner_margin(egui::Margin::symmetric(8, 6))
                 .show(ui, |ui| {
@@ -1176,7 +1211,7 @@ fn ai_chip(_app: &mut App, ui: &mut Ui, m3: &M3, full: Rect, open: &mut Sheet) {
                         let text = egui::RichText::new(tr(label)).size(14.0).color(m3.on);
                         let button = egui::Button::new(text)
                             .corner_radius(12.0)
-                            .fill(m3.container)
+                            .fill(m3.high)
                             .min_size(Vec2::new(120.0, row - 8.0));
                         if ui.add(button).clicked() {
                             *open = sheet;
@@ -1217,7 +1252,7 @@ fn model_choice(
     button = if chosen {
         button.fill(m3.primary_container)
     } else {
-        button.fill(m3.high).stroke(Stroke::new(1.0, m3.outline))
+        button.fill(m3.container).stroke(Stroke::new(1.0, m3.outline))
     };
     if ui.add(button).clicked() {
         *pick = index;
@@ -2319,54 +2354,120 @@ fn drawer(app: &mut App, ui: &mut Ui, m3: &M3, screen: Rect, open: &mut Sheet) {
                         .auto_shrink([false, false])
                         .show(ui, |ui| {
                             ui.add_space(8.0);
-                            for (i, (key, _)) in crate::ui::menus::all_menus().iter().enumerate() {
-                                if drawer_row(ui, m3, &tr(key), None, safe.left).clicked() {
-                                    *open = Sheet::MenuPage(i);
+                            let menus = crate::ui::menus::all_menus();
+                            card(ui, m3, 0.0, |ui| {
+                                for (i, (key, _)) in menus.iter().enumerate() {
+                                    let last = i + 1 == menus.len();
+                                    if drawer_row(ui, m3, &tr(key), None, last).clicked() {
+                                        *open = Sheet::MenuPage(i);
+                                    }
                                 }
-                            }
-                            ui.add_space(8.0);
-                            ui.separator();
-                            ui.add_space(4.0);
-                            if drawer_row(ui, m3, &tr("mobile.settings"), Some(Glyph::Gear), safe.left)
-                                .clicked()
-                            {
-                                *open = Sheet::Settings;
-                            }
+                            });
+                            ui.add_space(12.0);
+                            card(ui, m3, 0.0, |ui| {
+                                if drawer_row(ui, m3, &tr("mobile.settings"), Some(Glyph::Gear), true)
+                                    .clicked()
+                                {
+                                    *open = Sheet::Settings;
+                                }
+                            });
                             ui.add_space(12.0 + safe.bottom);
                         });
                 });
         });
 }
 
-/// A row of the drawer or of the settings: the whole width, a finger high.
-fn drawer_row(ui: &mut Ui, m3: &M3, label: &str, glyph: Option<Glyph>, left_pad: f32) -> Response {
-    let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 52.0), Sense::click());
-    if resp.hovered() || resp.is_pointer_button_down_on() {
-        let fill = mix(m3.on, m3.surface, 0.08);
-        ui.painter()
-            .rect_filled(rect.shrink2(Vec2::new(8.0, 2.0)), 26.0, fill);
+/// The colour of the tile a label gets: the same label always the same one,
+/// and two rows of a list rarely the same.
+fn tile_color(label: &str) -> Color32 {
+    let mut h: usize = 7;
+    for c in label.chars() {
+        h = h.wrapping_mul(31).wrapping_add(c as usize);
     }
-    let mut left = rect.left() + 20.0 + left_pad;
+    TILES[h % TILES.len()]
+}
+
+/// A card of rows on the page: white, rounded, `inset` clear of the edges
+/// on either side.
+fn card(ui: &mut Ui, m3: &M3, inset: f32, add: impl FnOnce(&mut Ui)) {
+    let width = ui.available_width();
+    ui.horizontal(|ui| {
+        if inset > 0.0 {
+            ui.add_space(inset);
+        }
+        Frame::new()
+            .fill(m3.container)
+            .corner_radius(18.0)
+            .inner_margin(egui::Margin::symmetric(0, 2))
+            .show(ui, |ui| {
+                ui.set_width((width - inset * 2.0).max(80.0));
+                add(ui);
+            });
+        if inset > 0.0 {
+            ui.add_space(inset);
+        }
+    });
+}
+
+/// One row of a card: the icon the row already carries on a tile of its
+/// own when it has one, the label, the arrow that says it opens something,
+/// and the hairline that keeps it from the row below.
+fn list_row(ui: &mut Ui, m3: &M3, label: &str, glyph: Option<Glyph>, last: bool) -> Response {
+    let width = ui.available_width();
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, 58.0), Sense::click());
+    if resp.hovered() || resp.is_pointer_button_down_on() {
+        ui.painter()
+            .rect_filled(rect, 0.0, mix(m3.on, m3.container, 0.05));
+    }
+    let mut text_left = rect.left() + 16.0;
     if let Some(glyph) = glyph {
-        draw_glyph(
-            ui,
-            Rect::from_center_size(
-                egui::pos2(left + 10.0, rect.center().y),
-                Vec2::splat(20.0),
-            ),
-            glyph,
-            m3.variant,
+        let tile = Rect::from_center_size(
+            egui::pos2(rect.left() + 16.0 + 20.0, rect.center().y),
+            Vec2::splat(40.0),
         );
-        left += 36.0;
+        ui.painter().rect_filled(tile, 11.0, tile_color(label));
+        draw_glyph(ui, tile.shrink(10.0), glyph, Color32::WHITE);
+        text_left = tile.right() + 14.0;
     }
     ui.painter().text(
-        egui::pos2(left, rect.center().y),
+        egui::pos2(text_left, rect.center().y),
         egui::Align2::LEFT_CENTER,
         label,
-        egui::FontId::proportional(16.0),
+        egui::FontId::proportional(16.5),
         m3.on,
     );
+    // The arrow at the end of the row: two strokes meeting at a point.
+    let tip = rect.right() - 20.0;
+    let middle = rect.center().y;
+    let arrow = Stroke::new(1.6, m3.chevron);
+    ui.painter().line_segment(
+        [egui::pos2(tip - 4.0, middle - 5.0), egui::pos2(tip + 1.0, middle)],
+        arrow,
+    );
+    ui.painter().line_segment(
+        [egui::pos2(tip + 1.0, middle), egui::pos2(tip - 4.0, middle + 5.0)],
+        arrow,
+    );
+    if !last {
+        let y = rect.bottom() - 0.5;
+        ui.painter().line_segment(
+            [egui::pos2(text_left, y), egui::pos2(rect.right() - 16.0, y)],
+            Stroke::new(1.0, m3.separator),
+        );
+    }
     resp
+}
+
+/// A row of the drawer or of the settings: the whole width, a finger high,
+/// on the card its list is drawn on.
+fn drawer_row(
+    ui: &mut Ui,
+    m3: &M3,
+    label: &str,
+    glyph: Option<Glyph>,
+    last: bool,
+) -> Response {
+    list_row(ui, m3, label, glyph, last)
 }
 
 // ----- Pages ----------------------------------------------------------------
@@ -2481,19 +2582,26 @@ fn settings_list(app: &mut App, ui: &mut Ui, m3: &M3, screen: Rect, open: &mut S
         false,
         |app, ui| {
             for set in crate::ui::options::OptionsSet::ALL {
-                ui.add_space(10.0);
-                ui.label(
-                    egui::RichText::new(set.tab_label())
-                        .size(13.0)
-                        .strong()
-                        .color(m3.primary),
-                );
-                for page in set.pages() {
-                    if drawer_row(ui, m3, &tr(page.key()), None, 0.0).clicked() {
-                        app.options_page = *page;
-                        chosen.set(Sheet::SettingsPage(*page));
+                ui.add_space(14.0);
+                ui.horizontal(|ui| {
+                    ui.add_space(16.0);
+                    ui.label(
+                        egui::RichText::new(set.tab_label())
+                            .size(12.5)
+                            .color(m3.variant),
+                    );
+                });
+                ui.add_space(6.0);
+                card(ui, m3, 16.0, |ui| {
+                    let pages = set.pages();
+                    for (i, page) in pages.iter().enumerate() {
+                        let last = i + 1 == pages.len();
+                        if drawer_row(ui, m3, &tr(page.key()), None, last).clicked() {
+                            app.options_page = *page;
+                            chosen.set(Sheet::SettingsPage(*page));
+                        }
                     }
-                }
+                });
             }
         },
     );
@@ -2961,7 +3069,7 @@ fn palette_float(
         .fixed_pos(pos)
         .show(ctx, |ui| {
             Frame::new()
-                .fill(m3.surface)
+                .fill(m3.container)
                 .corner_radius(12.0)
                 .shadow(crate::theme::shadow(egui::epaint::Shadow {
                     offset: [0, 4],
