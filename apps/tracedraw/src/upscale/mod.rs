@@ -167,6 +167,9 @@ impl Upscaler {
         let tiles_x = (w + TILE - 1) / TILE;
         let tiles_y = (h + TILE - 1) / TILE;
         let total = (tiles_x * tiles_y).max(1);
+        log::info!(
+            "upscaling: a {w} x {h} picture to {out_w} x {out_h}, {total} tiles of {TILE} px"
+        );
         let mut done = 0;
         for ty in 0..tiles_y {
             for tx in 0..tiles_x {

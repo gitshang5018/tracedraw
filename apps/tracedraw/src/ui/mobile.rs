@@ -1542,9 +1542,16 @@ fn upscale_start(app: &mut App, ctx: &egui::Context, model: &crate::ai_tools::Mo
             worker.request_repaint();
             let img = crate::bitmap_fx::decode(&png).ok_or("the picture could not be read")?;
             let mut last = 0usize;
+            let mut logged = 0usize;
             up.run(&img, &mut |done, total| {
                 if done != last {
                     last = done;
+                    // Every tenth: a run that stops part way says where.
+                    let pct = done * 100 / total.max(1);
+                    if pct / 10 != logged / 10 {
+                        logged = pct;
+                        log::info!("upscaling: {done} of {total} tiles, {pct}%");
+                    }
                     worker.data_mut(|d| d.insert_temp(Id::new("upscale_progress"), (done, total)));
                     worker.request_repaint();
                 }

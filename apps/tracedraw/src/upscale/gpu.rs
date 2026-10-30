@@ -222,6 +222,11 @@ impl Pool {
         if let Some(i) = self.free.iter().position(|(have, _)| *have >= size) {
             return self.free.swap_remove(i).1;
         }
+        // A large one is worth a line: the whole picture goes through these
+        // buffers, and a card that runs out says nothing before it stops.
+        if size >= 32 * 1024 * 1024 {
+            log::info!("upscaling: a buffer of {} MiB", size / (1024 * 1024));
+        }
         Arc::new(storage(device, size))
     }
 
@@ -523,6 +528,11 @@ impl GpuNet {
         if h == 0 || w == 0 || input.c != self.channels {
             return Err("the picture is not the shape the network reads".to_string());
         }
+        log::info!(
+            "upscaling on the card: a {w} x {h} tile, {} channels, {} steps",
+            input.c,
+            self.steps.len()
+        );
         let mut pool = Pool::new();
         let mut blobs: HashMap<String, (Arc<wgpu::Buffer>, usize, usize, usize)> = HashMap::new();
         let mut encoder = self
