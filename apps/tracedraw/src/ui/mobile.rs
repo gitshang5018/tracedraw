@@ -109,6 +109,8 @@ pub enum Sheet {
     Drawings,
     /// The other tools of toolbox group `n`.
     Tools(usize),
+    /// The chip at the left edge: pictures and drawings from a prompt.
+    AiGenerate,
     /// The chip at the left edge: the background taken out of a picture.
     Matting,
     /// The chip at the left edge: one drawing filled from a table.
@@ -1151,6 +1153,7 @@ fn ai_chip(_app: &mut App, ui: &mut Ui, m3: &M3, full: Rect, open: &mut Sheet) {
         return;
     }
     let items = [
+        (Sheet::AiGenerate, "docker.ai_generate"),
         (Sheet::Matting, "ai.matting"),
         (Sheet::Variable, "ai.variable"),
         (Sheet::Trace, "ai.trace"),
@@ -1923,6 +1926,9 @@ fn sheet_height(which: Sheet, screen: f32) -> f32 {
         Sheet::Files | Sheet::Drawings => 0.52,
         Sheet::Properties => 0.46,
         Sheet::Matting | Sheet::Variable | Sheet::Trace => 0.52,
+        // The generate panel carries a prompt, a source image, styles and a
+        // strip of results: it opens over most of the drawing.
+        Sheet::AiGenerate => 0.88,
         Sheet::Palette => 0.24,
         Sheet::None | Sheet::Drawer | Sheet::MenuPage(_) | Sheet::Settings | Sheet::SettingsPage(_) => 0.0,
     };
@@ -2008,6 +2014,7 @@ fn sheet_title(which: Sheet) -> String {
             .get(gi)
             .map(|g| g.tools[0].name())
             .unwrap_or_default(),
+        Sheet::AiGenerate => tr("docker.ai_generate"),
         Sheet::Matting => tr("ai.matting"),
         Sheet::Variable => tr("ai.variable"),
         Sheet::Trace => tr("ai.trace"),
@@ -2027,6 +2034,7 @@ fn sheet_body(app: &mut App, ui: &mut Ui, which: Sheet, m3: &M3, open: &mut Shee
         Sheet::Files => files_sheet(app, ui, m3),
         Sheet::Drawings => drawings_sheet(app, ui, m3),
         Sheet::Tools(gi) => tools_sheet(app, ui, m3, gi, open),
+        Sheet::AiGenerate => crate::ui::ai_generate_docker::ai_generate(app, ui),
         Sheet::Matting => matting_sheet(app, ui, m3),
         Sheet::Variable => variable_sheet(app, ui, m3),
         Sheet::Trace => trace_sheet(app, ui, m3, open),
