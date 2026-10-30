@@ -2388,25 +2388,24 @@ fn tile_color(label: &str) -> Color32 {
 }
 
 /// A card of rows on the page: white, rounded, `inset` clear of the edges
-/// on either side.
+/// on either side. The rows are laid out downwards whatever the layout of
+/// the caller: a card is a column of rows, never a row of them.
 fn card(ui: &mut Ui, m3: &M3, inset: f32, add: impl FnOnce(&mut Ui)) {
     let width = ui.available_width();
-    ui.horizontal(|ui| {
-        if inset > 0.0 {
-            ui.add_space(inset);
-        }
-        Frame::new()
-            .fill(m3.container)
-            .corner_radius(18.0)
-            .inner_margin(egui::Margin::symmetric(0, 2))
-            .show(ui, |ui| {
-                ui.set_width((width - inset * 2.0).max(80.0));
-                add(ui);
-            });
-        if inset > 0.0 {
-            ui.add_space(inset);
-        }
-    });
+    Frame::new()
+        .fill(m3.container)
+        .corner_radius(18.0)
+        .outer_margin(egui::Margin {
+            left: inset as i8,
+            right: inset as i8,
+            top: 0,
+            bottom: 0,
+        })
+        .inner_margin(egui::Margin::symmetric(0, 2))
+        .show(ui, |ui| {
+            ui.set_width((width - inset * 2.0).max(80.0));
+            ui.vertical(|ui| add(ui));
+        });
 }
 
 /// One row of a card: the icon the row already carries on a tile of its
@@ -3922,5 +3921,47 @@ mod tests {
         // Standing up the bars reach the edges the interface is drawn on.
         let up = edge_to_edge(s, false);
         assert_eq!((up.left, up.right), (32.0, 12.0));
+    }
+
+    #[test]
+    fn the_rows_of_a_card_are_one_under_the_other() {
+        // A card is a column: every row below the one before it, and none
+        // of them drawn over another. It was a row of rows once, and every
+        // label of the drawer landed on top of the one before it.
+        let ctx = crate::theme::ui_context();
+        let m3 = M3::of();
+        let labels = ["Sounds", "Notifications", "Scenes", "Battery"];
+        let mut seen: Vec<Rect> = Vec::new();
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(
+                egui::Pos2::ZERO,
+                Vec2::new(360.0, 800.0),
+            )),
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input, |ui| {
+            card(ui, &m3, 16.0, |ui| {
+                let last = labels.len() - 1;
+                for (i, label) in labels.iter().enumerate() {
+                    seen.push(list_row(ui, &m3, label, None, i == last).rect);
+                }
+            });
+        });
+        out.textures_delta.clear();
+        assert_eq!(seen.len(), labels.len());
+        for pair in seen.windows(2) {
+            assert!(
+                pair[1].top() >= pair[0].bottom() - 0.5,
+                "a row is drawn over the one before it: {:?} then {:?}",
+                pair[0],
+                pair[1]
+            );
+        }
+        // Every row the same width, and inside the card's own margin.
+        let width = seen.first().map(|r| r.width()).unwrap_or(0.0);
+        assert!(width > 100.0 && width < 360.0, "a row is {width} wide");
+        for row in &seen {
+            assert!((row.width() - width).abs() < 0.5);
+        }
     }
 }
