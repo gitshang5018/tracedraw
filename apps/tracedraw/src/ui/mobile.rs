@@ -2304,8 +2304,9 @@ fn sheet_height(which: Sheet, screen: f32) -> f32 {
         Sheet::Files | Sheet::Drawings => 0.52,
         Sheet::Properties => 0.46,
         Sheet::Matting | Sheet::Variable | Sheet::Trace => 0.52,
-        // Three numbers, two switches and one button: the sheet is short.
-        Sheet::Arrange => 0.40,
+        // Three numbers, two switches and one button: short, but the button
+        // at the end of it has to be in the card without scrolling to it.
+        Sheet::Arrange => 0.50,
         // The generate panel carries a prompt, a source image, styles and a
         // strip of results: it opens over most of the drawing.
         Sheet::AiGenerate => 0.88,
