@@ -593,8 +593,12 @@ pub fn frame(app: &mut App, ui: &mut Ui) -> bool {
 
     // The bar above the tools, or above the sheet that covers them; on
     // its side the sheet is on the right, so it stays at the bottom.
+    let card_rect = ctx.data(|d| d.get_temp::<Rect>(Id::new("mobile_sheet_rect")));
     let floor = if open != Sheet::None && open != Sheet::Palette && !land {
-        window.bottom() - sheet_height(open, window.height())
+        match card_rect {
+            Some(rect) => rect.top() - 8.0,
+            None => window.bottom() - inset.bottom,
+        }
     } else if land {
         window.bottom() - inset.bottom
     } else {
@@ -606,6 +610,7 @@ pub fn frame(app: &mut App, ui: &mut Ui) -> bool {
     } else {
         // The card is not the one in front: the next opening starts over.
         ctx.data_mut(|d| d.remove::<u64>(Id::new("mobile_palette_since")));
+        ctx.data_mut(|d| d.remove::<Rect>(Id::new("mobile_sheet_rect")));
         if open != Sheet::None {
             sheet_ui(app, ui, open, &mut open, window, &m3, inset);
         }
@@ -2169,14 +2174,10 @@ fn sheet_ui(
         let top = TOP_H + top_padding(safe, false);
         let floor = (screen.bottom() - safe.bottom - ime).max(top + 120.0);
         let room = (floor - top).max(120.0);
-        // The share a panel is given is the most it may take, not what it
-        // takes: the card is as tall as its contents, and only a panel with
-        // more in it than that fills it and scrolls.
-        let cap = sheet_height(which, screen.height()).min(room).max(120.0);
         let side = 12.0;
         let width = (screen.width() - side * 2.0).max(200.0);
         let mid = egui::pos2(screen.center().x, top + room * 0.5);
-        egui::Area::new(Id::new("mobile_sheet_port"))
+        let card = egui::Area::new(Id::new("mobile_sheet_port"))
             .order(egui::Order::Foreground)
             // The pivot centres the card on the middle of the room by its
             // own size, which is not known until it is laid out: it settles
@@ -2201,9 +2202,14 @@ fn sheet_ui(
                     })
                     .show(ui, |ui| {
                         ui.set_width(width);
-                        sheet_content(app, ui, which, open, m3, cap - 16.0, false);
+                        sheet_content(app, ui, which, open, m3, room - 16.0, false);
                     });
             });
+        // Where the card came to rest, for what is drawn above it: a card
+        // whose height follows its contents cannot be guessed at from a
+        // share of the screen.
+        let rect = card.response.rect;
+        ctx.data_mut(|d| d.insert_temp(Id::new("mobile_sheet_rect"), rect));
     }
 
     // A command that opens a dialog of its own (Options, Save As...) takes
@@ -2314,24 +2320,6 @@ fn scrim(ctx: &egui::Context, screen: Rect, open: &mut Sheet) {
 /// How much of the screen a sheet takes: a list of menus needs more of it
 /// than a row of page fields. The two short ones — the property bar and the
 /// palettes — take only what their cards need.
-fn sheet_height(which: Sheet, screen: f32) -> f32 {
-    let share = match which {
-        Sheet::Panels | Sheet::Tools(_) => 0.62,
-        Sheet::Files | Sheet::Drawings => 0.52,
-        Sheet::Properties => 0.46,
-        Sheet::Matting | Sheet::Variable | Sheet::Trace => 0.52,
-        // Three numbers, two switches and one button: short, but the button
-        // at the end of it has to be in the card without scrolling to it.
-        Sheet::Arrange => 0.50,
-        // The generate panel carries a prompt, a source image, styles and a
-        // strip of results: it opens over most of the drawing.
-        Sheet::AiGenerate => 0.88,
-        Sheet::Palette => 0.24,
-        Sheet::None | Sheet::Drawer | Sheet::MenuPage(_) | Sheet::Settings | Sheet::SettingsPage(_) => 0.0,
-    };
-    (screen * share).clamp(180.0, (screen - TOP_H - 40.0).max(180.0))
-}
-
 /// The sheet's name and its close button; true when the button was hit.
 fn sheet_header(ui: &mut Ui, which: Sheet, m3: &M3) -> bool {
     // A file list standing in for a file dialog says what it is asking
