@@ -2376,7 +2376,10 @@ fn sheet_ui(
             // on the frame after the one that opened it.
             .pivot(egui::Align2::CENTER_CENTER)
             .fixed_pos(mid)
+            .default_size(Vec2::new(width, room))
             .show(&ctx, |ui| {
+                ui.set_max_width(width);
+                ui.set_max_height(room - 16.0);
                 Frame::new()
                     .fill(m3.surface)
                     .corner_radius(24.0)
@@ -2394,6 +2397,7 @@ fn sheet_ui(
                     })
                     .show(ui, |ui| {
                         ui.set_width(width);
+                        ui.set_max_height(room - 16.0);
                         sheet_content(app, ui, which, open, m3, room - 16.0, false);
                     });
             });
@@ -2456,17 +2460,14 @@ fn sheet_content(
     // left the body a third of its room and put every panel's last rows
     // behind a scroll.
     let body_room = (height - HEAD_ROW - 16.0 - bar).max(80.0);
-    let auto_shrink_y = match which {
-        Sheet::Files | Sheet::Drawings | Sheet::Panels => false,
-        _ => true,
-    };
+    ui.set_max_height(body_room + bar);
     egui::ScrollArea::vertical()
         .id_salt(("mobile_sheet_scroll", sheet_title(which)))
         .max_height(body_room)
         // The card is as tall as what it holds, up to the room there is: a
         // panel of three numbers has no business covering the drawing for
         // the sake of a height chosen for the tallest panel.
-        .auto_shrink([false, auto_shrink_y])
+        .auto_shrink([false, true])
         .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded)
         .show(ui, |ui| {
             Frame::new()

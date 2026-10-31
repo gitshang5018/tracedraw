@@ -567,7 +567,9 @@ pub fn dialog(app: &mut App, ctx: &Context, st: &mut SaveAsState, close: &mut bo
             // separator would take all there is).
             let list_h = if mobile { 340.0 } else { LIST_H };
             ui.allocate_ui(egui::vec2(width, list_h), |ui| {
-                ui.set_min_height(list_h);
+                if !mobile {
+                    ui.set_min_height(list_h);
+                }
                 ui.set_max_height(list_h);
                 if !mobile {
                     ui.horizontal_top(|ui| {
@@ -714,7 +716,7 @@ fn listing(ui: &mut Ui, st: &mut SaveAsState) {
         egui::ScrollArea::vertical()
             .id_salt("save_as_list")
             .max_height(max_h)
-            .auto_shrink([false, false])
+            .auto_shrink([false, if crate::ui::mobile::phone() { true } else { false }])
             .show(ui, |ui| {
                 egui::Grid::new("save_as_grid")
                     .num_columns(4)
