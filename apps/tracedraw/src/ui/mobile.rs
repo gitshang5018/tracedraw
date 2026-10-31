@@ -455,6 +455,36 @@ pub fn frame(app: &mut App, ui: &mut Ui) -> bool {
     system_bars(&ctx, land);
     let inset = system_insets(&ctx, land);
 
+    // What a panel asked for on the frame before: it runs here, after the
+    // card that says it is being made has been drawn, so the phone shows
+    // the card while the work takes the frame.
+    if let Some(job) = job_take(&ctx) {
+        match job {
+            Job::Arrange {
+                width,
+                height,
+                gap,
+                rotate,
+                irregular,
+            } => app.arrange_selection(width, height, gap, rotate, irregular),
+            Job::Contour {
+                expand,
+                detail,
+                smooth,
+                white,
+                clip,
+            } => contour_run(app, expand, detail, smooth, white, clip),
+            Job::MattingColour { settings } => {
+                app.apply_to_bitmaps("Remove Background", move |img, _| {
+                    crate::bg_remove::remove_background(img, &settings, 1.0)
+                });
+            }
+            Job::MergeDocument { print } => app.create_merged_document(print),
+        }
+        ctx.data_mut(|d| d.remove::<String>(Id::new("mobile_busy")));
+        ctx.request_repaint();
+    }
+
     let mut open = sheet(&ctx);
     // A file dialog asked anywhere (File > Open, an import) becomes the
     // file sheet: a phone has no dialog of the system's to show. It is
@@ -622,6 +652,18 @@ pub fn frame(app: &mut App, ui: &mut Ui) -> bool {
     if welcome || sorter {
         crate::ui::dialogs::show(app, &ctx);
     }
+    // The panel has been drawn, so a button in it that asked for work has
+    // had its say: nothing stays open while something is being made, and
+    // the card in the middle is the only thing on screen.
+    let busy = busy_what(&ctx, app);
+    if busy.is_some() {
+        open = Sheet::None;
+    }
+    if let Some(what) = &busy {
+        busy_card(&ctx, window, &m3, what);
+        // A ring that does not turn is a picture of a ring.
+        ctx.request_repaint();
+    }
     let before = sheet(&ctx);
     if open != before {
         // The file list is the file dialog on a phone: closing the list
@@ -638,6 +680,94 @@ pub fn frame(app: &mut App, ui: &mut Ui) -> bool {
         ctx.request_repaint();
     }
     welcome || sorter
+}
+
+/// Work a panel asked for, done on the frame after the one that asked: the
+/// card that says something is being made is drawn first, so the phone
+/// shows it rather than a frozen picture of the panel it came from.
+#[derive(Clone, Debug)]
+pub(crate) enum Job {
+    Arrange {
+        width: f64,
+        height: f64,
+        gap: f64,
+        rotate: bool,
+        irregular: bool,
+    },
+    Contour {
+        expand: f64,
+        detail: f64,
+        smooth: f64,
+        white: bool,
+        clip: bool,
+    },
+    MattingColour {
+        settings: crate::bg_remove::BgSettings,
+    },
+    MergeDocument {
+        print: bool,
+    },
+}
+
+/// Ask for `job`, and for the card that says `what` is being made.
+pub(crate) fn defer(ctx: &egui::Context, job: Job, what: &str) {
+    ctx.data_mut(|d| {
+        d.insert_temp(Id::new("mobile_job"), job);
+        d.insert_temp(Id::new("mobile_busy"), what.to_string());
+    });
+    ctx.request_repaint();
+}
+
+fn job_take(ctx: &egui::Context) -> Option<Job> {
+    ctx.data_mut(|d| d.remove::<Job>(Id::new("mobile_job")))
+}
+
+/// What is being made right now, if anything: the word a panel asked for,
+/// or one of the jobs that keep their own progress.
+fn busy_what(ctx: &egui::Context, app: &App) -> Option<String> {
+    if let Some(what) = ctx.data(|d| d.get_temp::<String>(Id::new("mobile_busy"))) {
+        return Some(what);
+    }
+    if app.ai_image.busy() {
+        return Some(tr("aigen.in_progress"));
+    }
+    if ctx
+        .data(|d| d.get_temp::<(usize, usize)>(Id::new("matting_progress")))
+        .is_some()
+    {
+        return Some(tr("mobile.working"));
+    }
+    None
+}
+
+/// The card in the middle of the screen while something is being made: a
+/// ring that turns, and a word for what it is. Nothing else is in reach
+/// while it shows, so it covers the panels as well as the drawing.
+fn busy_card(ctx: &egui::Context, screen: Rect, m3: &M3, what: &str) {
+    egui::Area::new(Id::new("mobile_busy_card"))
+        .order(egui::Order::Foreground)
+        .pivot(egui::Align2::CENTER_CENTER)
+        .fixed_pos(screen.center())
+        .interactable(false)
+        .show(ctx, |ui| {
+            Frame::new()
+                .fill(m3.surface)
+                .corner_radius(20.0)
+                .shadow(crate::theme::shadow(egui::epaint::Shadow {
+                    offset: [0, 8],
+                    blur: 32,
+                    spread: 0,
+                    color: Color32::from_black_alpha(90),
+                }))
+                .inner_margin(egui::Margin::symmetric(30, 24))
+                .show(ui, |ui| {
+                    ui.vertical_centered(|ui| {
+                        ui.add(egui::Spinner::new().size(44.0).color(m3.primary));
+                        ui.add_space(12.0);
+                        ui.label(egui::RichText::new(what).size(14.0).color(m3.on));
+                    });
+                });
+        });
 }
 
 fn sheet(ctx: &egui::Context) -> Sheet {
@@ -1509,9 +1639,7 @@ fn matting_sheet(app: &mut App, ui: &mut Ui, m3: &M3) {
             Some(m) if ready => matting_start(app, &ctx, &m, &st),
             _ => {
                 let settings = st.matting_settings.clone();
-                app.apply_to_bitmaps("Remove Background", move |img, _| {
-                    crate::bg_remove::remove_background(img, &settings, 1.0)
-                });
+                defer(&ctx, Job::MattingColour { settings }, &tr("mobile.working"));
             }
         }
     }
@@ -1723,12 +1851,16 @@ fn arrange_sheet(app: &mut App, ui: &mut Ui, m3: &M3) {
     ui.checkbox(&mut st.arrange_irregular, tr("arrange.irregular"));
     ui.add_space(10.0);
     if action_chip(ui, m3, &tr("arrange.run")).clicked() {
-        app.arrange_selection(
-            st.arrange_width_mm,
-            st.arrange_height_mm,
-            st.arrange_gap_mm,
-            st.arrange_rotate,
-            st.arrange_irregular,
+        defer(
+            &ctx,
+            Job::Arrange {
+                width: st.arrange_width_mm,
+                height: st.arrange_height_mm,
+                gap: st.arrange_gap_mm,
+                rotate: st.arrange_rotate,
+                irregular: st.arrange_irregular,
+            },
+            &tr("mobile.working"),
         );
     }
     save_ai_state(&ctx, &st);
@@ -1755,13 +1887,16 @@ fn trace_sheet(app: &mut App, ui: &mut Ui, m3: &M3, open: &mut Sheet) {
     ui.checkbox(&mut st.contour_power_clip, tr("ai.contour_power_clip"));
     ui.add_space(10.0);
     if action_chip(ui, m3, &tr("ai.contour_run")).clicked() {
-        contour_run(
-            app,
-            st.contour_expand_mm,
-            st.contour_detail,
-            st.contour_smooth,
-            st.contour_white_backing,
-            st.contour_power_clip,
+        defer(
+            &ctx,
+            Job::Contour {
+                expand: st.contour_expand_mm,
+                detail: st.contour_detail,
+                smooth: st.contour_smooth,
+                white: st.contour_white_backing,
+                clip: st.contour_power_clip,
+            },
+            &tr("mobile.working"),
         );
     }
     save_ai_state(&ctx, &st);

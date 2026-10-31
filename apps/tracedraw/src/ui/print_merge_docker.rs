@@ -673,6 +673,21 @@ fn anchor_grid(ui: &mut Ui, anchor: &mut u8) {
     }
 }
 
+/// The document a merge makes. On a phone it is asked for rather than made
+/// on the spot, so the card that says it is being made is drawn first; on a
+/// desk, where there is no such card, it is made at once.
+fn merge_document(app: &mut App, ctx: &egui::Context, print: bool) {
+    if crate::ui::mobile::phone() {
+        crate::ui::mobile::defer(
+            ctx,
+            crate::ui::mobile::Job::MergeDocument { print },
+            &tr("mobile.working"),
+        );
+    } else {
+        app.create_merged_document(print);
+    }
+}
+
 pub fn print_merge(app: &mut App, ui: &mut Ui) {
     let loaded = app.merge_state.is_some();
     let full = ui.available_width();
@@ -851,7 +866,7 @@ pub fn print_merge(app: &mut App, ui: &mut Ui) {
             )
             .clicked()
         {
-            app.create_merged_document(false);
+            merge_document(app, ui.ctx(), false);
         }
         if ui
             .add_enabled(
@@ -860,7 +875,7 @@ pub fn print_merge(app: &mut App, ui: &mut Ui) {
             )
             .clicked()
         {
-            app.create_merged_document(true);
+            merge_document(app, ui.ctx(), true);
         }
         if pick_folder {
             if let Some(dir) = crate::files::pick_folder() {
