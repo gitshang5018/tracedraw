@@ -6793,7 +6793,7 @@ idphoto.red = "红底"
 
 ai.dimension = "一键标注"
 ai.dimension_done = "已完成一键尺寸标注"
-ai.native_vectorize = "自研矢量化"
+ai.native_vectorize = "图片矢量"
 ai.vectorize_done = "高清矢量化完成"
 ai.vectorize_result = "矢量化图形"
 ai.select_bitmap_first = "请先选中位图对象"
