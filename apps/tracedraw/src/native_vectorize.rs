@@ -7,7 +7,7 @@
 
 use image::RgbaImage;
 use tracedraw_core::{
-    geometry::{BezPath, CubicBez, ParamCurve, ParamCurveDeriv, Point, Vec2},
+    geometry::{BezPath, CubicBez, ParamCurve, ParamCurveDeriv, PathEl, Point, Vec2},
     Color,
 };
 
@@ -22,8 +22,6 @@ pub struct VectorizeOptions {
     pub corner_threshold_rad: f64,
     /// Collinear straight-line snapping tolerance in pixels (default 0.25 px).
     pub line_snap_tolerance: f64,
-    /// Orthogonal alignment angle threshold in radians (default 1.5 degrees).
-    pub ortho_snap_rad: f64,
     /// Outward dilation offset in pixels for base/underlap layers (default 0.6 px).
     pub dilation_px: f64,
     /// Minimum island pixel count to keep (default 4).
@@ -39,7 +37,6 @@ impl Default for VectorizeOptions {
             tolerance: 0.35,
             corner_threshold_rad: 42.0f64.to_radians(),
             line_snap_tolerance: 0.25,
-            ortho_snap_rad: 1.5f64.to_radians(),
             dilation_px: 0.6,
             min_speck_area: 4,
             ignore_transparent: true,
@@ -135,7 +132,6 @@ pub fn oklab_dist_sq(c1: [f32; 3], c2: [f32; 3]) -> f32 {
 
 struct QuantizedImage {
     palette_rgb: Vec<[u8; 3]>,
-    palette_oklab: Vec<[f32; 3]>,
     labels: Vec<Option<usize>>,
 }
 
@@ -162,7 +158,6 @@ fn quantize_oklab(
     if opaque_indices.is_empty() {
         return QuantizedImage {
             palette_rgb: Vec::new(),
-            palette_oklab: Vec::new(),
             labels: vec![None; total],
         };
     }
@@ -265,7 +260,6 @@ fn quantize_oklab(
 
     QuantizedImage {
         palette_rgb,
-        palette_oklab: centers,
         labels,
     }
 }
@@ -323,7 +317,6 @@ fn despeckle_labels(
         }
 
         if comp.len() < min_area {
-            // Find most frequent neighbor label around this small island
             let mut neighbor_counts = std::collections::HashMap::new();
             for &idx in &comp {
                 let x = idx % w;
@@ -353,7 +346,7 @@ fn despeckle_labels(
 }
 
 // ---------------------------------------------------------------------------
-// 4. Subpixel Contour Interpolation & Polygon Normal Dilation
+// 4. Polygon Normal Dilation
 // ---------------------------------------------------------------------------
 
 fn signed_area(pts: &[Point]) -> f64 {
@@ -411,100 +404,15 @@ fn dilate_ring(ring: &[Point], offset_px: f64) -> Vec<Point> {
             continue;
         }
         let n_unit = n_avg / l_avg;
-        let cos_half = (n_unit.x * n1.x + n_unit.y * n1.y).max(0.1);
-        let miter = (1.0 / cos_half).clamp(0.8, 1.8);
+        let cos_half = (n_unit.x * n1.x + n_unit.y * n1.y).max(0.2);
+        let miter = (1.0 / cos_half).clamp(0.8, 1.3);
         out.push(curr + n_unit * (offset_px * miter));
     }
     out
 }
 
 // ---------------------------------------------------------------------------
-// 5. Corner Detection, Line Snapping, and Orthogonal Alignment
-// ---------------------------------------------------------------------------
-
-fn detect_corners(pts: &[Point], corner_threshold_rad: f64) -> Vec<usize> {
-    let n = pts.len();
-    if n < 4 {
-        return (0..n).collect();
-    }
-    let reach = 3usize.min(n / 4).max(1);
-    let at = |i: isize| pts[i.rem_euclid(n as isize) as usize];
-    let turn: Vec<f64> = (0..n as isize)
-        .map(|i| {
-            let (a, b, c) = (at(i - reach as isize), at(i), at(i + reach as isize));
-            let (u, v) = (b - a, c - b);
-            let cross = u.x * v.y - u.y * v.x;
-            let dot = u.x * v.x + u.y * v.y;
-            cross.atan2(dot).abs()
-        })
-        .collect();
-
-    let mut corners = Vec::new();
-    for i in 0..n {
-        if turn[i] >= corner_threshold_rad {
-            let is_local_max = (1..=reach as isize).all(|d| {
-                let before = turn[(i as isize - d).rem_euclid(n as isize) as usize];
-                let after = turn[(i as isize + d).rem_euclid(n as isize) as usize];
-                turn[i] >= before && turn[i] > after
-            });
-            if is_local_max {
-                corners.push(i);
-            }
-        }
-    }
-    corners
-}
-
-fn try_snap_straight(
-    pts: &[Point],
-    tolerance: f64,
-    ortho_rad: f64,
-) -> Option<(Point, Point)> {
-    if pts.len() < 2 {
-        return None;
-    }
-    let p0 = pts[0];
-    let p1 = pts[pts.len() - 1];
-    let v = p1 - p0;
-    let len = v.hypot();
-    if len < 1e-6 {
-        return Some((p0, p1));
-    }
-    let u = v / len;
-    let n = Vec2::new(-u.y, u.x);
-
-    let mut max_dist = 0.0f64;
-    for &p in &pts[1..pts.len() - 1] {
-        let dist = ((p - p0).x * n.x + (p - p0).y * n.y).abs();
-        if dist > max_dist {
-            max_dist = dist;
-        }
-    }
-
-    if max_dist <= tolerance {
-        let mut ep0 = p0;
-        let mut ep1 = p1;
-        let angle = v.y.atan2(v.x).abs();
-        let near_horiz = angle < ortho_rad || (std::f64::consts::PI - angle).abs() < ortho_rad;
-        let near_vert = (angle - std::f64::consts::FRAC_PI_2).abs() < ortho_rad;
-
-        if near_horiz {
-            let avg_y = (ep0.y + ep1.y) * 0.5;
-            ep0.y = avg_y;
-            ep1.y = avg_y;
-        } else if near_vert {
-            let avg_x = (ep0.x + ep1.x) * 0.5;
-            ep0.x = avg_x;
-            ep1.x = avg_x;
-        }
-        Some((ep0, ep1))
-    } else {
-        None
-    }
-}
-
-// ---------------------------------------------------------------------------
-// 6. Energy-Minimizing Schneider Cubic Bezier Curve Fitting
+// 5. Straight Line Check & Schneider Bezier Curve Fitting
 // ---------------------------------------------------------------------------
 
 fn unit(v: Vec2) -> Vec2 {
@@ -517,6 +425,27 @@ fn unit(v: Vec2) -> Vec2 {
 }
 
 const TANGENT_REACH: usize = 3;
+
+fn is_collinear_segment(pts: &[Point], tolerance: f64) -> bool {
+    if pts.len() <= 2 {
+        return true;
+    }
+    let p0 = pts[0];
+    let p1 = pts[pts.len() - 1];
+    let v = p1 - p0;
+    let len = v.hypot();
+    if len < 1e-6 {
+        return true;
+    }
+    let n = Vec2::new(-v.y / len, v.x / len);
+    for &p in &pts[1..pts.len() - 1] {
+        let dist = ((p.x - p0.x) * n.x + (p.y - p0.y) * n.y).abs();
+        if dist > tolerance {
+            return false;
+        }
+    }
+    true
+}
 
 fn fit_cubics(
     pts: &[Point],
@@ -543,7 +472,7 @@ fn fit_cubics_rec(
     let (p0, p3) = (pts[0], pts[n - 1]);
     let dist = (p3 - p0).hypot();
     if n == 2 || depth > 24 {
-        let h = dist / 3.0;
+        let h = (dist / 3.0).min(dist * 0.5);
         out.curve_to(p0 + t1 * h, p3 + t2 * h, p3);
         return;
     }
@@ -554,6 +483,7 @@ fn fit_cubics_rec(
     }
     let total = u[n - 1];
     if total < 1e-12 {
+        out.line_to(p3);
         return;
     }
     for v in u.iter_mut() {
@@ -578,16 +508,27 @@ fn fit_cubics_rec(
             x1 += a2.dot(tmp);
         }
         let det = c00 * c11 - c01 * c01;
-        let (mut l1, mut l2) = if det.abs() > 1e-12 {
-            ((x0 * c11 - x1 * c01) / det, (c00 * x1 - c01 * x0) / det)
-        } else {
-            (0.0, 0.0)
-        };
         let eps = 1e-6 * dist;
-        if !(l1.is_finite() && l2.is_finite()) || l1 < eps || l2 < eps {
-            l1 = dist / 3.0;
-            l2 = dist / 3.0;
-        }
+        let max_len = dist * 1.2;
+
+        let (l1, l2) = if det.abs() > 1e-12 {
+            let raw_l1 = (x0 * c11 - x1 * c01) / det;
+            let raw_l2 = (c00 * x1 - c01 * x0) / det;
+            if raw_l1.is_finite()
+                && raw_l2.is_finite()
+                && raw_l1 >= eps
+                && raw_l2 >= eps
+                && raw_l1 <= max_len
+                && raw_l2 <= max_len
+            {
+                (raw_l1, raw_l2)
+            } else {
+                (dist / 3.0, dist / 3.0)
+            }
+        } else {
+            (dist / 3.0, dist / 3.0)
+        };
+
         CubicBez::new(p0, p0 + t1 * l1, p3 + t2 * l2, p3)
     };
 
@@ -645,37 +586,112 @@ fn fit_cubics_rec(
     fit_cubics_rec(&pts[split..], -centre, t2, tolerance, out, depth + 1);
 }
 
-/// Fit a closed ring using corner detection, line snapping, and Schneider Beziers.
+fn polyline_closed(pts: &[Point]) -> BezPath {
+    let mut p = BezPath::new();
+    if let Some(&f) = pts.first() {
+        p.move_to(f);
+        for &q in &pts[1..] {
+            p.line_to(q);
+        }
+        p.close_path();
+    }
+    p
+}
+
+/// Fit a closed ring using unit-step resampling, corner detection, line snapping, and Schneider Beziers.
 fn fit_ring_precision(ring: &[Point], options: &VectorizeOptions) -> BezPath {
+    let mut pts: Vec<Point> = Vec::new();
+    let mut starts: Vec<Point> = Vec::new();
     let n = ring.len();
     if n < 3 {
         return BezPath::new();
     }
-    if n == 3 {
-        let mut p = BezPath::new();
-        p.move_to(ring[0]);
-        p.line_to(ring[1]);
-        p.line_to(ring[2]);
-        p.close_path();
-        return p;
+
+    // Step 1: Unit-step edge resampling to eliminate sparse-vertex artifacts
+    for i in 0..n {
+        let (a, b) = (ring[i], ring[(i + 1) % n]);
+        let steps = (b - a).hypot().round().max(1.0) as usize;
+        for k in 0..steps {
+            starts.push(a.lerp(b, k as f64 / steps as f64));
+            pts.push(a.lerp(b, (k as f64 + 0.5) / steps as f64));
+        }
     }
 
-    let mut corners = detect_corners(ring, options.corner_threshold_rad);
+    let n = pts.len();
+    if n < 4 {
+        return polyline_closed(&pts);
+    }
+
+    // Step 2: Feature corner detection
+    let reach = 3usize.min(n / 4).max(1);
+    let threshold = options.corner_threshold_rad;
+    let at = |i: isize| pts[i.rem_euclid(n as isize) as usize];
+    let turn: Vec<f64> = (0..n as isize)
+        .map(|i| {
+            let (a, b, c) = (at(i - reach as isize), at(i), at(i + reach as isize));
+            let (u, v) = (b - a, c - b);
+            let cross = u.x * v.y - u.y * v.x;
+            let dot = u.x * v.x + u.y * v.y;
+            cross.atan2(dot).abs()
+        })
+        .collect();
+
+    let corners: Vec<usize> = (0..n)
+        .filter(|&i| {
+            turn[i] > threshold
+                && (1..=reach as isize).all(|d| {
+                    let before = turn[(i as isize - d).rem_euclid(n as isize) as usize];
+                    let after = turn[(i as isize + d).rem_euclid(n as isize) as usize];
+                    turn[i] >= before && turn[i] > after
+                })
+        })
+        .collect();
+
+    // Step 3: Anchor corners to pixel corners
+    let mut is_corner = vec![false; n];
+    for &c in &corners {
+        is_corner[c] = true;
+        let mid = pts[(c + n - 1) % n].midpoint(pts[(c + 1) % n]);
+        let (a, b) = (starts[c], starts[(c + 1) % n]);
+        pts[c] = if (a - mid).hypot() > (b - mid).hypot() {
+            a
+        } else {
+            b
+        };
+    }
+
+    // Step 4: Gentle smoothing passes between corners to eliminate grid stairs
+    for _ in 0..4 {
+        let prev = pts.clone();
+        for i in 0..n {
+            if is_corner[i] {
+                continue;
+            }
+            let a = prev[(i + n - 1) % n];
+            let c = prev[(i + 1) % n];
+            pts[i] = Point::new(
+                (a.x + 2.0 * prev[i].x + c.x) / 4.0,
+                (a.y + 2.0 * prev[i].y + c.y) / 4.0,
+            );
+        }
+    }
 
     let mut out = BezPath::new();
-    if corners.is_empty() {
+
+    // If no distinct corners or only 1 corner, fit 4 quarter curves meeting smoothly
+    if corners.len() < 2 {
         let cuts: Vec<usize> = (0..4).map(|k| k * n / 4).collect();
-        let tangent = |i: usize| unit(ring[(i + 2) % n] - ring[(i + n - 2) % n]);
-        out.move_to(ring[0]);
+        let tangent = |i: usize| unit(pts[(i + reach) % n] - pts[(i + n - reach) % n]);
+        out.move_to(pts[0]);
         for k in 0..4 {
             let (a, b) = (cuts[k], cuts[(k + 1) % 4]);
             let mut piece: Vec<Point> = if b > a {
-                ring[a..=b].to_vec()
+                pts[a..=b].to_vec()
             } else {
-                ring[a..].to_vec()
+                pts[a..].to_vec()
             };
             if b <= a {
-                piece.push(ring[0]);
+                piece.push(pts[0]);
             }
             fit_cubics(&piece, tangent(a), -tangent(b), options.tolerance, &mut out);
         }
@@ -683,17 +699,20 @@ fn fit_ring_precision(ring: &[Point], options: &VectorizeOptions) -> BezPath {
         return out;
     }
 
-    corners.sort_unstable();
-    corners.dedup();
-    out.move_to(ring[corners[0]]);
+    // Segment chaining between corners with strict G0 continuity
+    let mut sorted_corners = corners;
+    sorted_corners.sort_unstable();
+    sorted_corners.dedup();
 
-    for k in 0..corners.len() {
-        let a = corners[k];
-        let b = corners[(k + 1) % corners.len()];
+    out.move_to(pts[sorted_corners[0]]);
+
+    for k in 0..sorted_corners.len() {
+        let a = sorted_corners[k];
+        let b = sorted_corners[(k + 1) % sorted_corners.len()];
         let mut piece: Vec<Point> = Vec::new();
         let mut i = a;
         loop {
-            piece.push(ring[i]);
+            piece.push(pts[i]);
             if i == b && piece.len() > 1 {
                 break;
             }
@@ -707,13 +726,9 @@ fn fit_ring_precision(ring: &[Point], options: &VectorizeOptions) -> BezPath {
             continue;
         }
 
-        // Try straight line and orthogonal snapping first
-        if let Some((_start, end)) = try_snap_straight(
-            &piece,
-            options.line_snap_tolerance,
-            options.ortho_snap_rad,
-        ) {
-            out.line_to(end);
+        let end_pt = pts[b];
+        if is_collinear_segment(&piece, options.line_snap_tolerance) {
+            out.line_to(end_pt);
         } else {
             let m = piece.len();
             let far = TANGENT_REACH.min(m - 1);
@@ -728,7 +743,7 @@ fn fit_ring_precision(ring: &[Point], options: &VectorizeOptions) -> BezPath {
 }
 
 // ---------------------------------------------------------------------------
-// 7. Full Vectorization Pipeline
+// 6. Full Vectorization Pipeline
 // ---------------------------------------------------------------------------
 
 /// Vectorize an RGBA image into high-precision, gap-free vector shapes.
@@ -808,10 +823,28 @@ pub fn vectorize(img: &RgbaImage, options: &VectorizeOptions) -> Vec<crate::trac
             }
         }
 
-        if !path.elements().is_empty() {
+        // Clamp any out-of-bounds coordinates to image range + 1.0 margin as a safety guarantee
+        let mut sanitized = BezPath::new();
+        let max_x = w as f64 + 1.0;
+        let max_y = h as f64 + 1.0;
+        let clamp_pt = |p: Point| Point::new(p.x.clamp(-1.0, max_x), p.y.clamp(-1.0, max_y));
+
+        for el in path.elements() {
+            match el {
+                PathEl::MoveTo(p) => sanitized.move_to(clamp_pt(*p)),
+                PathEl::LineTo(p) => sanitized.line_to(clamp_pt(*p)),
+                PathEl::QuadTo(c, p) => sanitized.quad_to(clamp_pt(*c), clamp_pt(*p)),
+                PathEl::CurveTo(c1, c2, p) => {
+                    sanitized.curve_to(clamp_pt(*c1), clamp_pt(*c2), clamp_pt(*p))
+                }
+                PathEl::ClosePath => sanitized.close_path(),
+            }
+        }
+
+        if !sanitized.elements().is_empty() {
             let rgb = quantized.palette_rgb[ci];
             out.push(crate::trace::Traced {
-                path,
+                path: sanitized,
                 color: Color::rgb8(rgb[0], rgb[1], rgb[2]),
                 closed: true,
             });
@@ -857,16 +890,13 @@ mod tests {
     }
 
     #[test]
-    fn square_snaps_to_straight_lines() {
+    fn straight_segment_collinear_check() {
         let pts = vec![
             Point::new(10.0, 10.0),
             Point::new(20.0, 10.0),
             Point::new(30.0, 10.0),
             Point::new(40.0, 10.0),
         ];
-        let snapped = try_snap_straight(&pts, 0.25, 1.5f64.to_radians());
-        assert!(snapped.is_some());
-        let (p0, p1) = snapped.unwrap();
-        assert_eq!(p0.y, p1.y);
+        assert!(is_collinear_segment(&pts, 0.25));
     }
 }
