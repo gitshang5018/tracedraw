@@ -72,7 +72,7 @@ impl<'a, N: Numeric> NumField<'a, N> {
     /// The key this box is known by, when the value it edits is the helper's
     /// own local rather than something that stands for it.
     pub fn key(mut self, key: impl std::hash::Hash) -> Self {
-        use std::hash::{Hash, Hasher};
+        use std::hash::Hasher;
         let mut h = std::collections::hash_map::DefaultHasher::new();
         key.hash(&mut h);
         self.key = Some(h.finish());

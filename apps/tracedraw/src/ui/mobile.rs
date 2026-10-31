@@ -573,17 +573,18 @@ pub fn frame(app: &mut App, ui: &mut Ui) -> bool {
     // the band after the bars left them underneath it, and the strip alone
     // floating over the keyboard, which is not a bar that can be typed in.
     let ime = ime_height(&ctx);
+    let bar_ime = keyboard_bar_gap(app, ime);
     // The properties of what is selected sit above the bars, and take no
     // room at all while nothing is selected.
     let strip_h = if land {
         // On its side the phone keeps the tools down the left edge and
         // the destinations down the right one, out of the drawing's way.
-        keyboard_gap(ui, ime);
+        keyboard_gap(ui, bar_ime);
         tools_rail(app, ui, &m3, inset);
         nav_rail(app, ui, &m3, inset, &mut open);
         selection_strip(app, ui, &m3, open)
     } else {
-        keyboard_gap(ui, ime);
+        keyboard_gap(ui, bar_ime);
         nav_bar(app, ui, &m3, inset.bottom, &mut open);
         tools_bar(app, ui, &m3);
         selection_strip(app, ui, &m3, open)
@@ -646,7 +647,7 @@ pub fn frame(app: &mut App, ui: &mut Ui) -> bool {
     } else if land {
         window.bottom() - inset.bottom
     } else {
-        window.bottom() - inset.bottom - NAV_H - TOOLS_H - strip_h - ime
+        window.bottom() - inset.bottom - NAV_H - TOOLS_H - strip_h - bar_ime
     };
     snackbar(app, ui, floor);
     if open == Sheet::Palette {
@@ -944,6 +945,19 @@ fn top_bar(app: &mut App, ui: &mut Ui, m3: &M3, safe: Safe, open: &mut Sheet) {
 /// The room the phone's keyboard takes, between the bars and the strip of
 /// properties above them: nothing is drawn there, and the keyboard covers
 /// it.
+/// How much the navigation and tools bars should be lifted above the keyboard:
+/// zero while text on the canvas is being edited (the user is looking at and
+/// typing into the canvas, so the bars stay at the bottom rather than being
+/// pushed up), and ime for fields in sheets and dialogs so they stay above
+/// the keyboard.
+fn keyboard_bar_gap(app: &App, ime: f32) -> f32 {
+    if app.text_edit.is_some() {
+        0.0
+    } else {
+        ime
+    }
+}
+
 fn keyboard_gap(ui: &mut Ui, ime: f32) {
     if ime <= 0.5 {
         return;
@@ -4288,6 +4302,16 @@ mod tests {
     fn a_phone_standing_up_uses_the_whole_top_inset() {
         assert_eq!(top_padding(safe(28.0, 28.0, true), false), 28.0);
         assert_eq!(top_padding(safe(0.0, 0.0, true), false), 0.0);
+    }
+
+    #[test]
+    fn canvas_text_editing_leaves_bars_at_bottom() {
+        let ctx = crate::theme::ui_context();
+        let mut app = App::new(&ctx, None);
+        let ime = 300.0;
+        assert_eq!(keyboard_bar_gap(&app, ime), 300.0);
+        app.text_edit = Some(crate::app::TextEdit::at_end(tracedraw_core::id::ShapeId(1), 0));
+        assert_eq!(keyboard_bar_gap(&app, ime), 0.0);
     }
 
     #[test]
