@@ -6790,3 +6790,11 @@ idphoto.small_two_inch = "Small two inch" # mt
 idphoto.white = "White" # mt
 idphoto.blue = "Blue" # mt
 idphoto.red = "Red" # mt
+
+ai.dimension = "أبعاد تلقائية"
+ai.dimension_done = "اكتملت الأبعاد التلقائية"
+ai.native_vectorize = "تحويل متجهي أصلي"
+ai.vectorize_done = "اكتمل التحويل عالي الدقة"
+ai.vectorize_result = "مجموعة متجهية"
+ai.select_bitmap_first = "يرجى تحديد صورة نقطية أولاً"
+ai.no_selection = "يرجى تحديد كائن أولاً"

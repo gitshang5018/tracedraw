@@ -1904,6 +1904,72 @@ impl App {
         }
     }
 
+    /// High-precision proprietary vectorization of selected bitmaps.
+    pub fn native_vectorize_selection(&mut self) {
+        let bitmaps = self.bitmap_shapes();
+        if bitmaps.is_empty() {
+            self.status = crate::i18n::tr("ai.select_bitmap_first");
+            return;
+        }
+        let Some(layer) = self.active_layer() else {
+            return;
+        };
+        let options = crate::native_vectorize::VectorizeOptions::default();
+        let mut cmds = Vec::new();
+        let mut new_sel = Vec::new();
+
+        for (id, rect, w, h, png) in bitmaps {
+            let Some(img) = crate::bitmap_fx::decode(&png) else {
+                continue;
+            };
+            let Ok((_, src)) = self.doc().shape(id) else {
+                continue;
+            };
+            let transform = src.transform;
+            let traced = crate::native_vectorize::vectorize(&img, &options);
+            let mut children = Vec::new();
+            for t in traced {
+                let sid = self.engine.new_shape_id();
+                let path = crate::trace::to_rect(&t.path, w, h, rect);
+                let mut s = Shape::new(
+                    sid,
+                    ShapeKind::Path {
+                        path,
+                        closed: t.closed,
+                    },
+                );
+                if t.closed {
+                    s.fill = Fill::Solid(t.color);
+                    s.stroke = None;
+                } else {
+                    s.fill = Fill::None;
+                    s.stroke = Some(tracedraw_core::Stroke::new(t.color, 0.2));
+                }
+                children.push(s);
+            }
+            if children.is_empty() {
+                continue;
+            }
+            let gid = self.engine.new_shape_id();
+            let mut group = Shape::new(gid, ShapeKind::Group { children });
+            group.transform = transform;
+            group.name = Some(tr("ai.vectorize_result"));
+            cmds.push(Command::AddShape {
+                layer,
+                shape: group,
+            });
+            new_sel.push(gid);
+        }
+        if !cmds.is_empty() {
+            if let Err(e) = self.engine.run_batch("Native Vectorize", &cmds) {
+                self.status = e.to_string();
+            } else {
+                self.selection = new_sel;
+                self.status = crate::i18n::tr("ai.vectorize_done");
+            }
+        }
+    }
+
     // ----- text ------------------------------------------------------------------------
 
     pub fn text_shapes(&self) -> Vec<Shape> {

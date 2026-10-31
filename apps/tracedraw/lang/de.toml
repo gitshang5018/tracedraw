@@ -6790,3 +6790,11 @@ idphoto.small_two_inch = "Small two inch" # mt
 idphoto.white = "White" # mt
 idphoto.blue = "Blue" # mt
 idphoto.red = "Red" # mt
+
+ai.dimension = "Automatische Bemaßung"
+ai.dimension_done = "Automatische Bemaßung abgeschlossen"
+ai.native_vectorize = "Native Vektorisierung"
+ai.vectorize_done = "Hochpräzise Vektorisierung abgeschlossen"
+ai.vectorize_result = "Vektorisierte Gruppe"
+ai.select_bitmap_first = "Bitte zuerst eine Bitmap auswählen"
+ai.no_selection = "Bitte zuerst ein Objekt auswählen"

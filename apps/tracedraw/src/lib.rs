@@ -111,6 +111,7 @@ mod mixed;
 #[cfg(test)]
 mod mockup_tests;
 mod multipage;
+mod native_vectorize;
 mod net;
 mod nesting;
 mod new_document;

@@ -6790,3 +6790,11 @@ idphoto.small_two_inch = "Small two inch" # mt
 idphoto.white = "White" # mt
 idphoto.blue = "Blue" # mt
 idphoto.red = "Red" # mt
+
+ai.dimension = "Авторазмеры"
+ai.dimension_done = "Автоматическая простановка размеров завершена"
+ai.native_vectorize = "Векторизация"
+ai.vectorize_done = "Высокоточная векторизация завершена"
+ai.vectorize_result = "Векторизованная группа"
+ai.select_bitmap_first = "Сначала выберите растровое изображение"
+ai.no_selection = "Сначала выберите объект"

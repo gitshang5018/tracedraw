@@ -6790,3 +6790,11 @@ idphoto.small_two_inch = "Small two inch" # mt
 idphoto.white = "White" # mt
 idphoto.blue = "Blue" # mt
 idphoto.red = "Red" # mt
+
+ai.dimension = "Automatické kótování"
+ai.dimension_done = "Automatické kótování dokončeno"
+ai.native_vectorize = "Nativní vektorizace"
+ai.vectorize_done = "Vysoce přesná vektorizace dokončena"
+ai.vectorize_result = "Vektorizovaná skupina"
+ai.select_bitmap_first = "Nejprve vyberte bitmapu"
+ai.no_selection = "Nejprve vyberte objekt"

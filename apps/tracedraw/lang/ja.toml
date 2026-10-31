@@ -6790,3 +6790,11 @@ idphoto.small_two_inch = "Small two inch" # mt
 idphoto.white = "White" # mt
 idphoto.blue = "Blue" # mt
 idphoto.red = "Red" # mt
+
+ai.dimension = "自動寸法"
+ai.dimension_done = "寸法記入が完了しました"
+ai.native_vectorize = "ネイティブベクター化"
+ai.vectorize_done = "高精度ベクター化が完了しました"
+ai.vectorize_result = "ベクター化グループ"
+ai.select_bitmap_first = "最初にビットマップを選択してください"
+ai.no_selection = "最初に対象を選択してください"

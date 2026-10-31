@@ -6790,3 +6790,11 @@ idphoto.small_two_inch = "Small two inch" # mt
 idphoto.white = "White" # mt
 idphoto.blue = "Blue" # mt
 idphoto.red = "Red" # mt
+
+ai.dimension = "一鍵標注"
+ai.dimension_done = "已完成一鍵尺寸標注"
+ai.native_vectorize = "自研向量化"
+ai.vectorize_done = "高清向量化完成"
+ai.vectorize_result = "向量化圖形"
+ai.select_bitmap_first = "請先選中點陣圖物件"
+ai.no_selection = "請先選中物件"

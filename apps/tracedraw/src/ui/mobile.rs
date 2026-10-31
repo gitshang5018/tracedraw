@@ -1400,6 +1400,8 @@ enum AiMenu {
     Sheet(Sheet),
     Arrange,
     Group,
+    Dimension,
+    Vectorize,
 }
 
 /// The chip at the left edge over the drawing: the image tools whose models
@@ -1427,6 +1429,8 @@ fn ai_chip(app: &mut App, ui: &mut Ui, m3: &M3, full: Rect, open: &mut Sheet) {
         (AiMenu::Sheet(Sheet::Matting), "ai.matting"),
         (AiMenu::Sheet(Sheet::Variable), "ai.variable"),
         (AiMenu::Sheet(Sheet::Trace), "ai.trace"),
+        (AiMenu::Vectorize, "ai.native_vectorize"),
+        (AiMenu::Dimension, "ai.dimension"),
         (AiMenu::Arrange, "docker.smart_arrange"),
         (AiMenu::Group, "docker.smart_group"),
     ];
@@ -1474,6 +1478,8 @@ fn ai_chip(app: &mut App, ui: &mut Ui, m3: &M3, full: Rect, open: &mut Sheet) {
                                 AiMenu::Sheet(sheet) => *open = sheet,
                                 AiMenu::Arrange => *open = Sheet::Arrange,
                                 AiMenu::Group => app.smart_group(),
+                                AiMenu::Dimension => app.auto_dimension_selection(),
+                                AiMenu::Vectorize => app.native_vectorize_selection(),
                             }
                             ui.ctx().data_mut(|d| d.insert_temp(menu_key, false));
                         }

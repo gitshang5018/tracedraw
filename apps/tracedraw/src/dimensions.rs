@@ -1051,6 +1051,54 @@ impl App {
         );
     }
 
+    /// One-click dimensioning: annotates the width and height of selected objects.
+    pub fn auto_dimension_selection(&mut self) {
+        let shapes = self.selected_shapes();
+        if shapes.is_empty() {
+            self.status = crate::i18n::tr("ai.no_selection");
+            return;
+        }
+        let orig_selection = self.selection.clone();
+        let mut created = Vec::new();
+
+        for s in &shapes {
+            let b = self.visual_bounds(s);
+            let (x0, x1) = (b.x0.min(b.x1), b.x0.max(b.x1));
+            let (y0, y1) = (b.y0.min(b.y1), b.y0.max(b.y1));
+            let w = x1 - x0;
+            let h = y1 - y0;
+            if w <= 1e-4 || h <= 1e-4 {
+                continue;
+            }
+            let offset_w = (h * 0.15).clamp(8.0, 30.0);
+            let offset_h = (w * 0.15).clamp(8.0, 30.0);
+
+            // Horizontal dimension (width): below the object
+            let p_bl = Point::new(x0, y0);
+            let p_br = Point::new(x1, y0);
+            let at_bottom = Point::new((x0 + x1) * 0.5, y0 - offset_w);
+            self.create_dimension(p_bl, p_br, at_bottom);
+            if let Some(&gid) = self.selection.last() {
+                created.push(gid);
+            }
+
+            // Vertical dimension (height): to the right of the object
+            let p_tr = Point::new(x1, y1);
+            let at_right = Point::new(x1 + offset_h, (y0 + y1) * 0.5);
+            self.create_dimension(p_br, p_tr, at_right);
+            if let Some(&gid) = self.selection.last() {
+                created.push(gid);
+            }
+        }
+
+        if !created.is_empty() {
+            let mut final_sel = orig_selection;
+            final_sel.extend(created);
+            self.select(final_sel);
+            self.status = crate::i18n::tr("ai.dimension_done");
+        }
+    }
+
     /// An angular dimension: at `center` from `a` to `b`, the arc through
     /// `label_at`.
     pub fn create_angular_dimension(&mut self, center: Point, a: Point, b: Point, label_at: Point) {

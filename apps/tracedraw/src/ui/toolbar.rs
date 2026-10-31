@@ -974,6 +974,14 @@ fn ai_button(app: &mut App, ui: &mut Ui) {
                 app.open_ai_drawing();
                 ui.close();
             }
+            if ui.button(tr("ai.dimension")).clicked() {
+                app.auto_dimension_selection();
+                ui.close();
+            }
+            if ui.button(tr("ai.native_vectorize")).clicked() {
+                app.native_vectorize_selection();
+                ui.close();
+            }
             let cutout = app.ai_image_ready() && app.ai_source_bitmap().is_some();
             let tip = app.ai_image_tip().unwrap_or_default();
             if ui

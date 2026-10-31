@@ -50,7 +50,11 @@ fn root(parent: &mut [usize], mut i: usize) -> usize {
 
 /// Whether two boxes touch once each is grown by `gap`.
 fn meets(a: (f64, f64, f64, f64), b: (f64, f64, f64, f64), gap: f64) -> bool {
-    a.0 - gap <= b.2 && b.0 - gap <= a.2 && a.1 - gap <= b.3 && b.1 - gap <= a.3
+    let (min_xa, max_xa) = (a.0.min(a.2), a.0.max(a.2));
+    let (min_ya, max_ya) = (a.1.min(a.3), a.1.max(a.3));
+    let (min_xb, max_xb) = (b.0.min(b.2), b.0.max(b.2));
+    let (min_yb, max_yb) = (b.1.min(b.3), b.1.max(b.3));
+    min_xa - gap <= max_xb && min_xb - gap <= max_xa && min_ya - gap <= max_yb && min_yb - gap <= max_ya
 }
 
 #[cfg(test)]

@@ -6790,3 +6790,11 @@ idphoto.small_two_inch = "Small two inch" # mt
 idphoto.white = "White" # mt
 idphoto.blue = "Blue" # mt
 idphoto.red = "Red" # mt
+
+ai.dimension = "Dimensi Otomatis"
+ai.dimension_done = "Dimensi otomatis selesai"
+ai.native_vectorize = "Vektorisasi Asli"
+ai.vectorize_done = "Vektorisasi presisi tinggi selesai"
+ai.vectorize_result = "Grup Tervektorisasi"
+ai.select_bitmap_first = "Silakan pilih bitmap terlebih dahulu"
+ai.no_selection = "Silakan pilih objek terlebih dahulu"

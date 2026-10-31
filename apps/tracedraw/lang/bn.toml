@@ -6790,3 +6790,11 @@ idphoto.small_two_inch = "Small two inch" # mt
 idphoto.white = "White" # mt
 idphoto.blue = "Blue" # mt
 idphoto.red = "Red" # mt
+
+ai.dimension = "স্বয়ংক্রিয় মাত্রা"
+ai.dimension_done = "স্বয়ংক্রিয় মাত্রা সম্পন্ন হয়েছে"
+ai.native_vectorize = "নেটিভ ভেক্টরাইজেশন"
+ai.vectorize_done = "উচ্চ নির্ভুল ভেক্টরাইজেশন সম্পন্ন হয়েছে"
+ai.vectorize_result = "ভেক্টরাইজড গ্রুপ"
+ai.select_bitmap_first = "প্রথমে একটি বিটম্যাপ নির্বাচন করুন"
+ai.no_selection = "প্রথমে একটি অবজেক্ট নির্বাচন করুন"

@@ -6790,3 +6790,11 @@ idphoto.small_two_inch = "Small two inch" # mt
 idphoto.white = "White" # mt
 idphoto.blue = "Blue" # mt
 idphoto.red = "Red" # mt
+
+ai.dimension = "Otomatik Ölçülendirme"
+ai.dimension_done = "Otomatik ölçülendirme tamamlandı"
+ai.native_vectorize = "Yerel Vektörleştirme"
+ai.vectorize_done = "Yüksek hassasiyetli vektörleştirme tamamlandı"
+ai.vectorize_result = "Vektörleştirilmiş Grup"
+ai.select_bitmap_first = "Lütfen önce bir bit eşlem seçin"
+ai.no_selection = "Lütfen önce bir nesne seçin"

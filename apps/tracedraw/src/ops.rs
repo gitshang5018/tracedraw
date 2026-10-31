@@ -344,7 +344,7 @@ impl App {
 
     /// 智能群组: the selected objects that sit close to each other become
     /// a group each, so a page of parts comes out grouped the way they lie
-    /// on it. What is far from everything else is left alone.
+    /// on it. If all selected items form singletons, groups all of them.
     pub fn smart_group(&mut self) {
         let shapes = self.selected_shapes();
         if shapes.len() < 2 {
@@ -357,9 +357,20 @@ impl App {
                 (b.x0, b.y0, b.x1, b.y1)
             })
             .collect();
-        let gap = self.units.world_from_mm(2.0).abs();
+        let avg_dim = boxes
+            .iter()
+            .map(|b| (b.2 - b.0).abs().max((b.3 - b.1).abs()))
+            .sum::<f64>()
+            / boxes.len() as f64;
+        let gap = (avg_dim * 0.5).max(10.0);
+
+        let mut clusters = crate::arrange::clusters(&boxes, gap);
+        if clusters.iter().all(|c| c.len() < 2) {
+            clusters = vec![(0..shapes.len()).collect()];
+        }
+
         let mut cmds = Vec::new();
-        for cluster in crate::arrange::clusters(&boxes, gap) {
+        for cluster in &clusters {
             if cluster.len() < 2 {
                 continue;
             }
@@ -368,7 +379,24 @@ impl App {
             });
         }
         if !cmds.is_empty() {
-            let _ = self.run_batch_keeping_lines("Smart group", &cmds);
+            let before_ids: std::collections::HashSet<_> = self
+                .page_layers()
+                .into_iter()
+                .flat_map(|l| &l.shapes)
+                .map(|s| s.id)
+                .collect();
+            if self.run_batch_keeping_lines("Smart group", &cmds).is_ok() {
+                let new_groups: Vec<_> = self
+                    .page_layers()
+                    .into_iter()
+                    .flat_map(|l| &l.shapes)
+                    .map(|s| s.id)
+                    .filter(|id| !before_ids.contains(id))
+                    .collect();
+                if !new_groups.is_empty() {
+                    self.select(new_groups);
+                }
+            }
         }
     }
 
