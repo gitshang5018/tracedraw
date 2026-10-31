@@ -321,11 +321,16 @@ impl Window {
                 }
                 // The body scrolls when the phone is short: a dialog that
                 // cannot be scrolled is a dialog with no way out.
-                let max_h = (screen.height() * 0.58).max(140.0);
+                // What the phone has left for the body: the headline above
+                // it, the buttons below it and the card's own edges are not
+                // its room. A dialog with three fields in it is three fields
+                // tall; one with more in it than the phone holds fills this
+                // and scrolls.
+                let max_h = (screen.height() - 40.0 - HEAD_H - 96.0).max(140.0);
                 let body = egui::ScrollArea::vertical()
                     .id_salt("dialog_body")
                     .max_height(max_h)
-                    .auto_shrink([false, false])
+                    .auto_shrink([false, true])
                     .show(ui, |ui| {
                         Frame::new()
                             .inner_margin(Margin {
