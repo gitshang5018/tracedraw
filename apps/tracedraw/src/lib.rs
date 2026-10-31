@@ -114,6 +114,7 @@ mod multipage;
 mod net;
 mod nesting;
 mod new_document;
+mod nfp;
 mod node_edit;
 mod object_clone;
 mod ops;

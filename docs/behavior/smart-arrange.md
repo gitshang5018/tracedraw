@@ -50,22 +50,41 @@ than vanishing.
 
 ## Nest by outline
 
-With the switch on, each part is measured by its own outline, simplified at
-0.2 mm and taken as its convex hull. Twelve angles 15° apart are tried and
-the one whose box is smallest is used, which is what a long thin part
-gains from.
+With the switch on, the shapes themselves are packed rather than the boxes
+around them, by no-fit polygon.
 
-After the boxes are placed, every part is slid down and then left until its
-outline comes within the spacing of another part or of the sheet's edge.
-Two convex outlines sliding in a straight line overlap over one stretch of
-travel, so the longest free slide is found by halving that range rather
-than by stepping a millimetre at a time. Six passes, last placed first,
-since the parts placed last are on top of the pile.
+**Parts.** Each outline is simplified at 0.2 mm and cut into convex parts:
+ears are taken off one at a time and the triangles merged back while the
+merge stays convex.
 
-This is not a full no-fit-polygon nest: parts do not interlock by being
-moved around each other, only by settling into the hollows below them. It
-packs tighter than the boxes it starts from, and less tight than a
-dedicated nesting program.
+**Forbidden region.** For two convex parts, the translations that make them
+overlap are their no-fit polygon, which is the Minkowski sum of one part and
+the other mirrored: start at the sum of their lowest corners, then walk both
+rings' edges in order of angle. A piece's forbidden region against
+everything already placed is the union of those, one per pair of parts, which
+is why a piece can be placed in the hollow of another rather than only beside
+it.
+
+**Where it goes.** The lowest free place is always a corner of the sheet or a
+vertex of the forbidden region on it, so the search takes those points, sorts
+them by height and then by distance from the left edge, and keeps the first
+that is not inside any no-fit polygon. A point on the boundary counts as
+free, which is what lets parts touch.
+
+**Spacing** is carried by the geometry rather than checked for: each part is
+grown by half the spacing before the no-fit polygons are worked out, as its
+Minkowski sum with a square of that half side, so two parts that touch after
+growing are exactly the spacing apart.
+
+**Angles.** A part is tried at eighth turns as well as quarter ones, since a
+shape with a long diagonal in it uses the sheet better lying along that
+diagonal, and the placement that comes out lowest wins.
+
+Two things this does not do yet: a shape's holes are not used to hold other
+parts (its largest ring is the outline that is packed), and the candidates
+are the vertices of the no-fit polygons, not the points where two of their
+edges cross, so a placement can sit a little above the true optimum when two
+pieces both constrain the same corner.
 
 ## Where the result goes
 

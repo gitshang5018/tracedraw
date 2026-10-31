@@ -4,7 +4,7 @@
 use crate::app::App;
 use tracedraw_core::{
     document::{Shape, ShapeKind},
-    geometry::{Affine, Point, Rect, Vec2},
+    geometry::{Affine, BezPath, PathEl, Point, Rect, Vec2},
     Command,
 };
 
@@ -155,10 +155,12 @@ impl App {
 
     /// 智能排布: the selected objects packed onto sheets of the size given,
     /// the gaps between them evened out, the first sheet left where the
-    /// selection was. `rotate` lets the packer turn a piece a quarter turn;
-    /// `irregular` turns each piece to the angle its own box is smallest at
-    /// and then slides it into the hollow of the ones below it, which packs
-    /// outlines rather than the boxes around them.
+    /// selection was.
+    ///
+    /// Plain packing places the boxes around the objects. Irregular packing
+    /// places the outlines themselves, by no-fit polygon, so a part can sit
+    /// in the hollow of another one; it also turns each part to whichever of
+    /// the angles given leaves the sheet fullest.
     pub fn arrange_selection(
         &mut self,
         width_mm: f64,
@@ -177,87 +179,96 @@ impl App {
         let board_h = to_world(height_mm.max(1.0));
         let gap = to_world(gap_mm.max(0.0));
         let boxes: Vec<Rect> = shapes.iter().map(|s| self.align_box(s)).collect();
-        // Each piece's own outline, simplified and taken as its hull: what
-        // irregular packing measures against, and what tells it which angle
-        // gives the piece its smallest box.
-        let tol = to_world(0.2).max(1e-9);
-        let turns: Vec<crate::nesting::Turn> = shapes
-            .iter()
-            .zip(boxes.iter())
-            .map(|(s, b)| {
-                let path = s.page_path();
-                let mut points = Vec::new();
-                tracedraw_core::geometry::flatten(&path, tol, &mut |el| match el {
-                    tracedraw_core::geometry::PathEl::MoveTo(p)
-                    | tracedraw_core::geometry::PathEl::LineTo(p) => points.push(p),
-                    _ => {}
-                });
-                let simple = tracedraw_core::geometry::simplify(&points, tol);
-                let piece = crate::nesting::Piece {
-                    hull: crate::nesting::hull(&simple),
-                };
-                let turn = crate::nesting::turn_of(&piece, rotate, irregular);
-                if turn.w > 1e-9 && turn.h > 1e-9 {
-                    turn
-                } else {
-                    // No outline to measure: its box is what it fills.
-                    crate::nesting::Turn {
-                        angle: 0.0,
-                        w: b.width(),
-                        h: b.height(),
-                        hull: Vec::new(),
-                    }
-                }
-            })
-            .collect();
-        let sizes: Vec<(f64, f64)> = turns.iter().map(|t| (t.w, t.h)).collect();
-        let options = crate::nesting::Options {
-            width: board_w,
-            height: board_h,
-            gap,
-            // An angle chosen already is not turned again by the packer.
-            rotate: rotate && !irregular,
-        };
-        let mut spots = crate::nesting::pack(&sizes, &options);
-        if irregular {
-            crate::nesting::settle(&mut spots, &turns, &options);
-        }
         let left = boxes.iter().fold(f64::MAX, |m, b| m.min(b.x0));
         let top = boxes.iter().fold(f64::MIN, |m, b| m.max(b.y1));
         let sheet_step = board_w + gap;
         let mut cmds = Vec::new();
-        for (i, ((s, b), spot)) in shapes.iter().zip(&boxes).zip(&spots).enumerate() {
-            let turn = &turns[i];
-            let (w, h) = turn.box_of(spot.turned);
-            let tx = left + spot.sheet as f64 * sheet_step + spot.x;
-            let ty = top - spot.y;
-            let angle = turn.angle
-                + if spot.turned {
+        if irregular {
+            let tol = to_world(0.2).max(1e-9);
+            let rings: Vec<Vec<Point>> = shapes
+                .iter()
+                .map(|s| outer_ring(&s.page_path(), tol))
+                .collect();
+            // A part is tried at eighth turns as well as quarter ones: a
+            // shape with a long diagonal in it uses the sheet better lying
+            // along that diagonal.
+            let angles: Vec<f64> = if rotate {
+                (0..8)
+                    .map(|k| k as f64 * std::f64::consts::FRAC_PI_4)
+                    .collect()
+            } else {
+                vec![0.0]
+            };
+            let options = crate::nfp::Options {
+                width: board_w,
+                height: board_h,
+                gap,
+                angles,
+            };
+            let spots = crate::nfp::nest(&rings, &options);
+            for (i, (s, b)) in shapes.iter().zip(&boxes).enumerate() {
+                let Some(spot) = spots.get(i) else {
+                    continue;
+                };
+                // A shape with no outline to measure is left where it is
+                // rather than moved to the corner on a box of nothing.
+                if spot.w <= 1e-9 || spot.h <= 1e-9 {
+                    continue;
+                }
+                // The packing works upside down from the drawing, so a turn
+                // it made one way is the other way here.
+                let angle = -spot.angle;
+                let (tx, ty) = (
+                    left + spot.sheet as f64 * sheet_step + spot.x,
+                    top - spot.y,
+                );
+                let transform = turn_into(*b, tx, ty, spot.w, spot.h, angle);
+                if moved(*b, tx, ty, angle) {
+                    cmds.push(Command::TransformShapes {
+                        shapes: vec![s.id],
+                        transform,
+                    });
+                }
+            }
+        } else {
+            let sizes: Vec<(f64, f64)> = boxes.iter().map(|b| (b.width(), b.height())).collect();
+            let options = crate::nesting::Options {
+                width: board_w,
+                height: board_h,
+                gap,
+                rotate,
+            };
+            let spots = crate::nesting::pack(&sizes, &options);
+            for (i, (s, b)) in shapes.iter().zip(&boxes).enumerate() {
+                let Some(spot) = spots.get(i) else {
+                    continue;
+                };
+                let size = match sizes.get(i) {
+                    Some(&(w, h)) => {
+                        if spot.turned {
+                            (h, w)
+                        } else {
+                            (w, h)
+                        }
+                    }
+                    None => (b.width(), b.height()),
+                };
+                let angle = if spot.turned {
                     -std::f64::consts::FRAC_PI_2
                 } else {
                     0.0
                 };
-            let transform = if angle.abs() < 1e-9 {
-                Affine::translate(Vec2::new(tx - b.x0, ty - b.y1))
-            } else {
-                // A turn about the box's centre leaves that centre where it
-                // was, so the box is placed by moving its centre.
-                let c = b.center();
-                let target = Vec2::new(tx + w / 2.0, ty - h / 2.0);
-                let d = target - c.to_vec2();
-                Affine::translate(d)
-                    * Affine::translate(c.to_vec2())
-                    * Affine::rotate(angle)
-                    * Affine::translate(-c.to_vec2())
-            };
-            let moves = (tx - b.x0).abs() > 1e-9
-                || (ty - b.y1).abs() > 1e-9
-                || angle.abs() > 1e-9;
-            if moves {
-                cmds.push(Command::TransformShapes {
-                    shapes: vec![s.id],
-                    transform,
-                });
+                let (tx, ty) = (
+                    left + spot.sheet as f64 * sheet_step + spot.x,
+                    top - spot.y,
+                );
+                let transform = turn_into(*b, tx, ty, size.0, size.1, angle);
+                if moved(*b, tx, ty, angle) {
+                    cmds.push(Command::TransformShapes {
+                        shapes: vec![s.id],
+                        transform,
+                    });
+                }
             }
         }
         if !cmds.is_empty() {
@@ -2320,4 +2331,84 @@ mod curves_and_target_tests {
         assert_eq!(app.selection, vec![a]);
         assert!(app.doc().find_shape(b).is_none());
     }
+}
+
+// ----- Placing a packed part in the drawing --------------------------------
+
+/// The transform that puts `b`'s box at `(tx, ty)`, `w` by `h`, turned by
+/// `angle` about the box's own centre. A turn about that centre leaves it
+/// where it was, so the box is placed by moving the centre.
+fn turn_into(b: Rect, tx: f64, ty: f64, w: f64, h: f64, angle: f64) -> Affine {
+    if angle.abs() < 1e-9 {
+        return Affine::translate(Vec2::new(tx - b.x0, ty - b.y1));
+    }
+    let c = b.center();
+    let target = Vec2::new(tx + w / 2.0, ty - h / 2.0);
+    let d = target - c.to_vec2();
+    Affine::translate(d)
+        * Affine::translate(c.to_vec2())
+        * Affine::rotate(angle)
+        * Affine::translate(-c.to_vec2())
+}
+
+/// Whether placing `b` at `(tx, ty)` at `angle` changes anything.
+fn moved(b: Rect, tx: f64, ty: f64, angle: f64) -> bool {
+    (tx - b.x0).abs() > 1e-9 || (ty - b.y1).abs() > 1e-9 || angle.abs() > 1e-9
+}
+
+/// The ring of a path that encloses the most. A shape has one outline, and
+/// what lies inside its holes is not something the sheet gains from yet, so
+/// the holes are left out rather than nested into.
+fn outer_ring(path: &BezPath, tol: f64) -> Vec<Point> {
+    let mut rings: Vec<Vec<Point>> = Vec::new();
+    let mut current: Vec<Point> = Vec::new();
+    tracedraw_core::geometry::flatten(path, tol, &mut |el| match el {
+        PathEl::MoveTo(p) => {
+            if current.len() >= 3 {
+                rings.push(std::mem::take(&mut current));
+            } else {
+                current.clear();
+            }
+            current.push(p);
+        }
+        PathEl::LineTo(p) => current.push(p),
+        PathEl::ClosePath => {
+            if current.len() >= 3 {
+                rings.push(std::mem::take(&mut current));
+            }
+        }
+        _ => {}
+    });
+    if current.len() >= 3 {
+        rings.push(current);
+    }
+    let mut best: Option<(f64, Vec<Point>)> = None;
+    for r in rings {
+        let a = ring_area(&r);
+        let better = match &best {
+            None => true,
+            Some((had, _)) => a > *had,
+        };
+        if better {
+            best = Some((a, r));
+        }
+    }
+    match best {
+        Some((_, r)) => r,
+        None => Vec::new(),
+    }
+}
+
+fn ring_area(r: &[Point]) -> f64 {
+    let n = r.len();
+    if n < 3 {
+        return 0.0;
+    }
+    let mut s = 0.0;
+    for i in 0..n {
+        let p = r[i];
+        let q = r[(i + 1) % n];
+        s += p.x * q.y - q.x * p.y;
+    }
+    (s * 0.5).abs()
 }
