@@ -26,8 +26,6 @@ use egui::{Color32, CornerRadius, Frame, Id, Rect, Response, Sense, Stroke, Ui, 
 
 /// The top app bar: the menu, the drawing's name, undo and redo.
 const TOP_H: f32 = 64.0;
-/// The row a sheet's name and close button take.
-const HEAD_ROW: f32 = 56.0;
 /// The strip of tools above the navigation bar.
 const TOOLS_H: f32 = 72.0;
 /// The strip of properties above the tools, shown while something is
@@ -573,7 +571,7 @@ pub fn frame(app: &mut App, ui: &mut Ui) -> bool {
     // the band after the bars left them underneath it, and the strip alone
     // floating over the keyboard, which is not a bar that can be typed in.
     let ime = ime_height(&ctx);
-    let bar_ime = keyboard_bar_gap(app, ime);
+    let bar_ime = keyboard_bar_gap(app, &ctx, ime);
     // The properties of what is selected sit above the bars, and take no
     // room at all while nothing is selected.
     let strip_h = if land {
@@ -651,6 +649,7 @@ pub fn frame(app: &mut App, ui: &mut Ui) -> bool {
     };
     snackbar(app, ui, floor);
     if open == Sheet::Palette {
+        ctx.data_mut(|d| d.remove::<u64>(Id::new("mobile_sheet_since")));
         palette_float(app, &ctx, window, &m3, &mut open, strip_h, ime);
     } else {
         // The card is not the one in front: the next opening starts over.
@@ -658,6 +657,8 @@ pub fn frame(app: &mut App, ui: &mut Ui) -> bool {
         ctx.data_mut(|d| d.remove::<Rect>(Id::new("mobile_sheet_rect")));
         if open != Sheet::None {
             sheet_ui(app, ui, open, &mut open, window, &m3, inset);
+        } else {
+            ctx.data_mut(|d| d.remove::<u64>(Id::new("mobile_sheet_since")));
         }
     }
     // The prompt windows are the shared dialog system's: the phone layout
@@ -946,12 +947,12 @@ fn top_bar(app: &mut App, ui: &mut Ui, m3: &M3, safe: Safe, open: &mut Sheet) {
 /// properties above them: nothing is drawn there, and the keyboard covers
 /// it.
 /// How much the navigation and tools bars should be lifted above the keyboard:
-/// zero while text on the canvas is being edited (the user is looking at and
-/// typing into the canvas, so the bars stay at the bottom rather than being
-/// pushed up), and ime for fields in sheets and dialogs so they stay above
-/// the keyboard.
-fn keyboard_bar_gap(app: &App, ime: f32) -> f32 {
-    if app.text_edit.is_some() {
+/// zero while focus is in the canvas (editing text on the canvas with no
+/// UI widget focused), but lifted by ime when an edit box or docker is focused
+/// so the field stays in view.
+pub(crate) fn keyboard_bar_gap(app: &App, ctx: &egui::Context, ime: f32) -> f32 {
+    let focus_in_canvas = app.text_edit.is_some() && ctx.memory(|m| m.focused().is_none());
+    if focus_in_canvas {
         0.0
     } else {
         ime
@@ -2334,7 +2335,7 @@ fn sheet_ui(
     // what a panel is laid out in.
     let ime = ime_height(&ctx);
 
-    if landscape(screen) {
+    let card_rect = if landscape(screen) {
         // A phone on its side docks the sheet on the right, between the
         // drawing and the destinations rail: a wide screen has no room to
         // spare at the bottom, and the rail stays in reach.
@@ -2348,7 +2349,7 @@ fn sheet_ui(
             ),
         );
         let height = rect.height();
-        egui::Area::new(Id::new("mobile_sheet_land"))
+        let card = egui::Area::new(Id::new("mobile_sheet_land"))
             .order(egui::Order::Foreground)
             .fixed_pos(rect.min)
             .show(&ctx, |ui| {
@@ -2372,6 +2373,7 @@ fn sheet_ui(
                         sheet_content(app, ui, which, open, m3, height, false);
                     });
             });
+        card.response.rect
     } else {
         // A card in the middle of the screen rather than a sheet against the
         // bottom. The keyboard comes up over a sheet and takes the field
@@ -2420,6 +2422,27 @@ fn sheet_ui(
         // share of the screen.
         let rect = card.response.rect;
         ctx.data_mut(|d| d.insert_temp(Id::new("mobile_sheet_rect"), rect));
+        rect
+    };
+
+    // A click or tap outside the card puts it away.
+    let since_id = Id::new("mobile_sheet_since");
+    let since = match ctx.data(|d| d.get_temp::<u64>(since_id)) {
+        Some(frame) => frame,
+        None => {
+            let frame = ctx.cumulative_frame_nr();
+            ctx.data_mut(|d| d.insert_temp(since_id, frame));
+            frame
+        }
+    };
+    if ctx.cumulative_frame_nr() > since
+        && ctx.input(|i| i.pointer.any_pressed() || i.pointer.any_click())
+    {
+        if let Some(at) = ctx.pointer_latest_pos() {
+            if !card_rect.contains(at) {
+                *open = Sheet::None;
+            }
+        }
     }
 
     // A command that opens a dialog of its own (Options, Save As...) takes
@@ -2430,7 +2453,7 @@ fn sheet_ui(
 }
 
 /// What a sheet holds, wherever it is drawn: the drag handle of a bottom
-/// sheet, the name and the close button, then the body.
+/// sheet, then the body.
 fn sheet_content(
     app: &mut App,
     ui: &mut Ui,
@@ -2449,9 +2472,6 @@ fn sheet_content(
         ui.painter().rect_filled(grab, 2.0, m3.variant);
         ui.add_space(10.0);
     }
-    if sheet_header(ui, which, m3) {
-        *open = Sheet::None;
-    }
     // The generate panel keeps its button in view under its own scroll: a
     // phone should not have to scroll past the settings to reach the one
     // thing the panel is for.
@@ -2468,12 +2488,7 @@ fn sheet_content(
         which,
         Sheet::AiGenerate | Sheet::Matting | Sheet::Variable | Sheet::Trace | Sheet::Arrange
     );
-    // What is left of the card for the body: the header is a row of 56, and
-    // the margins take 16 more, so the body gets the rest. Measuring it off
-    // the cursor was tried and gave the header five hundred points, which
-    // left the body a third of its room and put every panel's last rows
-    // behind a scroll.
-    let body_room = (height - HEAD_ROW - 16.0 - bar).max(80.0);
+    let body_room = (height - 16.0 - bar).max(80.0);
     ui.set_max_height(body_room + bar);
     egui::ScrollArea::vertical()
         .id_salt(("mobile_sheet_scroll", sheet_title(which)))
@@ -2488,7 +2503,7 @@ fn sheet_content(
                 .inner_margin(egui::Margin {
                     left: 16,
                     right: 16,
-                    top: 0,
+                    top: 12,
                     bottom: 16,
                 })
                 .show(ui, |ui| {
@@ -2520,77 +2535,6 @@ fn scrim(ctx: &egui::Context, screen: Rect, open: &mut Sheet) {
         });
     if dim.inner.clicked() {
         *open = Sheet::None;
-    }
-}
-
-/// How much of the screen a sheet takes: a list of menus needs more of it
-/// than a row of page fields. The two short ones — the property bar and the
-/// palettes — take only what their cards need.
-/// The sheet's name and its close button; true when the button was hit.
-fn sheet_header(ui: &mut Ui, which: Sheet, m3: &M3) -> bool {
-    // A file list standing in for a file dialog says what it is asking
-    // for, and offers the Cancel every dialog has.
-    let picking = matches!(which, Sheet::Files) && asking();
-    let title = if picking {
-        plain(&tr("menu.file.open"))
-    } else {
-        sheet_title(which)
-    };
-    // The row is laid out by hand: the target of the close button is a
-    // rectangle of its own at the right end, so a finger always finds it
-    // (a row of nested layouts put it out of reach of the pointer).
-    let (row, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), HEAD_ROW), Sense::hover());
-    ui.painter().text(
-        egui::pos2(row.left() + 16.0, row.center().y),
-        egui::Align2::LEFT_CENTER,
-        title,
-        crate::theme::bold(18.0),
-        m3.on,
-    );
-    let target = if picking {
-        Rect::from_min_max(
-            egui::pos2(row.right() - 104.0, row.top() + 4.0),
-            egui::pos2(row.right() - 8.0, row.bottom() - 4.0),
-        )
-    } else {
-        Rect::from_center_size(
-            egui::pos2(row.right() - 28.0, row.center().y),
-            Vec2::splat(48.0),
-        )
-    };
-    let resp = ui.put(
-        target,
-        egui::Button::new(
-            egui::RichText::new(if picking { tr("dialog.cancel") } else { String::new() })
-                .size(14.0)
-                .color(m3.primary),
-        )
-        .fill(Color32::TRANSPARENT)
-        .corner_radius(22.0)
-        .min_size(target.size()),
-    );
-    if !picking {
-        // The cross is drawn, not typed: the bundled font has no
-        // multiplication sign, and a missing glyph shows as a box.
-        draw_glyph(
-            ui,
-            Rect::from_center_size(target.center(), Vec2::splat(ICON)),
-            Glyph::Close,
-            m3.on,
-        );
-    }
-    resp.clicked()
-}
-
-/// Whether a file dialog is waiting for the interface's answer.
-fn asking() -> bool {
-    #[cfg(target_os = "android")]
-    {
-        crate::files::ask().is_some()
-    }
-    #[cfg(not(target_os = "android"))]
-    {
-        false
     }
 }
 
@@ -3479,43 +3423,16 @@ fn palette_float(
                 })
                 .show(ui, |ui| {
                     ui.set_width(width);
-                    // The title is the way out: a tap on it, or on the cross
-                    // beside it, puts the card away. A tap elsewhere on the
-                    // card picks a colour, so the header is what closes it.
-                    let (row, row_resp) =
-                        ui.allocate_exact_size(Vec2::new(width, 44.0), Sense::click());
-                    ui.painter().text(
-                        egui::pos2(row.left() + 16.0, row.center().y),
-                        egui::Align2::LEFT_CENTER,
-                        sheet_title(Sheet::Palette),
-                        crate::theme::bold(16.0),
-                        m3.on,
-                    );
-                    let close = Rect::from_center_size(
-                        egui::pos2(row.right() - 28.0, row.center().y),
-                        Vec2::splat(48.0),
-                    );
-                    let close_resp =
-                        ui.interact(close, Id::new("mobile_palette_close"), Sense::click());
-                    draw_glyph(
-                        ui,
-                        Rect::from_center_size(close.center(), Vec2::splat(ICON)),
-                        Glyph::Close,
-                        m3.on,
-                    );
-                    if row_resp.clicked() || close_resp.clicked() {
-                        *open = Sheet::None;
-                    }
                     egui::ScrollArea::vertical()
                         .id_salt("mobile_palette_scroll")
-                        .max_height(height - 44.0)
+                        .max_height((height - 16.0).max(80.0))
                         .auto_shrink([false, true])
                         .show(ui, |ui| {
                             Frame::new()
                                 .inner_margin(egui::Margin {
                                     left: 14,
                                     right: 14,
-                                    top: 0,
+                                    top: 12,
                                     bottom: 12,
                                 })
                                 .show(ui, |ui| {
@@ -3527,7 +3444,7 @@ fn palette_float(
         });
     // A press outside the card puts it away: it floats over the drawing,
     // so there is nothing else to tap. Not the press that opened it,
-    // though — that one is on the bar under the card.
+    // though, that one is on the bar under the card.
     let since_id = Id::new("mobile_palette_since");
     let since = match ctx.data(|d| d.get_temp::<u64>(since_id)) {
         Some(frame) => frame,
@@ -3537,7 +3454,9 @@ fn palette_float(
             frame
         }
     };
-    if ctx.cumulative_frame_nr() > since && ctx.input(|i| i.pointer.any_pressed()) {
+    if ctx.cumulative_frame_nr() > since
+        && ctx.input(|i| i.pointer.any_pressed() || i.pointer.any_click())
+    {
         if let Some(at) = ctx.pointer_latest_pos() {
             if !card.response.rect.contains(at) {
                 *open = Sheet::None;
@@ -4309,9 +4228,11 @@ mod tests {
         let ctx = crate::theme::ui_context();
         let mut app = App::new(&ctx, None);
         let ime = 300.0;
-        assert_eq!(keyboard_bar_gap(&app, ime), 300.0);
+        assert_eq!(keyboard_bar_gap(&app, &ctx, ime), 300.0);
         app.text_edit = Some(crate::app::TextEdit::at_end(tracedraw_core::id::ShapeId(1), 0));
-        assert_eq!(keyboard_bar_gap(&app, ime), 0.0);
+        assert_eq!(keyboard_bar_gap(&app, &ctx, ime), 0.0);
+        ctx.memory_mut(|m| m.request_focus(egui::Id::new("some_field")));
+        assert_eq!(keyboard_bar_gap(&app, &ctx, ime), 300.0);
     }
 
     #[test]

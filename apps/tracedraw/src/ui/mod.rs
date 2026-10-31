@@ -254,6 +254,10 @@ pub(crate) fn clear_focus_on_outside_click(ctx: &egui::Context) {
     if !pressed {
         return;
     }
+    // When a dropdown popup is open, clicking inside the popup should not unfocus.
+    if egui::Popup::is_any_open(ctx) {
+        return;
+    }
     let Some(pos) = ctx.input(|i| i.pointer.interact_pos()) else {
         return;
     };
