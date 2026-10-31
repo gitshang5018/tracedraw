@@ -185,9 +185,12 @@ impl App {
         let mut cmds = Vec::new();
         if irregular {
             let tol = to_world(0.2).max(1e-9);
-            let rings: Vec<Vec<Point>> = shapes
+            // Every ring of every shape: its outlines and the holes they
+            // carry. Which is which is for the packing to work out, by what
+            // lies inside what.
+            let rings: Vec<Vec<Vec<Point>>> = shapes
                 .iter()
-                .map(|s| outer_ring(&s.page_path(), tol))
+                .map(|s| shape_rings(&s.page_path(), tol))
                 .collect();
             // A part is tried at eighth turns as well as quarter ones: a
             // shape with a long diagonal in it uses the sheet better lying
@@ -2356,10 +2359,10 @@ fn moved(b: Rect, tx: f64, ty: f64, angle: f64) -> bool {
     (tx - b.x0).abs() > 1e-9 || (ty - b.y1).abs() > 1e-9 || angle.abs() > 1e-9
 }
 
-/// The ring of a path that encloses the most. A shape has one outline, and
-/// what lies inside its holes is not something the sheet gains from yet, so
-/// the holes are left out rather than nested into.
-fn outer_ring(path: &BezPath, tol: f64) -> Vec<Point> {
+/// The rings of a path, in the order it draws them: a shape's outlines and
+/// the holes they carry, which the packing sorts out by what lies inside
+/// what.
+fn shape_rings(path: &BezPath, tol: f64) -> Vec<Vec<Point>> {
     let mut rings: Vec<Vec<Point>> = Vec::new();
     let mut current: Vec<Point> = Vec::new();
     tracedraw_core::geometry::flatten(path, tol, &mut |el| match el {
@@ -2382,33 +2385,5 @@ fn outer_ring(path: &BezPath, tol: f64) -> Vec<Point> {
     if current.len() >= 3 {
         rings.push(current);
     }
-    let mut best: Option<(f64, Vec<Point>)> = None;
-    for r in rings {
-        let a = ring_area(&r);
-        let better = match &best {
-            None => true,
-            Some((had, _)) => a > *had,
-        };
-        if better {
-            best = Some((a, r));
-        }
-    }
-    match best {
-        Some((_, r)) => r,
-        None => Vec::new(),
-    }
-}
-
-fn ring_area(r: &[Point]) -> f64 {
-    let n = r.len();
-    if n < 3 {
-        return 0.0;
-    }
-    let mut s = 0.0;
-    for i in 0..n {
-        let p = r[i];
-        let q = r[(i + 1) % n];
-        s += p.x * q.y - q.x * p.y;
-    }
-    (s * 0.5).abs()
+    rings
 }

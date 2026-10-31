@@ -80,11 +80,21 @@ growing are exactly the spacing apart.
 shape with a long diagonal in it uses the sheet better lying along that
 diagonal, and the placement that comes out lowest wins.
 
-Two things this does not do yet: a shape's holes are not used to hold other
-parts (its largest ring is the outline that is packed), and the candidates
-are the vertices of the no-fit polygons, not the points where two of their
-edges cross, so a placement can sit a little above the true optimum when two
-pieces both constrain the same corner.
+**Holes.** What is packed is the material: each outline with its holes taken
+out. Every hole is cut open into its outline by a slit of no width (from the
+hole's rightmost vertex to the outline), the ring is cut into convex parts,
+and those parts are used only when their area is the outline's less the
+holes'. Otherwise the holes are filled in, which wastes the room inside them
+but never packs a part into another part. Because the hole is not material,
+a part nested inside the counter of an O is placed there by the same search
+as any other.
+
+**Resting.** The first free candidate is not where a part is left. It is slid
+towards the sheet's top left corner until it meets something, the first
+contact along a straight line being found exactly rather than stepped
+towards, and then left, and round again. That is what puts a part exactly
+against another one, including where two pieces meet at a corner that is not
+a vertex of either no-fit polygon.
 
 ## Where the result goes
 

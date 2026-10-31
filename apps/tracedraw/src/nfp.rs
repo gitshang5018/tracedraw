@@ -17,6 +17,13 @@
 //! grown by half the spacing, as its Minkowski sum with a square of that
 //! side, so two parts that touch after growing are exactly the spacing
 //! apart.
+//!
+//! What is packed is the material: an outline with its holes taken out, each
+//! hole cut open into the outline by a slit, so a part can be nested inside
+//! the counter of an O. And the place a part is given is not just the first
+//! free candidate, it is that candidate slid towards the sheet's top left
+//! corner until it meets something, which is what puts a part exactly
+//! against another rather than a hair away from it.
 
 use tracedraw_core::geometry::Point;
 
@@ -46,11 +53,12 @@ pub struct Spot {
     pub angle: f64,
 }
 
-/// Where each ring goes, in the order given. The rings are in the drawing's
-/// own coordinates; the packing turns them upside down into its own frame
-/// and answers in that frame, which is the same frame [`crate::nesting`]
-/// uses.
-pub fn nest(rings: &[Vec<Point>], o: &Options) -> Vec<Spot> {
+/// Where each piece goes, in the order given. A piece is its rings: the
+/// outlines and the holes they carry, which are told apart by what lies
+/// inside what. The rings are in the drawing's own coordinates; the packing
+/// turns them upside down into its own frame and answers in that frame,
+/// which is the same frame [`crate::nesting`] uses.
+pub fn nest(rings: &[Vec<Vec<Point>>], o: &Options) -> Vec<Spot> {
     let n = rings.len();
     if n == 0 {
         return Vec::new();
@@ -72,8 +80,11 @@ pub fn nest(rings: &[Vec<Point>], o: &Options) -> Vec<Spot> {
     // left corner is the smallest corner of its box.
     let base: Vec<(Vec<Vec<Pt>>, f64, f64)> = rings
         .iter()
-        .map(|r| {
-            let flipped: Vec<Pt> = r.iter().map(|p| (p.x, -p.y)).collect();
+        .map(|piece| {
+            let flipped: Vec<Vec<Pt>> = piece
+                .iter()
+                .map(|ring| ring.iter().map(|p| (p.x, -p.y)).collect())
+                .collect();
             local_parts(&flipped)
         })
         .collect();
@@ -183,20 +194,172 @@ pub fn nest(rings: &[Vec<Point>], o: &Options) -> Vec<Spot> {
     spots
 }
 
-/// The convex parts of a ring, and the box they fill: parts in the ring's own
-/// frame with the box's smallest corner at the origin.
-fn local_parts(ring: &[Pt]) -> (Vec<Vec<Pt>>, f64, f64) {
-    let ring = positive(ring);
-    if ring.len() < 3 {
+/// The material a piece is cut from, as convex parts, and the box it fills.
+///
+/// A piece is one or more outlines, each carrying its holes. What the sheet
+/// has to hold is the material: an outline with its holes taken out, so a
+/// part can be nested inside the counter of an O rather than only beside
+/// it. Parts come back in the piece's own frame, the box's smallest corner
+/// at the origin.
+fn local_parts(rings: &[Vec<Pt>]) -> (Vec<Vec<Pt>>, f64, f64) {
+    let clean: Vec<Vec<Pt>> = rings
+        .iter()
+        .map(|r| positive(r))
+        .filter(|r| r.len() >= 3)
+        .collect();
+    if clean.is_empty() {
         return (Vec::new(), 0.0, 0.0);
     }
-    let (x0, y0, x1, y1) = bbox(&ring);
-    let moved: Vec<Pt> = ring.iter().map(|&(x, y)| (x - x0, y - y0)).collect();
-    (
-        convex_parts(&moved),
-        (x1 - x0).max(0.0),
-        (y1 - y0).max(0.0),
-    )
+    let areas: Vec<f64> = clean.iter().map(|r| area2(r).abs() * 0.5).collect();
+    let count = clean.len();
+    // A ring inside a bigger one is that one's hole; a ring inside nothing
+    // is an outline of its own, and a piece drawn as several separate parts
+    // has several.
+    let mut inside_of: Vec<Option<usize>> = vec![None; count];
+    for i in 0..count {
+        let mut best: Option<(f64, usize)> = None;
+        for j in 0..count {
+            if i == j || areas[j] <= areas[i] + 1e-9 {
+                continue;
+            }
+            let Some(&probe) = clean[i].first() else {
+                continue;
+            };
+            if !inside(probe, &clean[j]) {
+                continue;
+            }
+            let better = match best {
+                None => true,
+                Some((had, _)) => areas[j] < had,
+            };
+            if better {
+                best = Some((areas[j], j));
+            }
+        }
+        inside_of[i] = best.map(|(_, j)| j);
+    }
+    let (mut x0, mut y0) = (f64::MAX, f64::MAX);
+    let (mut x1, mut y1) = (f64::MIN, f64::MIN);
+    let mut parts: Vec<Vec<Pt>> = Vec::new();
+    for body in 0..count {
+        if inside_of[body].is_some() {
+            continue;
+        }
+        let holes: Vec<Vec<Pt>> = (0..count)
+            .filter(|&i| inside_of[i] == Some(body))
+            .map(|i| clean[i].clone())
+            .collect();
+        for &(x, y) in &clean[body] {
+            x0 = x0.min(x);
+            y0 = y0.min(y);
+            x1 = x1.max(x);
+            y1 = y1.max(y);
+        }
+        parts.extend(material_parts(&clean[body], &holes));
+    }
+    if parts.is_empty() || x1 <= x0 || y1 <= y0 {
+        return (Vec::new(), 0.0, 0.0);
+    }
+    let moved: Vec<Vec<Pt>> = parts
+        .iter()
+        .map(|p| p.iter().map(|&(x, y)| (x - x0, y - y0)).collect())
+        .collect();
+    (moved, x1 - x0, y1 - y0)
+}
+
+/// The outline with its holes taken out, as convex parts.
+///
+/// Each hole is cut open towards the outline by a bridge, the way a polygon
+/// with a hole is made into one ring, and the ring is then cut into convex
+/// parts. The bridges are a slit of no width, which the ear walk can
+/// stumble on, so the parts are only used when their area is the outline's
+/// less the holes': otherwise the holes are filled in, which wastes the
+/// space inside them but never packs a part into another part.
+fn material_parts(outer: &[Pt], holes: &[Vec<Pt>]) -> Vec<Vec<Pt>> {
+    if holes.is_empty() {
+        return convex_parts(outer);
+    }
+    let mut want = area2(outer).abs() * 0.5;
+    for h in holes {
+        want -= area2(h).abs() * 0.5;
+    }
+    let mut ring: Vec<Pt> = outer.to_vec();
+    let outline_way = area2(&ring) > 0.0;
+    for hole in holes {
+        // A hole is walked the other way round from its outline, which is
+        // what makes the ring's area the outline's less the hole's.
+        let mut h: Vec<Pt> = hole.clone();
+        if (area2(&h) > 0.0) == outline_way {
+            h.reverse();
+        }
+        match bridge(&ring, &h) {
+            Some(next) => ring = next,
+            None => return convex_parts(outer),
+        }
+    }
+    let parts = convex_parts(&ring);
+    let got: f64 = parts.iter().map(|p| area2(p).abs() * 0.5).sum();
+    if (got - want).abs() > (want.abs() * 0.01).max(1e-6) {
+        return convex_parts(outer);
+    }
+    parts
+}
+
+/// A ring with a hole cut open into it: the hole's rightmost vertex is
+/// joined to the outline by a slit of no width, so the two become one ring
+/// that runs round the outside and back round the inside.
+fn bridge(ring: &[Pt], hole: &[Pt]) -> Option<Vec<Pt>> {
+    let ring = positive(ring);
+    if ring.len() < 3 || hole.len() < 3 {
+        return None;
+    }
+    // The hole's rightmost vertex: a ray to the right from it leaves the
+    // hole at once and meets the outline, and the slit along that ray cannot
+    // cross the hole itself.
+    let mut k = 0usize;
+    for i in 1..hole.len() {
+        if hole[i].0 > hole[k].0 {
+            k = i;
+        }
+    }
+    let m = hole[k];
+    let mut hit: Option<(f64, usize)> = None;
+    for i in 0..ring.len() {
+        let a = ring[i];
+        let b = ring[(i + 1) % ring.len()];
+        if (a.1 > m.1) == (b.1 > m.1) {
+            continue;
+        }
+        let t = (m.1 - a.1) / (b.1 - a.1);
+        let x = a.0 + t * (b.0 - a.0);
+        if x <= m.0 + 1e-9 {
+            continue;
+        }
+        let better = match hit {
+            None => true,
+            Some((had, _)) => x < had - 1e-9,
+        };
+        if better {
+            hit = Some((x, i));
+        }
+    }
+    let (_, i) = hit?;
+    let a = ring[i];
+    let b = ring[(i + 1) % ring.len()];
+    // The end of that edge further to the right is where the slit goes.
+    let target = if a.0 >= b.0 { i } else { (i + 1) % ring.len() };
+    let mut out: Vec<Pt> = Vec::with_capacity(ring.len() + hole.len() + 2);
+    for j in 0..=target {
+        out.push(ring[j]);
+    }
+    for j in 0..hole.len() {
+        out.push(hole[(k + j) % hole.len()]);
+    }
+    out.push(hole[k]);
+    for j in target..ring.len() {
+        out.push(ring[j]);
+    }
+    Some(out)
 }
 
 /// The same parts turned by `angle`, with the box's smallest corner back at
@@ -299,10 +462,72 @@ fn place(
             }
         }
         if free {
-            return Some(c);
+            return Some(rest(c, &nfps, rx0, ry0));
         }
     }
     None
+}
+
+/// The place a piece comes to rest in: slid towards the sheet's top left
+/// corner until it touches, so it sits against what is above and beside it
+/// rather than a hair away from it.
+///
+/// The point it starts from is already free, and the first contact along a
+/// straight line is found exactly rather than stepped towards, so this lands
+/// on the boundary. Three rounds, because sliding left can open the way up
+/// again.
+fn rest(pos: Pt, nfps: &[(Vec<Pt>, (f64, f64, f64, f64))], left_edge: f64, top_edge: f64) -> Pt {
+    let mut p = pos;
+    for _ in 0..3 {
+        let up = travel(p, (0.0, -1.0), nfps, p.1 - top_edge);
+        if up > 1e-9 {
+            p.1 -= up;
+        }
+        let left = travel(p, (-1.0, 0.0), nfps, p.0 - left_edge);
+        if left > 1e-9 {
+            p.0 -= left;
+        }
+    }
+    p
+}
+
+/// How far a point can travel along `u` before it meets one of the rings, or
+/// reaches `limit`.
+fn travel(p: Pt, u: Pt, nfps: &[(Vec<Pt>, (f64, f64, f64, f64))], limit: f64) -> f64 {
+    let mut best = if limit > 0.0 && limit.is_finite() {
+        limit
+    } else {
+        0.0
+    };
+    for (poly, _) in nfps {
+        let n = poly.len();
+        for i in 0..n {
+            if let Some(t) = ray_hit(p, u, poly[i], poly[(i + 1) % n]) {
+                if t < best {
+                    best = t;
+                }
+            }
+        }
+    }
+    best.max(0.0)
+}
+
+/// Where a ray from `p` along `u` meets the line between two points, as a
+/// distance along the ray, when it meets it between them.
+fn ray_hit(p: Pt, u: Pt, a: Pt, b: Pt) -> Option<f64> {
+    let e = sub(b, a);
+    let den = cross(u, e);
+    if den.abs() < 1e-12 {
+        return None;
+    }
+    let ap = sub(a, p);
+    let t = cross(ap, e) / den;
+    let s = cross(ap, u) / den;
+    if t > 1e-6 && (-1e-9..=1.0 + 1e-9).contains(&s) {
+        Some(t)
+    } else {
+        None
+    }
 }
 
 /// A coarse grid over the sheet, so a candidate is tested against the few
@@ -830,7 +1055,7 @@ mod tests {
             (0.0, 100.0),
         ]);
         let square_ring = ring(&square(0.0, 0.0, 40.0));
-        let spots = nest(&[l, square_ring], &options(100.0, 100.0, 0.0));
+        let spots = nest(&[vec![l], vec![square_ring]], &options(100.0, 100.0, 0.0));
         assert_eq!(spots.len(), 2);
         assert_eq!(spots[1].sheet, 0, "it went to another sheet: {spots:?}");
         // In the packing's own frame the notch is the right hand side at the
@@ -843,7 +1068,7 @@ mod tests {
     fn two_parts_on_a_sheet_do_not_overlap() {
         let a = ring(&square(0.0, 0.0, 50.0));
         let b = ring(&square(0.0, 0.0, 50.0));
-        let spots = nest(&[a, b], &options(100.0, 100.0, 0.0));
+        let spots = nest(&[vec![a], vec![b]], &options(100.0, 100.0, 0.0));
         assert_eq!(spots[0].sheet, 0);
         assert_eq!(spots[1].sheet, 0, "{spots:?}");
         let apart = spots[0].x + 50.0 <= spots[1].x + 1e-6
@@ -857,7 +1082,7 @@ mod tests {
     fn the_spacing_is_kept_between_two_squares() {
         let a = ring(&square(0.0, 0.0, 40.0));
         let b = ring(&square(0.0, 0.0, 40.0));
-        let spots = nest(&[a, b], &options(200.0, 200.0, 10.0));
+        let spots = nest(&[vec![a], vec![b]], &options(200.0, 200.0, 10.0));
         assert_eq!(spots[1].sheet, 0, "{spots:?}");
         let dx = (spots[0].x - spots[1].x).abs();
         let dy = (spots[0].y - spots[1].y).abs();
@@ -871,13 +1096,50 @@ mod tests {
 
     #[test]
     fn a_second_sheet_when_the_first_is_full() {
-        let mut rings = Vec::new();
+        let mut rings: Vec<Vec<Vec<Point>>> = Vec::new();
         for _ in 0..3 {
-            rings.push(ring(&square(0.0, 0.0, 90.0)));
+            rings.push(vec![ring(&square(0.0, 0.0, 90.0))]);
         }
         let spots = nest(&rings, &options(100.0, 100.0, 0.0));
         let sheets = spots.iter().map(|s| s.sheet + 1).max().unwrap_or(0);
         assert_eq!(sheets, 3, "{spots:?}");
+    }
+
+    #[test]
+    fn a_hole_is_carried_by_its_outline() {
+        let outer = square(0.0, 0.0, 100.0);
+        let hole = square(30.0, 30.0, 40.0);
+        let (parts, w, h) = local_parts(&[outer, hole]);
+        assert!(
+            (w - 100.0).abs() < 1e-9 && (h - 100.0).abs() < 1e-9,
+            "{w} by {h}"
+        );
+        let total: f64 = parts.iter().map(|p| area2(p).abs() * 0.5).sum();
+        assert!(
+            (total - 8400.0).abs() < 1.0,
+            "the material comes to {total}, not 8400"
+        );
+    }
+
+    #[test]
+    fn a_part_goes_inside_a_hole() {
+        // A square with a hole through it, on a sheet exactly its own size:
+        // the only room left is the hole.
+        let outer = ring(&square(0.0, 0.0, 100.0));
+        let hole = ring(&square(30.0, 30.0, 40.0));
+        let small = ring(&square(0.0, 0.0, 20.0));
+        let spots = nest(
+            &[vec![outer, hole], vec![small]],
+            &options(100.0, 100.0, 0.0),
+        );
+        assert_eq!(spots[1].sheet, 0, "{spots:?}");
+        assert!(
+            spots[1].x >= 29.0
+                && spots[1].x <= 51.0
+                && spots[1].y >= 29.0
+                && spots[1].y <= 51.0,
+            "it is not in the hole: {spots:?}"
+        );
     }
 
     #[test]
