@@ -1596,8 +1596,10 @@ fn matting_sheet(app: &mut App, ui: &mut Ui, m3: &M3) {
     }
     ui.add_space(6.0);
     property_label(ui, m3, &tr("ai.matting_cut"));
-    ui.checkbox(&mut st.matting_split, tr("ai.matting_split"));
-    ui.checkbox(&mut st.matting_trim, tr("ai.matting_trim"));
+    ui.horizontal_wrapped(|ui| {
+        ui.checkbox(&mut st.matting_split, tr("ai.matting_split"));
+        ui.checkbox(&mut st.matting_trim, tr("ai.matting_trim"));
+    });
     if st.matting == 0 {
         // An identification photo is made from the portrait model: its
         // subject is a person, and the photo has rules of its own about
@@ -1620,9 +1622,11 @@ fn matting_sheet(app: &mut App, ui: &mut Ui, m3: &M3) {
         ui.label(egui::RichText::new(tr("dialog.edge_softness")).size(13.0));
         ui.add(egui::Slider::new(&mut s.softness, 0.0..=20.0).suffix(" px"));
     });
-    ui.checkbox(&mut s.contiguous, tr("dialog.bg_contiguous"));
-    ui.checkbox(&mut s.despeckle, tr("dialog.bg_despeckle"));
-    ui.checkbox(&mut s.clean_edges, tr("dialog.bg_clean_edges"));
+    ui.horizontal_wrapped(|ui| {
+        ui.checkbox(&mut s.contiguous, tr("dialog.bg_contiguous"));
+        ui.checkbox(&mut s.despeckle, tr("dialog.bg_despeckle"));
+        ui.checkbox(&mut s.clean_edges, tr("dialog.bg_clean_edges"));
+    });
     st.matting_settings = s;
     ui.add_space(10.0);
     if let Some((done, total)) =
@@ -1866,9 +1870,11 @@ fn arrange_sheet(_app: &mut App, ui: &mut Ui, m3: &M3) {
             ui.end_row();
         });
     ui.add_space(10.0);
-    ui.checkbox(&mut st.arrange_rotate, tr("arrange.rotate"));
-    ui.checkbox(&mut st.arrange_irregular, tr("arrange.irregular"));
-    ui.checkbox(&mut st.arrange_split, tr("arrange.split"));
+    ui.horizontal_wrapped(|ui| {
+        ui.checkbox(&mut st.arrange_rotate, tr("arrange.rotate"));
+        ui.checkbox(&mut st.arrange_irregular, tr("arrange.irregular"));
+        ui.checkbox(&mut st.arrange_split, tr("arrange.split"));
+    });
     ui.add_space(10.0);
     if action_chip(ui, m3, &tr("arrange.run")).clicked() {
         defer(
@@ -1918,13 +1924,24 @@ fn trace_sheet(_app: &mut App, ui: &mut Ui, m3: &M3, open: &mut Sheet) {
                 .fixed_decimals(2),
         );
     });
-    property_label(ui, m3, &tr("dialog.detail"));
-    ui.add(egui::Slider::new(&mut st.contour_detail, 0.0..=100.0));
-    property_label(ui, m3, &tr("dialog.smoothing"));
-    ui.add(egui::Slider::new(&mut st.contour_smooth, 0.0..=100.0));
+    ui.horizontal(|ui| {
+        let half = ((ui.available_width() - 8.0) * 0.5).max(100.0);
+        ui.vertical(|ui| {
+            ui.set_width(half);
+            property_label(ui, m3, &tr("dialog.detail"));
+            ui.add(egui::Slider::new(&mut st.contour_detail, 0.0..=100.0));
+        });
+        ui.vertical(|ui| {
+            ui.set_width(half);
+            property_label(ui, m3, &tr("dialog.smoothing"));
+            ui.add(egui::Slider::new(&mut st.contour_smooth, 0.0..=100.0));
+        });
+    });
     ui.add_space(8.0);
-    ui.checkbox(&mut st.contour_white_backing, tr("ai.contour_white_backing"));
-    ui.checkbox(&mut st.contour_power_clip, tr("ai.contour_power_clip"));
+    ui.horizontal_wrapped(|ui| {
+        ui.checkbox(&mut st.contour_white_backing, tr("ai.contour_white_backing"));
+        ui.checkbox(&mut st.contour_power_clip, tr("ai.contour_power_clip"));
+    });
     ui.add_space(10.0);
     if action_chip(ui, m3, &tr("ai.contour_run")).clicked() {
         defer(
@@ -2439,18 +2456,18 @@ fn sheet_content(
     // left the body a third of its room and put every panel's last rows
     // behind a scroll.
     let body_room = (height - HEAD_ROW - 16.0 - bar).max(80.0);
+    let auto_shrink_y = match which {
+        Sheet::Files | Sheet::Drawings | Sheet::Panels => false,
+        _ => true,
+    };
     egui::ScrollArea::vertical()
         .id_salt(("mobile_sheet_scroll", sheet_title(which)))
         .max_height(body_room)
         // The card is as tall as what it holds, up to the room there is: a
         // panel of three numbers has no business covering the drawing for
         // the sake of a height chosen for the tallest panel.
-        .auto_shrink([false, true])
-        .scroll_bar_visibility(if bar_shown {
-            egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded
-        } else {
-            egui::scroll_area::ScrollBarVisibility::AlwaysHidden
-        })
+        .auto_shrink([false, auto_shrink_y])
+        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded)
         .show(ui, |ui| {
             Frame::new()
                 .inner_margin(egui::Margin {
@@ -3270,40 +3287,50 @@ fn page_properties(app: &mut App, ui: &mut Ui, m3: &M3) {
 
     // Its width and its height, in the drawing's units.
     let mut new_size = None;
-    property_label(ui, m3, &tr("newdoc.width"));
-    let r = property_row(ui, width, 46.0);
-    if let Some(v) = crate::ui::chrome::spin_field(
-        ui,
-        "mobile_page_width",
-        r,
-        units.from_mm(size.width),
-        1,
-        units.short(),
-        0.1,
-        0.1..=1.0e7,
-    ) {
-        new_size = Some(tracedraw_core::geometry::Size::new(
-            units.to_mm(v).max(0.1),
-            size.height,
-        ));
-    }
-    property_label(ui, m3, &tr("newdoc.height"));
-    let r = property_row(ui, width, 46.0);
-    if let Some(v) = crate::ui::chrome::spin_field(
-        ui,
-        "mobile_page_height",
-        r,
-        units.from_mm(size.height),
-        1,
-        units.short(),
-        0.1,
-        0.1..=1.0e7,
-    ) {
-        new_size = Some(tracedraw_core::geometry::Size::new(
-            size.width,
-            units.to_mm(v).max(0.1),
-        ));
-    }
+    let half_w = ((width - 8.0) * 0.5).max(100.0);
+    ui.horizontal(|ui| {
+        ui.vertical(|ui| {
+            ui.set_width(half_w);
+            property_label(ui, m3, &tr("newdoc.width"));
+            let r = property_row(ui, half_w, 46.0);
+            if let Some(v) = crate::ui::chrome::spin_field(
+                ui,
+                "mobile_page_width",
+                r,
+                units.from_mm(size.width),
+                1,
+                units.short(),
+                0.1,
+                0.1..=1.0e7,
+            ) {
+                new_size = Some(tracedraw_core::geometry::Size::new(
+                    units.to_mm(v).max(0.1),
+                    size.height,
+                ));
+            }
+        });
+        ui.vertical(|ui| {
+            ui.set_width(half_w);
+            property_label(ui, m3, &tr("newdoc.height"));
+            let r = property_row(ui, half_w, 46.0);
+            if let Some(v) = crate::ui::chrome::spin_field(
+                ui,
+                "mobile_page_height",
+                r,
+                units.from_mm(size.height),
+                1,
+                units.short(),
+                0.1,
+                0.1..=1.0e7,
+            ) {
+                let cur = new_size.unwrap_or(size);
+                new_size = Some(tracedraw_core::geometry::Size::new(
+                    cur.width,
+                    units.to_mm(v).max(0.1),
+                ));
+            }
+        });
+    });
     if let Some(s) = new_size {
         crate::ui::propbar::resize_pages(app, s);
         app.fit_pending = true;

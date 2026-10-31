@@ -565,7 +565,7 @@ pub fn dialog(app: &mut App, ctx: &Context, st: &mut SaveAsState, close: &mut bo
             ui.add_space(4.0);
             // The shortcuts and the list keep a fixed height (a vertical
             // separator would take all there is).
-            let list_h = if mobile { 180.0 } else { LIST_H };
+            let list_h = if mobile { 340.0 } else { LIST_H };
             ui.allocate_ui(egui::vec2(width, list_h), |ui| {
                 ui.set_min_height(list_h);
                 ui.set_max_height(list_h);
@@ -710,9 +710,10 @@ fn listing(ui: &mut Ui, st: &mut SaveAsState) {
     let mut rename_done: Option<bool> = None;
     list_keys(ui, st, &mut open, &mut rename);
     ui.vertical(|ui| {
+        let max_h = if crate::ui::mobile::phone() { 340.0 } else { LIST_H };
         egui::ScrollArea::vertical()
             .id_salt("save_as_list")
-            .max_height(LIST_H)
+            .max_height(max_h)
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 egui::Grid::new("save_as_grid")

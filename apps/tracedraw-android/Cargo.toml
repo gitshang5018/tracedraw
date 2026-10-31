@@ -21,7 +21,7 @@ log.workspace = true
 winit = { version = "0.30", default-features = false, features = ["android-native-activity"] }
 
 [package.metadata.android]
-package = "dev.tracedraw.app"
+package = "com.tracedraw_android.app"
 apk_name = "tracedraw"
 resources = "res"
 build_targets = ["aarch64-linux-android", "x86_64-linux-android", "armv7-linux-androideabi"]

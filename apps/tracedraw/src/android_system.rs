@@ -1996,7 +1996,7 @@ fn install_session(
     // in, and the app does not read it.
     const FLAGS: i32 = 0x0800_0000 | 0x0200_0000;
     let action = env
-        .new_string("dev.tracedraw.app.UPDATED")
+        .new_string("com.tracedraw_android.app.UPDATED")
         .map_err(|e| e.to_string())?;
     let intent = env
         .new_object(
