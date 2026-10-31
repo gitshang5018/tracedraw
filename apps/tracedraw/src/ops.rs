@@ -161,6 +161,7 @@ impl App {
     /// places the outlines themselves, by no-fit polygon, so a part can sit
     /// in the hollow of another one; it also turns each part to whichever of
     /// the angles given leaves the sheet fullest.
+    #[allow(clippy::too_many_arguments)]
     pub fn arrange_selection(
         &mut self,
         width_mm: f64,
@@ -168,7 +169,11 @@ impl App {
         gap_mm: f64,
         rotate: bool,
         irregular: bool,
+        split: bool,
     ) {
+        if split {
+            self.split_groups();
+        }
         let shapes = self.selected_shapes();
         if shapes.len() < 2 {
             self.status = crate::i18n::tr("arrange.need_selection");
@@ -2335,6 +2340,40 @@ mod curves_and_target_tests {
         assert!(app.doc().find_shape(b).is_none());
     }
 }
+
+// ----- Taking a selection apart -------------------------------------------
+
+impl App {
+    /// Open the groups in the selection so each member is a piece of its
+    /// own. A group is packed as one part, and the room between its members
+    /// is then wasted; a word turned into curves and left as one group nests
+    /// as a block of letters rather than as letters.
+    ///
+    /// Repeated while there are groups to open, up to the point where the
+    /// pieces are more than a phone can pack: a deeply nested drawing is
+    /// left as it is rather than taken apart into thousands of shapes.
+    fn split_groups(&mut self) {
+        for _ in 0..8 {
+            let shapes = self.selected_shapes();
+            if shapes.len() > SPLIT_LIMIT {
+                self.status = crate::i18n::tr("arrange.split_too_many");
+                return;
+            }
+            let groups = shapes
+                .iter()
+                .filter(|s| matches!(s.kind, ShapeKind::Group { .. }))
+                .count();
+            if groups == 0 {
+                return;
+            }
+            self.ungroup_selection();
+        }
+    }
+}
+
+/// The most pieces a split may leave before the packing stops opening
+/// groups: an outline packer on a phone wants tens, not thousands.
+const SPLIT_LIMIT: usize = 400;
 
 // ----- Placing a packed part in the drawing --------------------------------
 

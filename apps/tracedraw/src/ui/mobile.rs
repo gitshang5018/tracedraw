@@ -468,7 +468,8 @@ pub fn frame(app: &mut App, ui: &mut Ui) -> bool {
                 gap,
                 rotate,
                 irregular,
-            } => app.arrange_selection(width, height, gap, rotate, irregular),
+                split,
+            } => app.arrange_selection(width, height, gap, rotate, irregular, split),
             Job::Contour {
                 expand,
                 detail,
@@ -702,6 +703,7 @@ pub(crate) enum Job {
         gap: f64,
         rotate: bool,
         irregular: bool,
+        split: bool,
     },
     Contour {
         expand: f64,
@@ -1862,6 +1864,7 @@ fn arrange_sheet(_app: &mut App, ui: &mut Ui, m3: &M3) {
     ui.add_space(10.0);
     ui.checkbox(&mut st.arrange_rotate, tr("arrange.rotate"));
     ui.checkbox(&mut st.arrange_irregular, tr("arrange.irregular"));
+    ui.checkbox(&mut st.arrange_split, tr("arrange.split"));
     ui.add_space(10.0);
     if action_chip(ui, m3, &tr("arrange.run")).clicked() {
         defer(
@@ -1872,6 +1875,7 @@ fn arrange_sheet(_app: &mut App, ui: &mut Ui, m3: &M3) {
                 gap: st.arrange_gap_mm,
                 rotate: st.arrange_rotate,
                 irregular: st.arrange_irregular,
+                split: st.arrange_split,
             },
             &tr("mobile.working"),
         );

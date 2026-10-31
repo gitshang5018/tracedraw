@@ -13,9 +13,26 @@ of a size the panel is told, and leaves them packed.
 | 间距 / Spacing | 10 mm | the least room left between two parts, and between a part and the sheet's edge |
 | 允许旋转 / Allow rotation | on | a part may be turned a quarter turn to make it fit |
 | 异形拼版 / Nest by outline | off | a part is turned to the angle its own box is smallest at, and then slid down and left until its outline meets something |
+| 自动拆分 / Split groups first | off | the groups in the selection are opened before the packing, so each member is a part of its own |
 
 The panel is in the drawing's own unit: the three numbers are millimetres
 and are converted with the document's unit setting.
+
+## Split groups first
+
+A group is packed as one part, and the room between its members is then
+wasted: a word turned into curves and left as one group nests as a block of
+letters rather than as letters. With the switch on, every group in the
+selection is opened before the packing, and its members are what is placed.
+
+The opening is repeated while groups remain, so a group inside a group comes
+apart too, and it stops at four hundred pieces: a drawing nested that deeply
+is left as it is rather than taken apart into thousands of shapes, and the
+status bar says why.
+
+Curves are not taken apart by this. Splitting a letter into its outline and
+the hole in it would leave the hole free to be nested somewhere else, which
+is not what a cut sheet wants; that split stays a command of its own.
 
 ## How the boxes are placed
 

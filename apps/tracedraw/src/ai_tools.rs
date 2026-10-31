@@ -84,6 +84,9 @@ pub struct AiTools {
     pub arrange_gap_mm: f64,
     pub arrange_rotate: bool,
     pub arrange_irregular: bool,
+    /// The groups in the selection opened before the packing, so each
+    /// member is placed on its own rather than as one block.
+    pub arrange_split: bool,
 }
 
 impl Default for AiTools {
@@ -112,6 +115,7 @@ impl Default for AiTools {
             arrange_gap_mm: 10.0,
             arrange_rotate: true,
             arrange_irregular: false,
+            arrange_split: false,
         }
     }
 }
