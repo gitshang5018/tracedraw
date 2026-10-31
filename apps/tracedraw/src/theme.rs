@@ -334,7 +334,7 @@ const MEDIUM_LIGHT: Palette = Palette {
     ruler_tick: rgb(0x707070),
     ruler_label: rgb(0x5A5A5A),
     ruler_marker: rgb(0x0B0B0B),
-    desktop: rgb(0xFFFFFF),
+    desktop: rgb(0xDCDCDC),
 };
 
 const MEDIUM_DARK: Palette = Palette {

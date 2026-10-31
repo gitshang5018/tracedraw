@@ -70,22 +70,6 @@ pub(crate) struct M3 {
     pub(crate) chevron: Color32,
 }
 
-/// The phone's own light or dark setting, as the system last said it: 1
-/// dark, 0 light, and -1 while nothing has said yet. The interface on a
-/// phone follows the phone rather than the app's own theme, which the
-/// desktop picks by hand.
-static SYSTEM_THEME: std::sync::atomic::AtomicI8 = std::sync::atomic::AtomicI8::new(-1);
-
-/// Take the system's light or dark setting for this frame.
-fn note_system_theme(ctx: &egui::Context) {
-    let said = match ctx.system_theme() {
-        Some(egui::Theme::Dark) => 1,
-        Some(egui::Theme::Light) => 0,
-        None => -1,
-    };
-    SYSTEM_THEME.store(said, std::sync::atomic::Ordering::Relaxed);
-}
-
 /// The colours of the tiles at the head of a list's rows: warm to cool, the
 /// way the phone's own settings page sets its icons, so a list reads as a
 /// set of destinations rather than a block of text.
@@ -103,15 +87,9 @@ pub(crate) const TILES: [Color32; 9] = [
 
 impl M3 {
     pub(crate) fn of() -> Self {
-        let dark = match SYSTEM_THEME.load(std::sync::atomic::Ordering::Relaxed) {
-            1 => true,
-            0 => false,
-            // Nothing has said yet: the app's own theme stands in.
-            _ => crate::theme::theme().is_dark(),
-        };
         let c = |r: u8, g: u8, b: u8| Color32::from_rgb(r, g, b);
-        if dark {
-            Self {
+        match crate::theme::theme() {
+            crate::theme::Theme::Dark => Self {
                 surface: c(0x0E, 0x0E, 0x10),
                 container: c(0x1C, 0x1C, 0x1E),
                 high: c(0x2C, 0x2C, 0x2E),
@@ -122,9 +100,32 @@ impl M3 {
                 outline: c(0x2C, 0x2C, 0x2E),
                 separator: c(0x2C, 0x2C, 0x2E),
                 chevron: c(0x5A, 0x5A, 0x5E),
-            }
-        } else {
-            Self {
+            },
+            crate::theme::Theme::MediumDark => Self {
+                surface: c(0x38, 0x38, 0x3A),
+                container: c(0x4A, 0x4A, 0x4D),
+                high: c(0x5A, 0x5A, 0x5E),
+                on: c(0xF0, 0xF0, 0xF2),
+                variant: c(0xAA, 0xAA, 0xB0),
+                primary: c(0x6C, 0x9B, 0xFF),
+                primary_container: c(0x28, 0x38, 0x5C),
+                outline: c(0x55, 0x55, 0x5A),
+                separator: c(0x40, 0x40, 0x44),
+                chevron: c(0x7A, 0x7A, 0x80),
+            },
+            crate::theme::Theme::MediumLight => Self {
+                surface: c(0xCD, 0xCD, 0xCD),
+                container: c(0xDC, 0xDC, 0xDC),
+                high: c(0xEE, 0xEE, 0xEE),
+                on: c(0x1A, 0x1A, 0x1A),
+                variant: c(0x59, 0x59, 0x59),
+                primary: c(0x2A, 0x6E, 0xEE),
+                primary_container: c(0xC8, 0xDC, 0xF5),
+                outline: c(0xBD, 0xBD, 0xBD),
+                separator: c(0xBD, 0xBD, 0xBD),
+                chevron: c(0x8A, 0x8A, 0x90),
+            },
+            crate::theme::Theme::Light => Self {
                 surface: c(0xF2, 0xF3, 0xF5),
                 container: c(0xFF, 0xFF, 0xFF),
                 high: c(0xF2, 0xF3, 0xF5),
@@ -135,6 +136,36 @@ impl M3 {
                 outline: c(0xED, 0xED, 0xF0),
                 separator: c(0xED, 0xED, 0xF0),
                 chevron: c(0xC4, 0xC4, 0xC8),
+            },
+            crate::theme::Theme::HighContrast => {
+                let dark = crate::theme::contrast_colors().is_dark();
+                if dark {
+                    Self {
+                        surface: Color32::BLACK,
+                        container: c(0x18, 0x18, 0x18),
+                        high: c(0x28, 0x28, 0x28),
+                        on: Color32::WHITE,
+                        variant: c(0xDF, 0xDF, 0xDF),
+                        primary: c(0x5B, 0x8B, 0xFF),
+                        primary_container: c(0x1E, 0x2A, 0x44),
+                        outline: Color32::WHITE,
+                        separator: Color32::WHITE,
+                        chevron: Color32::WHITE,
+                    }
+                } else {
+                    Self {
+                        surface: Color32::WHITE,
+                        container: Color32::WHITE,
+                        high: c(0xF2, 0xF3, 0xF5),
+                        on: Color32::BLACK,
+                        variant: c(0x30, 0x30, 0x30),
+                        primary: c(0x00, 0x5A, 0xD0),
+                        primary_container: c(0xE9, 0xEF, 0xFF),
+                        outline: Color32::BLACK,
+                        separator: Color32::BLACK,
+                        chevron: Color32::BLACK,
+                    }
+                }
             }
         }
     }
@@ -439,7 +470,6 @@ fn landscape(screen: Rect) -> bool {
 pub fn frame(app: &mut App, ui: &mut Ui) -> bool {
     let ctx = ui.ctx().clone();
     let window = ui.max_rect();
-    note_system_theme(&ctx);
     let m3 = M3::of();
     // A finger is not a mouse pointer: bigger targets and room between
     // them, whatever size the desktop was set to.

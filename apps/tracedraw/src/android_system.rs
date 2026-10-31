@@ -864,14 +864,25 @@ fn field_text(vm: *mut c_void) -> Option<String> {
     })
 }
 
+/// Clear the focused field memory when focus is deliberately surrendered.
+pub fn clear_field_focus() {
+    *lock(&FOCUSED) = None;
+    *lock(&ASKED) = None;
+    *lock(&NO_FIELD_SINCE) = None;
+}
+
 /// Hand what the keyboard typed to the frame being drawn, and put the
 /// keyboard up while `wants` says a field has the focus.
 pub fn pump_typing(ctx: &egui::Context, wants: bool) {
     let Some(phone) = phone() else {
         return;
     };
+    if !wants {
+        *lock(&FOCUSED) = None;
+        *lock(&ASKED) = None;
+    }
     let focused = ctx.memory(|m| m.focused());
-    let touched = ctx.input(|i| i.pointer.any_pressed());
+    let touched = ctx.input(|i| i.pointer.any_pressed() || i.pointer.any_click());
     // A touch on a field whose keyboard was put away is the user asking for
     // it again. `SHOWN` says the phone answered once, and a field that keeps
     // the focus after the keyboard goes (the back gesture leaves it where it
@@ -896,7 +907,7 @@ pub fn pump_typing(ctx: &egui::Context, wants: bool) {
     // then opened and lost again, and the two went round for as long as the
     // text was edited: the keyboard closed and opened, over and over, and
     // the back gesture that put it away was answered with another ask.
-    if focused.is_none() && !touched && KEYBOARD.load(std::sync::atomic::Ordering::Relaxed) {
+    if wants && focused.is_none() && !touched && KEYBOARD.load(std::sync::atomic::Ordering::Relaxed) {
         let last = *lock(&FOCUSED);
         let rising = match *lock(&ASKED) {
             Some((when, _)) => when.elapsed() < KEYBOARD_GRACE,

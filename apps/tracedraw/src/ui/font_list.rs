@@ -435,35 +435,13 @@ fn font_list_with(
     // The field and its arrow.
     let mut text = st.typed.clone().unwrap_or_else(|| current.to_string());
     let field_id = id.with("field");
-    let is_mobile = crate::ui::mobile::active(&ctx);
     let row = ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 0.0;
-        let field = if is_mobile {
-            let (rect, resp) = ui.allocate_exact_size(
-                Vec2::new((width - 18.0).max(40.0), 22.0),
-                Sense::click(),
-            );
-            let fill = if resp.hovered() {
-                Tokens::tool_hover()
-            } else {
-                Tokens::field()
-            };
-            ui.painter().rect_filled(rect.shrink(1.0), 2.0, fill);
-            ui.painter().text(
-                egui::pos2(rect.left() + 4.0, rect.center().y),
-                egui::Align2::LEFT_CENTER,
-                &text,
-                egui::FontId::proportional(12.0),
-                Tokens::text(),
-            );
-            resp
-        } else {
-            ui.add(
-                egui::TextEdit::singleline(&mut text)
-                    .id(field_id)
-                    .desired_width((width - 18.0).max(40.0)),
-            )
-        };
+        let field = ui.add(
+            egui::TextEdit::singleline(&mut text)
+                .id(field_id)
+                .desired_width((width - 18.0).max(40.0)),
+        );
         let (arrow_rect, arrow) =
             ui.allocate_exact_size(Vec2::new(18.0, field.rect.height()), Sense::click());
         let fill = if arrow.hovered() {
@@ -492,42 +470,35 @@ fn font_list_with(
         embedded_tag(ui.painter(), field.rect.shrink2(Vec2::new(3.0, 1.0)), true);
     }
     let was_open = egui::Popup::is_id_open(&ctx, popup_id);
-    if is_mobile {
-        if field.clicked() {
-            if was_open {
-                egui::Popup::close_id(&ctx, popup_id);
-            } else {
-                egui::Popup::open_id(&ctx, popup_id);
-                st.scroll = true;
-            }
+    if field.gained_focus() {
+        // Typing replaces the name.
+        if let Some(mut state) = egui::TextEdit::load_state(&ctx, field_id) {
+            let n = text.chars().count();
+            state
+                .cursor
+                .set_char_range(Some(egui::text::CCursorRange::two(
+                    egui::text::CCursor::new(0),
+                    egui::text::CCursor::new(n),
+                )));
+            state.store(&ctx, field_id);
         }
-    } else {
-        if field.gained_focus() {
-            // Typing replaces the name.
-            if let Some(mut state) = egui::TextEdit::load_state(&ctx, field_id) {
-                let n = text.chars().count();
-                state
-                    .cursor
-                    .set_char_range(Some(egui::text::CCursorRange::two(
-                        egui::text::CCursor::new(0),
-                        egui::text::CCursor::new(n),
-                    )));
-                state.store(&ctx, field_id);
-            }
-            egui::Popup::open_id(&ctx, popup_id);
-            st.scroll = true;
-        }
-        if field.changed() {
-            st.typed = Some(text.clone());
-            st.highlight = Some(0);
-            st.scroll = true;
-            st.keyed = true;
-            egui::Popup::open_id(&ctx, popup_id);
-        }
+        egui::Popup::open_id(&ctx, popup_id);
+        st.scroll = true;
+    }
+    if field.changed() {
+        st.typed = Some(text.clone());
+        st.highlight = Some(0);
+        st.scroll = true;
+        st.keyed = true;
+        egui::Popup::open_id(&ctx, popup_id);
     }
     if arrow.clicked() {
         if was_open {
             egui::Popup::close_id(&ctx, popup_id);
+            field.surrender_focus();
+            ctx.memory_mut(|m| m.stop_text_input());
+            #[cfg(target_os = "android")]
+            crate::android_system::clear_field_focus();
         } else {
             egui::Popup::open_id(&ctx, popup_id);
             st.scroll = true;
@@ -653,6 +624,9 @@ fn font_list_with(
             egui::Popup::close_id(&ctx, popup_id);
             st.typed = None;
             field.surrender_focus();
+            ctx.memory_mut(|m| m.stop_text_input());
+            #[cfg(target_os = "android")]
+            crate::android_system::clear_field_focus();
         }
     } else if field.lost_focus() && ctx.input(|i| i.key_pressed(Key::Enter)) {
         pick = st.highlight.and_then(|h| rows.get(h)).map(row_pick);
@@ -720,9 +694,10 @@ fn font_list_with(
         egui::Popup::close_id(&ctx, popup_id);
         st.typed = None;
         st.expanded = None;
-        if !is_mobile {
-            field.surrender_focus();
-        }
+        field.surrender_focus();
+        ctx.memory_mut(|m| m.stop_text_input());
+        #[cfg(target_os = "android")]
+        crate::android_system::clear_field_focus();
     }
     ctx.data_mut(|d| d.insert_temp(id, st));
     (pick, live)

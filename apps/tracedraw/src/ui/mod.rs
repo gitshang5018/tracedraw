@@ -270,6 +270,8 @@ pub(crate) fn clear_focus_on_outside_click(ctx: &egui::Context) {
         }
     }
     ctx.memory_mut(|m| m.stop_text_input());
+    #[cfg(target_os = "android")]
+    crate::android_system::clear_field_focus();
 }
 
 fn root_frame(app: &mut App, ui: &mut Ui) {
