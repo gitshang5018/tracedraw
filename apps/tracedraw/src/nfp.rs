@@ -411,9 +411,14 @@ fn place(
     // Every translation that puts this piece on one already placed.
     let mut nfps: Vec<(Vec<Pt>, (f64, f64, f64, f64))> = Vec::new();
     for q in placed {
-        let mirrored: Vec<Pt> = q.iter().map(|&(x, y)| (-x, -y)).collect();
         for p in prep {
-            let poly = minkowski(p, &mirrored);
+            // The translations that put this part on one already placed are
+            // the placed part grown by the moving one turned round: `t` is
+            // such a translation when `b + t = a` for some `a` of the part
+            // placed and `b` of the one moving, so the sum is the placed
+            // part with the moving one mirrored.
+            let mirrored: Vec<Pt> = p.iter().map(|&(x, y)| (-x, -y)).collect();
+            let poly = minkowski(q, &mirrored);
             if poly.len() < 3 {
                 continue;
             }
@@ -465,6 +470,20 @@ fn place(
             return Some(rest(c, &nfps, rx0, ry0));
         }
     }
+    // No vertex of the forbidden region is free: the free places are the
+    // ones between them, a hole in the middle of a part for one. A coarse
+    // walk of the sheet finds one, and the part is then slid into its
+    // corner like any other.
+    let steps = 16;
+    for iy in 0..=steps {
+        let y = ry0 + (ry1 - ry0) * iy as f64 / steps as f64;
+        for ix in 0..=steps {
+            let x = rx0 + (rx1 - rx0) * ix as f64 / steps as f64;
+            if free((x, y), &nfps) {
+                return Some(rest((x, y), &nfps, rx0, ry0));
+            }
+        }
+    }
     None
 }
 
@@ -480,15 +499,31 @@ fn rest(pos: Pt, nfps: &[(Vec<Pt>, (f64, f64, f64, f64))], left_edge: f64, top_e
     let mut p = pos;
     for _ in 0..3 {
         let up = travel(p, (0.0, -1.0), nfps, p.1 - top_edge);
-        if up > 1e-9 {
+        if up > 1e-9 && free((p.0, p.1 - up), nfps) {
             p.1 -= up;
         }
         let left = travel(p, (-1.0, 0.0), nfps, p.0 - left_edge);
-        if left > 1e-9 {
+        if left > 1e-9 && free((p.0 - left, p.1), nfps) {
             p.0 -= left;
         }
     }
     p
+}
+
+/// Whether a place is clear of every no-fit polygon. A slide that starts on
+/// the edge of one goes into it at once, and the first contact of a ray is
+/// then the point it starts from, which is no distance at all: the end of a
+/// slide is tested rather than trusted.
+fn free(p: Pt, nfps: &[(Vec<Pt>, (f64, f64, f64, f64))]) -> bool {
+    for (poly, b) in nfps {
+        if p.0 < b.0 - 1e-9 || p.0 > b.2 + 1e-9 || p.1 < b.1 - 1e-9 || p.1 > b.3 + 1e-9 {
+            continue;
+        }
+        if inside(p, poly) {
+            return false;
+        }
+    }
+    true
 }
 
 /// How far a point can travel along `u` before it meets one of the rings, or
@@ -699,6 +734,12 @@ fn ear_clip(ring: &[Pt]) -> Vec<Vec<Pt>> {
                 if j == i || j == (i + n - 1) % n || j == (i + 1) % n {
                     continue;
                 }
+                // The two sides of a slit are the same two points: a corner
+                // on the ear's own edge is the ear itself, not a corner that
+                // blocks it.
+                if same(r[j], a) || same(r[j], b) || same(r[j], c) {
+                    continue;
+                }
                 if in_tri(r[j], a, b, c) {
                     ear = false;
                     break;
@@ -712,7 +753,28 @@ fn ear_clip(ring: &[Pt]) -> Vec<Vec<Pt>> {
             }
         }
         if !cut {
-            break;
+            // A ring with a hole cut open into it has a slit, and the two
+            // sides of a slit lie on one line: no ear test will take any of
+            // its corners. The flattest corner is cut away as a sliver and
+            // the walk goes on, which is how a bridged ring comes apart.
+            let n = r.len();
+            let mut pick = 0usize;
+            let mut flattest = f64::MAX;
+            for i in 0..n {
+                let a = r[(i + n - 1) % n];
+                let b = r[i];
+                let c = r[(i + 1) % n];
+                let turn = cross(sub(b, a), sub(c, b)).abs();
+                if turn < flattest {
+                    flattest = turn;
+                    pick = i;
+                }
+            }
+            let a = r[(pick + n - 1) % n];
+            let b = r[pick];
+            let c = r[(pick + 1) % n];
+            out.push(vec![a, b, c]);
+            r.remove(pick);
         }
     }
     if r.len() == 3 {
@@ -1007,7 +1069,8 @@ mod tests {
         let b = bbox(&sum);
         assert!((b.0).abs() < 1e-9 && (b.1).abs() < 1e-9, "{b:?}");
         assert!((b.2 - 20.0).abs() < 1e-9 && (b.3 - 20.0).abs() < 1e-9, "{b:?}");
-        assert!((area2(&sum) - 400.0).abs() < 1e-6, "{}", area2(&sum));
+        // `area2` is twice the area, as the shoelace gives it.
+        assert!((area2(&sum) - 800.0).abs() < 1e-6, "{}", area2(&sum));
     }
 
     #[test]

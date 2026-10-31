@@ -110,11 +110,14 @@ fn one_run(idx: &[usize], sizes: &[(f64, f64)], o: &Options, heuristic: u8) -> (
     } else {
         1e-6
     };
+    // The gap is carried by the parts, so the sheet is given one more gap
+    // in each direction: the gap that hangs off the last part in a row then
+    // falls outside the sheet rather than making the part too big for it.
     let whole = Free {
         x: 0.0,
         y: 0.0,
-        w: board_w,
-        h: board_h,
+        w: board_w + gap,
+        h: board_h + gap,
     };
     let mut spots: Vec<Spot> = vec![
         Spot {
@@ -128,13 +131,18 @@ fn one_run(idx: &[usize], sizes: &[(f64, f64)], o: &Options, heuristic: u8) -> (
     let mut sheet = 0usize;
     let mut free: Vec<Free> = vec![whole];
     let mut depth = 0.0f64;
+    // Whether the sheet in hand has nothing on it yet. A part that does not
+    // fit an empty sheet is too big for any, and gets the corner of one of
+    // its own; a part that does not fit a sheet with something on it goes to
+    // the next sheet. Telling the two apart is what keeps a drawing of
+    // oversized parts from piling them all on the first sheet.
+    let mut empty = true;
     for &i in idx {
         let (w0, h0) = sizes[i];
         // A box takes the gap along with it, so the next one keeps its
         // distance without the packer having to remember anything.
         let need_w = w0.max(0.0) + gap;
         let need_h = h0.max(0.0) + gap;
-        let mut fresh = true;
         loop {
             if let Some((x, y, turned)) = best_fit(&free, need_w, need_h, o.rotate, heuristic) {
                 let (fw, fh) = if turned {
@@ -150,9 +158,10 @@ fn one_run(idx: &[usize], sizes: &[(f64, f64)], o: &Options, heuristic: u8) -> (
                     y,
                     turned,
                 };
+                empty = false;
                 break;
             }
-            if fresh {
+            if empty {
                 // An empty sheet, and it still does not fit: it goes at the
                 // corner, turned only if that is what brings it closer.
                 let turned = o.rotate && need_w > board_w && need_h <= board_w;
@@ -169,13 +178,14 @@ fn one_run(idx: &[usize], sizes: &[(f64, f64)], o: &Options, heuristic: u8) -> (
                     y: 0.0,
                     turned,
                 };
+                empty = false;
                 break;
             }
             sheet += 1;
             free.clear();
             free.push(whole);
             depth = 0.0;
-            fresh = true;
+            empty = true;
         }
     }
     (spots, depth)
