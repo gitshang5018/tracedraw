@@ -3219,21 +3219,31 @@ fn palette_float(
     let land = landscape(screen);
     let width = (screen.width() * 0.78).clamp(232.0, 360.0);
     let height = (screen.height() * 0.34).clamp(190.0, 300.0);
-    let pos = if land {
+    // The corner the card hangs from, rather than a corner and a height:
+    // it is as tall as the colours in it, and grows away from the corner
+    // it is pinned to.
+    let (pos, pivot) = if land {
         // On its side: under the top bar, against the destinations rail.
-        egui::pos2(
-            screen.right() - NAV_RAIL_W - width - 12.0,
-            screen.top() + TOP_H + 12.0,
+        (
+            egui::pos2(
+                screen.right() - NAV_RAIL_W - 12.0,
+                screen.top() + TOP_H + 12.0,
+            ),
+            egui::Align2::RIGHT_TOP,
         )
     } else {
         // Standing: above the tool strip, against the right edge.
-        egui::pos2(
-            screen.right() - width - 12.0,
-            screen.bottom() - ime - NAV_H - TOOLS_H - strip - height - 12.0,
+        (
+            egui::pos2(
+                screen.right() - 12.0,
+                screen.bottom() - ime - NAV_H - TOOLS_H - strip - 12.0,
+            ),
+            egui::Align2::RIGHT_BOTTOM,
         )
     };
     let card = egui::Area::new(Id::new("mobile_palette_float"))
         .order(egui::Order::Foreground)
+        .pivot(pivot)
         .fixed_pos(pos)
         .show(ctx, |ui| {
             Frame::new()
@@ -3253,7 +3263,6 @@ fn palette_float(
                 })
                 .show(ui, |ui| {
                     ui.set_width(width);
-                    ui.set_min_height(height);
                     // The title is the way out: a tap on it, or on the cross
                     // beside it, puts the card away. A tap elsewhere on the
                     // card picks a colour, so the header is what closes it.
@@ -3284,7 +3293,7 @@ fn palette_float(
                     egui::ScrollArea::vertical()
                         .id_salt("mobile_palette_scroll")
                         .max_height(height - 44.0)
-                        .auto_shrink([false, false])
+                        .auto_shrink([false, true])
                         .show(ui, |ui| {
                             Frame::new()
                                 .inner_margin(egui::Margin {
