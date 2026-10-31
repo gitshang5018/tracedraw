@@ -26,6 +26,8 @@ use egui::{Color32, CornerRadius, Frame, Id, Rect, Response, Sense, Stroke, Ui, 
 
 /// The top app bar: the menu, the drawing's name, undo and redo.
 const TOP_H: f32 = 64.0;
+/// The row a sheet's name and close button take.
+const HEAD_ROW: f32 = 56.0;
 /// The strip of tools above the navigation bar.
 const TOOLS_H: f32 = 72.0;
 /// The strip of properties above the tools, shown while something is
@@ -484,6 +486,13 @@ pub fn frame(app: &mut App, ui: &mut Ui) -> bool {
         ctx.data_mut(|d| d.remove::<String>(Id::new("mobile_busy")));
         ctx.request_repaint();
     }
+
+    // A cut-out that finished on its own thread goes into the drawing as
+    // soon as it is ready. It used to be applied at the top of the matting
+    // panel, which is drawn only while that panel is open: with the panel
+    // closed when the work starts, the picture waited for it to be opened
+    // again.
+    matting_apply(app, &ctx);
 
     let mut open = sheet(&ctx);
     // A file dialog asked anywhere (File > Open, an import) becomes the
@@ -1559,8 +1568,6 @@ fn id_photo_settings(ui: &mut Ui, how: &mut crate::matting::IdPhoto) {
 /// learnt from their border or by the model picked.
 fn matting_sheet(app: &mut App, ui: &mut Ui, m3: &M3) {
     let ctx = ui.ctx().clone();
-    // A mask that finished since the last frame goes in first.
-    matting_apply(app, &ctx);
     let mut st = ai_state(&ctx);
     ui.label(
         egui::RichText::new(tr("ai.matting_hint"))
@@ -1883,7 +1890,26 @@ fn trace_sheet(_app: &mut App, ui: &mut Ui, m3: &M3, open: &mut Sheet) {
     );
     ui.add_space(8.0);
     property_label(ui, m3, &tr("ai.contour_expand"));
-    ui.add(egui::Slider::new(&mut st.contour_expand_mm, -5.0..=5.0).fixed_decimals(2));
+    // The slider for the feel of it, and a field beside it for a number
+    // typed in: an outline grown by 7.5 mm is a measurement, not something
+    // to be hunted for by dragging.
+    ui.horizontal(|ui| {
+        let field = 62.0;
+        let width = (ui.available_width() - field - 8.0).max(80.0);
+        ui.add_sized(
+            [width, 30.0],
+            egui::Slider::new(&mut st.contour_expand_mm, -50.0..=50.0)
+                .fixed_decimals(2)
+                .show_value(false),
+        );
+        ui.add_sized(
+            [field, 30.0],
+            egui::DragValue::new(&mut st.contour_expand_mm)
+                .speed(0.05)
+                .range(-50.0..=50.0)
+                .fixed_decimals(2),
+        );
+    });
     property_label(ui, m3, &tr("dialog.detail"));
     ui.add(egui::Slider::new(&mut st.contour_detail, 0.0..=100.0));
     property_label(ui, m3, &tr("dialog.smoothing"));
@@ -2380,7 +2406,6 @@ fn sheet_content(
         ui.painter().rect_filled(grab, 2.0, m3.variant);
         ui.add_space(10.0);
     }
-    let head_top = ui.cursor().min.y;
     if sheet_header(ui, which, m3) {
         *open = Sheet::None;
     }
@@ -2400,12 +2425,12 @@ fn sheet_content(
         which,
         Sheet::AiGenerate | Sheet::Matting | Sheet::Variable | Sheet::Trace | Sheet::Arrange
     );
-    // What is left of the card for the body: the header has been drawn, and
-    // the bar a panel keeps at its foot is not the body's room. Measured off
-    // the cursor rather than guessed, so a card is not cut short by a margin
-    // nobody uses, and a dock that fills its side still measures right.
-    let used = (ui.cursor().min.y - head_top).max(0.0);
-    let body_room = (height - used - bar - 8.0).max(80.0);
+    // What is left of the card for the body: the header is a row of 56, and
+    // the margins take 16 more, so the body gets the rest. Measuring it off
+    // the cursor was tried and gave the header five hundred points, which
+    // left the body a third of its room and put every panel's last rows
+    // behind a scroll.
+    let body_room = (height - HEAD_ROW - 16.0 - bar).max(80.0);
     egui::ScrollArea::vertical()
         .id_salt(("mobile_sheet_scroll", sheet_title(which)))
         .max_height(body_room)
@@ -2474,7 +2499,7 @@ fn sheet_header(ui: &mut Ui, which: Sheet, m3: &M3) -> bool {
     // The row is laid out by hand: the target of the close button is a
     // rectangle of its own at the right end, so a finger always finds it
     // (a row of nested layouts put it out of reach of the pointer).
-    let (row, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 56.0), Sense::hover());
+    let (row, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), HEAD_ROW), Sense::hover());
     ui.painter().text(
         egui::pos2(row.left() + 16.0, row.center().y),
         egui::Align2::LEFT_CENTER,

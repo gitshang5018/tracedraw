@@ -6,6 +6,9 @@ full, row-by-row status.
 
 ## Unreleased
 
+- A panel's body gets the room the header does not take, worked out from the row the header is made of. Measuring the header off the cursor gave it five hundred points on a phone, which left every panel a third of its room and put its last rows behind a scroll: 巡边 showed its sliders and hid its switches and its button.
+- 巡边's 外扩 is a number that can be typed as well as dragged, and up to 50 mm either way rather than 5.
+- A cut-out that finishes on its thread goes into the drawing at once. It used to be applied at the top of the matting panel, which is drawn only while that panel is open, so with the panel closing as the work started the picture waited to be opened again.
 - 排布, 抠图, AI 生成, 巡边 and 变量数据 close their panel when they are asked to make something, and a card with a turning ring in the middle of the screen says what is being made until it is done. The work itself is handed to the frame after the one that asked for it, so the card is drawn before the work takes the phone rather than after it.
 - A dialog on a phone is as tall as its fields and as tall as the phone allows, rather than 0.58 of the screen: a prompt with one field is one field tall, and a page of settings fills what is left above its buttons and scrolls only past that. The colour palette floats at the corner it is pinned to and is as tall as the colours in it, up to the height it used to be fixed at.
 - A phone's panel is as tall as what it holds, and only scrolls when the phone has no room for it: the share of the screen each panel used to be given is gone, so a panel of three numbers and two switches is short and a panel of settings is as tall as its settings. The bar above the tools follows the card it is drawn over, since a card whose height follows its contents cannot be guessed at from a share of the screen.
