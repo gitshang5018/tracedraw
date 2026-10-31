@@ -173,6 +173,8 @@ pub enum Sheet {
     Variable,
     /// The chip at the left edge: a picture turned into curves.
     Trace,
+    /// The chip at the left edge: the selected parts packed onto a sheet.
+    Arrange,
 }
 
 /// Whether the interface is laid out for a phone: always in the Android
@@ -1269,7 +1271,7 @@ fn ai_chip(app: &mut App, ui: &mut Ui, m3: &M3, full: Rect, open: &mut Sheet) {
                         if resp.clicked() {
                             match action {
                                 AiMenu::Sheet(sheet) => *open = sheet,
-                                AiMenu::Arrange => app.arrange_selection(),
+                                AiMenu::Arrange => *open = Sheet::Arrange,
                                 AiMenu::Group => app.smart_group(),
                             }
                             ui.ctx().data_mut(|d| d.insert_temp(menu_key, false));
@@ -1676,6 +1678,57 @@ fn matting_apply(app: &mut App, ctx: &egui::Context) {
 /// The contour: the outline of the selected picture as closed paths, which
 /// is what a cutter follows. It grows out of the subject by a distance in
 /// millimetres, or shrinks into it when the distance is negative.
+/// The smart layout: the sheet the parts are packed onto, the least room
+/// left between two of them, and whether a part may be turned, or turned to
+/// any angle and settled by its own outline.
+fn arrange_sheet(app: &mut App, ui: &mut Ui, m3: &M3) {
+    let ctx = ui.ctx().clone();
+    let mut st = ai_state(&ctx);
+    property_label(ui, m3, &tr("arrange.params"));
+    ui.add_space(2.0);
+    let field = ((ui.available_width() - 16.0) / 3.0).max(56.0);
+    egui::Grid::new("arrange_numbers")
+        .num_columns(3)
+        .spacing([8.0, 2.0])
+        .show(ui, |ui| {
+            for key in ["resample.width", "resample.height", "arrange.gap"] {
+                ui.add_sized(
+                    [field, 16.0],
+                    egui::Label::new(egui::RichText::new(tr(key)).size(11.5).color(m3.variant)),
+                );
+            }
+            ui.end_row();
+            for value in [
+                &mut st.arrange_width_mm,
+                &mut st.arrange_height_mm,
+                &mut st.arrange_gap_mm,
+            ] {
+                ui.add_sized(
+                    [field, 34.0],
+                    egui::DragValue::new(value)
+                        .speed(1.0)
+                        .range(1.0..=20000.0)
+                        .fixed_decimals(0),
+                );
+            }
+            ui.end_row();
+        });
+    ui.add_space(10.0);
+    ui.checkbox(&mut st.arrange_rotate, tr("arrange.rotate"));
+    ui.checkbox(&mut st.arrange_irregular, tr("arrange.irregular"));
+    ui.add_space(10.0);
+    if action_chip(ui, m3, &tr("arrange.run")).clicked() {
+        app.arrange_selection(
+            st.arrange_width_mm,
+            st.arrange_height_mm,
+            st.arrange_gap_mm,
+            st.arrange_rotate,
+            st.arrange_irregular,
+        );
+    }
+    save_ai_state(&ctx, &st);
+}
+
 fn trace_sheet(app: &mut App, ui: &mut Ui, m3: &M3, open: &mut Sheet) {
     let _ = open;
     let ctx = ui.ctx().clone();
@@ -2175,10 +2228,23 @@ fn sheet_content(
     } else {
         0.0
     };
+    // The image tools' panels are short enough to read in one go, and a bar
+    // down the side of them is a desk's furniture: a phone drags the content
+    // itself, with nothing drawn over it. The lists, which can be long, keep
+    // theirs.
+    let bar_shown = !matches!(
+        which,
+        Sheet::AiGenerate | Sheet::Matting | Sheet::Variable | Sheet::Trace | Sheet::Arrange
+    );
     egui::ScrollArea::vertical()
         .id_salt(("mobile_sheet_scroll", sheet_title(which)))
         .max_height(height - 92.0 - bar)
         .auto_shrink([false, false])
+        .scroll_bar_visibility(if bar_shown {
+            egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded
+        } else {
+            egui::scroll_area::ScrollBarVisibility::AlwaysHidden
+        })
         .show(ui, |ui| {
             Frame::new()
                 .inner_margin(egui::Margin {
@@ -2189,6 +2255,12 @@ fn sheet_content(
                 })
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
+                    if !bar_shown {
+                        // The image tools are a short list of controls that
+                        // a phone reads in one go: set closer together, so
+                        // most of them fit without scrolling at all.
+                        ui.spacing_mut().item_spacing.y = 6.0;
+                    }
                     sheet_body(app, ui, which, m3, open);
                 });
         });
@@ -2222,6 +2294,8 @@ fn sheet_height(which: Sheet, screen: f32) -> f32 {
         Sheet::Files | Sheet::Drawings => 0.52,
         Sheet::Properties => 0.46,
         Sheet::Matting | Sheet::Variable | Sheet::Trace => 0.52,
+        // Three numbers, two switches and one button: the sheet is short.
+        Sheet::Arrange => 0.40,
         // The generate panel carries a prompt, a source image, styles and a
         // strip of results: it opens over most of the drawing.
         Sheet::AiGenerate => 0.88,
@@ -2314,6 +2388,7 @@ fn sheet_title(which: Sheet) -> String {
         Sheet::Matting => tr("ai.matting"),
         Sheet::Variable => tr("ai.variable"),
         Sheet::Trace => tr("ai.trace"),
+        Sheet::Arrange => tr("docker.smart_arrange"),
         Sheet::None
         | Sheet::Drawer
         | Sheet::MenuPage(_)
@@ -2334,6 +2409,7 @@ fn sheet_body(app: &mut App, ui: &mut Ui, which: Sheet, m3: &M3, open: &mut Shee
         Sheet::Matting => matting_sheet(app, ui, m3),
         Sheet::Variable => variable_sheet(app, ui, m3),
         Sheet::Trace => trace_sheet(app, ui, m3, open),
+        Sheet::Arrange => arrange_sheet(app, ui, m3),
         Sheet::None
         | Sheet::Drawer
         | Sheet::MenuPage(_)

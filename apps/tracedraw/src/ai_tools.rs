@@ -76,6 +76,14 @@ pub struct AiTools {
     /// is made.
     pub id_photo_on: bool,
     pub id_photo: crate::matting::IdPhoto,
+    /// The smart layout's numbers: the sheet the parts are packed onto, in
+    /// millimetres, the least space between two of them, and whether a part
+    /// may be turned, or turned to any angle and settled by its own outline.
+    pub arrange_width_mm: f64,
+    pub arrange_height_mm: f64,
+    pub arrange_gap_mm: f64,
+    pub arrange_rotate: bool,
+    pub arrange_irregular: bool,
 }
 
 impl Default for AiTools {
@@ -99,6 +107,11 @@ impl Default for AiTools {
             matting_trim: true,
             id_photo_on: false,
             id_photo: crate::matting::IdPhoto::default(),
+            arrange_width_mm: 1200.0,
+            arrange_height_mm: 2400.0,
+            arrange_gap_mm: 10.0,
+            arrange_rotate: true,
+            arrange_irregular: false,
         }
     }
 }

@@ -112,6 +112,7 @@ mod mixed;
 mod mockup_tests;
 mod multipage;
 mod net;
+mod nesting;
 mod new_document;
 mod node_edit;
 mod object_clone;

@@ -6,6 +6,9 @@ full, row-by-row status.
 
 ## Unreleased
 
+- 智能排布 opens a panel of its own now, with the sheet it packs onto: 1200 by 2400 mm and 10 mm of spacing by default, a switch for turning a part a quarter turn, and one for nesting by outline, which turns each part to the angle its box is smallest at and then settles it into the hollows below by its own outline. The parts are packed by maximal free rectangles, four heuristics and three orders all tried and the one that fills the fewest sheets kept. The row that arranged straight into rows is gone with it.
+- The image tools' panels draw no scroll bar: a phone drags the content itself, and a bar down the side of a short panel is a desk's furniture. The lists, which can be long, keep theirs.
+- Release builds are stripped of their symbols, so a library read back out of an APK is addresses and code rather than a table of names.
 - The phone's interface follows the phone's own light and dark setting: turning the system dark turns the page, the cards, the bars and the accent dark with it, and turning it back brings the light ones. It was drawn from the app's own theme, which is picked by hand in Options and was left behind when the phone changed.
 - The AI chip's menu is drawn as the card the tool strip opens: the same corner, the same shadow, and rows that light up in the accent as the strip's buttons do. It was a smaller card of filled chips, which read as another kind of menu.
 - 智能排布 and 智能群组 are in the AI chip's menu now, beside the image tools they are used with, instead of the bar along the bottom of the drawing.
