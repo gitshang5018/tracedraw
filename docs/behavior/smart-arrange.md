@@ -22,17 +22,24 @@ and are converted with the document's unit setting.
 
 A group is packed as one part, and the room between its members is then
 wasted: a word turned into curves and left as one group nests as a block of
-letters rather than as letters. With the switch on, every group in the
-selection is opened before the packing, and its members are what is placed.
+letters rather than as letters.
 
-The opening is repeated while groups remain, so a group inside a group comes
-apart too, and it stops at four hundred pieces: a drawing nested that deeply
-is left as it is rather than taken apart into thousands of shapes, and the
-status bar says why.
+With the switch on, two things are taken apart before the packing:
 
-Curves are not taken apart by this. Splitting a letter into its outline and
-the hole in it would leave the hole free to be nested somewhere else, which
-is not what a cut sheet wants; that split stays a command of its own.
+- **Groups** are opened, and the opening is repeated while groups remain, so
+  a group inside a group comes apart too.
+- **Compound curves** are split into bodies. A body is a ring with the rings
+  inside it: the outline of a letter and the hole in it stay one object, and
+  two letters standing apart become two objects. A word turned into curves
+  is one compound, and this is what turns it into letters.
+
+The hole staying with its letter matters: split into bare rings, the hole of
+an O would be a part of its own, free to be nested somewhere else, and the
+sheet would be cut wrong.
+
+It stops at four hundred pieces, which the status bar explains: a drawing
+nested that deeply is left as it is rather than taken apart into thousands
+of shapes.
 
 ## How the boxes are placed
 

@@ -6,7 +6,7 @@ full, row-by-row status.
 
 ## Unreleased
 
-- 智能排布 has a 自动拆分 switch: the groups in the selection are opened before the packing, so each member is placed on its own rather than as one block. It repeats while groups remain and stops at four hundred pieces, which the status bar explains. Curves are left alone: splitting a letter from the hole in it would let the nester put the hole somewhere else.
+- 智能排布 has a 自动拆分 switch: the groups in the selection are opened before the packing, and compound curves are split into bodies, a body being a ring with the rings inside it, so a word turned into curves nests as letters and a letter keeps the hole in it. It repeats while groups remain and stops at four hundred pieces, which the status bar explains.
 - A panel's body gets the room the header does not take, worked out from the row the header is made of. Measuring the header off the cursor gave it five hundred points on a phone, which left every panel a third of its room and put its last rows behind a scroll: 巡边 showed its sliders and hid its switches and its button.
 - 巡边's 外扩 is a number that can be typed as well as dragged, and up to 50 mm either way rather than 5.
 - A cut-out that finishes on its thread goes into the drawing at once. It used to be applied at the top of the matting panel, which is drawn only while that panel is open, so with the panel closing as the work started the picture waited to be opened again.

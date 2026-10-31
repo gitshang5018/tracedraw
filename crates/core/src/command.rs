@@ -289,6 +289,14 @@ pub enum Command {
     BreakApart {
         shape: ShapeId,
     },
+    /// Split a compound curve into one object per body: a ring and the
+    /// rings inside it stay together, and rings that stand apart become
+    /// objects of their own. A word turned into curves is one compound of
+    /// letters, and this is what makes it letters without leaving a hole
+    /// free to be nested somewhere else.
+    SplitBodies {
+        shape: ShapeId,
+    },
     SetShadow {
         shapes: Vec<ShapeId>,
         shadow: Option<Shadow>,
@@ -446,6 +454,7 @@ impl Command {
             Command::ReverseOrder { .. } => "Reverse Order",
             Command::Combine { .. } => "Combine",
             Command::BreakApart { .. } => "Break Apart",
+            Command::SplitBodies { .. } => "Split Into Bodies",
             Command::PlaceInside { .. } => "Place Inside Frame",
             Command::ExtractContents { .. } => "Extract Contents",
             Command::RenamePage { .. } => "Rename Page",
@@ -1048,6 +1057,47 @@ impl Command {
                     layer.shapes.insert(idx + k, piece);
                 }
             }
+            Command::SplitBodies { shape } => {
+                let (layer_id, idx) = doc.locate(*shape)?;
+                let s = doc.shape(*shape)?.1.clone();
+                let ShapeKind::Path { path, closed } = &s.kind else {
+                    return Ok(());
+                };
+                let rings = subpaths(path);
+                if rings.len() < 2 {
+                    return Ok(());
+                }
+                let bodies = ring_bodies(&rings);
+                if bodies.len() < 2 {
+                    return Ok(());
+                }
+                let n = bodies.len();
+                let mut ids: Vec<ShapeId> = (1..n).map(|_| doc.ids_mut().shape()).collect();
+                ids.insert(0, *shape);
+                let layer = doc.layer_mut(layer_id)?;
+                layer.shapes.remove(idx);
+                let layer = doc.layer_mut(layer_id)?;
+                for (k, (body, id)) in bodies.into_iter().zip(ids).enumerate() {
+                    let mut piece_path = BezPath::new();
+                    for r in body {
+                        for el in rings[r].elements() {
+                            piece_path.push(*el);
+                        }
+                    }
+                    let mut piece = Shape::new(
+                        id,
+                        ShapeKind::Path {
+                            path: piece_path,
+                            closed: *closed,
+                        },
+                    );
+                    piece.transform = s.transform;
+                    piece.fill = s.fill.clone();
+                    piece.stroke = s.stroke.clone();
+                    piece.opacity = s.opacity;
+                    layer.shapes.insert(idx + k, piece);
+                }
+            }
             Command::PlaceInside { contents, frame } => {
                 if contents.contains(frame) {
                     return Ok(());
@@ -1324,6 +1374,111 @@ fn for_group_deep(shape: &mut Shape, f: &mut dyn FnMut(&mut Shape)) {
         ShapeKind::ClipFrame { frame, .. } => for_group_deep(frame, f),
         _ => {}
     }
+}
+
+/// The rings of a path, one per subpath.
+fn subpaths(path: &BezPath) -> Vec<BezPath> {
+    let mut out: Vec<BezPath> = Vec::new();
+    let mut cur = BezPath::new();
+    for el in path.elements() {
+        if matches!(el, PathEl::MoveTo(_)) && !cur.elements().is_empty() {
+            out.push(std::mem::take(&mut cur));
+        }
+        cur.push(*el);
+    }
+    if !cur.elements().is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
+/// The rings grouped into bodies: each outline with the rings inside it.
+/// A ring inside a bigger one is that one's hole; a ring inside nothing is
+/// an outline of its own.
+fn ring_bodies(rings: &[BezPath]) -> Vec<Vec<usize>> {
+    let flats: Vec<Vec<(f64, f64)>> = rings.iter().map(|r| flatten_ring(r)).collect();
+    let areas: Vec<f64> = flats.iter().map(|p| ring_area(p).abs()).collect();
+    let n = rings.len();
+    let mut outline_of: Vec<Option<usize>> = vec![None; n];
+    for i in 0..n {
+        let mut best: Option<(f64, usize)> = None;
+        for j in 0..n {
+            if i == j || areas[j] <= areas[i] + 1e-9 {
+                continue;
+            }
+            let Some(&probe) = flats[i].first() else {
+                continue;
+            };
+            if !point_in_ring(probe, &flats[j]) {
+                continue;
+            }
+            let better = match best {
+                None => true,
+                Some((had, _)) => areas[j] < had,
+            };
+            if better {
+                best = Some((areas[j], j));
+            }
+        }
+        outline_of[i] = best.map(|(_, j)| j);
+    }
+    let mut bodies: Vec<Vec<usize>> = Vec::new();
+    for i in 0..n {
+        if outline_of[i].is_some() {
+            continue;
+        }
+        let mut body = vec![i];
+        for k in 0..n {
+            if outline_of[k] == Some(i) {
+                body.push(k);
+            }
+        }
+        bodies.push(body);
+    }
+    bodies
+}
+
+fn flatten_ring(path: &BezPath) -> Vec<(f64, f64)> {
+    let mut pts: Vec<(f64, f64)> = Vec::new();
+    crate::geometry::flatten(path, 0.2, &mut |el| match el {
+        PathEl::MoveTo(p) | PathEl::LineTo(p) => pts.push((p.x, p.y)),
+        _ => {}
+    });
+    pts
+}
+
+fn ring_area(p: &[(f64, f64)]) -> f64 {
+    let n = p.len();
+    if n < 3 {
+        return 0.0;
+    }
+    let mut s = 0.0;
+    for i in 0..n {
+        let q = p[(i + 1) % n];
+        s += p[i].0 * q.1 - q.0 * p[i].1;
+    }
+    s * 0.5
+}
+
+fn point_in_ring(p: (f64, f64), ring: &[(f64, f64)]) -> bool {
+    let n = ring.len();
+    if n < 3 {
+        return false;
+    }
+    let mut hit = false;
+    let mut j = n - 1;
+    for i in 0..n {
+        let a = ring[i];
+        let b = ring[j];
+        if (a.1 > p.1) != (b.1 > p.1) {
+            let x = a.0 + (p.1 - a.1) / (b.1 - a.1) * (b.0 - a.0);
+            if p.0 < x {
+                hit = !hit;
+            }
+        }
+        j = i;
+    }
+    hit
 }
 
 #[cfg(test)]
@@ -2000,6 +2155,56 @@ mod tests {
             .apply(&mut doc)
             .unwrap();
         assert_eq!(doc.layer(layer).unwrap().shapes.len(), 2);
+    }
+
+    /// A ring for `SplitBodies`: four corners, closed.
+    fn add_ring(path: &mut BezPath, x: f64, y: f64, side: f64) {
+        path.move_to((x, y));
+        path.line_to((x + side, y));
+        path.line_to((x + side, y + side));
+        path.line_to((x, y + side));
+        path.close_path();
+    }
+
+    /// The point of it: a compound comes apart into bodies, not into rings.
+    /// The hole of a letter travels with the letter it is in, and two
+    /// letters standing apart become two objects.
+    #[test]
+    fn a_compound_comes_apart_into_bodies() {
+        let mut doc = Document::default();
+        let layer = doc.pages[0].layers[0].id;
+        let mut path = BezPath::new();
+        add_ring(&mut path, 0.0, 0.0, 10.0);
+        add_ring(&mut path, 30.0, 0.0, 10.0);
+        add_ring(&mut path, 60.0, 0.0, 30.0);
+        add_ring(&mut path, 68.0, 8.0, 14.0);
+        let id = doc.ids_mut().shape();
+        let shape = Shape::new(
+            id,
+            ShapeKind::Path {
+                path,
+                closed: true,
+            },
+        );
+        Command::AddShape { layer, shape }
+            .apply(&mut doc)
+            .unwrap();
+        Command::SplitBodies { shape: id }
+            .apply(&mut doc)
+            .unwrap();
+        let shapes = &doc.layer(layer).unwrap().shapes;
+        assert_eq!(shapes.len(), 3, "four rings, three bodies");
+        // The first keeps the id it had, and the ring with the hole keeps
+        // both of its rings.
+        assert_eq!(shapes[0].id, id);
+        let rings: Vec<usize> = shapes
+            .iter()
+            .map(|s| match &s.kind {
+                ShapeKind::Path { path, .. } => subpaths(path).len(),
+                _ => 0,
+            })
+            .collect();
+        assert_eq!(rings, vec![1, 1, 2], "the hole stayed with its letter");
     }
 
     #[test]

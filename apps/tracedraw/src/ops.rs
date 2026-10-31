@@ -5,7 +5,7 @@ use crate::app::App;
 use tracedraw_core::{
     document::{Shape, ShapeKind},
     geometry::{Affine, BezPath, PathEl, Point, Rect, Vec2},
-    Command,
+    Command, ShapeId,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -174,16 +174,30 @@ impl App {
         if split {
             self.split_groups();
         }
-        let shapes = self.selected_shapes();
+        let picked = self.selected_shapes();
+        let boxes: Vec<Rect> = picked.iter().map(|s| self.align_box(s)).collect();
+        // A box that is empty, or is not a number, is not a part to pack:
+        // one of them leaves the packer free rectangles of nothing, and
+        // every part after it lands on the first one.
+        let mut shapes: Vec<Shape> = Vec::with_capacity(picked.len());
+        let mut kept: Vec<Rect> = Vec::with_capacity(boxes.len());
+        for (s, b) in picked.iter().zip(&boxes) {
+            let w = b.width();
+            let h = b.height();
+            if w.is_finite() && h.is_finite() && w > 1e-9 && h > 1e-9 {
+                shapes.push(s.clone());
+                kept.push(*b);
+            }
+        }
         if shapes.len() < 2 {
             self.status = crate::i18n::tr("arrange.need_selection");
             return;
         }
+        let boxes = kept;
         let to_world = |v: f64| self.units.world_from_mm(v).abs();
         let board_w = to_world(width_mm.max(1.0));
         let board_h = to_world(height_mm.max(1.0));
         let gap = to_world(gap_mm.max(0.0));
-        let boxes: Vec<Rect> = shapes.iter().map(|s| self.align_box(s)).collect();
         let left = boxes.iter().fold(f64::MAX, |m, b| m.min(b.x0));
         let top = boxes.iter().fold(f64::MIN, |m, b| m.max(b.y1));
         let sheet_step = board_w + gap;
@@ -214,6 +228,18 @@ impl App {
                 angles,
             };
             let spots = crate::nfp::nest(&rings, &options);
+            log::info!(
+                "arrange: {} parts, outline packing on {:.0} x {:.0} mm, gap {:.1}: {:?}",
+                shapes.len(),
+                width_mm,
+                height_mm,
+                gap_mm,
+                spots
+                    .iter()
+                    .take(5)
+                    .map(|p| (p.sheet, p.x.round(), p.y.round(), p.w.round()))
+                    .collect::<Vec<_>>()
+            );
             for (i, (s, b)) in shapes.iter().zip(&boxes).enumerate() {
                 let Some(spot) = spots.get(i) else {
                     continue;
@@ -247,6 +273,18 @@ impl App {
                 rotate,
             };
             let spots = crate::nesting::pack(&sizes, &options);
+            log::info!(
+                "arrange: {} parts, box packing on {:.0} x {:.0} mm, gap {:.1}: {:?}",
+                shapes.len(),
+                width_mm,
+                height_mm,
+                gap_mm,
+                spots
+                    .iter()
+                    .take(5)
+                    .map(|p| (p.sheet, p.x.round(), p.y.round(), p.turned))
+                    .collect::<Vec<_>>()
+            );
             for (i, (s, b)) in shapes.iter().zip(&boxes).enumerate() {
                 let Some(spot) = spots.get(i) else {
                     continue;
@@ -1519,9 +1557,88 @@ mod smoke_tests {
     use crate::tools::Tool;
     use tracedraw_core::{
         document::{ParagraphStyle, ShapeKind, TextSpan},
-        geometry::{Point, Rect, Shape as _},
+        geometry::{BezPath, PathEl, Point, Rect, Shape as _},
         TextAlign,
     };
+
+    /// 智能排布 puts the parts apart, not on top of one another. Four
+    /// squares side by side, packed onto a sheet: every pair has to end up
+    /// clear of the other.
+    #[test]
+    fn arranging_four_squares_spreads_them() {
+        let mut app = App::headless();
+        let mut ids = Vec::new();
+        for k in 0..4 {
+            let x = k as f64 * 60.0;
+            ids.push(
+                app.new_shape(ShapeKind::Rect {
+                    rect: Rect::new(x, 10.0, x + 20.0, 30.0),
+                    radius: 0.0,
+                    corners: None,
+                })
+                .expect("rect"),
+            );
+        }
+        app.select(ids);
+        app.arrange_selection(1200.0, 2400.0, 10.0, true, false, false);
+        let boxes: Vec<Rect> = app
+            .selected_shapes()
+            .iter()
+            .map(|s| app.align_box(s))
+            .collect();
+        assert_eq!(boxes.len(), 4, "{boxes:?}");
+        for (i, a) in boxes.iter().enumerate() {
+            for b in boxes.iter().skip(i + 1) {
+                let apart = a.x1 <= b.x0 + 1e-6
+                    || b.x1 <= a.x0 + 1e-6
+                    || a.y1 <= b.y0 + 1e-6
+                    || b.y1 <= a.y0 + 1e-6;
+                assert!(apart, "{a:?} and {b:?} sit on each other");
+            }
+        }
+    }
+
+    /// 自动拆分 takes a compound curve apart into bodies: a letter keeps the
+    /// hole in it, and two letters become two objects.
+    #[test]
+    fn splitting_a_compound_makes_one_object_per_letter() {
+        let mut app = App::headless();
+        let mut path = BezPath::new();
+        let mut ring = |p: &mut BezPath, x: f64, y: f64, s: f64| {
+            p.move_to((x, y));
+            p.line_to((x + s, y));
+            p.line_to((x + s, y + s));
+            p.line_to((x, y + s));
+            p.close_path();
+        };
+        ring(&mut path, 0.0, 0.0, 40.0);
+        ring(&mut path, 12.0, 12.0, 16.0);
+        ring(&mut path, 60.0, 0.0, 40.0);
+        let id = app
+            .new_shape(ShapeKind::Path {
+                path,
+                closed: true,
+            })
+            .expect("curve");
+        app.select(vec![id]);
+        app.arrange_selection(1200.0, 2400.0, 10.0, true, false, true);
+        let shapes = app.selected_shapes();
+        assert_eq!(shapes.len(), 2, "one compound, two letters");
+        let rings: Vec<usize> = shapes
+            .iter()
+            .map(|s| match &s.kind {
+                ShapeKind::Path { path, .. } => path
+                    .elements()
+                    .iter()
+                    .filter(|e| matches!(e, PathEl::MoveTo(_)))
+                    .count(),
+                _ => 0,
+            })
+            .collect();
+        let mut sorted = rings.clone();
+        sorted.sort_unstable();
+        assert_eq!(sorted, vec![1, 2], "the hole stayed with its letter: {rings:?}");
+    }
 
     /// Back Minus Front with a group at the back: each of its objects is
     /// cut and keeps its own fill, the pieces a group; the result took the
@@ -2364,10 +2481,59 @@ impl App {
                 .filter(|s| matches!(s.kind, ShapeKind::Group { .. }))
                 .count();
             if groups == 0 {
-                return;
+                break;
             }
             self.ungroup_selection();
         }
+        self.split_compounds();
+    }
+
+    /// Take every compound curve in the selection apart into its bodies: a
+    /// ring and the rings inside it stay one object, and rings that stand
+    /// apart become objects of their own. A word turned into curves is one
+    /// compound of letters, and without this it nests as one block.
+    fn split_compounds(&mut self) {
+        let targets: Vec<ShapeId> = self
+            .selected_shapes()
+            .iter()
+            .filter(|s| matches!(s.kind, ShapeKind::Path { .. }))
+            .map(|s| s.id)
+            .collect();
+        if targets.is_empty() {
+            return;
+        }
+        let before = self.shape_ids();
+        let cmds: Vec<Command> = targets
+            .iter()
+            .map(|id| Command::SplitBodies { shape: *id })
+            .collect();
+        let _ = self.run_batch_keeping_lines("Split", &cmds);
+        // What is left of the originals, and what came out of them.
+        let mut keep: Vec<ShapeId> = targets
+            .into_iter()
+            .filter(|id| self.doc().find_shape(*id).is_some())
+            .collect();
+        for id in self.shape_ids() {
+            if !before.contains(&id) {
+                keep.push(id);
+            }
+        }
+        if !keep.is_empty() {
+            self.select(keep);
+        }
+    }
+
+    /// Every shape in the drawing, on every page.
+    fn shape_ids(&self) -> std::collections::HashSet<ShapeId> {
+        let mut out = std::collections::HashSet::new();
+        for page in &self.doc().pages {
+            for layer in &page.layers {
+                for s in &layer.shapes {
+                    out.insert(s.id);
+                }
+            }
+        }
+        out
     }
 }
 
