@@ -12,3 +12,9 @@ edgeone/*.zip
 
 # The emulator this repository is tested with.
 /.avd/
+
+# Screenshots taken off the phone while working on it: they are read once
+# and thrown away, and three of them were committed by accident.
+/.[spa][0-9].png
+/.drop.txt
+/.l.txt
