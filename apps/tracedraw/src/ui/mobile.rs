@@ -2118,6 +2118,10 @@ fn sheet_ui(
     }
     let ctx = ui.ctx().clone();
     scrim(&ctx, screen, open);
+    // How much of the screen the keyboard covers: a panel that reaches under
+    // it has the field being typed in taken out of sight, so what is left is
+    // what a panel is laid out in.
+    let ime = ime_height(&ctx);
 
     if landscape(screen) {
         // A phone on its side docks the sheet on the right, between the
@@ -2129,7 +2133,7 @@ fn sheet_ui(
             egui::pos2(screen.right() - safe.right - NAV_RAIL_W - width, top),
             egui::pos2(
                 screen.right() - safe.right - NAV_RAIL_W,
-                screen.bottom() - safe.bottom,
+                (screen.bottom() - safe.bottom - ime).max(top + 160.0),
             ),
         );
         let height = rect.height();
@@ -2158,34 +2162,40 @@ fn sheet_ui(
                     });
             });
     } else {
-        // Above the gesture bar: a sheet that reaches the bottom of the
-        // screen puts its last row, the button a panel is for, under it.
-        let height = (sheet_height(which, screen.height()) - safe.bottom).max(180.0);
+        // A card in the middle of the screen rather than a sheet against the
+        // bottom. The keyboard comes up over a sheet and takes the field
+        // being typed in with it; a card centred in what the keyboard leaves,
+        // and shrunk to fit in it, stays where it can be read and typed in.
+        let top = TOP_H + top_padding(safe, false);
+        let floor = (screen.bottom() - safe.bottom - ime).max(top + 180.0);
+        let room = (floor - top).max(180.0);
+        let height = sheet_height(which, screen.height()).min(room).max(180.0);
+        let side = 12.0;
+        let width = (screen.width() - side * 2.0).max(200.0);
+        let at = top + ((room - height) * 0.5).max(0.0);
         egui::Area::new(Id::new("mobile_sheet_port"))
             .order(egui::Order::Foreground)
-            .fixed_pos(egui::pos2(
-                screen.left(),
-                screen.bottom() - safe.bottom - height,
-            ))
+            .fixed_pos(egui::pos2(screen.left() + side, at))
             .show(&ctx, |ui| {
                 Frame::new()
                     .fill(m3.surface)
-                    .corner_radius(CornerRadius {
-                        nw: 28,
-                        ne: 28,
-                        sw: 0,
-                        se: 0,
-                    })
+                    .corner_radius(24.0)
+                    .shadow(crate::theme::shadow(egui::epaint::Shadow {
+                        offset: [0, 8],
+                        blur: 32,
+                        spread: 0,
+                        color: Color32::from_black_alpha(90),
+                    }))
                     .inner_margin(egui::Margin {
                         left: 0,
                         right: 0,
                         top: 8,
-                        bottom: 0,
+                        bottom: 8,
                     })
                     .show(ui, |ui| {
-                        ui.set_width(screen.width());
-                        ui.set_min_height(height - 8.0);
-                        sheet_content(app, ui, which, open, m3, height, true);
+                        ui.set_width(width);
+                        ui.set_min_height(height - 16.0);
+                        sheet_content(app, ui, which, open, m3, height - 16.0, false);
                     });
             });
     }
