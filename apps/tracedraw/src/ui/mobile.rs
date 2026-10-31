@@ -718,8 +718,14 @@ pub(crate) fn defer(ctx: &egui::Context, job: Job, what: &str) {
     ctx.request_repaint();
 }
 
+/// The work a panel asked for, taken off the queue. `remove` only drops a
+/// value, so it is read first and then dropped.
 fn job_take(ctx: &egui::Context) -> Option<Job> {
-    ctx.data_mut(|d| d.remove::<Job>(Id::new("mobile_job")))
+    let job = ctx.data(|d| d.get_temp::<Job>(Id::new("mobile_job")));
+    if job.is_some() {
+        ctx.data_mut(|d| d.remove::<Job>(Id::new("mobile_job")));
+    }
+    job
 }
 
 /// What is being made right now, if anything: the word a panel asked for,
@@ -1814,7 +1820,7 @@ fn matting_apply(app: &mut App, ctx: &egui::Context) {
 /// The smart layout: the sheet the parts are packed onto, the least room
 /// left between two of them, and whether a part may be turned, or turned to
 /// any angle and settled by its own outline.
-fn arrange_sheet(app: &mut App, ui: &mut Ui, m3: &M3) {
+fn arrange_sheet(_app: &mut App, ui: &mut Ui, m3: &M3) {
     let ctx = ui.ctx().clone();
     let mut st = ai_state(&ctx);
     property_label(ui, m3, &tr("arrange.params"));
@@ -1866,7 +1872,7 @@ fn arrange_sheet(app: &mut App, ui: &mut Ui, m3: &M3) {
     save_ai_state(&ctx, &st);
 }
 
-fn trace_sheet(app: &mut App, ui: &mut Ui, m3: &M3, open: &mut Sheet) {
+fn trace_sheet(_app: &mut App, ui: &mut Ui, m3: &M3, open: &mut Sheet) {
     let _ = open;
     let ctx = ui.ctx().clone();
     let mut st = ai_state(&ctx);
