@@ -725,6 +725,7 @@ arrange.rotate = "Разрешить поворот (лучше использу
 arrange.irregular = "Укладывать по контуру (настоящие контуры и умный поворот)"
 arrange.split = "Сначала разбить группы"
 arrange.split_too_many = "Слишком много деталей для дальнейшего разбиения"
+arrange.done = "Разложено {n} деталей, отступ {g} мм"
 arrange.run = "Разложить"
 arrange.need_selection = "Сначала выберите детали"
 docker.center_page = "Center on page"

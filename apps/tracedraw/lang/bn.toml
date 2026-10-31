@@ -725,6 +725,7 @@ arrange.rotate = "ঘোরানোর অনুমতি (শিটের ভ�
 arrange.irregular = "আউটলাইন অনুযায়ী সাজানো (আসল আউটলাইন + স্মার্ট ঘোরানো)"
 arrange.split = "আগে গ্রুপ ভাগ করুন"
 arrange.split_too_many = "আর ভাগ করার জন্য টুকরো বেশি"
+arrange.done = "{n} টি অংশ সাজানো হয়েছে, ফাঁক {g} মিমি"
 arrange.run = "সাজান"
 arrange.need_selection = "আগে সাজানোর বস্তুগুলো নির্বাচন করুন"
 docker.center_page = "Center on page"

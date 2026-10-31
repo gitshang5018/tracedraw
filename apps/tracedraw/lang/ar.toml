@@ -725,6 +725,7 @@ arrange.rotate = "السماح بالتدوير (استغلال أفضل للو�
 arrange.irregular = "الترتيب حسب المحيط (محيطات حقيقية وتدوير ذكي)"
 arrange.split = "تقسيم المجموعات أولاً"
 arrange.split_too_many = "عدد القطع أكبر من أن يُقسَّم أكثر"
+arrange.done = "تم ترتيب {n} قطعة، بتباعد {g} مم"
 arrange.run = "رتّب"
 arrange.need_selection = "اختر القطع المطلوب ترتيبها أولاً"
 docker.center_page = "Center on page"

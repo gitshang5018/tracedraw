@@ -6,6 +6,8 @@ full, row-by-row status.
 
 ## Unreleased
 
+- The fonts in the phone's own folder are read as soon as the phone lets the app see its storage. The scan at start runs before that grant, so a designer's fonts in `Download/Fonts` were missing from the first drawing opened, and only the Files sheet's reload brought them in.
+- 智能排布 says what it did in the status bar: how many parts it placed and what spacing it used, so a gap that reads as nothing at a low zoom can be checked against the number that was set.
 - 智能排布 has a 自动拆分 switch: the groups in the selection are opened before the packing, and compound curves are split into bodies, a body being a ring with the rings inside it, so a word turned into curves nests as letters and a letter keeps the hole in it. It repeats while groups remain and stops at four hundred pieces, which the status bar explains.
 - A panel's body gets the room the header does not take, worked out from the row the header is made of. Measuring the header off the cursor gave it five hundred points on a phone, which left every panel a third of its room and put its last rows behind a scroll: 巡边 showed its sliders and hid its switches and its button.
 - 巡边's 外扩 is a number that can be typed as well as dragged, and up to 50 mm either way rather than 5.

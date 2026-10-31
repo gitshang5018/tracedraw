@@ -81,6 +81,39 @@ pub fn scan() -> usize {
     tracedraw_text::fonts().add_fonts(files).len()
 }
 
+/// Whether the storage grant has been seen: the fonts in the shared
+/// `Download` folder cannot be read until the phone has let the app see it,
+/// and the scan at start runs before that.
+static GRANTED_SEEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Read the fonts again once the phone has let the app see its storage.
+///
+/// The scan at start runs before the grant, so a designer's fonts in
+/// `Download/Fonts` were not read until the Files sheet asked: the drawing
+/// opened with a font missing, and only tapping "reload fonts" brought it
+/// in. This is asked for on every frame, and answers at once once it has
+/// been done, so the cost is one atomic load.
+pub fn scan_when_storage_is_granted() {
+    #[cfg(target_os = "android")]
+    {
+        if GRANTED_SEEN.load(std::sync::atomic::Ordering::Relaxed) {
+            return;
+        }
+        let Some(phone) = crate::android_system::phone() else {
+            return;
+        };
+        if !crate::android_system::storage_granted(phone) {
+            return;
+        }
+        GRANTED_SEEN.store(true, std::sync::atomic::Ordering::Relaxed);
+        scan();
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        GRANTED_SEEN.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 /// A name that ends like a font file: `.ttf`, `.otf` or a `.ttc`
 /// collection, in any case.
 fn is_font(path: &std::path::Path) -> bool {

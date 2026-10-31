@@ -488,6 +488,10 @@ pub fn frame(app: &mut App, ui: &mut Ui) -> bool {
         ctx.request_repaint();
     }
 
+    // The fonts in the phone's own folder, read once the phone has let the
+    // app see its storage: the scan at start runs before that.
+    crate::fonts_folder::scan_when_storage_is_granted();
+
     // A cut-out that finished on its own thread goes into the drawing as
     // soon as it is ready. It used to be applied at the top of the matting
     // panel, which is drawn only while that panel is open: with the panel

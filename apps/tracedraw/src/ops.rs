@@ -320,6 +320,15 @@ impl App {
         if !cmds.is_empty() {
             let _ = self.run_batch_keeping_lines("Smart arrange", &cmds);
         }
+        // What it did, in the numbers it was given: a gap that looks like
+        // nothing at a low zoom is easier to believe when the status bar
+        // says what it was set to.
+        let count = shapes.len().to_string();
+        let apart = format!("{:.1}", gap_mm);
+        self.status = crate::i18n::trf(
+            "arrange.done",
+            &[("n", &count), ("g", &apart)],
+        );
     }
 
     /// The selection as a whole, centred on the page.

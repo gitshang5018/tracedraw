@@ -1185,6 +1185,40 @@ mod tests {
     }
 
     #[test]
+    fn two_ls_keep_the_spacing_asked_for() {
+        // Not a box: the corners of one L end up in the hollow of the other,
+        // and the spacing has to hold between the outlines, not the boxes.
+        let l = vec![
+            (0.0, 0.0),
+            (60.0, 0.0),
+            (60.0, 20.0),
+            (20.0, 20.0),
+            (20.0, 60.0),
+            (0.0, 60.0),
+        ];
+        let a = ring(&l);
+        let b = ring(&l);
+        let spots = nest(
+            &[vec![a.clone()], vec![b.clone()]],
+            &options(400.0, 400.0, 10.0),
+        );
+        assert_eq!(spots[1].sheet, 0, "{spots:?}");
+        let placed = |pts: &[Point], s: &Spot| -> Vec<(f64, f64)> {
+            pts.iter().map(|p| (p.x + s.x, p.y - s.y)).collect()
+        };
+        let pa = placed(&a, &spots[0]);
+        let pb = placed(&b, &spots[1]);
+        let mut closest = f64::MAX;
+        for i in 0..pa.len() {
+            for j in 0..pb.len() {
+                let d = ((pa[i].0 - pb[j].0).powi(2) + (pa[i].1 - pb[j].1).powi(2)).sqrt();
+                closest = closest.min(d);
+            }
+        }
+        assert!(closest >= 9.9, "the spacing came out {closest}");
+    }
+
+    #[test]
     fn a_part_goes_inside_a_hole() {
         // A square with a hole through it, on a sheet exactly its own size:
         // the only room left is the hole.
