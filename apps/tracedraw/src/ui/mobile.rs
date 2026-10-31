@@ -2167,15 +2167,22 @@ fn sheet_ui(
         // being typed in with it; a card centred in what the keyboard leaves,
         // and shrunk to fit in it, stays where it can be read and typed in.
         let top = TOP_H + top_padding(safe, false);
-        let floor = (screen.bottom() - safe.bottom - ime).max(top + 180.0);
-        let room = (floor - top).max(180.0);
-        let height = sheet_height(which, screen.height()).min(room).max(180.0);
+        let floor = (screen.bottom() - safe.bottom - ime).max(top + 120.0);
+        let room = (floor - top).max(120.0);
+        // The share a panel is given is the most it may take, not what it
+        // takes: the card is as tall as its contents, and only a panel with
+        // more in it than that fills it and scrolls.
+        let cap = sheet_height(which, screen.height()).min(room).max(120.0);
         let side = 12.0;
         let width = (screen.width() - side * 2.0).max(200.0);
-        let at = top + ((room - height) * 0.5).max(0.0);
+        let mid = egui::pos2(screen.center().x, top + room * 0.5);
         egui::Area::new(Id::new("mobile_sheet_port"))
             .order(egui::Order::Foreground)
-            .fixed_pos(egui::pos2(screen.left() + side, at))
+            // The pivot centres the card on the middle of the room by its
+            // own size, which is not known until it is laid out: it settles
+            // on the frame after the one that opened it.
+            .pivot(egui::Align2::CENTER_CENTER)
+            .fixed_pos(mid)
             .show(&ctx, |ui| {
                 Frame::new()
                     .fill(m3.surface)
@@ -2194,8 +2201,7 @@ fn sheet_ui(
                     })
                     .show(ui, |ui| {
                         ui.set_width(width);
-                        ui.set_min_height(height - 16.0);
-                        sheet_content(app, ui, which, open, m3, height - 16.0, false);
+                        sheet_content(app, ui, which, open, m3, cap - 16.0, false);
                     });
             });
     }
@@ -2227,6 +2233,7 @@ fn sheet_content(
         ui.painter().rect_filled(grab, 2.0, m3.variant);
         ui.add_space(10.0);
     }
+    let head_top = ui.cursor().min.y;
     if sheet_header(ui, which, m3) {
         *open = Sheet::None;
     }
@@ -2246,10 +2253,19 @@ fn sheet_content(
         which,
         Sheet::AiGenerate | Sheet::Matting | Sheet::Variable | Sheet::Trace | Sheet::Arrange
     );
+    // What is left of the card for the body: the header has been drawn, and
+    // the bar a panel keeps at its foot is not the body's room. Measured off
+    // the cursor rather than guessed, so a card is not cut short by a margin
+    // nobody uses, and a dock that fills its side still measures right.
+    let used = (ui.cursor().min.y - head_top).max(0.0);
+    let body_room = (height - used - bar - 8.0).max(80.0);
     egui::ScrollArea::vertical()
         .id_salt(("mobile_sheet_scroll", sheet_title(which)))
-        .max_height(height - 92.0 - bar)
-        .auto_shrink([false, false])
+        .max_height(body_room)
+        // The card is as tall as what it holds, up to the room there is: a
+        // panel of three numbers has no business covering the drawing for
+        // the sake of a height chosen for the tallest panel.
+        .auto_shrink([false, true])
         .scroll_bar_visibility(if bar_shown {
             egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded
         } else {
