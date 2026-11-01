@@ -440,7 +440,7 @@ fn despeckle_anti_aliasing_bands(
             continue;
         }
 
-        let mut by_count: Vec<(usize, usize)> = counts.into_iter().collect();
+        let mut by_count: Vec<(usize, usize)> = counts.iter().map(|(&k, &v)| (k, v)).collect();
         by_count.sort_by_key(|&(_, c)| std::cmp::Reverse(c));
         let a = by_count[0].0;
         let b = by_count[1].0;
