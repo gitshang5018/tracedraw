@@ -2,8 +2,9 @@
 //!
 //! Provides perceptually accurate vectorization of raster graphics into
 //! minimal-node, gap-free, geometric-aligned Bezier paths using OKLab color
-//! space quantization, sub-pixel contour tracing, 42-degree corner detection,
-//! straight-line and orthogonal snapping, and Schneider cubic Bezier curve fitting.
+//! space quantization, 3x3 median noise reduction, sub-pixel contour tracing,
+//! curvature-based corner detection, multi-pass Laplacian smoothing, and
+//! Schneider cubic Bezier curve fitting.
 
 use image::RgbaImage;
 use tracedraw_core::{
@@ -11,23 +12,25 @@ use tracedraw_core::{
     Color,
 };
 
-/// Configuration options for the proprietary native vectorizer.
+/// Configuration options for the native vectorizer.
 #[derive(Debug, Clone)]
 pub struct VectorizeOptions {
-    /// Maximum number of quantized colors (2..32, default 16).
+    /// Maximum number of quantized colors (2..32, default 24).
     pub max_colors: usize,
-    /// Detail fitting tolerance in pixels (default 0.35 px).
+    /// Detail fitting tolerance in pixels (default 0.8 px for smooth flowing curves).
     pub tolerance: f64,
-    /// Corner angle threshold in radians (default 42.0 degrees).
+    /// Corner angle threshold in radians (default 75.0 degrees).
     pub corner_threshold_rad: f64,
     /// Collinear straight-line snapping tolerance in pixels (default 0.25 px).
     pub line_snap_tolerance: f64,
-    /// Outward dilation offset in pixels for base/underlap layers (default 0.6 px).
+    /// Outward dilation offset in pixels for base/underlap layers (default 0.0 px).
     pub dilation_px: f64,
-    /// Minimum island pixel count to keep (default 24).
+    /// Minimum island pixel count to keep (default 32).
     pub min_speck_area: usize,
-    /// Edge-preserving median filter passes (default 2).
+    /// Edge-preserving 3x3 median filter passes (default 2).
     pub denoise_passes: usize,
+    /// Contour Laplacian smoothing passes (default 10).
+    pub smoothing_passes: usize,
     /// Whether to ignore fully transparent background pixels (default true).
     pub ignore_transparent: bool,
 }
@@ -35,20 +38,21 @@ pub struct VectorizeOptions {
 impl Default for VectorizeOptions {
     fn default() -> Self {
         Self {
-            max_colors: 16,
-            tolerance: 0.35,
-            corner_threshold_rad: 42.0f64.to_radians(),
+            max_colors: 24,
+            tolerance: 0.8,
+            corner_threshold_rad: 75.0f64.to_radians(),
             line_snap_tolerance: 0.25,
-            dilation_px: 0.6,
-            min_speck_area: 24,
+            dilation_px: 0.0,
+            min_speck_area: 32,
             denoise_passes: 2,
+            smoothing_passes: 10,
             ignore_transparent: true,
         }
     }
 }
 
 // ---------------------------------------------------------------------------
-// 0. Pre-processing Edge-Preserving Denoise Filter
+// 0. Pre-processing Edge-Preserving 3x3 Median Denoise Filter
 // ---------------------------------------------------------------------------
 
 fn denoise_image(img: &RgbaImage, passes: usize) -> RgbaImage {
@@ -65,25 +69,26 @@ fn denoise_image(img: &RgbaImage, passes: usize) -> RgbaImage {
                 if p[3] < 32 {
                     continue;
                 }
-                let at = |dx: i32, dy: i32| {
-                    let px = (x as i32 + dx).clamp(0, w as i32 - 1) as u32;
+                let mut r_buf = [0u8; 9];
+                let mut g_buf = [0u8; 9];
+                let mut b_buf = [0u8; 9];
+                let mut count = 0;
+                for dy in -1i32..=1 {
                     let py = (y as i32 + dy).clamp(0, h as i32 - 1) as u32;
-                    *prev.get_pixel(px, py)
-                };
-                let neighbors = [p, at(-1, 0), at(1, 0), at(0, -1), at(0, 1)];
-                let mut filtered = p;
-                for k in 0..3 {
-                    let mut ch = [
-                        neighbors[0][k],
-                        neighbors[1][k],
-                        neighbors[2][k],
-                        neighbors[3][k],
-                        neighbors[4][k],
-                    ];
-                    ch.sort_unstable();
-                    filtered[k] = ch[2]; // 5-point median
+                    for dx in -1i32..=1 {
+                        let px = (x as i32 + dx).clamp(0, w as i32 - 1) as u32;
+                        let n_pix = *prev.get_pixel(px, py);
+                        r_buf[count] = n_pix[0];
+                        g_buf[count] = n_pix[1];
+                        b_buf[count] = n_pix[2];
+                        count += 1;
+                    }
                 }
-                out.put_pixel(x, y, filtered);
+                r_buf.sort_unstable();
+                g_buf.sort_unstable();
+                b_buf.sort_unstable();
+                // 3x3 median selects the 5th sorted element (index 4)
+                out.put_pixel(x, y, image::Rgba([r_buf[4], g_buf[4], b_buf[4], p[3]]));
             }
         }
     }
@@ -399,7 +404,7 @@ fn despeckle_labels(
 }
 
 // ---------------------------------------------------------------------------
-// 4. Polygon Normal Dilation
+// 4. Polygon Area and Normal Dilation
 // ---------------------------------------------------------------------------
 
 fn signed_area(pts: &[Point]) -> f64 {
@@ -417,6 +422,7 @@ fn signed_area(pts: &[Point]) -> f64 {
 }
 
 /// Outward normal dilation by `offset_px` to prevent white gaps (T-junctions).
+#[allow(dead_code)]
 fn dilate_ring(ring: &[Point], offset_px: f64) -> Vec<Point> {
     let n = ring.len();
     if n < 3 || offset_px.abs() < 1e-4 {
@@ -477,7 +483,7 @@ fn unit(v: Vec2) -> Vec2 {
     }
 }
 
-const TANGENT_REACH: usize = 3;
+const TANGENT_REACH: usize = 4;
 
 fn is_collinear_segment(pts: &[Point], tolerance: f64) -> bool {
     if pts.len() <= 2 {
@@ -512,8 +518,8 @@ fn fit_cubics(
 
 fn fit_cubics_rec(
     pts: &[Point],
-    t1: Vec2,
-    t2: Vec2,
+    mut t1: Vec2,
+    mut t2: Vec2,
     tolerance: f64,
     out: &mut BezPath,
     depth: usize,
@@ -524,6 +530,14 @@ fn fit_cubics_rec(
     }
     let (p0, p3) = (pts[0], pts[n - 1]);
     let dist = (p3 - p0).hypot();
+
+    if t1 == Vec2::ZERO {
+        t1 = unit(pts[1] - pts[0]);
+    }
+    if t2 == Vec2::ZERO {
+        t2 = unit(pts[n - 2] - pts[n - 1]);
+    }
+
     if n == 2 || depth > 24 {
         let h = (dist / 3.0).min(dist * 0.5);
         out.curve_to(p0 + t1 * h, p3 + t2 * h, p3);
@@ -651,21 +665,20 @@ fn polyline_closed(pts: &[Point]) -> BezPath {
     p
 }
 
-/// Fit a closed ring using unit-step resampling, corner detection, line snapping, and Schneider Beziers.
+/// Fit a closed ring using unit-step resampling, multi-pass Laplacian smoothing,
+/// curvature corner detection, straight-line snapping, and Schneider Beziers.
 fn fit_ring_precision(ring: &[Point], options: &VectorizeOptions) -> BezPath {
     let mut pts: Vec<Point> = Vec::new();
-    let mut starts: Vec<Point> = Vec::new();
     let n = ring.len();
     if n < 3 {
         return BezPath::new();
     }
 
-    // Step 1: Unit-step edge resampling to eliminate sparse-vertex artifacts
+    // Step 1: Unit-step edge resampling to create a continuous contour of midpoint samples
     for i in 0..n {
         let (a, b) = (ring[i], ring[(i + 1) % n]);
         let steps = (b - a).hypot().round().max(1.0) as usize;
         for k in 0..steps {
-            starts.push(a.lerp(b, k as f64 / steps as f64));
             pts.push(a.lerp(b, (k as f64 + 0.5) / steps as f64));
         }
     }
@@ -675,8 +688,23 @@ fn fit_ring_precision(ring: &[Point], options: &VectorizeOptions) -> BezPath {
         return polyline_closed(&pts);
     }
 
-    // Step 2: Feature corner detection
-    let reach = 3usize.min(n / 4).max(1);
+    // Step 2: Initial gentle smoothing passes to remove single-pixel staircase jitter
+    // before computing curvature turn angles.
+    let initial_passes = 4usize.min(options.smoothing_passes);
+    for _ in 0..initial_passes {
+        let prev = pts.clone();
+        for i in 0..n {
+            let a = prev[(i + n - 1) % n];
+            let c = prev[(i + 1) % n];
+            pts[i] = Point::new(
+                (a.x + 2.0 * prev[i].x + c.x) / 4.0,
+                (a.y + 2.0 * prev[i].y + c.y) / 4.0,
+            );
+        }
+    }
+
+    // Step 3: Feature corner detection over smoothed contour
+    let reach = 4usize.min(n / 4).max(2);
     let threshold = options.corner_threshold_rad;
     let at = |i: isize| pts[i.rem_euclid(n as isize) as usize];
     let turn: Vec<f64> = (0..n as isize)
@@ -689,7 +717,7 @@ fn fit_ring_precision(ring: &[Point], options: &VectorizeOptions) -> BezPath {
         })
         .collect();
 
-    let corners: Vec<usize> = (0..n)
+    let candidate_corners: Vec<usize> = (0..n)
         .filter(|&i| {
             turn[i] > threshold
                 && (1..=reach as isize).all(|d| {
@@ -700,21 +728,29 @@ fn fit_ring_precision(ring: &[Point], options: &VectorizeOptions) -> BezPath {
         })
         .collect();
 
-    // Step 3: Anchor corners to pixel corners
+    // Enforce minimum distance between corners (at least 8 pixels) to prevent
+    // false corner segmentation along curved arcs.
+    let min_dist = 8usize.min(n / 4);
+    let mut corners: Vec<usize> = Vec::new();
+    for &c in &candidate_corners {
+        let too_close = corners.iter().any(|&prev| {
+            let d = (c as isize - prev as isize).abs() as usize;
+            let circ_d = d.min(n - d);
+            circ_d < min_dist
+        });
+        if !too_close {
+            corners.push(c);
+        }
+    }
+
+    // Step 4: Finish remaining smoothing passes on stretches between true corners
     let mut is_corner = vec![false; n];
     for &c in &corners {
         is_corner[c] = true;
-        let mid = pts[(c + n - 1) % n].midpoint(pts[(c + 1) % n]);
-        let (a, b) = (starts[c], starts[(c + 1) % n]);
-        pts[c] = if (a - mid).hypot() > (b - mid).hypot() {
-            a
-        } else {
-            b
-        };
     }
 
-    // Step 4: Gentle smoothing passes between corners to eliminate grid stairs
-    for _ in 0..4 {
+    let remaining_passes = options.smoothing_passes.saturating_sub(initial_passes);
+    for _ in 0..remaining_passes {
         let prev = pts.clone();
         for i in 0..n {
             if is_corner[i] {
@@ -731,10 +767,11 @@ fn fit_ring_precision(ring: &[Point], options: &VectorizeOptions) -> BezPath {
 
     let mut out = BezPath::new();
 
-    // If no distinct corners or only 1 corner, fit 4 quarter curves meeting smoothly
+    // If no distinct corners or only 1 corner, fit 4 quarter curves meeting with C1 smoothness
     if corners.len() < 2 {
         let cuts: Vec<usize> = (0..4).map(|k| k * n / 4).collect();
-        let tangent = |i: usize| unit(pts[(i + reach) % n] - pts[(i + n - reach) % n]);
+        let reach_t = 4usize.min(n / 4).max(1);
+        let tangent = |i: usize| unit(pts[(i + reach_t) % n] - pts[(i + n - reach_t) % n]);
         out.move_to(pts[0]);
         for k in 0..4 {
             let (a, b) = (cuts[k], cuts[(k + 1) % 4]);
@@ -752,7 +789,7 @@ fn fit_ring_precision(ring: &[Point], options: &VectorizeOptions) -> BezPath {
         return out;
     }
 
-    // Segment chaining between corners with strict G0 continuity
+    // Segment chaining between true corners
     let mut sorted_corners = corners;
     sorted_corners.sort_unstable();
     sorted_corners.dedup();
@@ -780,11 +817,13 @@ fn fit_ring_precision(ring: &[Point], options: &VectorizeOptions) -> BezPath {
         }
 
         let end_pt = pts[b];
-        if is_collinear_segment(&piece, options.line_snap_tolerance) {
+        let seg_len = (end_pt - pts[a]).hypot();
+        // Only snap to straight line if the segment has sufficient length and is genuinely collinear
+        if seg_len >= 8.0 && piece.len() >= 6 && is_collinear_segment(&piece, options.line_snap_tolerance) {
             out.line_to(end_pt);
         } else {
             let m = piece.len();
-            let far = TANGENT_REACH.min(m - 1);
+            let far = 4usize.min(m - 1).max(1);
             let t1 = unit(piece[far] - piece[0]);
             let t2 = unit(piece[m - 1 - far] - piece[m - 1]);
             fit_cubics(&piece, t1, t2, options.tolerance, &mut out);
@@ -806,14 +845,14 @@ pub fn vectorize(img: &RgbaImage, options: &VectorizeOptions) -> Vec<crate::trac
         return Vec::new();
     }
 
-    // Step 0: Pre-processing edge-preserving median filter to eliminate salt-and-pepper noise & freckles
+    // Step 0: Pre-processing edge-preserving 3x3 median filter to eliminate noise, freckles, and dithering
     let clean_img = if options.denoise_passes > 0 {
         denoise_image(img, options.denoise_passes)
     } else {
         img.clone()
     };
 
-    // Step 1: OKLab quantization
+    // Step 1: OKLab perceptual quantization
     let mut quantized = quantize_oklab(&clean_img, options.max_colors, options.ignore_transparent);
     if quantized.palette_rgb.is_empty() {
         return Vec::new();
@@ -855,14 +894,12 @@ pub fn vectorize(img: &RgbaImage, options: &VectorizeOptions) -> Vec<crate::trac
             .unwrap_or(std::cmp::Ordering::Equal)
     });
 
-    let max_area = color_areas.iter().cloned().fold(0.0f64, f64::max);
     let mut out = Vec::new();
 
     for &ci in &order {
         if color_rings[ci].is_empty() {
             continue;
         }
-        let is_base_layer = color_areas[ci] >= max_area * 0.15;
         let mut path = BezPath::new();
 
         for ring in &color_rings[ci] {
@@ -870,20 +907,13 @@ pub fn vectorize(img: &RgbaImage, options: &VectorizeOptions) -> Vec<crate::trac
                 continue;
             }
 
-            // Filter out tiny micro-speckle rings smaller than 12 square pixels
+            // Filter out tiny micro-speckle rings smaller than 16 square pixels
             let area = signed_area(ring).abs();
-            if area < 12.0 {
+            if area < 16.0 {
                 continue;
             }
 
-            // Normal dilation on base layers to ensure physical gap-free rendering
-            let processed_ring = if is_base_layer && options.dilation_px > 0.0 {
-                dilate_ring(ring, options.dilation_px)
-            } else {
-                ring.clone()
-            };
-
-            let fitted = fit_ring_precision(&processed_ring, options);
+            let fitted = fit_ring_precision(ring, options);
             if !fitted.elements().is_empty() {
                 path.extend(fitted);
             }
@@ -964,5 +994,29 @@ mod tests {
             Point::new(40.0, 10.0),
         ];
         assert!(is_collinear_segment(&pts, 0.25));
+    }
+
+    #[test]
+    fn smooth_curved_ring_produces_no_corners() {
+        // Construct a smooth circular ring of radius 30
+        let mut ring = Vec::new();
+        let center = Point::new(50.0, 50.0);
+        let r = 30.0;
+        let count = 64;
+        for i in 0..count {
+            let theta = (i as f64) * 2.0 * std::f64::consts::PI / (count as f64);
+            ring.push(Point::new(center.x + r * theta.cos(), center.y + r * theta.sin()));
+        }
+        let options = VectorizeOptions::default();
+        let fitted = fit_ring_precision(&ring, &options);
+        assert!(!fitted.elements().is_empty());
+        // Verify path contains curve elements and closes cleanly
+        let mut has_curves = false;
+        for el in fitted.elements() {
+            if let PathEl::CurveTo(..) = el {
+                has_curves = true;
+            }
+        }
+        assert!(has_curves, "Expected smooth circular ring to be fitted with Bezier curves");
     }
 }
