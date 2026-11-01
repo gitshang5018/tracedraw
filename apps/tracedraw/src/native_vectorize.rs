@@ -17,9 +17,9 @@ use tracedraw_core::{
 pub struct VectorizeOptions {
     /// Maximum number of quantized colors (2..32, default 24).
     pub max_colors: usize,
-    /// Detail fitting tolerance in pixels (default 1.0 px for smooth flowing curves).
+    /// Detail fitting tolerance in pixels (default 1.2 px for smooth flowing curves).
     pub tolerance: f64,
-    /// Corner angle threshold in radians (default 92.0 degrees).
+    /// Corner angle threshold in radians (default 100.0 degrees).
     pub corner_threshold_rad: f64,
     /// Collinear straight-line snapping tolerance in pixels (default 0.25 px).
     pub line_snap_tolerance: f64,
@@ -27,7 +27,7 @@ pub struct VectorizeOptions {
     pub min_speck_area: usize,
     /// Edge-preserving 3x3 median filter passes (default 2).
     pub denoise_passes: usize,
-    /// Contour Laplacian smoothing passes (default 14).
+    /// Contour Laplacian smoothing passes (default 16).
     pub smoothing_passes: usize,
     /// Minimum hole area in square pixels to preserve (smaller holes are filled).
     pub min_hole_area: f64,
@@ -39,12 +39,12 @@ impl Default for VectorizeOptions {
     fn default() -> Self {
         Self {
             max_colors: 24,
-            tolerance: 1.0,
-            corner_threshold_rad: 92.0f64.to_radians(),
+            tolerance: 1.2,
+            corner_threshold_rad: 100.0f64.to_radians(),
             line_snap_tolerance: 0.25,
             min_speck_area: 32,
             denoise_passes: 2,
-            smoothing_passes: 14,
+            smoothing_passes: 16,
             min_hole_area: 64.0,
             ignore_transparent: true,
         }
@@ -915,7 +915,7 @@ fn fit_ring_precision(ring: &[Point], options: &VectorizeOptions) -> BezPath {
         let end_pt = pts[b];
         let seg_len = (end_pt - pts[a]).hypot();
         // Only snap to straight line if the segment has sufficient length and is genuinely collinear
-        if seg_len >= 8.0 && piece.len() >= 6 && is_collinear_segment(&piece, options.line_snap_tolerance) {
+        if seg_len >= 16.0 && piece.len() >= 10 && is_collinear_segment(&piece, options.line_snap_tolerance) {
             out.line_to(end_pt);
         } else {
             let m = piece.len();
