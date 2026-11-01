@@ -24,8 +24,10 @@ pub struct VectorizeOptions {
     pub line_snap_tolerance: f64,
     /// Outward dilation offset in pixels for base/underlap layers (default 0.6 px).
     pub dilation_px: f64,
-    /// Minimum island pixel count to keep (default 4).
+    /// Minimum island pixel count to keep (default 24).
     pub min_speck_area: usize,
+    /// Edge-preserving median filter passes (default 2).
+    pub denoise_passes: usize,
     /// Whether to ignore fully transparent background pixels (default true).
     pub ignore_transparent: bool,
 }
@@ -38,10 +40,54 @@ impl Default for VectorizeOptions {
             corner_threshold_rad: 42.0f64.to_radians(),
             line_snap_tolerance: 0.25,
             dilation_px: 0.6,
-            min_speck_area: 4,
+            min_speck_area: 24,
+            denoise_passes: 2,
             ignore_transparent: true,
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// 0. Pre-processing Edge-Preserving Denoise Filter
+// ---------------------------------------------------------------------------
+
+fn denoise_image(img: &RgbaImage, passes: usize) -> RgbaImage {
+    let (w, h) = (img.width(), img.height());
+    let mut out = img.clone();
+    if w < 3 || h < 3 || passes == 0 {
+        return out;
+    }
+    for _ in 0..passes {
+        let prev = out.clone();
+        for y in 0..h {
+            for x in 0..w {
+                let p = *prev.get_pixel(x, y);
+                if p[3] < 32 {
+                    continue;
+                }
+                let at = |dx: i32, dy: i32| {
+                    let px = (x as i32 + dx).clamp(0, w as i32 - 1) as u32;
+                    let py = (y as i32 + dy).clamp(0, h as i32 - 1) as u32;
+                    *prev.get_pixel(px, py)
+                };
+                let neighbors = [p, at(-1, 0), at(1, 0), at(0, -1), at(0, 1)];
+                let mut filtered = p;
+                for k in 0..3 {
+                    let mut ch = [
+                        neighbors[0][k],
+                        neighbors[1][k],
+                        neighbors[2][k],
+                        neighbors[3][k],
+                        neighbors[4][k],
+                    ];
+                    ch.sort_unstable();
+                    filtered[k] = ch[2]; // 5-point median
+                }
+                out.put_pixel(x, y, filtered);
+            }
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -265,7 +311,7 @@ fn quantize_oklab(
 }
 
 // ---------------------------------------------------------------------------
-// 3. Despeckling / Island Filter
+// 3. Multi-Pass Despeckling / Island Filter
 // ---------------------------------------------------------------------------
 
 fn despeckle_labels(
@@ -278,69 +324,76 @@ fn despeckle_labels(
         return;
     }
     let total = w * h;
-    let mut visited = vec![false; total];
-    let mut queue = Vec::new();
-    let mut comp = Vec::new();
+    for _ in 0..3 {
+        let mut changed = false;
+        let mut visited = vec![false; total];
+        let mut queue = Vec::new();
+        let mut comp = Vec::new();
 
-    for start in 0..total {
-        if visited[start] {
-            continue;
-        }
-        visited[start] = true;
-        let Some(lab) = labels[start] else {
-            continue;
-        };
-
-        comp.clear();
-        comp.push(start);
-        queue.clear();
-        queue.push(start);
-
-        while let Some(curr) = queue.pop() {
-            let x = curr % w;
-            let y = curr / w;
-
-            let neighbors = [
-                if x > 0 { Some(curr - 1) } else { None },
-                if x + 1 < w { Some(curr + 1) } else { None },
-                if y > 0 { Some(curr - w) } else { None },
-                if y + 1 < h { Some(curr + w) } else { None },
-            ];
-
-            for n_idx in neighbors.into_iter().flatten() {
-                if !visited[n_idx] && labels[n_idx] == Some(lab) {
-                    visited[n_idx] = true;
-                    comp.push(n_idx);
-                    queue.push(n_idx);
-                }
+        for start in 0..total {
+            if visited[start] {
+                continue;
             }
-        }
+            visited[start] = true;
+            let Some(lab) = labels[start] else {
+                continue;
+            };
 
-        if comp.len() < min_area {
-            let mut neighbor_counts = std::collections::HashMap::new();
-            for &idx in &comp {
-                let x = idx % w;
-                let y = idx / w;
+            comp.clear();
+            comp.push(start);
+            queue.clear();
+            queue.push(start);
+
+            while let Some(curr) = queue.pop() {
+                let x = curr % w;
+                let y = curr / w;
+
                 let neighbors = [
-                    if x > 0 { Some(idx - 1) } else { None },
-                    if x + 1 < w { Some(idx + 1) } else { None },
-                    if y > 0 { Some(idx - w) } else { None },
-                    if y + 1 < h { Some(idx + w) } else { None },
+                    if x > 0 { Some(curr - 1) } else { None },
+                    if x + 1 < w { Some(curr + 1) } else { None },
+                    if y > 0 { Some(curr - w) } else { None },
+                    if y + 1 < h { Some(curr + w) } else { None },
                 ];
+
                 for n_idx in neighbors.into_iter().flatten() {
-                    if let Some(n_lab) = labels[n_idx] {
-                        if n_lab != lab {
-                            *neighbor_counts.entry(n_lab).or_insert(0usize) += 1;
-                        }
+                    if !visited[n_idx] && labels[n_idx] == Some(lab) {
+                        visited[n_idx] = true;
+                        comp.push(n_idx);
+                        queue.push(n_idx);
                     }
                 }
             }
 
-            if let Some((&best_neighbor, _)) = neighbor_counts.iter().max_by_key(|&(_, c)| *c) {
+            if comp.len() < min_area {
+                let mut neighbor_counts = std::collections::HashMap::new();
                 for &idx in &comp {
-                    labels[idx] = Some(best_neighbor);
+                    let x = idx % w;
+                    let y = idx / w;
+                    let neighbors = [
+                        if x > 0 { Some(idx - 1) } else { None },
+                        if x + 1 < w { Some(idx + 1) } else { None },
+                        if y > 0 { Some(idx - w) } else { None },
+                        if y + 1 < h { Some(idx + w) } else { None },
+                    ];
+                    for n_idx in neighbors.into_iter().flatten() {
+                        if let Some(n_lab) = labels[n_idx] {
+                            if n_lab != lab {
+                                *neighbor_counts.entry(n_lab).or_insert(0usize) += 1;
+                            }
+                        }
+                    }
+                }
+
+                if let Some((&best_neighbor, _)) = neighbor_counts.iter().max_by_key(|&(_, c)| *c) {
+                    for &idx in &comp {
+                        labels[idx] = Some(best_neighbor);
+                    }
+                    changed = true;
                 }
             }
+        }
+        if !changed {
+            break;
         }
     }
 }
@@ -753,13 +806,20 @@ pub fn vectorize(img: &RgbaImage, options: &VectorizeOptions) -> Vec<crate::trac
         return Vec::new();
     }
 
+    // Step 0: Pre-processing edge-preserving median filter to eliminate salt-and-pepper noise & freckles
+    let clean_img = if options.denoise_passes > 0 {
+        denoise_image(img, options.denoise_passes)
+    } else {
+        img.clone()
+    };
+
     // Step 1: OKLab quantization
-    let mut quantized = quantize_oklab(img, options.max_colors, options.ignore_transparent);
+    let mut quantized = quantize_oklab(&clean_img, options.max_colors, options.ignore_transparent);
     if quantized.palette_rgb.is_empty() {
         return Vec::new();
     }
 
-    // Step 2: Despeckle / island removal
+    // Step 2: Multi-pass despeckle / island removal to merge noise clusters into surroundings
     despeckle_labels(&mut quantized.labels, w, h, options.min_speck_area);
 
     // Step 3: Extract contours for each color and measure areas
@@ -807,6 +867,12 @@ pub fn vectorize(img: &RgbaImage, options: &VectorizeOptions) -> Vec<crate::trac
 
         for ring in &color_rings[ci] {
             if ring.len() < 3 {
+                continue;
+            }
+
+            // Filter out tiny micro-speckle rings smaller than 12 square pixels
+            let area = signed_area(ring).abs();
+            if area < 12.0 {
                 continue;
             }
 
