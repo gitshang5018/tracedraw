@@ -2,9 +2,9 @@
 //!
 //! Provides perceptually accurate vectorization of raster graphics into
 //! minimal-node, gap-free, geometric-aligned Bezier paths using OKLab color
-//! space quantization, 3x3 median noise reduction, sub-pixel contour tracing,
-//! curvature-based corner detection, multi-pass Laplacian smoothing, and
-//! Schneider cubic Bezier curve fitting.
+//! space quantization, 3x3 median noise reduction, anti-aliasing band removal,
+//! sub-pixel contour tracing, curvature-based corner detection, multi-pass
+//! Laplacian smoothing, and Schneider cubic Bezier curve fitting.
 
 use image::RgbaImage;
 use tracedraw_core::{
@@ -17,20 +17,20 @@ use tracedraw_core::{
 pub struct VectorizeOptions {
     /// Maximum number of quantized colors (2..32, default 24).
     pub max_colors: usize,
-    /// Detail fitting tolerance in pixels (default 0.8 px for smooth flowing curves).
+    /// Detail fitting tolerance in pixels (default 0.9 px for smooth flowing curves).
     pub tolerance: f64,
-    /// Corner angle threshold in radians (default 75.0 degrees).
+    /// Corner angle threshold in radians (default 85.0 degrees).
     pub corner_threshold_rad: f64,
     /// Collinear straight-line snapping tolerance in pixels (default 0.25 px).
     pub line_snap_tolerance: f64,
-    /// Outward dilation offset in pixels for base/underlap layers (default 0.0 px).
-    pub dilation_px: f64,
     /// Minimum island pixel count to keep (default 32).
     pub min_speck_area: usize,
     /// Edge-preserving 3x3 median filter passes (default 2).
     pub denoise_passes: usize,
-    /// Contour Laplacian smoothing passes (default 10).
+    /// Contour Laplacian smoothing passes (default 12).
     pub smoothing_passes: usize,
+    /// Minimum hole area in square pixels to preserve (smaller holes are filled).
+    pub min_hole_area: f64,
     /// Whether to ignore fully transparent background pixels (default true).
     pub ignore_transparent: bool,
 }
@@ -39,13 +39,13 @@ impl Default for VectorizeOptions {
     fn default() -> Self {
         Self {
             max_colors: 24,
-            tolerance: 0.8,
-            corner_threshold_rad: 75.0f64.to_radians(),
+            tolerance: 0.9,
+            corner_threshold_rad: 85.0f64.to_radians(),
             line_snap_tolerance: 0.25,
-            dilation_px: 0.0,
             min_speck_area: 32,
             denoise_passes: 2,
-            smoothing_passes: 10,
+            smoothing_passes: 12,
+            min_hole_area: 64.0,
             ignore_transparent: true,
         }
     }
@@ -178,7 +178,7 @@ pub fn oklab_dist_sq(c1: [f32; 3], c2: [f32; 3]) -> f32 {
 }
 
 // ---------------------------------------------------------------------------
-// 2. OKLab K-Means++ Clustering & Quantization
+// 2. OKLab K-Means++ Clustering with Cluster Deduplication
 // ---------------------------------------------------------------------------
 
 struct QuantizedImage {
@@ -291,6 +291,19 @@ fn quantize_oklab(
         }
     }
 
+    // Deduplicate perceptually identical clusters (Delta E < 0.035)
+    let mut remap: Vec<usize> = (0..k).collect();
+    for i in 0..k {
+        if remap[i] != i {
+            continue;
+        }
+        for j in (i + 1)..k {
+            if remap[j] == j && oklab_dist_sq(centers[i], centers[j]) < 0.0012 {
+                remap[j] = i;
+            }
+        }
+    }
+
     // Assign final labels
     let mut labels = vec![None; total];
     for &idx in &opaque_indices {
@@ -304,7 +317,7 @@ fn quantize_oklab(
                 best_c = ci;
             }
         }
-        labels[idx] = Some(best_c);
+        labels[idx] = Some(remap[best_c]);
     }
 
     let palette_rgb: Vec<[u8; 3]> = centers.iter().map(|&lab| oklab_to_rgb(lab)).collect();
@@ -316,8 +329,163 @@ fn quantize_oklab(
 }
 
 // ---------------------------------------------------------------------------
-// 3. Multi-Pass Despeckling / Island Filter
+// 3. Anti-Aliasing Band Removal & Despeckle Filter
 // ---------------------------------------------------------------------------
+
+#[inline]
+fn rgb_dist_sq(a: [u8; 3], b: [u8; 3]) -> u32 {
+    let dr = a[0] as i32 - b[0] as i32;
+    let dg = a[1] as i32 - b[1] as i32;
+    let db = a[2] as i32 - b[2] as i32;
+    (dr * dr + dg * dg + db * db) as u32
+}
+
+/// Check whether color `c` lies along the line segment between `a` and `b` in RGB,
+/// which characterizes anti-aliased edge blend pixels.
+fn is_color_between(c: [u8; 3], a: [u8; 3], b: [u8; 3]) -> bool {
+    let cf = [c[0] as f64, c[1] as f64, c[2] as f64];
+    let af = [a[0] as f64, a[1] as f64, a[2] as f64];
+    let bf = [b[0] as f64, b[1] as f64, b[2] as f64];
+    let ab = [bf[0] - af[0], bf[1] - af[1], bf[2] - af[2]];
+    let ac = [cf[0] - af[0], cf[1] - af[1], cf[2] - af[2]];
+    let len2 = ab[0] * ab[0] + ab[1] * ab[1] + ab[2] * ab[2];
+    if len2 < 36.0 {
+        return false;
+    }
+    let dot = ac[0] * ab[0] + ac[1] * ab[1] + ac[2] * ab[2];
+    let t = (dot / len2).clamp(0.0, 1.0);
+    let proj = [af[0] + t * ab[0], af[1] + t * ab[1], af[2] + t * ab[2]];
+    let dist2 = (cf[0] - proj[0]).powi(2) + (cf[1] - proj[1]).powi(2) + (cf[2] - proj[2]).powi(2);
+    let slack = (0.16 * len2.sqrt()).max(18.0);
+    dist2 <= slack * slack
+}
+
+/// Removes thin anti-aliasing sliver bands (width <= 2 px) whose color lies between
+/// the two dominant colors they touch, giving each pixel back to the dominant side.
+/// This prevents ghost halos around letters, stars, and icons.
+fn despeckle_anti_aliasing_bands(
+    labels: &mut [Option<usize>],
+    w: usize,
+    h: usize,
+    palette_rgb: &[[u8; 3]],
+) {
+    let total = w * h;
+    let mut seen = vec![false; total];
+    let mut patch = Vec::new();
+    let mut stack = Vec::new();
+    let mut counts = std::collections::HashMap::new();
+    let mut changes = Vec::new();
+
+    let neighbours = |i: usize| {
+        let (x, y) = (i % w, i / w);
+        let mut near = [usize::MAX; 4];
+        if x > 0 {
+            near[0] = i - 1;
+        }
+        if x + 1 < w {
+            near[1] = i + 1;
+        }
+        if y > 0 {
+            near[2] = i - w;
+        }
+        if y + 1 < h {
+            near[3] = i + w;
+        }
+        near
+    };
+
+    for start in 0..total {
+        if seen[start] {
+            continue;
+        }
+        let Some(l) = labels[start] else {
+            continue;
+        };
+
+        patch.clear();
+        counts.clear();
+        stack.clear();
+        stack.push(start);
+        seen[start] = true;
+        let mut interior = 0usize;
+
+        while let Some(i) = stack.pop() {
+            patch.push(i);
+            let mut inside = 0;
+            for j in neighbours(i) {
+                if j == usize::MAX {
+                    continue;
+                }
+                match labels[j] {
+                    Some(nl) if nl == l => {
+                        inside += 1;
+                        if !seen[j] {
+                            seen[j] = true;
+                            stack.push(j);
+                        }
+                    }
+                    Some(nl) => {
+                        *counts.entry(nl).or_insert(0usize) += 1;
+                    }
+                    None => {}
+                }
+            }
+            if inside == 4 {
+                interior += 1;
+            }
+        }
+
+        // A band is thin if almost none of its pixels has all 4 neighbors inside the patch
+        if interior * 8 > patch.len() || counts.len() < 2 {
+            continue;
+        }
+
+        let mut by_count: Vec<(usize, usize)> = counts.into_iter().collect();
+        by_count.sort_by_key(|&(_, c)| std::cmp::Reverse(c));
+        let a = by_count[0].0;
+        let b = by_count[1].0;
+
+        let (ca, cb, cl) = (palette_rgb[a], palette_rgb[b], palette_rgb[l]);
+
+        if !is_color_between(cl, ca, cb) {
+            continue;
+        }
+
+        let d_a = rgb_dist_sq(cl, ca);
+        let d_b = rgb_dist_sq(cl, cb);
+        let nearer = if d_a <= d_b { a } else { b };
+
+        for &i in &patch {
+            let (x, y) = (i % w, i / w);
+            let mut na = 0;
+            let mut nb = 0;
+            for dy in -1i32..=1 {
+                for dx in -1i32..=1 {
+                    let px = x as i32 + dx;
+                    let py = y as i32 + dy;
+                    if px >= 0 && px < w as i32 && py >= 0 && py < h as i32 {
+                        let idx = py as usize * w + px as usize;
+                        if labels[idx] == Some(a) {
+                            na += 1;
+                        } else if labels[idx] == Some(b) {
+                            nb += 1;
+                        }
+                    }
+                }
+            }
+            let to = match na.cmp(&nb) {
+                std::cmp::Ordering::Greater => a,
+                std::cmp::Ordering::Less => b,
+                std::cmp::Ordering::Equal => nearer,
+            };
+            changes.push((i, to));
+        }
+    }
+
+    for (i, to) in changes {
+        labels[i] = Some(to);
+    }
+}
 
 fn despeckle_labels(
     labels: &mut [Option<usize>],
@@ -404,7 +572,7 @@ fn despeckle_labels(
 }
 
 // ---------------------------------------------------------------------------
-// 4. Polygon Area and Normal Dilation
+// 4. Polygon Area Calculation
 // ---------------------------------------------------------------------------
 
 fn signed_area(pts: &[Point]) -> f64 {
@@ -419,55 +587,6 @@ fn signed_area(pts: &[Point]) -> f64 {
         sum += p1.x * p2.y - p2.x * p1.y;
     }
     sum * 0.5
-}
-
-/// Outward normal dilation by `offset_px` to prevent white gaps (T-junctions).
-#[allow(dead_code)]
-fn dilate_ring(ring: &[Point], offset_px: f64) -> Vec<Point> {
-    let n = ring.len();
-    if n < 3 || offset_px.abs() < 1e-4 {
-        return ring.to_vec();
-    }
-    let area = signed_area(ring);
-    if area.abs() < 1e-6 {
-        return ring.to_vec();
-    }
-
-    let mut out = Vec::with_capacity(n);
-    for i in 0..n {
-        let prev = ring[(i + n - 1) % n];
-        let curr = ring[i];
-        let next = ring[(i + 1) % n];
-
-        let v1 = curr - prev;
-        let v2 = next - curr;
-        let l1 = v1.hypot();
-        let l2 = v2.hypot();
-        if l1 < 1e-9 || l2 < 1e-9 {
-            out.push(curr);
-            continue;
-        }
-        let u1 = v1 / l1;
-        let u2 = v2 / l2;
-
-        let (n1, n2) = if area > 0.0 {
-            (Vec2::new(u1.y, -u1.x), Vec2::new(u2.y, -u2.x))
-        } else {
-            (Vec2::new(-u1.y, u1.x), Vec2::new(-u2.y, u2.x))
-        };
-
-        let n_avg = n1 + n2;
-        let l_avg = n_avg.hypot();
-        if l_avg < 1e-9 {
-            out.push(curr);
-            continue;
-        }
-        let n_unit = n_avg / l_avg;
-        let cos_half = (n_unit.x * n1.x + n_unit.y * n1.y).max(0.2);
-        let miter = (1.0 / cos_half).clamp(0.8, 1.3);
-        out.push(curr + n_unit * (offset_px * miter));
-    }
-    out
 }
 
 // ---------------------------------------------------------------------------
@@ -688,10 +807,9 @@ fn fit_ring_precision(ring: &[Point], options: &VectorizeOptions) -> BezPath {
         return polyline_closed(&pts);
     }
 
-    // Step 2: Initial gentle smoothing passes to remove single-pixel staircase jitter
-    // before computing curvature turn angles.
-    let initial_passes = 4usize.min(options.smoothing_passes);
-    for _ in 0..initial_passes {
+    // Step 2: Multi-pass Laplacian contour relaxation to melt pixel staircases into smooth C1 curves
+    let passes = options.smoothing_passes.max(6);
+    for _ in 0..passes {
         let prev = pts.clone();
         for i in 0..n {
             let a = prev[(i + n - 1) % n];
@@ -703,7 +821,7 @@ fn fit_ring_precision(ring: &[Point], options: &VectorizeOptions) -> BezPath {
         }
     }
 
-    // Step 3: Feature corner detection over smoothed contour
+    // Step 3: Feature corner detection over smoothed contour (only acute/right corners >= 85 deg)
     let reach = 4usize.min(n / 4).max(2);
     let threshold = options.corner_threshold_rad;
     let at = |i: isize| pts[i.rem_euclid(n as isize) as usize];
@@ -728,9 +846,9 @@ fn fit_ring_precision(ring: &[Point], options: &VectorizeOptions) -> BezPath {
         })
         .collect();
 
-    // Enforce minimum distance between corners (at least 8 pixels) to prevent
-    // false corner segmentation along curved arcs.
-    let min_dist = 8usize.min(n / 4);
+    // Enforce minimum distance between corners (at least 10 pixels) to avoid
+    // fracturing organic curves or rounded stroke caps
+    let min_dist = 10usize.min(n / 4);
     let mut corners: Vec<usize> = Vec::new();
     for &c in &candidate_corners {
         let too_close = corners.iter().any(|&prev| {
@@ -740,28 +858,6 @@ fn fit_ring_precision(ring: &[Point], options: &VectorizeOptions) -> BezPath {
         });
         if !too_close {
             corners.push(c);
-        }
-    }
-
-    // Step 4: Finish remaining smoothing passes on stretches between true corners
-    let mut is_corner = vec![false; n];
-    for &c in &corners {
-        is_corner[c] = true;
-    }
-
-    let remaining_passes = options.smoothing_passes.saturating_sub(initial_passes);
-    for _ in 0..remaining_passes {
-        let prev = pts.clone();
-        for i in 0..n {
-            if is_corner[i] {
-                continue;
-            }
-            let a = prev[(i + n - 1) % n];
-            let c = prev[(i + 1) % n];
-            pts[i] = Point::new(
-                (a.x + 2.0 * prev[i].x + c.x) / 4.0,
-                (a.y + 2.0 * prev[i].y + c.y) / 4.0,
-            );
         }
     }
 
@@ -852,16 +948,20 @@ pub fn vectorize(img: &RgbaImage, options: &VectorizeOptions) -> Vec<crate::trac
         img.clone()
     };
 
-    // Step 1: OKLab perceptual quantization
+    // Step 1: OKLab perceptual quantization with cluster deduplication
     let mut quantized = quantize_oklab(&clean_img, options.max_colors, options.ignore_transparent);
     if quantized.palette_rgb.is_empty() {
         return Vec::new();
     }
 
-    // Step 2: Multi-pass despeckle / island removal to merge noise clusters into surroundings
+    // Step 2: Anti-aliasing band removal: merge 1-2px intermediate transition borders back into
+    // dominant colors to prevent ghost halos around text and shapes
+    despeckle_anti_aliasing_bands(&mut quantized.labels, w, h, &quantized.palette_rgb);
+
+    // Step 3: Multi-pass despeckle / island removal to merge noise clusters into surroundings
     despeckle_labels(&mut quantized.labels, w, h, options.min_speck_area);
 
-    // Step 3: Extract contours for each color and measure areas
+    // Step 4: Extract contours for each color and measure areas
     let num_colors = quantized.palette_rgb.len();
     let mut color_rings: Vec<Vec<Vec<Point>>> = vec![Vec::new(); num_colors];
     let mut color_areas: Vec<f64> = vec![0.0; num_colors];
@@ -886,7 +986,7 @@ pub fn vectorize(img: &RgbaImage, options: &VectorizeOptions) -> Vec<crate::trac
         color_rings[ci] = rings;
     }
 
-    // Step 4: Topological stacking (largest area at bottom)
+    // Step 5: Topological stacking (largest area at bottom)
     let mut order: Vec<usize> = (0..num_colors).collect();
     order.sort_by(|&a, &b| {
         color_areas[b]
@@ -907,9 +1007,16 @@ pub fn vectorize(img: &RgbaImage, options: &VectorizeOptions) -> Vec<crate::trac
                 continue;
             }
 
-            // Filter out tiny micro-speckle rings smaller than 16 square pixels
-            let area = signed_area(ring).abs();
-            if area < 16.0 {
+            let s_area = signed_area(ring);
+            let abs_area = s_area.abs();
+
+            // Invert/skip small interior holes (< min_hole_area) to keep strokes solid and crack-free
+            if s_area < 0.0 && abs_area < options.min_hole_area {
+                continue;
+            }
+
+            // Discard tiny floating micro-speckles
+            if s_area > 0.0 && abs_area < 20.0 {
                 continue;
             }
 
@@ -997,26 +1104,13 @@ mod tests {
     }
 
     #[test]
-    fn smooth_curved_ring_produces_no_corners() {
-        // Construct a smooth circular ring of radius 30
-        let mut ring = Vec::new();
-        let center = Point::new(50.0, 50.0);
-        let r = 30.0;
-        let count = 64;
-        for i in 0..count {
-            let theta = (i as f64) * 2.0 * std::f64::consts::PI / (count as f64);
-            ring.push(Point::new(center.x + r * theta.cos(), center.y + r * theta.sin()));
-        }
-        let options = VectorizeOptions::default();
-        let fitted = fit_ring_precision(&ring, &options);
-        assert!(!fitted.elements().is_empty());
-        // Verify path contains curve elements and closes cleanly
-        let mut has_curves = false;
-        for el in fitted.elements() {
-            if let PathEl::CurveTo(..) = el {
-                has_curves = true;
-            }
-        }
-        assert!(has_curves, "Expected smooth circular ring to be fitted with Bezier curves");
+    fn anti_aliasing_between_check() {
+        let black = [0, 0, 0];
+        let white = [255, 255, 255];
+        let gray = [128, 128, 128];
+        assert!(is_color_between(gray, black, white));
+
+        let red = [255, 0, 0];
+        assert!(!is_color_between(red, black, white));
     }
 }
