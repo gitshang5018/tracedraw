@@ -206,6 +206,9 @@ pub enum Sheet {
     Trace,
     /// The chip at the left edge: the selected parts packed onto a sheet.
     Arrange,
+    /// The chip at the left edge: a batch of banners made from a list of
+    /// slogans.
+    Banner,
 }
 
 /// Whether the interface is laid out for a phone: always in the Android
@@ -1402,6 +1405,7 @@ enum AiMenu {
     Group,
     Dimension,
     Vectorize,
+    Banner,
 }
 
 /// The chip at the left edge over the drawing: the image tools whose models
@@ -1433,6 +1437,7 @@ fn ai_chip(app: &mut App, ui: &mut Ui, m3: &M3, full: Rect, open: &mut Sheet) {
         (AiMenu::Dimension, "ai.dimension"),
         (AiMenu::Arrange, "docker.smart_arrange"),
         (AiMenu::Group, "docker.smart_group"),
+        (AiMenu::Banner, "banner.title"),
     ];
     let row = 46.0;
     let height = row * items.len() as f32 + 12.0;
@@ -1480,6 +1485,7 @@ fn ai_chip(app: &mut App, ui: &mut Ui, m3: &M3, full: Rect, open: &mut Sheet) {
                                 AiMenu::Group => app.smart_group(),
                                 AiMenu::Dimension => app.auto_dimension_selection(),
                                 AiMenu::Vectorize => app.native_vectorize_selection(),
+                                AiMenu::Banner => *open = Sheet::Banner,
                             }
                             ui.ctx().data_mut(|d| d.insert_temp(menu_key, false));
                         }
@@ -1940,6 +1946,123 @@ fn arrange_sheet(_app: &mut App, ui: &mut Ui, m3: &M3) {
             },
             &tr("mobile.working"),
         );
+    }
+    save_ai_state(&ctx, &st);
+}
+
+/// The batch of banners: the slogans, one banner each, the signature
+/// under them, and the shape of a banner.
+fn banner_sheet(app: &mut App, ui: &mut Ui, m3: &M3) {
+    let ctx = ui.ctx().clone();
+    let mut st = ai_state(&ctx);
+    property_label(ui, m3, &tr("banner.slogans"));
+    // The slogans, one per line: a line is a banner. The text is edited
+    // as one block, so the list is taken apart again afterwards.
+    let mut slogans = st.banner.slogans.join("\n");
+    ui.add(
+        egui::TextEdit::multiline(&mut slogans)
+            .desired_rows(4)
+            .desired_width(ui.available_width())
+            .hint_text(tr("banner.slogans_hint")),
+    );
+    st.banner.slogans = slogans.split('\n').map(|s| s.to_string()).collect();
+    ui.add_space(4.0);
+    property_label(ui, m3, &tr("banner.signature"));
+    ui.add(
+        egui::TextEdit::singleline(&mut st.banner.signature)
+            .desired_width(ui.available_width())
+            .hint_text(tr("banner.signature_hint")),
+    );
+    ui.add_space(8.0);
+    property_label(ui, m3, &tr("banner.size"));
+    let field = ((ui.available_width() - 16.0) / 3.0).max(56.0);
+    egui::Grid::new("banner_numbers")
+        .num_columns(3)
+        .spacing([8.0, 2.0])
+        .show(ui, |ui| {
+            for key in ["banner.width", "banner.height", "banner.gap"] {
+                ui.add_sized(
+                    [field, 16.0],
+                    egui::Label::new(egui::RichText::new(tr(key)).size(11.5).color(m3.variant)),
+                );
+            }
+            ui.end_row();
+            ui.add_sized(
+                [field, 34.0],
+                egui::DragValue::new(&mut st.banner.width_mm)
+                    .speed(1.0)
+                    .range(10.0..=10000.0)
+                    .fixed_decimals(0),
+            );
+            ui.add_sized(
+                [field, 34.0],
+                egui::DragValue::new(&mut st.banner.height_mm)
+                    .speed(1.0)
+                    .range(10.0..=5000.0)
+                    .fixed_decimals(0),
+            );
+            ui.add_sized(
+                [field, 34.0],
+                egui::DragValue::new(&mut st.banner.gap_mm)
+                    .speed(1.0)
+                    .range(0.0..=2000.0)
+                    .fixed_decimals(0),
+            );
+            ui.end_row();
+        });
+    ui.add_space(6.0);
+    property_label(ui, m3, &tr("banner.letter"));
+    let field = ((ui.available_width() - 16.0) / 2.0).max(56.0);
+    egui::Grid::new("banner_letter")
+        .num_columns(2)
+        .spacing([8.0, 2.0])
+        .show(ui, |ui| {
+            for key in ["banner.slogan_size", "banner.signature_size"] {
+                ui.add_sized(
+                    [field, 16.0],
+                    egui::Label::new(egui::RichText::new(tr(key)).size(11.5).color(m3.variant)),
+                );
+            }
+            ui.end_row();
+            ui.add_sized(
+                [field, 34.0],
+                egui::DragValue::new(&mut st.banner.slogan_pt)
+                    .speed(1.0)
+                    .range(4.0..=400.0)
+                    .fixed_decimals(0),
+            );
+            ui.add_sized(
+                [field, 34.0],
+                egui::DragValue::new(&mut st.banner.signature_pt)
+                    .speed(1.0)
+                    .range(4.0..=200.0)
+                    .fixed_decimals(0),
+            );
+            ui.end_row();
+        });
+    ui.add_space(8.0);
+    property_label(ui, m3, &tr("banner.colours"));
+    ui.horizontal(|ui| {
+        for (label, colour) in [
+            (tr("banner.background"), &mut st.banner.background),
+            (tr("banner.slogan_colour"), &mut st.banner.slogan_color),
+            (tr("banner.signature_colour"), &mut st.banner.signature_color),
+            (tr("banner.band_colour"), &mut st.banner.band_color),
+        ] {
+            let mut rgb = colour.to_rgb8();
+            ui.vertical(|ui| {
+                if ui.color_edit_button_srgb(&mut rgb).changed() {
+                    *colour = tracedraw_core::Color::rgb8(rgb[0], rgb[1], rgb[2]);
+                }
+                ui.label(egui::RichText::new(label).size(10.5).color(m3.variant));
+            });
+        }
+    });
+    ui.add_space(6.0);
+    ui.checkbox(&mut st.banner.vertical, tr("banner.vertical"));
+    ui.add_space(8.0);
+    if action_chip(ui, m3, &tr("banner.run")).clicked() {
+        app.create_banners(&st.banner);
     }
     save_ai_state(&ctx, &st);
 }
@@ -2590,6 +2713,7 @@ fn sheet_title(which: Sheet) -> String {
         Sheet::Variable => tr("ai.variable"),
         Sheet::Trace => tr("ai.trace"),
         Sheet::Arrange => tr("docker.smart_arrange"),
+        Sheet::Banner => tr("banner.title"),
         Sheet::None
         | Sheet::Drawer
         | Sheet::MenuPage(_)
@@ -2611,6 +2735,7 @@ fn sheet_body(app: &mut App, ui: &mut Ui, which: Sheet, m3: &M3, open: &mut Shee
         Sheet::Variable => variable_sheet(app, ui, m3),
         Sheet::Trace => trace_sheet(app, ui, m3, open),
         Sheet::Arrange => arrange_sheet(app, ui, m3),
+        Sheet::Banner => banner_sheet(app, ui, m3),
         Sheet::None
         | Sheet::Drawer
         | Sheet::MenuPage(_)

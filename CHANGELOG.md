@@ -6,6 +6,9 @@ full, row-by-row status.
 
 ## Unreleased
 
+- 异形拼版 keeps the spacing that was asked for. The parts were grown by a square, which leaves the spacing along the diagonal a corner further away: the parts sat ten millimetres apart where they met side to side and fourteen where they met at an angle. They are grown by a disc now, so the spacing is the same in every direction, and a test measures it.
+- 异形拼版 keeps the spacing that was asked for. The parts were grown by a square, which leaves the spacing along the diagonal a corner further away: the parts sat ten millimetres apart where they met side to side and fourteen where they met at an angle. They are grown by a disc now, so the spacing is the same in every direction, and a test measures it.
+- 批量条幅 is in the chip at the left edge of a phone's drawing: a list of slogans, one banner each, with the signature under them. The width, the height, the gap, the size of the letters and the four colours are the panel's, and the whole batch is made in one tap and one undo step.
 - The updates window says what the release says about itself: the notes are in the window, read as plain text from the Markdown they are written in, and they scroll. They come from the release's own body, and from the update host's manifest when GitHub cannot be read, so a phone that cannot reach the release's page still reads them.
 - The models the image tools need are below the notes, each with its own button. The button that fetched every model at once is gone: it filled a phone's storage without being asked what for.
 - The updates window has no close button at the end of it. The window is closed by its own cross.

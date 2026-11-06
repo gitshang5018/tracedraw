@@ -21,6 +21,7 @@ mod ai_tools;
 mod anchors;
 mod app;
 mod arrange;
+mod banner;
 mod autocorrect;
 mod barcode;
 mod bg_remove;

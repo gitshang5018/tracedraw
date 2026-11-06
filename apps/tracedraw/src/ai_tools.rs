@@ -87,6 +87,9 @@ pub struct AiTools {
     /// The groups in the selection opened before the packing, so each
     /// member is placed on its own rather than as one block.
     pub arrange_split: bool,
+    /// The batch of banners: the slogans, one per banner, the signature
+    /// under them, and the shape of a banner.
+    pub banner: crate::banner::Banner,
 }
 
 impl Default for AiTools {
@@ -116,6 +119,7 @@ impl Default for AiTools {
             arrange_rotate: true,
             arrange_irregular: false,
             arrange_split: false,
+            banner: crate::banner::Banner::default(),
         }
     }
 }
