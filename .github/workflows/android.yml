@@ -220,6 +220,53 @@ jobs:
       - name: The APKs
         run: ls -l artifacts
 
+      # What this build changed, in the words of the changelog.
+      #
+      # The page the release shows carries them, and so does the manifest
+      # the update host serves, so the app's own update box says the same
+      # thing the page says.
+      #
+      # A version takes the section of the changelog named after it, and
+      # the nightly takes what is unreleased: what is unreleased is what
+      # the last pushes brought. A build with nothing of its own to say
+      # falls back on the last release's words rather than on an empty
+      # page.
+      - name: The changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          unreleased() {
+            awk '/^## Unreleased/{p=1;next} /^## / && p{exit} p' CHANGELOG.md
+          }
+          version() {
+            awk -v head="## $1 " 'index($0,head)==1{p=1;next} /^## / && p{exit} p' CHANGELOG.md
+          }
+          latest() {
+            awk '/^## [0-9]/{if(p)exit; p=1; next} /^## /{if(p)exit} p' CHANGELOG.md
+          }
+          # A section with nothing in it but blank lines is nothing said.
+          said() { grep -q '[^[:space:]]' "$1" 2>/dev/null; }
+          : > changes.md
+          if [[ -n "$RELEASE_TAG" ]]; then
+            version "${RELEASE_TAG#v}" > changes.md
+            if ! said changes.md; then
+              unreleased > changes.md
+            fi
+          else
+            unreleased > changes.md
+            if ! said changes.md; then
+              latest > changes.md
+            fi
+          fi
+          if ! said changes.md; then
+            {
+              echo "Android 版，由 \`main\` 分支的 ${GITHUB_SHA:0:7} 构建，每次推送都会替换这个包。"
+              echo
+              echo "在 App 里打开菜单 > 检查更新，就能直接下载安装；也可以点下面的 APK 手动装。"
+            } > changes.md
+          fi
+          cat changes.md
+
       # The app downloads a phone's APK from a bucket of the project's own
       # (Cloudflare R2), whose public address `UPDATE_HOST` names and which
       # `build.rs` bakes in as `APK_HOST`: a phone that cannot download from
@@ -267,15 +314,9 @@ jobs:
           version=$(basename "$(ls dist/apk/*.apk | head -1)")
           version=${version#tracedraw-}
           version=${version%-android-*}
-          if [[ -n "$RELEASE_TAG" ]]; then
-            # The version's section of CHANGELOG.md ("## 0.3.0 (date)").
-            v="${RELEASE_TAG#v}"
-            awk -v head="## ${v} " 'index($0, head) == 1 { p = 1; next } /^## / && p { exit } p' \
-              CHANGELOG.md > build-notes.md
-          else
-            printf 'Android 版，由 `main` 分支的 %s 构建，每次推送都会替换这个包。\n' \
-              "${GITHUB_SHA:0:7}" > build-notes.md
-          fi
+          # The same words the release's page shows: a phone that cannot
+          # reach GitHub reads them here.
+          cp changes.md build-notes.md
           python3 - <<'PYMANIFEST'
           import json, os, glob, hashlib
           version = os.environ["BUILD_VERSION"]
@@ -350,18 +391,15 @@ jobs:
           SIGNED: ${{ needs.apk.outputs.signed }}
         run: |
           # The notes are in Chinese: the phones this build is for read
-          # them, and the app's own update box opens this page.
-          if [[ -n "$RELEASE_TAG" ]]; then
-            # The version's section of CHANGELOG.md ("## 0.3.0 (date)").
-            v="${RELEASE_TAG#v}"
-            awk -v head="## ${v} " 'index($0, head) == 1 { p = 1; next } /^## / && p { exit } p' \
-              CHANGELOG.md > release-notes.md
-          else
+          # them, and the app's own update box opens this page. What
+          # changed is what the changelog says; what follows is how to
+          # install it.
+          cp changes.md release-notes.md
+          if [[ -z "$RELEASE_TAG" ]]; then
             {
-              echo "Android 版，由 \`main\` 分支的 ${GITHUB_SHA:0:7} 构建，每次推送都会替换这个包。"
               echo
-              echo "在 App 里打开菜单 > 检查更新，就能直接下载安装；也可以点下面的 APK 手动装。"
-            } > release-notes.md
+              echo "Android 版，由 \`main\` 分支的 ${GITHUB_SHA:0:7} 构建，每次推送都会替换这个包。"
+            } >> release-notes.md
           fi
           cat >> release-notes.md <<'NOTES'
 
@@ -384,6 +422,8 @@ jobs:
           fi
           cat release-notes.md
 
+      # The page is replaced, never added to: what it says is what this
+      # build changed, and the build before it is gone from it.
       - uses: softprops/action-gh-release@v2
         with:
           files: artifacts/*.apk
@@ -391,4 +431,5 @@ jobs:
           name: ${{ env.RELEASE_TAG != '' && env.RELEASE_TAG || 'nightly' }}
           prerelease: ${{ env.RELEASE_TAG == '' }}
           body_path: release-notes.md
+          append_body: false
           fail_on_unmatched_files: true
