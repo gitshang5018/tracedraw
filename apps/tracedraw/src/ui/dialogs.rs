@@ -773,7 +773,6 @@ enum Act {
     Open(String),
     Skip(String),
     Check,
-    Close,
 }
 
 /// The models the image tools need, on the updates page: what is on the
@@ -820,18 +819,13 @@ fn models_page(ui: &mut egui::Ui) {
     if running {
         ctx.request_repaint_after(std::time::Duration::from_millis(200));
     }
-    ui.horizontal(|ui| {
-        if ui.button(tr("ai.download_all")).clicked() {
-            for model in models() {
-                if !crate::ai_tools::ready(model) {
-                    crate::ai_tools::download(&ctx, model);
-                }
-            }
-        }
-        if let Some(dir) = crate::ai_tools::dir() {
-            ui.label(egui::RichText::new(dir.display().to_string()).small());
-        }
-    });
+    // The folder the models are in, and nothing else: a button that
+    // fetches every model at once is a button that fills a phone's
+    // storage without being asked what for. Each model has its own
+    // button, and what it is for is written beside it.
+    if let Some(dir) = crate::ai_tools::dir() {
+        ui.label(egui::RichText::new(dir.display().to_string()).small());
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1760,6 +1754,29 @@ pub fn show(app: &mut App, ctx: &Context) {
                             "updates.available",
                             &[("new", &r.version), ("version", version)],
                         ));
+                        // What the release says about itself, in the
+                        // dialog: the notes are the reason to read it,
+                        // and a phone is not a place to open a page in.
+                        // They scroll: a release with many changes says
+                        // more than fits in a window.
+                        if !r.notes.trim().is_empty() {
+                            ui.add_space(4.0);
+                            ui.label(
+                                egui::RichText::new(tr("updates.changes"))
+                                    .strong(),
+                            );
+                            egui::ScrollArea::vertical()
+                                .id_salt("updates_notes")
+                                .max_height(220.0)
+                                .auto_shrink([false, false])
+                                .show(ui, |ui| {
+                                    ui.label(
+                                        egui::RichText::new(&r.notes)
+                                            .small()
+                                            .weak(),
+                                    );
+                                });
+                        }
                         match &install {
                             InstallState::Downloading { done, total } => {
                                 ctx.request_repaint_after(std::time::Duration::from_millis(200));
@@ -1818,14 +1835,15 @@ pub fn show(app: &mut App, ctx: &Context) {
                         }
                     }
                 }
+                // The models the image tools need come below the notes:
+                // what the program is about comes first, and what it may
+                // need is the last thing in the window. The window is
+                // closed by its own cross, so there is no close button
+                // at the end of it.
                 ui.add_space(8.0);
                 ui.separator();
                 ui.add_space(4.0);
                 models_page(ui);
-                ui.add_space(8.0);
-                if ui.button(tr("dialog.close")).clicked() {
-                    act = Some(Act::Close);
-                }
             });
             match act {
                 Some(Act::Install(version, package, target)) => {
@@ -1851,7 +1869,6 @@ pub fn show(app: &mut App, ctx: &Context) {
                 Some(Act::Check) => {
                     app.updates.start(Some(ctx.clone()));
                 }
-                Some(Act::Close) => close = true,
                 None => {}
             }
         }
@@ -6832,6 +6849,7 @@ pub(crate) mod tests {
         let release = Release {
             version: "9.0.0".into(),
             page: "https://example.org/r".into(),
+            notes: "The notes of the release.".into(),
             download: None,
             package: Some(Package {
                 url: "https://example.org/a.AppImage".into(),

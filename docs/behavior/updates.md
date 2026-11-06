@@ -151,12 +151,30 @@ dialog offers Install first:
 
 ## What the dialog offers
 
-- **A newer release**: Download, Release notes, Skip this version and
-  Close, plus Install when the file can be put in place. Skip keeps that
-  version out of the daily check.
-- **No newer build**: the version that is running, and Close.
-- **A failed check** (no connection, a proxy that is down): why, and Open
-  the releases page.
+- **A newer release**: what the release says about itself, then Download,
+  Open the release page, Skip this version, plus Install when the file can
+  be put in place. Skip keeps that version out of the daily check.
+- **No newer build**: the version that is running, and Check for updates.
+- **A failed check** (no connection, a proxy that is down): why, and Check
+  for updates.
+
+The notes are in the window itself, not only on the release's page: they
+are what a reader wants to know before installing, and a phone is not a
+place to open a page in. They are written in Markdown and shown as plain
+text: a heading keeps its words, a bullet keeps its dot, a link keeps the
+words it was written with and the address it points at, and the marks
+around them are taken off. An underscore is only a mark at the edge of a
+word, so a name like `ACCESS_KEY_ID` keeps its underscores.
+
+The notes come from the release's own body when the release list is read
+from GitHub, and from the update host's manifest when it is not: a phone
+that cannot reach GitHub cannot reach the release's page either, so the
+manifest carries the notes of the build as well.
+
+Below the notes are the models the image tools need, each with its own
+button: a button that fetched every model at once filled a phone's
+storage without being asked what for. There is no close button at the end
+of the window: the window is closed by its own cross.
 
 On a phone the drawer shows the version it runs, and beside it a Check for
 updates button that starts the same check and opens the same box, one tap
@@ -173,6 +191,10 @@ newer release that was not skipped is shown.
 - `updates::tests::the_download_fits_the_system`
 - `updates::tests::a_phone_gets_the_apk_of_its_own_abi`
 - `updates::tests::the_host_manifest_names_the_file_of_this_phone`
+- `updates::tests::release_notes_are_read_as_plain_text`
+- `updates::tests::notes_with_nothing_in_them_are_nothing`
+- `updates::tests::a_strong_mark_closes_with_a_pair_and_names_keep_their_underscores`
+- `updates::tests::a_link_keeps_its_words_and_its_address`
 - `updates::tests::a_development_release_takes_its_version_from_its_files`
 - `updates::tests::a_release_with_no_file_for_this_system_is_passed_over`
 - `updates::tests::drafts_are_not_offered`

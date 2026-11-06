@@ -242,6 +242,11 @@ jobs:
           AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
         run: |
           set -euo pipefail
+          export BUILD_VERSION="$(basename "$(ls dist/apk/*.apk | head -1)")"
+          export BUILD_VERSION="${BUILD_VERSION#tracedraw-}"
+          export BUILD_VERSION="${BUILD_VERSION%-android-*}"
+          export BUILD_TIME="$(date +%s)"
+          export BUILD_REPO="${{ github.repository }}"
           if [[ -z "${R2_ACCOUNT_ID:-}" || -z "${AWS_ACCESS_KEY_ID:-}" || -z "${R2_BUCKET:-}" ]]; then
             echo "R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY and R2_BUCKET are not set: the APKs stay on the release only."
             exit 0
@@ -256,20 +261,47 @@ jobs:
           cp artifacts/*.apk dist/apk/
           ls -l dist/apk
           # The manifest the app falls back to when GitHub cannot be read.
+          # It carries the notes of the build as well, because a phone
+          # that cannot reach GitHub cannot reach the release's page
+          # either: the notes are in the manifest or they are nowhere.
           version=$(basename "$(ls dist/apk/*.apk | head -1)")
           version=${version#tracedraw-}
           version=${version%-android-*}
-          {
-            printf '{\n  "version": "%s",\n  "built": %s,\n  "page": "https://github.com/%s/releases",\n  "assets": [\n' \
-              "$version" "$(date +%s)" "${{ github.repository }}"
-            first=1
-            for apk in dist/apk/*.apk; do
-              if (( first )); then first=0; else printf ',\n'; fi
-              printf '    {"name": "%s", "size": %s, "sha256": "%s"}' \
-                "$(basename "$apk")" "$(stat -c%s "$apk")" "$(sha256sum "$apk" | cut -d' ' -f1)"
-            done
-            printf '\n  ]\n}\n'
-          } > dist/update.json
+          if [[ -n "$RELEASE_TAG" ]]; then
+            # The version's section of CHANGELOG.md ("## 0.3.0 (date)").
+            v="${RELEASE_TAG#v}"
+            awk -v head="## ${v} " 'index($0, head) == 1 { p = 1; next } /^## / && p { exit } p' \
+              CHANGELOG.md > build-notes.md
+          else
+            printf 'Android 版，由 `main` 分支的 %s 构建，每次推送都会替换这个包。\n' \
+              "${GITHUB_SHA:0:7}" > build-notes.md
+          fi
+          python3 - <<'PYMANIFEST'
+          import json, os, glob, hashlib
+          version = os.environ["BUILD_VERSION"]
+          built = int(os.environ["BUILD_TIME"])
+          page = "https://github.com/%s/releases" % os.environ["BUILD_REPO"]
+          with open("build-notes.md", encoding="utf-8") as f:
+              notes = f.read()
+          assets = []
+          for apk in sorted(glob.glob("dist/apk/*.apk")):
+              with open(apk, "rb") as f:
+                  digest = hashlib.sha256(f.read()).hexdigest()
+              assets.append({
+                  "name": os.path.basename(apk),
+                  "size": os.path.getsize(apk),
+                  "sha256": digest,
+              })
+          with open("dist/update.json", "w", encoding="utf-8") as f:
+              json.dump({
+                  "version": version,
+                  "built": built,
+                  "page": page,
+                  "notes": notes,
+                  "assets": assets,
+              }, f, ensure_ascii=False, indent=2)
+              f.write("\n")
+          PYMANIFEST
           cat dist/update.json
           # The bucket keeps the newest build only: the check always offers
           # it, and an older APK is of no use to anyone. `models/` stays

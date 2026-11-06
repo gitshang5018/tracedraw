@@ -6,6 +6,9 @@ full, row-by-row status.
 
 ## Unreleased
 
+- The updates window says what the release says about itself: the notes are in the window, read as plain text from the Markdown they are written in, and they scroll. They come from the release's own body, and from the update host's manifest when GitHub cannot be read, so a phone that cannot reach the release's page still reads them.
+- The models the image tools need are below the notes, each with its own button. The button that fetched every model at once is gone: it filled a phone's storage without being asked what for.
+- The updates window has no close button at the end of it. The window is closed by its own cross.
 - The fonts in the phone's own folder are read as soon as the phone lets the app see its storage. The scan at start runs before that grant, so a designer's fonts in `Download/Fonts` were missing from the first drawing opened, and only the Files sheet's reload brought them in.
 - 智能排布 says what it did in the status bar: how many parts it placed and what spacing it used, so a gap that reads as nothing at a low zoom can be checked against the number that was set.
 - 智能排布 has a 自动拆分 switch: the groups in the selection are opened before the packing, and compound curves are split into bodies, a body being a ring with the rings inside it, so a word turned into curves nests as letters and a letter keeps the hole in it. It repeats while groups remain and stops at four hundred pieces, which the status bar explains.

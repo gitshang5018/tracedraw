@@ -73,6 +73,9 @@ pub struct Release {
     pub version: String,
     /// The release's page (its notes).
     pub page: String,
+    /// What the release says about itself, in plain text: the notes the
+    /// dialog shows under the version.
+    pub notes: String,
     /// The download for this system, when the release has one.
     pub download: Option<String>,
     /// The download with the digest the release carries, for installing in
@@ -118,10 +121,197 @@ struct Asset {
 struct ApiRelease {
     tag_name: String,
     html_url: String,
+    /// What the release says about itself, in Markdown.
+    #[serde(default)]
+    body: String,
     #[serde(default)]
     draft: bool,
     #[serde(default)]
     assets: Vec<Asset>,
+}
+
+/// What a release says about itself, as plain text the dialog can show.
+///
+/// The notes a release carries are written in Markdown: the headings,
+/// the emphasis and the links are marked with characters the reader does
+/// not want to see, and a list of links is not what a small window can
+/// show. So the marks are taken off: a heading keeps its text, a bullet
+/// keeps its dot, a link keeps the words it was written with, and a line
+/// of code keeps its code. What is left is the sentences, which is what
+/// the notes are for.
+pub fn plain_notes(markdown: &str) -> String {
+    let mut out: Vec<String> = Vec::new();
+    for line in markdown.lines() {
+        let line = line.trim_end();
+        if line.trim().is_empty() {
+            // One blank line between the paragraphs, not the blank lines
+            // the Markdown has between them.
+            if !out.is_empty() && out.last().map(|s| !s.is_empty()).unwrap_or(false) {
+                out.push(String::new());
+            }
+            continue;
+        }
+        // A rule or a heading marker: the heading's text stays.
+        let body = line.trim_start();
+        let body = body
+            .strip_prefix("### ")
+            .or_else(|| body.strip_prefix("## "))
+            .or_else(|| body.strip_prefix("# "))
+            .unwrap_or(body);
+        let body = body.strip_prefix("> ").unwrap_or(body);
+        let bullet = body.starts_with("- ") || body.starts_with("* ");
+        let body = body
+            .strip_prefix("- ")
+            .or_else(|| body.strip_prefix("* "))
+            .unwrap_or(body);
+        // A numbered item keeps its number, which is what it is for.
+        let numbered = body
+            .split_once(". ")
+            .filter(|(n, _)| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()))
+            .map(|(n, rest)| (Some(n.to_string()), rest));
+        let (number, body) = match numbered {
+            Some((n, rest)) => (n, rest),
+            None => (None, body),
+        };
+        let body = inline_marks(body);
+        let mut line = String::new();
+        if let Some(n) = number {
+            line.push_str(&n);
+            line.push_str(". ");
+        } else if bullet {
+            line.push_str("\u{2022} ");
+        }
+        line.push_str(&body);
+        out.push(line);
+    }
+    while out.last().map(|s| s.is_empty()).unwrap_or(false) {
+        out.pop();
+    }
+    out.join("\n")
+}
+
+/// The marks inside a line of Markdown, taken off.
+///
+/// The marks come in pairs, and a strong mark is a pair of pairs: `*x*`
+/// is emphasis, `**x**` is strong emphasis. So the run of marks at the
+/// place is measured, and the same run is looked for further along: the
+/// text between them is what is kept, and the marks themselves are what
+/// is taken off.
+fn inline_marks(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        match c {
+            // A link: the words it was written with, then the address it
+            // points at, so the reader can still find it. The words come
+            // first, in brackets, and the address after them, in
+            // parentheses: "[the page](https://example.org)".
+            '[' => {
+                let mut label = String::new();
+                let mut j = i + 1;
+                while j < chars.len() && chars[j] != ']' {
+                    label.push(chars[j]);
+                    j += 1;
+                }
+                let mut url = String::new();
+                let mut after = j;
+                if j < chars.len() && chars[j] == ']' {
+                    // The address, if there is one.
+                    let mut k = j + 1;
+                    if k < chars.len() && chars[k] == '(' {
+                        k += 1;
+                        while k < chars.len() && chars[k] != ')' {
+                            url.push(chars[k]);
+                            k += 1;
+                        }
+                        if k < chars.len() {
+                            after = k + 1;
+                        }
+                    }
+                }
+                out.push_str(label.trim());
+                if !url.trim().is_empty() {
+                    // A space before the address, so the words and the
+                    // address do not run into each other.
+                    out.push_str(" (");
+                    out.push_str(url.trim());
+                    out.push(')');
+                }
+                i = after;
+            }
+            // The marks that wrap words: emphasis, strong emphasis, code.
+            //
+            // An underscore is only a mark at the edge of a word: the
+            // notes carry names like ACCESS_KEY_ID, and the underscore
+            // in the middle of one is part of the name, not a mark.
+            '*' | '`' | '_' => {
+                if c == '_' && !at_word_edge(&out, chars.get(i + 1).copied()) {
+                    out.push(c);
+                    i += 1;
+                    continue;
+                }
+                // How many marks stand together here.
+                let mut run = 1;
+                while i + run < chars.len() && chars[i + run] == c {
+                    run += 1;
+                }
+                // Two of them are a stronger mark, and they close with two
+                // of them as well: a pair that closes with one leaves that
+                // one behind.
+                let width = if run >= 2 { 2 } else { 1 };
+                let mut rest = String::new();
+                let mut j = i + run;
+                let mut closed_at = None;
+                while j < chars.len() {
+                    if chars[j] == c {
+                        // A run of the same marks here: as long as the one
+                        // that closes is wide enough, it closes.
+                        let mut k = 0;
+                        while j + k < chars.len() && chars[j + k] == c {
+                            k += 1;
+                        }
+                        if k >= width {
+                            closed_at = Some(j + width);
+                            break;
+                        }
+                        j += k;
+                        continue;
+                    }
+                    rest.push(chars[j]);
+                    j += 1;
+                }
+                match closed_at {
+                    Some(end) => {
+                        out.push_str(&rest);
+                        i = end;
+                    }
+                    None => {
+                        // An unmatched mark is a sign the text was written
+                        // by hand, not by a formatter: it stays.
+                        out.push(c);
+                        out.push_str(&rest);
+                        i = chars.len();
+                    }
+                }
+            }
+            '~' => {}
+            _ => {
+                out.push(c);
+                i += 1;
+            }
+        }
+    }
+    out
+}
+
+/// Whether an underscore at this place is a mark around a word rather
+/// than part of a name: it is a mark when the letter before it and the
+/// letter after it are not both letters or digits.
+fn at_word_edge(before: &str, after: Option<char>) -> bool {
+    let word = |c: Option<char>| c.map(|c| c.is_alphanumeric()).unwrap_or(false);
+    !(word(before.chars().last()) && word(after))
 }
 
 /// `1.2.3` from `v1.2.3` (pre-release parts after `-` are dropped).
@@ -383,6 +573,7 @@ pub fn parse_releases(
         return Ok(Some(Release {
             version,
             page: r.html_url.clone(),
+            notes: plain_notes(&r.body),
             download: Some(url),
             package,
         }));
@@ -405,6 +596,9 @@ struct Manifest {
     built: u64,
     #[serde(default)]
     page: String,
+    /// What the build says about itself, in plain text.
+    #[serde(default)]
+    notes: String,
     #[serde(default)]
     assets: Vec<ManifestAsset>,
 }
@@ -478,6 +672,7 @@ fn parse_manifest(json: &str, current: &str, arch: &str) -> Result<Option<Releas
         } else {
             m.page
         },
+        notes: plain_notes(&m.notes),
         download: Some(url),
         package,
     }))
@@ -948,6 +1143,54 @@ fn fetch_from(url: &str) -> Result<String, String> {
 mod tests {
     use super::*;
 
+    /// The notes of a release come as Markdown, and the dialog shows them
+    /// as plain text: the headings keep their words, the bullets keep
+    /// their dot, the links keep the words they were written with, and
+    /// the emphasis marks are gone.
+    #[test]
+    fn release_notes_are_read_as_plain_text() {
+        let notes = plain_notes(
+            "## What changed\n\n- The panel closes itself.\n- The **gap** is kept.\n\nSee [the page](https://example.org/r).\n",
+        );
+        assert!(notes.contains("What changed"), "{notes}");
+        assert!(notes.contains("\u{2022} The panel closes itself."), "{notes}");
+        assert!(notes.contains("The gap is kept."), "{notes}");
+        assert!(!notes.contains("**"), "{notes}");
+        assert!(notes.contains("the page (https://example.org/r)"), "{notes}");
+        assert!(!notes.contains("[the page]"), "{notes}");
+    }
+
+    /// A release whose body is empty says nothing, rather than saying
+    /// something empty.
+    #[test]
+    fn notes_with_nothing_in_them_are_nothing() {
+        assert_eq!(plain_notes(""), "");
+        assert_eq!(plain_notes("\n\n  \n"), "");
+    }
+
+    /// The strong mark is a pair of pairs: it closes with two marks as
+    /// well, so neither of them is left behind. The names in the notes
+    /// carry underscores, which are part of the name and not a mark.
+    #[test]
+    fn a_strong_mark_closes_with_a_pair_and_names_keep_their_underscores() {
+        let notes = plain_notes("- The **gap** is kept.");
+        assert!(notes.contains("The gap is kept."), "{notes}");
+        assert!(!notes.contains('*'), "{notes}");
+        let names = plain_notes("- The secret is ACCESS_KEY_ID and RUST_LOG.");
+        assert!(names.contains("ACCESS_KEY_ID"), "{names}");
+        assert!(names.contains("RUST_LOG"), "{names}");
+    }
+
+    /// A link is the words in brackets and the address in parentheses
+    /// after them, and both are kept: the words to read, the address to
+    /// find it by.
+    #[test]
+    fn a_link_keeps_its_words_and_its_address() {
+        let notes = plain_notes("See [the page](https://example.org/r).");
+        assert!(notes.contains("the page (https://example.org/r)"), "{notes}");
+        assert!(!notes.contains('['), "{notes}");
+    }
+
     /// The files of the v0.5.0 release, named and listed in the order
     /// GitHub gave them (the arm64 Linux files come first). Each URL ends
     /// in the file's name.
@@ -1167,15 +1410,18 @@ mod tests {
     /// files are, so a phone that can reach the host needs no other source.
     #[test]
     fn the_host_manifest_names_the_file_of_this_phone() {
-        let json = r#"{
+        // The notes carry a Markdown heading, whose "##" would close a
+        // raw string of one hash or of two, so this one has three.
+        let json = r###"{
             "version": "0.5.0-dev.abc1234",
             "built": 9999999999,
             "page": "https://github.com/gitshang5018/tracedraw/releases",
+            "notes": "## What changed\n\n- The panel closes itself.",
             "assets": [
                 {"name": "tracedraw-0.5.0-dev.abc1234-android-armeabi-v7a.apk", "size": 4, "sha256": "68e481c13fc5dc04ed6b106a9f801e1fa2689889f070a02b4fb89e8cb29c91ef"},
                 {"name": "tracedraw-0.5.0-dev.abc1234-android-arm64-v8a.apk", "size": 5, "sha256": "2CF24DBA5FB0A30E26E83B2AC5B9E29E1B161E5C1FA7425E73043362938B9824"}
             ]
-        }"#;
+        }"###;
         let r = parse_manifest(json, "0.4.0", "aarch64")
             .expect("parses")
             .expect("newer");
@@ -1190,6 +1436,11 @@ mod tests {
             "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
         );
         assert!(p.mirror.is_none());
+        // The manifest carries the notes of the build: a phone that
+        // cannot reach GitHub cannot reach the release's page either, so
+        // the notes are here or they are nowhere.
+        assert!(r.notes.contains("What changed"), "{}", r.notes);
+        assert!(r.notes.contains("The panel closes itself."), "{}", r.notes);
         // A build of that very version is not offered again, and neither is
         // a processor the host has no file for.
         assert_eq!(parse_manifest(json, "0.5.0-dev.abc1234", "aarch64"), Ok(None));
