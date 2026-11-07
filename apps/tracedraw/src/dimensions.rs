@@ -898,10 +898,21 @@ impl App {
     /// A new dimension on the active layer, in the bar's style, one undo
     /// step.
     pub fn add_dimension(&mut self, measure: Measure, label: &'static str) {
+        self.add_dimension_with_style(measure, self.dimension_style.clone(), label);
+    }
+
+    /// A new dimension on the active layer with the given style, one undo
+    /// step.
+    pub fn add_dimension_with_style(
+        &mut self,
+        measure: Measure,
+        style: DimensionStyle,
+        label: &'static str,
+    ) {
         let Some(layer) = self.active_layer() else {
             return;
         };
-        let mut d = Dimension::new(measure, self.dimension_style.clone());
+        let mut d = Dimension::new(measure, style);
         d.anchors = self.anchors_for(&d);
         let d = d.noting_drawn(&self.text_font, self.units);
         let ids = [
@@ -1051,6 +1062,25 @@ impl App {
         );
     }
 
+    /// Parallel, Horizontal or Vertical and Segment dimensions with custom style.
+    pub fn create_dimension_with_style(
+        &mut self,
+        a: Point,
+        b: Point,
+        offset_at: Point,
+        style: DimensionStyle,
+    ) {
+        self.add_dimension_with_style(
+            Measure::Linear {
+                a,
+                b,
+                at: offset_at,
+            },
+            style,
+            "Dimension",
+        );
+    }
+
     /// One-click dimensioning: annotates the width and height of selected objects.
     pub fn auto_dimension_selection(&mut self) {
         let shapes = self.selected_shapes();
@@ -1070,22 +1100,29 @@ impl App {
             if w <= 1e-4 || h <= 1e-4 {
                 continue;
             }
-            let offset_w = (h * 0.15).clamp(8.0, 30.0);
-            let offset_h = (w * 0.15).clamp(8.0, 30.0);
+            let char_dim = (w * h).sqrt().max(w.max(h) * 0.25);
+            let char_h_mm = (char_dim * 0.035).clamp(3.5, 120.0);
+            let text_size_pt = (char_h_mm * (72.0 / 25.4)).max(self.dimension_style.text_size);
+            let offset_w = (char_h_mm * 1.8).max(8.0);
+            let offset_h = (char_h_mm * 1.8).max(8.0);
 
-            // Horizontal dimension (width): below the object
-            let p_bl = Point::new(x0, y0);
-            let p_br = Point::new(x1, y0);
-            let at_bottom = Point::new((x0 + x1) * 0.5, y0 - offset_w);
-            self.create_dimension(p_bl, p_br, at_bottom);
+            let mut style = self.dimension_style.clone();
+            style.precision = 0;
+            style.text_size = text_size_pt;
+
+            // Horizontal dimension (width / length): placed on top of the object
+            let p_tl = Point::new(x0, y1);
+            let p_tr = Point::new(x1, y1);
+            let at_top = Point::new((x0 + x1) * 0.5, y1 + offset_w);
+            self.create_dimension_with_style(p_tl, p_tr, at_top, style.clone());
             if let Some(&gid) = self.selection.last() {
                 created.push(gid);
             }
 
             // Vertical dimension (height): to the right of the object
-            let p_tr = Point::new(x1, y1);
+            let p_br = Point::new(x1, y0);
             let at_right = Point::new(x1 + offset_h, (y0 + y1) * 0.5);
-            self.create_dimension(p_br, p_tr, at_right);
+            self.create_dimension_with_style(p_br, p_tr, at_right, style);
             if let Some(&gid) = self.selection.last() {
                 created.push(gid);
             }
@@ -2759,5 +2796,70 @@ mod tests {
         assert_eq!(read.style.corner_radius, 1.5);
         app.undo();
         assert_eq!(app.doc().find_shape(id), Some(&before));
+    }
+
+    /// One-click dimensioning scales text size with the object, removes decimals,
+    /// and places the length dimension on top of the object.
+    #[test]
+    fn auto_dimension_scales_text_removes_decimals_and_labels_top() {
+        let mut app = App::headless();
+        let rect_id = app
+            .new_shape(ShapeKind::Rect {
+                rect: Rect::new(0.0, 0.0, 6000.0, 700.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("rect");
+        app.select(vec![rect_id]);
+        app.auto_dimension_selection();
+
+        // Selection should now have rect + 2 dimensions (width and height).
+        assert_eq!(app.selection.len(), 3);
+        let dim1 = dimension(&app, app.selection[1]);
+        let dim2 = dimension(&app, app.selection[2]);
+
+        // Precision must be 0 (no decimals).
+        assert_eq!(dim1.style.precision, 0);
+        assert_eq!(dim2.style.precision, 0);
+
+        // Text size must scale with object size (> 100 pt for a 6000x700 banner).
+        assert!(dim1.style.text_size > 100.0);
+        assert!(dim2.style.text_size > 100.0);
+
+        // Find width (horizontal) and height (vertical) dimensions.
+        let (width_dim, width_id, height_dim, height_id) = match (dim1.measure, dim2.measure) {
+            (Measure::Linear { a, b, .. }, _) if (a.y - b.y).abs() < 1e-6 => {
+                (dim1, app.selection[1], dim2, app.selection[2])
+            }
+            _ => (dim2, app.selection[2], dim1, app.selection[1]),
+        };
+
+        // Horizontal dimension (width / length) must be placed on top of the object.
+        match width_dim.measure {
+            Measure::Linear { a, b, at } => {
+                assert!((a.y - 700.0).abs() < 1e-6);
+                assert!((b.y - 700.0).abs() < 1e-6);
+                assert!(
+                    at.y > 700.0,
+                    "horizontal dimension line should be above the top edge"
+                );
+            }
+            _ => panic!("expected linear measure"),
+        }
+        assert_eq!(label_of(&app, width_id), "6000 mm");
+
+        // Vertical dimension (height) must be to the right of the object.
+        match height_dim.measure {
+            Measure::Linear { a, b, at } => {
+                assert!((a.x - 6000.0).abs() < 1e-6);
+                assert!((b.x - 6000.0).abs() < 1e-6);
+                assert!(
+                    at.x > 6000.0,
+                    "vertical dimension line should be to the right"
+                );
+            }
+            _ => panic!("expected linear measure"),
+        }
+        assert_eq!(label_of(&app, height_id), "700 mm");
     }
 }
