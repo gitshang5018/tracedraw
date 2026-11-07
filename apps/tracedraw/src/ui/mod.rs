@@ -264,14 +264,17 @@ pub(crate) fn clear_focus_on_outside_click(ctx: &egui::Context) {
     let Some(focused_id) = ctx.memory(|m| m.focused()) else {
         return;
     };
-    if let Some(r) = ctx.read_response(focused_id) {
-        if r.rect.contains(pos) || r.interact_rect.contains(pos) {
-            return;
-        }
+    #[cfg(target_os = "android")]
+    if crate::android_system::is_keyboard_rising() {
+        return;
+    }
+    let Some(r) = ctx.read_response(focused_id) else {
+        return;
+    };
+    if r.rect.expand(8.0).contains(pos) || r.interact_rect.expand(8.0).contains(pos) {
+        return;
     }
     ctx.memory_mut(|m| m.stop_text_input());
-    #[cfg(target_os = "android")]
-    crate::android_system::clear_field_focus();
 }
 
 fn root_frame(app: &mut App, ui: &mut Ui) {
@@ -1732,5 +1735,32 @@ mod tests {
         );
         out.textures_delta.clear();
         assert_eq!(ctx.memory(|m| m.focused()), None, "clicking outside must clear focus");
+
+        // Pass 4: Clicking when response is not yet recorded must keep focus
+        ctx.memory_mut(|m| m.request_focus(egui::Id::new("unrecorded_field")));
+        let mut out = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0))),
+                events: vec![
+                    egui::Event::PointerMoved(outside),
+                    egui::Event::PointerButton {
+                        pos: outside,
+                        button: egui::PointerButton::Primary,
+                        pressed: true,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+                ..Default::default()
+            },
+            |_ui| {
+                clear_focus_on_outside_click(&ctx);
+            },
+        );
+        out.textures_delta.clear();
+        assert_eq!(
+            ctx.memory(|m| m.focused()),
+            Some(egui::Id::new("unrecorded_field")),
+            "unknown response must not clear focus"
+        );
     }
 }

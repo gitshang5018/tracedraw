@@ -1950,6 +1950,47 @@ fn arrange_sheet(_app: &mut App, ui: &mut Ui, m3: &M3) {
     save_ai_state(&ctx, &st);
 }
 
+/// A mobile-friendly singleline numeric text edit field with automatic keyboard scrolling
+/// and reliable numeric parsing.
+pub(crate) fn mobile_number_input(
+    ui: &mut Ui,
+    _m3: &M3,
+    id_salt: impl std::hash::Hash,
+    value: &mut f64,
+    range: std::ops::RangeInclusive<f64>,
+    width: f32,
+) -> Response {
+    let id = ui.make_persistent_id(id_salt);
+    let shown = if *value == value.round() {
+        format!("{:.0}", value)
+    } else {
+        format!("{:.1}", value)
+    };
+    let stored = ui.ctx().data(|d| d.get_temp::<String>(id));
+    let mut buf = stored.unwrap_or_else(|| shown.clone());
+
+    let resp = ui.add_sized(
+        [width, 36.0],
+        egui::TextEdit::singleline(&mut buf)
+            .id(id)
+            .desired_width(width)
+            .margin(egui::Margin::symmetric(6, 6))
+            .vertical_align(egui::Align::Center),
+    );
+
+    if resp.has_focus() {
+        resp.scroll_to_me(Some(egui::Align::Center));
+        if let Ok(v) = buf.trim().parse::<f64>() {
+            *value = v.clamp(*range.start(), *range.end());
+        }
+        ui.ctx().data_mut(|d| d.insert_temp(id, buf));
+    } else {
+        ui.ctx().data_mut(|d| d.insert_temp(id, shown));
+    }
+
+    resp
+}
+
 /// The batch of banners: standard roll presets, auto length, punctuation
 /// handling, color presets, and multi-page generation.
 fn banner_sheet(app: &mut App, ui: &mut Ui, m3: &M3) {
@@ -1961,22 +2002,28 @@ fn banner_sheet(app: &mut App, ui: &mut Ui, m3: &M3) {
     // 1. Slogans
     property_label(ui, m3, &tr("banner.slogans"));
     let mut slogans = st.banner.slogans.join("\n");
-    ui.add(
+    let slogans_resp = ui.add(
         egui::TextEdit::multiline(&mut slogans)
             .desired_rows(3)
             .desired_width(ui.available_width())
             .hint_text(tr("banner.slogans_hint")),
     );
+    if slogans_resp.has_focus() {
+        slogans_resp.scroll_to_me(Some(egui::Align::Center));
+    }
     st.banner.slogans = slogans.split('\n').map(|s| s.to_string()).collect();
 
     // 2. Signature (落款输入框放标语下面)
     ui.add_space(4.0);
     property_label(ui, m3, &tr("banner.signature"));
-    ui.add(
+    let sign_resp = ui.add(
         egui::TextEdit::singleline(&mut st.banner.signature)
             .desired_width(ui.available_width())
             .hint_text(tr("banner.signature_hint")),
     );
+    if sign_resp.has_focus() {
+        sign_resp.scroll_to_me(Some(egui::Align::Center));
+    }
 
     // 3. Banner orientation (横幅 / 竖幅)
     ui.add_space(6.0);
@@ -1994,23 +2041,13 @@ fn banner_sheet(app: &mut App, ui: &mut Ui, m3: &M3) {
     ui.add_space(6.0);
     property_label(ui, m3, &tr("banner.size"));
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new(tr("banner.height")).size(11.5).color(m3.variant));
-        ui.add(
-            egui::DragValue::new(&mut st.banner.height_mm)
-                .speed(5.0)
-                .range(100.0..=5000.0)
-                .fixed_decimals(0)
-                .suffix(" mm"),
-        );
-        ui.add_space(10.0);
-        ui.label(egui::RichText::new(tr("banner.length")).size(11.5).color(m3.variant));
-        ui.add(
-            egui::DragValue::new(&mut st.banner.width_mm)
-                .speed(50.0)
-                .range(200.0..=100000.0)
-                .fixed_decimals(0)
-                .suffix(" mm"),
-        );
+        ui.label(egui::RichText::new(format!("{}:", tr("banner.height"))).size(11.5).color(m3.variant));
+        mobile_number_input(ui, m3, "banner_height", &mut st.banner.height_mm, 100.0..=5000.0, 72.0);
+        ui.label(egui::RichText::new("mm").size(11.0).color(m3.variant));
+        ui.add_space(8.0);
+        ui.label(egui::RichText::new(format!("{}:", tr("banner.length"))).size(11.5).color(m3.variant));
+        mobile_number_input(ui, m3, "banner_width", &mut st.banner.width_mm, 200.0..=100000.0, 84.0);
+        ui.label(egui::RichText::new("mm").size(11.0).color(m3.variant));
     });
 
     // Cloth roll width presets
@@ -2117,59 +2154,33 @@ fn banner_sheet(app: &mut App, ui: &mut Ui, m3: &M3) {
     property_label(ui, m3, &tr("banner.margins_and_spacing"));
     if st.banner.output_mode == OutputMode::CurrentPage {
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new(tr("banner.gap")).size(11.5).color(m3.variant));
-            ui.add(
-                egui::DragValue::new(&mut st.banner.gap_mm)
-                    .speed(5.0)
-                    .range(0.0..=2000.0)
-                    .fixed_decimals(0)
-                    .suffix(" mm"),
-            );
+            ui.label(egui::RichText::new(format!("{}:", tr("banner.gap"))).size(11.5).color(m3.variant));
+            mobile_number_input(ui, m3, "banner_gap", &mut st.banner.gap_mm, 0.0..=2000.0, 72.0);
+            ui.label(egui::RichText::new("mm").size(11.0).color(m3.variant));
         });
         ui.add_space(3.0);
     }
-    let field = ((ui.available_width() - 16.0) / 3.0).max(56.0);
+    let field = ((ui.available_width() - 16.0) / 3.0).max(64.0);
     egui::Grid::new("banner_margins_grid")
         .num_columns(3)
-        .spacing([8.0, 2.0])
+        .spacing([8.0, 4.0])
         .show(ui, |ui| {
             ui.add_sized(
                 [field, 16.0],
-                egui::Label::new(egui::RichText::new(tr("banner.margin_lr")).size(11.0).color(m3.variant)),
+                egui::Label::new(egui::RichText::new(format!("{} (mm)", tr("banner.margin_lr"))).size(11.0).color(m3.variant)),
             );
             ui.add_sized(
                 [field, 16.0],
-                egui::Label::new(egui::RichText::new(tr("banner.margin_tb")).size(11.0).color(m3.variant)),
+                egui::Label::new(egui::RichText::new(format!("{} (mm)", tr("banner.margin_tb"))).size(11.0).color(m3.variant)),
             );
             ui.add_sized(
                 [field, 16.0],
-                egui::Label::new(egui::RichText::new(tr("banner.spacing")).size(11.0).color(m3.variant)),
+                egui::Label::new(egui::RichText::new(format!("{} (mm)", tr("banner.spacing"))).size(11.0).color(m3.variant)),
             );
             ui.end_row();
-            ui.add_sized(
-                [field, 32.0],
-                egui::DragValue::new(&mut st.banner.margin_lr_mm)
-                    .speed(5.0)
-                    .range(0.0..=2000.0)
-                    .fixed_decimals(0)
-                    .suffix(" mm"),
-            );
-            ui.add_sized(
-                [field, 32.0],
-                egui::DragValue::new(&mut st.banner.margin_tb_mm)
-                    .speed(2.0)
-                    .range(0.0..=500.0)
-                    .fixed_decimals(0)
-                    .suffix(" mm"),
-            );
-            ui.add_sized(
-                [field, 32.0],
-                egui::DragValue::new(&mut st.banner.spacing_mm)
-                    .speed(2.0)
-                    .range(0.0..=500.0)
-                    .fixed_decimals(0)
-                    .suffix(" mm"),
-            );
+            mobile_number_input(ui, m3, "banner_margin_lr", &mut st.banner.margin_lr_mm, 0.0..=2000.0, field);
+            mobile_number_input(ui, m3, "banner_margin_tb", &mut st.banner.margin_tb_mm, 0.0..=500.0, field);
+            mobile_number_input(ui, m3, "banner_spacing", &mut st.banner.spacing_mm, 0.0..=500.0, field);
             ui.end_row();
         });
 
@@ -2182,6 +2193,7 @@ fn banner_sheet(app: &mut App, ui: &mut Ui, m3: &M3) {
     if filled_button(ui, m3, &tr("banner.run")).clicked() {
         app.create_banners(&st.banner);
     }
+    ui.add_space(40.0);
     save_ai_state(&ctx, &st);
 }
 

@@ -871,6 +871,14 @@ pub fn clear_field_focus() {
     *lock(&NO_FIELD_SINCE) = None;
 }
 
+/// Whether the keyboard was asked for recently and is still rising or in grace period.
+pub fn is_keyboard_rising() -> bool {
+    match *lock(&ASKED) {
+        Some((when, _)) => when.elapsed() < KEYBOARD_GRACE,
+        None => false,
+    }
+}
+
 /// Hand what the keyboard typed to the frame being drawn, and put the
 /// keyboard up while `wants` says a field has the focus.
 pub fn pump_typing(ctx: &egui::Context, wants: bool) {
