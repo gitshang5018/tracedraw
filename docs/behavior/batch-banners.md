@@ -15,11 +15,11 @@ shops take one panel and one tap.
 |---|---|---|
 | 标语 / Slogans | two lines | the slogans, one per line; an empty line is left out |
 | 落款 / Signature | 示例商贸 | written under every slogan; empty means no signature |
-| 宽度 / Width | 800 mm | the width of a banner |
-| 高度 / Height | 240 mm | the height of a banner |
-| 间距 / Gap | 40 mm | the room between two banners |
-| 标语字号 / Slogan size | 72 pt | the size of the slogan |
-| 落款字号 / Signature size | 28 pt | the size of the signature |
+| 宽度 / Width | 6000 mm | the width of a banner |
+| 高度 / Height | 700 mm | the standard cloth roll height of a banner (400 to 1200 mm) |
+| 间距 / Gap | 100 mm | the room between two banners |
+| 标语字号 / Slogan size | 1400 pt | the size of the slogan (approx. 500 mm, 72% of cloth height) |
+| 落款字号 / Signature size | 500 pt | the size of the signature (approx. 180 mm) |
 | 底色 / Background | dark red | the colour of the banner |
 | 标语色 / Slogan | pale gold | the colour of the slogan |
 | 落款色 / Signature | white | the colour of the signature |

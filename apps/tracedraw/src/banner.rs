@@ -22,6 +22,11 @@ const FONT: &str = "sans";
 
 /// What a batch of banners is made of.
 #[derive(Debug, Clone, PartialEq)]
+/// Standard cloth roll widths in millimetres (400 to 1200 mm).
+pub const PRESET_HEIGHTS_MM: [f64; 8] = [
+    400.0, 500.0, 600.0, 700.0, 800.0, 900.0, 1000.0, 1200.0,
+];
+
 pub struct Banner {
     /// The slogans, one banner each. An empty line is left out.
     pub slogans: Vec<String>,
@@ -54,11 +59,11 @@ impl Default for Banner {
         Banner {
             slogans: vec!["开业大吉".into(), "欢迎光临".into()],
             signature: "示例商贸".into(),
-            width_mm: 800.0,
-            height_mm: 240.0,
-            gap_mm: 40.0,
-            slogan_pt: 72.0,
-            signature_pt: 28.0,
+            width_mm: 6000.0,
+            height_mm: 700.0,
+            gap_mm: 100.0,
+            slogan_pt: 1400.0,
+            signature_pt: 500.0,
             background: Color::rgb8(0xC8, 0x1E, 0x2E),
             slogan_color: Color::rgb8(0xFF, 0xE7, 0xA8),
             signature_color: Color::rgb8(0xFF, 0xFF, 0xFF),

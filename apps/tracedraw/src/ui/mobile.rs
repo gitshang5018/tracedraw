@@ -1975,6 +1975,21 @@ fn banner_sheet(app: &mut App, ui: &mut Ui, m3: &M3) {
     );
     ui.add_space(8.0);
     property_label(ui, m3, &tr("banner.size"));
+    ui.horizontal_wrapped(|ui| {
+        for &h in &crate::banner::PRESET_HEIGHTS_MM {
+            let selected = (st.banner.height_mm - h).abs() < 1e-3;
+            let text = egui::RichText::new(format!("{}", h as i32))
+                .size(11.5)
+                .color(if selected { m3.on_primary } else { m3.on });
+            let fill = if selected { m3.primary } else { m3.container };
+            if ui.add(egui::Button::new(text).fill(fill).corner_radius(8.0)).clicked() {
+                st.banner.height_mm = h;
+                st.banner.slogan_pt = (h * 0.72 * 72.0 / 25.4).round();
+                st.banner.signature_pt = (st.banner.slogan_pt * 0.35).round();
+            }
+        }
+    });
+    ui.add_space(4.0);
     let field = ((ui.available_width() - 16.0) / 3.0).max(56.0);
     egui::Grid::new("banner_numbers")
         .num_columns(3)
@@ -1991,7 +2006,7 @@ fn banner_sheet(app: &mut App, ui: &mut Ui, m3: &M3) {
                 [field, 34.0],
                 egui::DragValue::new(&mut st.banner.width_mm)
                     .speed(1.0)
-                    .range(10.0..=10000.0)
+                    .range(100.0..=50000.0)
                     .fixed_decimals(0),
             );
             ui.add_sized(
@@ -2028,14 +2043,14 @@ fn banner_sheet(app: &mut App, ui: &mut Ui, m3: &M3) {
                 [field, 34.0],
                 egui::DragValue::new(&mut st.banner.slogan_pt)
                     .speed(1.0)
-                    .range(4.0..=400.0)
+                    .range(20.0..=3000.0)
                     .fixed_decimals(0),
             );
             ui.add_sized(
                 [field, 34.0],
                 egui::DragValue::new(&mut st.banner.signature_pt)
                     .speed(1.0)
-                    .range(4.0..=200.0)
+                    .range(10.0..=1500.0)
                     .fixed_decimals(0),
             );
             ui.end_row();
