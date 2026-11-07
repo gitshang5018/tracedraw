@@ -349,8 +349,8 @@ impl Banner {
                     let banner_len = self.width_mm.max(2.0 * margin_ends + 100.0);
                     let avail_h = (banner_len - 2.0 * margin_ends).max(50.0);
                     let safe_h = (avail_h - 10.0).max(40.0);
-                    // Stretch or compress characters vertically to fill safe height (capped at 2.5x)
-                    let scale = (safe_h / raw_total_h).min(2.5);
+                    // Stretch or compress characters vertically to fill safe height
+                    let scale = safe_h / raw_total_h;
                     (banner_len, scale)
                 }
             };
@@ -388,8 +388,8 @@ impl Banner {
                     let banner_w = self.width_mm.max(2.0 * margin_lr + 100.0);
                     let avail_w = (banner_w - 2.0 * margin_lr).max(50.0);
                     let safe_w = (avail_w - 10.0).max(40.0);
-                    // Stretch or compress characters horizontally to fill safe width (capped at 2.5x)
-                    let scale = (safe_w / raw_total_w).min(2.5);
+                    // Stretch or compress characters horizontally to fill safe width
+                    let scale = safe_w / raw_total_w;
                     (banner_w, scale)
                 }
             };
@@ -1067,5 +1067,37 @@ mod tests {
         let safe_w = 6000.0 - 2.0 * 200.0 - 10.0;
         let raw_w = measure_slogan_w(slogan, size_pt, banner.spacing_mm);
         assert!((raw_w * scale - safe_w).abs() < 1.0, "scaled slogan width should reach safe width: {} vs {}", raw_w * scale, safe_w);
+    }
+
+    /// Short slogan with signature in fixed mode stretches to both ends just like without signature.
+    #[test]
+    fn short_slogan_with_signature_stretches_to_both_ends() {
+        let slogan = "庆祝元旦";
+        let banner_with_sign = Banner {
+            slogans: vec![slogan.into()],
+            signature: "支部委员会".into(),
+            height_mm: 700.0,
+            width_mm: 6000.0,
+            length_mode: LengthMode::Fixed,
+            margin_lr_mm: 200.0,
+            ..Banner::default()
+        };
+        let banner_no_sign = Banner {
+            slogans: vec![slogan.into()],
+            height_mm: 700.0,
+            width_mm: 6000.0,
+            length_mode: LengthMode::Fixed,
+            margin_lr_mm: 200.0,
+            ..Banner::default()
+        };
+        let (w1, _, size_pt1, scale1) = banner_with_sign.calculate_size(slogan);
+        let (w2, _, size_pt2, scale2) = banner_no_sign.calculate_size(slogan);
+        assert_eq!(w1, 6000.0);
+        assert_eq!(w2, 6000.0);
+        let safe_w = 6000.0 - 2.0 * 200.0 - 10.0;
+        let raw_w1 = measure_slogan_w(slogan, size_pt1, banner_with_sign.spacing_mm);
+        let raw_w2 = measure_slogan_w(slogan, size_pt2, banner_no_sign.spacing_mm);
+        assert!((raw_w1 * scale1 - safe_w).abs() < 1.0, "with sign: {} vs {}", raw_w1 * scale1, safe_w);
+        assert!((raw_w2 * scale2 - safe_w).abs() < 1.0, "no sign: {} vs {}", raw_w2 * scale2, safe_w);
     }
 }
