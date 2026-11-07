@@ -21,7 +21,7 @@ pub fn flatten(path: &BezPath, view: &View) -> Vec<(Vec<Pos2>, bool)> {
     let mut out: Vec<(Vec<Pos2>, bool)> = Vec::new();
     let mut cur: Vec<Pos2> = Vec::new();
     let mut closed = false;
-    let tol = 0.25 / view.zoom.max(0.05) as f64;
+    let tol = 0.25 / view.zoom.max(0.002) as f64;
     kurbo::flatten(path.elements().iter().copied(), tol, &mut |el| match el {
         PathEl::MoveTo(p) => {
             if !cur.is_empty() {

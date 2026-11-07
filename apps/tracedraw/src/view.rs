@@ -45,7 +45,7 @@ impl View {
     /// Zoom around a screen point, keeping it fixed.
     pub fn zoom_at(&mut self, anchor: Pos2, factor: f32) {
         let page = self.to_page(anchor);
-        self.zoom = (self.zoom * factor).clamp(0.05, 400.0);
+        self.zoom = (self.zoom * factor).clamp(0.002, 400.0);
         let after = self.to_screen(page);
         self.origin += anchor - after;
     }
@@ -70,7 +70,7 @@ impl View {
         let h = (r.height() as f32).max(1e-3);
         let zx = (screen.width() - 2.0 * margin).max(1.0) / w;
         let zy = (screen.height() - 2.0 * margin).max(1.0) / h;
-        self.zoom = zx.min(zy).clamp(0.05, 400.0);
+        self.zoom = zx.min(zy).clamp(0.002, 400.0);
         let c = r.center();
         self.origin = Pos2::new(
             screen.center().x - c.x as f32 * self.zoom,

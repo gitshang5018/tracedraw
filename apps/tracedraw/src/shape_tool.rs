@@ -981,7 +981,7 @@ impl App {
 
     /// Reduce Nodes: simplify the selected curves (all nodes when none are selected).
     pub fn reduce_selected_nodes(&mut self) {
-        let tol = 0.3 / self.view.zoom.max(0.05) as f64;
+        let tol = 0.3 / self.view.zoom.max(0.002) as f64;
         let ids: Vec<ShapeId> = if self.node_selection.is_empty() {
             self.selection.clone()
         } else {

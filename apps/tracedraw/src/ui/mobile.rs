@@ -1963,24 +1963,36 @@ fn banner_sheet(app: &mut App, ui: &mut Ui, m3: &M3) {
     let mut slogans = st.banner.slogans.join("\n");
     ui.add(
         egui::TextEdit::multiline(&mut slogans)
-            .desired_rows(4)
+            .desired_rows(3)
             .desired_width(ui.available_width())
             .hint_text(tr("banner.slogans_hint")),
     );
     st.banner.slogans = slogans.split('\n').map(|s| s.to_string()).collect();
 
-    // 2. Cloth roll width presets (height in mm)
+    // 2. Signature (落款输入框放标语下面)
+    ui.add_space(4.0);
+    property_label(ui, m3, &tr("banner.signature"));
+    ui.add(
+        egui::TextEdit::singleline(&mut st.banner.signature)
+            .desired_width(ui.available_width())
+            .hint_text(tr("banner.signature_hint")),
+    );
+
+    // 3. Banner orientation (横幅 / 竖幅)
     ui.add_space(6.0);
-    property_label(ui, m3, &tr("banner.roll_width"));
+    property_label(ui, m3, &tr("banner.orientation"));
     ui.horizontal_wrapped(|ui| {
-        for &h in &PRESET_HEIGHTS_MM {
-            let selected = (st.banner.height_mm - h).abs() < 1e-3;
-            if chip(ui, m3, &format!("{} mm", h as i32), selected).clicked() {
-                st.banner.height_mm = h;
-            }
+        if chip(ui, m3, &tr("banner.horizontal"), !st.banner.vertical).clicked() {
+            st.banner.vertical = false;
+        }
+        if chip(ui, m3, &tr("banner.vertical"), st.banner.vertical).clicked() {
+            st.banner.vertical = true;
         }
     });
-    ui.add_space(2.0);
+
+    // 4. Height & Length on the same row, width renamed to length (高度和宽度放一行上，宽度名称改为长度)
+    ui.add_space(6.0);
+    property_label(ui, m3, &tr("banner.size"));
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new(tr("banner.height")).size(11.5).color(m3.variant));
         ui.add(
@@ -1990,50 +2002,132 @@ fn banner_sheet(app: &mut App, ui: &mut Ui, m3: &M3) {
                 .fixed_decimals(0)
                 .suffix(" mm"),
         );
+        ui.add_space(10.0);
+        ui.label(egui::RichText::new(tr("banner.length")).size(11.5).color(m3.variant));
+        ui.add(
+            egui::DragValue::new(&mut st.banner.width_mm)
+                .speed(50.0)
+                .range(200.0..=100000.0)
+                .fixed_decimals(0)
+                .suffix(" mm"),
+        );
     });
 
-    // 3. Length mode (Auto by text length vs Fixed total length)
+    // Cloth roll width presets
+    ui.add_space(3.0);
+    ui.horizontal_wrapped(|ui| {
+        for &h in &PRESET_HEIGHTS_MM {
+            let selected = (st.banner.height_mm - h).abs() < 1e-3;
+            if chip(ui, m3, &format!("{} mm", h as i32), selected).clicked() {
+                st.banner.height_mm = h;
+            }
+        }
+    });
+
+    // 5. Length mode (Fixed length default vs Auto by text)
     ui.add_space(6.0);
     property_label(ui, m3, &tr("banner.length_mode"));
     ui.horizontal_wrapped(|ui| {
-        if chip(ui, m3, &tr("banner.len_auto"), st.banner.length_mode == LengthMode::Auto).clicked() {
-            st.banner.length_mode = LengthMode::Auto;
-        }
         if chip(ui, m3, &tr("banner.len_fixed"), st.banner.length_mode == LengthMode::Fixed).clicked() {
             st.banner.length_mode = LengthMode::Fixed;
         }
+        if chip(ui, m3, &tr("banner.len_auto"), st.banner.length_mode == LengthMode::Auto).clicked() {
+            st.banner.length_mode = LengthMode::Auto;
+        }
     });
-    if st.banner.length_mode == LengthMode::Fixed {
-        ui.add_space(2.0);
+    if st.banner.length_mode == LengthMode::Auto {
+        if let Some(first) = st.banner.lines().first() {
+            let (est_w, est_h, est_pt, _) = st.banner.calculate_size(first);
+            ui.add_space(2.0);
+            ui.label(
+                egui::RichText::new(format!(
+                    "{} {:.0} x {:.0} mm ({:.0} pt)",
+                    tr("banner.preview_size"),
+                    est_w,
+                    est_h,
+                    est_pt.round()
+                ))
+                .size(11.5)
+                .color(m3.variant),
+            );
+        }
+    }
+
+    // 6. Classic Color Presets
+    ui.add_space(6.0);
+    property_label(ui, m3, &tr("banner.colours"));
+    ui.horizontal_wrapped(|ui| {
+        for preset in ColorPreset::ALL {
+            let selected = st.banner.color_preset == preset;
+            if chip(ui, m3, &tr(preset.label()), selected).clicked() {
+                st.banner.apply_color_preset(preset);
+            }
+        }
+        let is_custom = st.banner.color_preset == ColorPreset::Custom;
+        if chip(ui, m3, &tr("banner.color_custom"), is_custom).clicked() {
+            st.banner.color_preset = ColorPreset::Custom;
+        }
+    });
+    if st.banner.color_preset == ColorPreset::Custom {
+        ui.add_space(4.0);
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new(tr("banner.width")).size(11.5).color(m3.variant));
+            let mut bg = st.banner.background.to_rgb8();
+            if ui.color_edit_button_srgb(&mut bg).changed() {
+                st.banner.background = tracedraw_core::Color::rgb8(bg[0], bg[1], bg[2]);
+            }
+            ui.label(egui::RichText::new(tr("banner.background")).size(11.0).color(m3.variant));
+            ui.add_space(8.0);
+            let mut fg = st.banner.slogan_color.to_rgb8();
+            if ui.color_edit_button_srgb(&mut fg).changed() {
+                st.banner.slogan_color = tracedraw_core::Color::rgb8(fg[0], fg[1], fg[2]);
+            }
+            ui.label(egui::RichText::new(tr("banner.slogan_colour")).size(11.0).color(m3.variant));
+        });
+    }
+
+    // 7. Punctuation Handling
+    ui.add_space(6.0);
+    property_label(ui, m3, &tr("banner.punctuation"));
+    ui.horizontal_wrapped(|ui| {
+        if chip(ui, m3, &tr("banner.punct_space"), st.banner.punctuation == PunctuationMode::Space).clicked() {
+            st.banner.punctuation = PunctuationMode::Space;
+        }
+        if chip(ui, m3, &tr("banner.punct_strip"), st.banner.punctuation == PunctuationMode::Strip).clicked() {
+            st.banner.punctuation = PunctuationMode::Strip;
+        }
+        if chip(ui, m3, &tr("banner.punct_keep"), st.banner.punctuation == PunctuationMode::Keep).clicked() {
+            st.banner.punctuation = PunctuationMode::Keep;
+        }
+    });
+
+    // 8. Output Mode (默认当前画布)
+    ui.add_space(6.0);
+    property_label(ui, m3, &tr("banner.output"));
+    ui.horizontal_wrapped(|ui| {
+        if chip(ui, m3, &tr("banner.output_current"), st.banner.output_mode == OutputMode::CurrentPage).clicked() {
+            st.banner.output_mode = OutputMode::CurrentPage;
+        }
+        if chip(ui, m3, &tr("banner.output_pages"), st.banner.output_mode == OutputMode::Pages).clicked() {
+            st.banner.output_mode = OutputMode::Pages;
+        }
+    });
+
+    // 9. Spacing & Margins (间距放到输出方式后面)
+    ui.add_space(6.0);
+    property_label(ui, m3, &tr("banner.margins_and_spacing"));
+    if st.banner.output_mode == OutputMode::CurrentPage {
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new(tr("banner.gap")).size(11.5).color(m3.variant));
             ui.add(
-                egui::DragValue::new(&mut st.banner.width_mm)
-                    .speed(50.0)
-                    .range(200.0..=100000.0)
+                egui::DragValue::new(&mut st.banner.gap_mm)
+                    .speed(5.0)
+                    .range(0.0..=2000.0)
                     .fixed_decimals(0)
                     .suffix(" mm"),
             );
         });
-    } else if let Some(first) = st.banner.lines().first() {
-        let (est_w, est_h, est_pt) = st.banner.calculate_size(first);
-        ui.add_space(2.0);
-        ui.label(
-            egui::RichText::new(format!(
-                "{} {:.0} x {:.0} mm ({:.0} pt)",
-                tr("banner.preview_size"),
-                est_w,
-                est_h,
-                est_pt.round()
-            ))
-            .size(11.5)
-            .color(m3.variant),
-        );
+        ui.add_space(3.0);
     }
-
-    // 4. Margins & Spacing
-    ui.add_space(6.0);
-    property_label(ui, m3, &tr("banner.margins_and_spacing"));
     let field = ((ui.available_width() - 16.0) / 3.0).max(56.0);
     egui::Grid::new("banner_margins_grid")
         .num_columns(3)
@@ -2079,92 +2173,11 @@ fn banner_sheet(app: &mut App, ui: &mut Ui, m3: &M3) {
             ui.end_row();
         });
 
-    // 5. Classic Color Presets
-    ui.add_space(6.0);
-    property_label(ui, m3, &tr("banner.colours"));
-    ui.horizontal_wrapped(|ui| {
-        for preset in ColorPreset::ALL {
-            let selected = st.banner.color_preset == preset;
-            if chip(ui, m3, &tr(preset.label()), selected).clicked() {
-                st.banner.apply_color_preset(preset);
-            }
-        }
-        let is_custom = st.banner.color_preset == ColorPreset::Custom;
-        if chip(ui, m3, &tr("banner.color_custom"), is_custom).clicked() {
-            st.banner.color_preset = ColorPreset::Custom;
-        }
-    });
-    if st.banner.color_preset == ColorPreset::Custom {
-        ui.add_space(4.0);
-        ui.horizontal(|ui| {
-            let mut bg = st.banner.background.to_rgb8();
-            if ui.color_edit_button_srgb(&mut bg).changed() {
-                st.banner.background = tracedraw_core::Color::rgb8(bg[0], bg[1], bg[2]);
-            }
-            ui.label(egui::RichText::new(tr("banner.background")).size(11.0).color(m3.variant));
-            ui.add_space(8.0);
-            let mut fg = st.banner.slogan_color.to_rgb8();
-            if ui.color_edit_button_srgb(&mut fg).changed() {
-                st.banner.slogan_color = tracedraw_core::Color::rgb8(fg[0], fg[1], fg[2]);
-            }
-            ui.label(egui::RichText::new(tr("banner.slogan_colour")).size(11.0).color(m3.variant));
-        });
-    }
-
-    // 6. Punctuation Handling
-    ui.add_space(6.0);
-    property_label(ui, m3, &tr("banner.punctuation"));
-    ui.horizontal_wrapped(|ui| {
-        if chip(ui, m3, &tr("banner.punct_space"), st.banner.punctuation == PunctuationMode::Space).clicked() {
-            st.banner.punctuation = PunctuationMode::Space;
-        }
-        if chip(ui, m3, &tr("banner.punct_strip"), st.banner.punctuation == PunctuationMode::Strip).clicked() {
-            st.banner.punctuation = PunctuationMode::Strip;
-        }
-        if chip(ui, m3, &tr("banner.punct_keep"), st.banner.punctuation == PunctuationMode::Keep).clicked() {
-            st.banner.punctuation = PunctuationMode::Keep;
-        }
-    });
-
-    // 7. Output Mode
-    ui.add_space(6.0);
-    property_label(ui, m3, &tr("banner.output"));
-    ui.horizontal_wrapped(|ui| {
-        if chip(ui, m3, &tr("banner.output_pages"), st.banner.output_mode == OutputMode::Pages).clicked() {
-            st.banner.output_mode = OutputMode::Pages;
-        }
-        if chip(ui, m3, &tr("banner.output_current"), st.banner.output_mode == OutputMode::CurrentPage).clicked() {
-            st.banner.output_mode = OutputMode::CurrentPage;
-        }
-    });
-    if st.banner.output_mode == OutputMode::CurrentPage {
-        ui.add_space(2.0);
-        ui.horizontal(|ui| {
-            ui.label(egui::RichText::new(tr("banner.gap")).size(11.5).color(m3.variant));
-            ui.add(
-                egui::DragValue::new(&mut st.banner.gap_mm)
-                    .speed(5.0)
-                    .range(0.0..=2000.0)
-                    .fixed_decimals(0)
-                    .suffix(" mm"),
-            );
-        });
-    }
-
-    // 8. Fabrication options
+    // 10. Fabrication options
     ui.add_space(6.0);
     ui.checkbox(&mut st.banner.grommets, tr("banner.grommets"));
 
-    // 9. Optional Signature
-    ui.add_space(6.0);
-    property_label(ui, m3, &tr("banner.signature"));
-    ui.add(
-        egui::TextEdit::singleline(&mut st.banner.signature)
-            .desired_width(ui.available_width())
-            .hint_text(tr("banner.signature_hint")),
-    );
-
-    // 10. Generate action button
+    // 11. Generate action button
     ui.add_space(10.0);
     if filled_button(ui, m3, &tr("banner.run")).clicked() {
         app.create_banners(&st.banner);

@@ -4,14 +4,15 @@
 //! - Standard roll widths: 400 to 1200 mm (700 mm default)
 //! - Side margins for tying ropes: 400 mm
 //! - Top and bottom margins: 50 mm
-//! - Letter spacing: 50 mm
-//! - Automatic length calculation based on text length
+//! - Letter spacing: 50 mm (auto expanded for few characters)
+//! - Automatic text compression in fixed length mode (no truncation)
+//! - Horizontal and vertical banner orientations
 //! - Classic color presets (red cloth with yellow text, etc.)
-//! - Output as separate pages (one banner per page) or laid out on current page
+//! - Output to current canvas (default) or separate pages
 
 use crate::app::App;
 use tracedraw_core::{
-    document::{ParagraphStyle, Shape, ShapeKind, TextAlign, TextSpan},
+    document::{ParagraphStyle, Shape, ShapeKind, TextAlign, TextSpan, VerticalAlign},
     geometry::{Point, Rect, Size},
     Color, Command, Fill, Stroke,
 };
@@ -27,10 +28,10 @@ pub const PRESET_HEIGHTS_MM: [f64; 8] = [
 /// How banner length is determined.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LengthMode {
+    /// Fixed total length in millimetres (default).
+    Fixed,
     /// Auto calculate banner length from text count and spacing.
     Auto,
-    /// Fixed total length in millimetres.
-    Fixed,
 }
 
 /// How punctuation marks in banner text should be cleaned up.
@@ -99,10 +100,10 @@ impl ColorPreset {
 /// How batch banners are outputted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutputMode {
+    /// Stack banners on the current canvas page (default).
+    CurrentPage,
     /// Each banner becomes an independent page of its own exact dimensions.
     Pages,
-    /// Stack banners down the current canvas page.
-    CurrentPage,
 }
 
 /// What a batch of banners is made of.
@@ -112,13 +113,13 @@ pub struct Banner {
     pub slogans: Vec<String>,
     /// Optional signature under every slogan. Empty if none.
     pub signature: String,
-    /// The cloth roll width (height of horizontal banner), in millimetres.
+    /// The cloth roll width (height of horizontal banner, width of vertical banner) in millimetres.
     pub height_mm: f64,
-    /// Length mode: auto by text or fixed.
+    /// Length mode: fixed total length (default) or auto by text.
     pub length_mode: LengthMode,
-    /// The width/length of a banner in fixed mode (millimetres).
+    /// The length of a banner in fixed mode (millimetres).
     pub width_mm: f64,
-    /// Left and right tying margins in millimetres (default: 400 mm).
+    /// Tying margins at both ends in millimetres (default: 400 mm).
     pub margin_lr_mm: f64,
     /// Top and bottom safety margins in millimetres (default: 50 mm).
     pub margin_tb_mm: f64,
@@ -128,7 +129,7 @@ pub struct Banner {
     pub height_ratio: f64,
     /// The room between two banners when stacked on current page.
     pub gap_mm: f64,
-    /// The size of the slogan, in points (auto computed if auto).
+    /// The size of the slogan, in points (auto computed).
     pub slogan_pt: f64,
     /// The size of the signature, in points.
     pub signature_pt: f64,
@@ -146,9 +147,9 @@ pub struct Banner {
     pub band_color: Color,
     /// Whether to generate grommet marks (eyelets).
     pub grommets: bool,
-    /// Output mode: separate pages (one per banner) or stacked on current page.
+    /// Output mode: current canvas (default) or separate pages.
     pub output_mode: OutputMode,
-    /// Whether the slogan is written along the banner or down it.
+    /// Whether the banner is vertical (竖幅) or horizontal (横幅, default).
     pub vertical: bool,
 }
 
@@ -158,7 +159,7 @@ impl Default for Banner {
             slogans: vec!["热烈庆祝中华人民共和国成立七十五周年".into(), "不忘初心 牢记使命 砥砺前行".into()],
             signature: String::new(),
             height_mm: 700.0,
-            length_mode: LengthMode::Auto,
+            length_mode: LengthMode::Fixed,
             width_mm: 6000.0,
             margin_lr_mm: 400.0,
             margin_tb_mm: 50.0,
@@ -174,7 +175,7 @@ impl Default for Banner {
             signature_color: Color::WHITE,
             band_color: Color::rgb8(138, 20, 31),
             grommets: false,
-            output_mode: OutputMode::Pages,
+            output_mode: OutputMode::CurrentPage,
             vertical: false,
         }
     }
@@ -216,8 +217,7 @@ impl Banner {
         }
     }
 
-    /// The slogans that get a banner: the empty lines are left out, and
-    /// the lines are cleaned.
+    /// The slogans that get a banner: empty lines are left out, and lines are cleaned.
     pub fn lines(&self) -> Vec<String> {
         self.slogans
             .iter()
@@ -237,135 +237,329 @@ impl Banner {
         }
     }
 
-    /// Calculate dimensions (width_mm, height_mm, font_size_pt) for a single slogan.
-    pub fn calculate_size(&self, slogan: &str) -> (f64, f64, f64) {
-        let cloth_h = self.height_mm.max(100.0);
-        let avail_h = (cloth_h - 2.0 * self.margin_tb_mm.max(0.0)).max(10.0);
-        let char_h_mm = (avail_h * self.height_ratio.clamp(0.4, 0.95)).max(10.0);
-        let font_size_pt = char_h_mm * (72.0 / 25.4);
-
+    /// Calculate dimensions (width_mm, height_mm, font_size_pt, eff_spacing_mm) for a single slogan.
+    pub fn calculate_size(&self, slogan: &str) -> (f64, f64, f64, f64) {
         let chars: Vec<char> = slogan.chars().collect();
-        let mut text_width_mm = 0.0;
-        for &c in &chars {
-            if c.is_ascii_graphic() || c.is_ascii_digit() {
-                text_width_mm += char_h_mm * 0.55;
-            } else if c.is_whitespace() {
-                text_width_mm += char_h_mm * 0.45;
-            } else {
-                text_width_mm += char_h_mm;
+        let n_chars = chars.len();
+        let n_gaps = n_chars.saturating_sub(1);
+        let base_spacing = self.spacing_mm.max(0.0);
+        let has_sign = !self.signature.trim().is_empty();
+
+        if self.vertical {
+            // Vertical banner: cloth roll is width (w), banner length is height (h).
+            let cloth_w = self.height_mm.max(100.0);
+            let margin_side = self.margin_tb_mm.max(0.0);
+            let avail_w = (cloth_w - 2.0 * margin_side).max(20.0);
+            let target_char_h = (avail_w * self.height_ratio.clamp(0.4, 0.95)).max(15.0);
+            let sign_h = if has_sign { (target_char_h * 2.0).clamp(60.0, 300.0) } else { 0.0 };
+
+            let mut raw_chars_h = 0.0;
+            for &c in &chars {
+                if c.is_ascii_graphic() || c.is_ascii_digit() {
+                    raw_chars_h += target_char_h * 0.55;
+                } else if c.is_whitespace() {
+                    raw_chars_h += target_char_h * 0.45;
+                } else {
+                    raw_chars_h += target_char_h;
+                }
             }
+            let raw_total_h = raw_chars_h + (n_gaps as f64) * base_spacing;
+            let margin_ends = self.margin_lr_mm.max(0.0);
+
+            let (banner_len, char_h, eff_spacing) = match self.length_mode {
+                LengthMode::Auto => {
+                    let banner_len = (2.0 * margin_ends + sign_h + raw_total_h).max(500.0);
+                    (banner_len, target_char_h, base_spacing)
+                }
+                LengthMode::Fixed => {
+                    let banner_len = self.width_mm.max(2.0 * margin_ends + 100.0);
+                    let avail_h = (banner_len - 2.0 * margin_ends - sign_h).max(50.0);
+                    if raw_total_h > avail_h {
+                        // Overflow: compress font and spacing proportionally so text fits without truncation
+                        let scale = avail_h / raw_total_h;
+                        (banner_len, target_char_h * scale, base_spacing * scale)
+                    } else {
+                        // Few characters: expand spacing to gracefully fill ~72% of the banner
+                        let target_span = avail_h * 0.72;
+                        if raw_total_h < target_span && n_gaps > 0 {
+                            let needed_gap_space = target_span - raw_chars_h;
+                            let expanded = (needed_gap_space / n_gaps as f64).clamp(base_spacing, target_char_h * 2.5);
+                            (banner_len, target_char_h, expanded)
+                        } else if n_chars == 1 {
+                            let enlarged = (target_char_h * 1.15).min(avail_w * 0.9);
+                            (banner_len, enlarged, base_spacing)
+                        } else {
+                            (banner_len, target_char_h, base_spacing)
+                        }
+                    }
+                }
+            };
+
+            let font_size_pt = char_h * (72.0 / 25.4);
+            (cloth_w, banner_len, font_size_pt, eff_spacing)
+        } else {
+            // Horizontal banner: cloth roll is height (h), banner length is width (w).
+            let cloth_h = self.height_mm.max(100.0);
+            let margin_tb = self.margin_tb_mm.max(0.0);
+            let sign_h = if has_sign { (cloth_h * 0.20).clamp(40.0, 160.0) } else { 0.0 };
+            let avail_h = (cloth_h - sign_h - 2.0 * margin_tb).max(20.0);
+            let target_char_h = (avail_h * self.height_ratio.clamp(0.4, 0.95)).max(15.0);
+
+            let mut raw_chars_w = 0.0;
+            for &c in &chars {
+                if c.is_ascii_graphic() || c.is_ascii_digit() {
+                    raw_chars_w += target_char_h * 0.55;
+                } else if c.is_whitespace() {
+                    raw_chars_w += target_char_h * 0.45;
+                } else {
+                    raw_chars_w += target_char_h;
+                }
+            }
+            let raw_total_w = raw_chars_w + (n_gaps as f64) * base_spacing;
+            let margin_lr = self.margin_lr_mm.max(0.0);
+
+            let (banner_w, char_h, eff_spacing) = match self.length_mode {
+                LengthMode::Auto => {
+                    let banner_w = (2.0 * margin_lr + raw_total_w).max(500.0);
+                    (banner_w, target_char_h, base_spacing)
+                }
+                LengthMode::Fixed => {
+                    let banner_w = self.width_mm.max(2.0 * margin_lr + 100.0);
+                    let avail_w = (banner_w - 2.0 * margin_lr).max(50.0);
+                    if raw_total_w > avail_w {
+                        // Overflow: compress font and spacing proportionally so text fits without truncation
+                        let scale = avail_w / raw_total_w;
+                        (banner_w, target_char_h * scale, base_spacing * scale)
+                    } else {
+                        // Few characters: expand spacing to gracefully fill ~72% of the banner
+                        let target_span = avail_w * 0.72;
+                        if raw_total_w < target_span && n_gaps > 0 {
+                            let needed_gap_space = target_span - raw_chars_w;
+                            let expanded = (needed_gap_space / n_gaps as f64).clamp(base_spacing, target_char_h * 2.5);
+                            (banner_w, target_char_h, expanded)
+                        } else if n_chars == 1 {
+                            let enlarged = (target_char_h * 1.15).min(avail_h * 0.9);
+                            (banner_w, enlarged, base_spacing)
+                        } else {
+                            (banner_w, target_char_h, base_spacing)
+                        }
+                    }
+                }
+            };
+
+            let font_size_pt = char_h * (72.0 / 25.4);
+            (banner_w, cloth_h, font_size_pt, eff_spacing)
         }
-        let gaps = (chars.len().saturating_sub(1)) as f64 * self.spacing_mm.max(0.0);
-
-        let width = match self.length_mode {
-            LengthMode::Auto => (2.0 * self.margin_lr_mm.max(0.0) + text_width_mm + gaps).max(200.0),
-            LengthMode::Fixed => self.width_mm.max(2.0 * self.margin_lr_mm.max(0.0) + 100.0),
-        };
-
-        (width, cloth_h, font_size_pt)
     }
 
-    /// The banners as shapes, laid out down the page from `top`.
-    /// Used when placing directly onto a page.
-    pub fn build(&self, top: f64, left: f64) -> Vec<Vec<(ShapeKind, Fill, Option<Stroke>)>> {
-        let mut out: Vec<Vec<(ShapeKind, Fill, Option<Stroke>)>> = Vec::new();
-        let h = self.height_mm.max(1.0);
+    /// Build shapes for a single banner at (left, top).
+    pub fn build_single(&self, slogan: &str, left: f64, top: f64) -> (f64, f64, Vec<(ShapeKind, Fill, Option<Stroke>)>) {
+        let (w, h, size_pt, eff_spacing) = self.calculate_size(slogan);
+        let mut shapes: Vec<(ShapeKind, Fill, Option<Stroke>)> = Vec::new();
         let has_sign = !self.signature.trim().is_empty();
-        let band = if has_sign { (h * 0.18).max(6.0) } else { 0.0 };
 
-        for (k, slogan) in self.lines().iter().enumerate() {
-            let (w, _, size_pt) = self.calculate_size(slogan);
-            let y0 = top + k as f64 * (h + self.gap_mm.max(0.0));
-            let mut banner: Vec<(ShapeKind, Fill, Option<Stroke>)> = Vec::new();
+        // 1. Cloth rectangle
+        shapes.push((
+            ShapeKind::Rect {
+                rect: Rect::new(left, top, left + w, top + h),
+                radius: 0.0,
+                corners: None,
+            },
+            Fill::Solid(self.background),
+            None,
+        ));
 
-            // 1. Rectangle
-            banner.push((
-                ShapeKind::Rect {
-                    rect: Rect::new(left, y0, left + w, y0 + h),
-                    radius: 0.0,
-                    corners: None,
-                },
-                Fill::Solid(self.background),
-                None,
-            ));
+        let char_h = size_pt * (25.4 / 72.0);
+        let tracking_pct = if char_h > 0.0 { (eff_spacing / char_h) * 100.0 } else { 0.0 };
 
-            // 2. Optional bottom band if signature is present
-            if has_sign {
-                banner.push((
-                    ShapeKind::Rect {
-                        rect: Rect::new(left, y0 + h - band, left + w, y0 + h),
-                        radius: 0.0,
-                        corners: None,
-                    },
-                    Fill::Solid(self.band_color),
-                    None,
-                ));
-            }
+        if self.vertical {
+            // Vertical banner
+            let margin_side = self.margin_tb_mm.max(0.0);
+            let margin_ends = self.margin_lr_mm.max(0.0);
+            let sign_h = if has_sign { (char_h * 2.0).clamp(60.0, 300.0) } else { 0.0 };
+            let avail_h = (h - 2.0 * margin_ends - sign_h).max(10.0);
+            let avail_w = (w - 2.0 * margin_side).max(10.0);
 
-            // 3. Slogan
-            let char_h = size_pt * (25.4 / 72.0);
-            let text_box_w = (w - 2.0 * self.margin_lr_mm.max(0.0)).max(10.0);
-            let text_box_h = if has_sign { h - band } else { h };
-            let origin_y = y0 + (text_box_h - char_h) * 0.5;
-
-            let span = TextSpan {
+            // Slogan
+            let slogan_span = TextSpan {
                 bold: true,
-                tracking_pct: if char_h > 0.0 { (self.spacing_mm / char_h) * 100.0 } else { 0.0 },
+                tracking_pct,
                 fill: Some(Fill::Solid(self.slogan_color)),
                 ..TextSpan::new(slogan, FONT, size_pt)
             };
-
-            banner.push((
+            shapes.push((
                 ShapeKind::Text {
-                    spans: vec![span],
-                    origin: Point::new(left + self.margin_lr_mm.max(0.0), origin_y),
-                    frame: Some(Size::new(text_box_w, char_h)),
+                    spans: vec![slogan_span],
+                    origin: Point::new(left + margin_side, top + margin_ends + sign_h),
+                    frame: Some(Size::new(avail_w, avail_h)),
                     align: TextAlign::Center,
-                    para: ParagraphStyle::default(),
+                    para: ParagraphStyle {
+                        vertical: true,
+                        vertical_align: VerticalAlign::Center,
+                        ..Default::default()
+                    },
                     on_path: None,
                 },
                 Fill::Solid(self.slogan_color),
                 None,
             ));
 
-            // 4. Signature
+            // Optional signature at bottom of vertical banner
             if has_sign {
-                let sign_pt = (size_pt * 0.35).max(12.0);
-                let sign_h = sign_pt * (25.4 / 72.0);
-                let frame = Size::new(w * 0.9, sign_h * 1.5);
-                banner.push((
+                let sign_pt = (size_pt * 0.40).clamp(14.0, 72.0);
+                let sign_span = TextSpan {
+                    bold: false,
+                    fill: Some(Fill::Solid(self.signature_color)),
+                    ..TextSpan::new(self.signature.trim(), FONT, sign_pt)
+                };
+                shapes.push((
                     ShapeKind::Text {
-                        spans: vec![TextSpan {
-                            text: self.signature.trim().into(),
-                            font_family: FONT.into(),
-                            size_pt: sign_pt,
-                            bold: false,
-                            fill: Some(Fill::Solid(self.signature_color)),
-                            ..TextSpan::new(self.signature.trim(), FONT, sign_pt)
-                        }],
-                        origin: Point::new(
-                            left + w * 0.5 - frame.width * 0.5,
-                            y0 + h - band * 0.5 - frame.height * 0.5,
-                        ),
-                        frame: Some(frame),
+                        spans: vec![sign_span],
+                        origin: Point::new(left + margin_side, top + margin_ends),
+                        frame: Some(Size::new(avail_w, sign_h)),
                         align: TextAlign::Center,
-                        para: ParagraphStyle::default(),
+                        para: ParagraphStyle {
+                            vertical: true,
+                            vertical_align: VerticalAlign::Bottom,
+                            ..Default::default()
+                        },
                         on_path: None,
                     },
                     Fill::Solid(self.signature_color),
                     None,
                 ));
             }
+        } else {
+            // Horizontal banner
+            let margin_lr = self.margin_lr_mm.max(0.0);
+            let margin_tb = self.margin_tb_mm.max(0.0);
+            let sign_h = if has_sign { (h * 0.20).clamp(40.0, 160.0) } else { 0.0 };
+            let avail_w = (w - 2.0 * margin_lr).max(10.0);
+            let avail_h = (h - 2.0 * margin_tb - sign_h).max(10.0);
 
-            out.push(banner);
+            // Slogan
+            let slogan_span = TextSpan {
+                bold: true,
+                tracking_pct,
+                fill: Some(Fill::Solid(self.slogan_color)),
+                ..TextSpan::new(slogan, FONT, size_pt)
+            };
+            shapes.push((
+                ShapeKind::Text {
+                    spans: vec![slogan_span],
+                    origin: Point::new(left + margin_lr, top + margin_tb + sign_h),
+                    frame: Some(Size::new(avail_w, avail_h)),
+                    align: TextAlign::Center,
+                    para: ParagraphStyle {
+                        vertical_align: VerticalAlign::Center,
+                        ..Default::default()
+                    },
+                    on_path: None,
+                },
+                Fill::Solid(self.slogan_color),
+                None,
+            ));
+
+            // Optional signature at bottom-right of horizontal banner
+            if has_sign {
+                let sign_pt = (size_pt * 0.35).clamp(14.0, 72.0);
+                let sign_span = TextSpan {
+                    bold: false,
+                    fill: Some(Fill::Solid(self.signature_color)),
+                    ..TextSpan::new(self.signature.trim(), FONT, sign_pt)
+                };
+                shapes.push((
+                    ShapeKind::Text {
+                        spans: vec![sign_span],
+                        origin: Point::new(left + margin_lr, top + margin_tb),
+                        frame: Some(Size::new(avail_w, sign_h)),
+                        align: TextAlign::Right,
+                        para: ParagraphStyle {
+                            vertical_align: VerticalAlign::Center,
+                            ..Default::default()
+                        },
+                        on_path: None,
+                    },
+                    Fill::Solid(self.signature_color),
+                    None,
+                ));
+            }
+        }
+
+        // Grommets
+        if self.grommets {
+            let r = 6.0;
+            let m = 18.0;
+            let mut pts = vec![
+                Point::new(left + m, top + m),
+                Point::new(left + w - m, top + m),
+                Point::new(left + m, top + h - m),
+                Point::new(left + w - m, top + h - m),
+            ];
+            if self.vertical {
+                let inner_h = h - 2.0 * m;
+                if inner_h > 1800.0 {
+                    let count = (inner_h / 1200.0).round() as usize;
+                    if count > 1 {
+                        let step = inner_h / count as f64;
+                        for k in 1..count {
+                            let gy = top + m + k as f64 * step;
+                            pts.push(Point::new(left + m, gy));
+                            pts.push(Point::new(left + w - m, gy));
+                        }
+                    }
+                }
+            } else {
+                let inner_w = w - 2.0 * m;
+                if inner_w > 1800.0 {
+                    let count = (inner_w / 1200.0).round() as usize;
+                    if count > 1 {
+                        let step = inner_w / count as f64;
+                        for k in 1..count {
+                            let gx = left + m + k as f64 * step;
+                            pts.push(Point::new(gx, top + m));
+                            pts.push(Point::new(gx, top + h - m));
+                        }
+                    }
+                }
+            }
+            for pt in pts {
+                shapes.push((
+                    ShapeKind::Ellipse {
+                        rect: Rect::new(pt.x - r, pt.y - r, pt.x + r, pt.y + r),
+                        arc: None,
+                    },
+                    Fill::Solid(Color::WHITE),
+                    Some(Stroke::hairline(Color::rgb8(120, 120, 120))),
+                ));
+            }
+        }
+
+        (w, h, shapes)
+    }
+
+    /// The banners as shapes, laid out from `(top, left)`.
+    pub fn build(&self, top: f64, left: f64) -> Vec<Vec<(ShapeKind, Fill, Option<Stroke>)>> {
+        let mut out: Vec<Vec<(ShapeKind, Fill, Option<Stroke>)>> = Vec::new();
+        let mut cur_x = left;
+        let mut cur_y = top;
+
+        for slogan in self.lines() {
+            let (w, h, shapes) = self.build_single(&slogan, cur_x, cur_y);
+            out.push(shapes);
+            if self.vertical {
+                cur_x += w + self.gap_mm.max(0.0);
+            } else {
+                cur_y += h + self.gap_mm.max(0.0);
+            }
         }
         out
     }
 }
 
 impl App {
-    /// Make a batch of banners: either as separate pages (one per banner, recommended)
-    /// or laid out down the current page.
+    /// Make a batch of banners: either as separate pages (one per banner)
+    /// or laid out on the current page.
     pub fn create_banners(&mut self, banner: &Banner) {
         let lines = banner.lines();
         if lines.is_empty() {
@@ -379,7 +573,7 @@ impl App {
             OutputMode::Pages => {
                 let mut first_page: Option<tracedraw_core::PageId> = None;
                 for (idx, slogan) in lines.iter().enumerate() {
-                    let (w, h, size_pt) = banner.calculate_size(slogan);
+                    let (w, h, shapes) = banner.build_single(slogan, 0.0, 0.0);
                     let add_cmd = Command::AddPage {
                         name: Some(format!("{} {}", crate::i18n::tr("banner.title"), idx + 1)),
                         size: Size::new(w, h),
@@ -399,140 +593,50 @@ impl App {
                         continue;
                     };
 
-                    let has_sign = !banner.signature.trim().is_empty();
-                    let band = if has_sign { (h * 0.18).max(6.0) } else { 0.0 };
-
-                    // 1. Background cloth
-                    let mut bg = Shape::new(
-                        self.engine.new_shape_id(),
-                        ShapeKind::Rect {
-                            rect: Rect::new(0.0, 0.0, w, h),
-                            radius: 0.0,
-                            corners: None,
-                        },
-                    );
-                    bg.fill = Fill::Solid(banner.background);
-                    bg.stroke = None;
-                    let _ = self.engine.run(&Command::AddShape { layer, shape: bg });
-
-                    // 2. Optional bottom band if signature is present
-                    if has_sign {
-                        let mut band_shape = Shape::new(
-                            self.engine.new_shape_id(),
-                            ShapeKind::Rect {
-                                rect: Rect::new(0.0, h - band, w, h),
-                                radius: 0.0,
-                                corners: None,
-                            },
-                        );
-                        band_shape.fill = Fill::Solid(banner.band_color);
-                        let _ = self.engine.run(&Command::AddShape { layer, shape: band_shape });
-                    }
-
-                    // 3. Banner text
-                    let char_h = size_pt * (25.4 / 72.0);
-                    let text_box_w = (w - 2.0 * banner.margin_lr_mm.max(0.0)).max(10.0);
-                    let text_box_h = if has_sign { h - band } else { h };
-                    let origin_y = (text_box_h - char_h) * 0.5;
-
-                    let span = TextSpan {
-                        bold: true,
-                        tracking_pct: if char_h > 0.0 { (banner.spacing_mm / char_h) * 100.0 } else { 0.0 },
-                        fill: Some(Fill::Solid(banner.slogan_color)),
-                        ..TextSpan::new(slogan, FONT, size_pt)
-                    };
-
-                    let text_shape = Shape::new(
-                        self.engine.new_shape_id(),
-                        ShapeKind::Text {
-                            spans: vec![span],
-                            origin: Point::new(banner.margin_lr_mm.max(0.0), origin_y),
-                            frame: Some(Size::new(text_box_w, char_h)),
-                            align: TextAlign::Center,
-                            para: ParagraphStyle::default(),
-                            on_path: None,
-                        },
-                    );
-                    let _ = self.engine.run(&Command::AddShape { layer, shape: text_shape });
-
-                    // 4. Optional signature
-                    if has_sign {
-                        let sign_pt = (size_pt * 0.35).max(12.0);
-                        let sign_h = sign_pt * (25.4 / 72.0);
-                        let frame = Size::new(w * 0.9, sign_h * 1.5);
-                        let sign_shape = Shape::new(
-                            self.engine.new_shape_id(),
-                            ShapeKind::Text {
-                                spans: vec![TextSpan {
-                                    text: banner.signature.trim().into(),
-                                    font_family: FONT.into(),
-                                    size_pt: sign_pt,
-                                    bold: false,
-                                    fill: Some(Fill::Solid(banner.signature_color)),
-                                    ..TextSpan::new(banner.signature.trim(), FONT, sign_pt)
-                                }],
-                                origin: Point::new(
-                                    (w - frame.width) * 0.5,
-                                    h - band * 0.5 - frame.height * 0.5,
-                                ),
-                                frame: Some(frame),
-                                align: TextAlign::Center,
-                                para: ParagraphStyle::default(),
-                                on_path: None,
-                            },
-                        );
-                        let _ = self.engine.run(&Command::AddShape { layer, shape: sign_shape });
-                    }
-
-                    // 5. Optional grommets
-                    if banner.grommets {
-                        let r = 6.0;
-                        let m = 18.0;
-                        let mut pts = vec![
-                            Point::new(m, m),
-                            Point::new(w - m, m),
-                            Point::new(m, h - m),
-                            Point::new(w - m, h - m),
-                        ];
-                        let inner_w = w - 2.0 * m;
-                        if inner_w > 1800.0 {
-                            let count = (inner_w / 1200.0).round() as usize;
-                            if count > 1 {
-                                let step = inner_w / count as f64;
-                                for k in 1..count {
-                                    let gx = m + k as f64 * step;
-                                    pts.push(Point::new(gx, m));
-                                    pts.push(Point::new(gx, h - m));
-                                }
-                            }
-                        }
-                        for pt in pts {
-                            let mut circle = Shape::new(
-                                self.engine.new_shape_id(),
-                                ShapeKind::Ellipse {
-                                    rect: Rect::new(pt.x - r, pt.y - r, pt.x + r, pt.y + r),
-                                    arc: None,
-                                },
-                            );
-                            circle.fill = Fill::Solid(Color::WHITE);
-                            circle.stroke = Some(Stroke::hairline(Color::rgb8(120, 120, 120)));
-                            let _ = self.engine.run(&Command::AddShape { layer, shape: circle });
-                        }
+                    for (kind, fill, stroke) in shapes {
+                        let id = self.engine.new_shape_id();
+                        let mut s = Shape::new(id, kind);
+                        s.fill = fill;
+                        s.stroke = stroke;
+                        let _ = self.engine.run(&Command::AddShape { layer, shape: s });
                     }
                 }
                 if let Some(first) = first_page {
                     self.page = first;
                 }
+                self.zoom_to_page();
             }
             OutputMode::CurrentPage => {
                 let Some(layer) = self.active_layer() else {
                     self.engine.end_group(mark, "Batch banners");
                     return;
                 };
-                let (top, left) = match self.doc().page(self.page) {
-                    Ok(p) => (p.size.height, (p.size.width - banner.width_mm.max(1.0)) / 2.0),
-                    Err(_) => (297.0, 0.0),
+
+                let empty_page = self.doc().layer(layer).map(|l| l.shapes.is_empty()).unwrap_or(true);
+                let (top, left) = if empty_page {
+                    // Empty canvas: calculate total extents and resize page to fit nicely
+                    let mut tot_w = 0.0;
+                    let mut tot_h = 0.0;
+                    for (i, slogan) in lines.iter().enumerate() {
+                        let (w, h, _, _) = banner.calculate_size(slogan);
+                        if banner.vertical {
+                            tot_w += if i == 0 { w } else { w + banner.gap_mm.max(0.0) };
+                            tot_h = tot_h.max(h);
+                        } else {
+                            tot_w = tot_w.max(w);
+                            tot_h += if i == 0 { h } else { h + banner.gap_mm.max(0.0) };
+                        }
+                    }
+                    let _ = self.engine.run(&Command::ResizePage {
+                        page: self.page,
+                        size: Size::new(tot_w.max(100.0), tot_h.max(100.0)),
+                    });
+                    (0.0, 0.0)
+                } else {
+                    let page_h = self.doc().page(self.page).map(|p| p.size.height).unwrap_or(297.0);
+                    (page_h + banner.gap_mm.max(50.0), 0.0)
                 };
+
                 let built = banner.build(top, left);
                 let mut created: Vec<tracedraw_core::ShapeId> = Vec::new();
                 for shapes in built {
@@ -557,6 +661,7 @@ impl App {
                     }
                 }
                 self.selection = created;
+                self.zoom_to_selection();
             }
         }
 
@@ -582,7 +687,6 @@ mod tests {
         };
         app.create_banners(&banner);
         let shapes = app.selected_shapes();
-        // every banner is a group, and the groups are what is selected
         let groups = shapes
             .iter()
             .filter(|s| matches!(s.kind, ShapeKind::Group { .. }))
@@ -607,7 +711,7 @@ mod tests {
         assert_eq!(banner.clean_slogan("热烈庆祝，祖国华诞！"), "热烈庆祝 祖国华诞");
     }
 
-    /// Multi-page mode generates separate pages.
+    /// Multi-page output generates pages.
     #[test]
     fn multi_page_output_generates_pages() {
         let mut app = App::headless();
@@ -617,6 +721,54 @@ mod tests {
             ..Banner::default()
         };
         app.create_banners(&banner);
-        assert_eq!(app.doc().pages.len(), 3); // initial 1 page + 2 banner pages
+        assert_eq!(app.doc().pages.len(), 3);
+    }
+
+    /// Long text in fixed mode scales down character size and spacing to fit.
+    #[test]
+    fn fixed_mode_compresses_overflowing_text() {
+        let banner = Banner {
+            slogans: vec!["这是一个非常非常非常非常非常非常非常非常非常长的标语测试".into()],
+            width_mm: 3000.0,
+            length_mode: LengthMode::Fixed,
+            ..Banner::default()
+        };
+        let (w, _h, size_pt, spacing) = banner.calculate_size(&banner.slogans[0]);
+        assert_eq!(w, 3000.0);
+        let char_h = size_pt * (25.4 / 72.0);
+        assert!(char_h < 400.0, "font should be scaled down: {char_h}");
+        assert!(spacing < banner.spacing_mm, "spacing should be scaled down: {spacing}");
+    }
+
+    /// Short text in fixed mode expands spacing to fill a suitable span.
+    #[test]
+    fn few_characters_expand_spacing() {
+        let banner = Banner {
+            slogans: vec!["庆祝元旦".into()],
+            width_mm: 6000.0,
+            length_mode: LengthMode::Fixed,
+            ..Banner::default()
+        };
+        let (w, _h, _size_pt, spacing) = banner.calculate_size(&banner.slogans[0]);
+        assert_eq!(w, 6000.0);
+        assert!(spacing > banner.spacing_mm, "spacing should be expanded: {spacing}");
+    }
+
+    /// Vertical banner sets roll width as width and length as height.
+    #[test]
+    fn vertical_banner_dimensions_and_text() {
+        let banner = Banner {
+            slogans: vec!["欢度国庆".into()],
+            height_mm: 700.0,
+            width_mm: 5000.0,
+            vertical: true,
+            length_mode: LengthMode::Fixed,
+            ..Banner::default()
+        };
+        let (w, h, size_pt, spacing) = banner.calculate_size(&banner.slogans[0]);
+        assert_eq!(w, 700.0, "cloth roll width is width");
+        assert_eq!(h, 5000.0, "banner length is height");
+        assert!(size_pt > 0.0);
+        assert!(spacing >= banner.spacing_mm);
     }
 }
