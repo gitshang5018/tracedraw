@@ -703,19 +703,25 @@ impl Banner {
         (w, h, shapes)
     }
 
-    /// The banners as shapes, laid out from `(top, left)`.
+    /// The banners as shapes, laid out from `(top, left)` (from top to bottom for horizontal banners).
     pub fn build(&self, top: f64, left: f64) -> Vec<Vec<(ShapeKind, Fill, Option<Stroke>, Affine)>> {
         let mut out: Vec<Vec<(ShapeKind, Fill, Option<Stroke>, Affine)>> = Vec::new();
         let mut cur_x = left;
         let mut cur_y = top;
 
         for slogan in self.lines() {
-            let (w, h, shapes) = self.build_single(&slogan, cur_x, cur_y);
+            let (w, h, _, _) = self.calculate_size(&slogan);
+            let y_pos = if self.vertical {
+                cur_y
+            } else {
+                cur_y - h
+            };
+            let (_, _, shapes) = self.build_single(&slogan, cur_x, y_pos);
             out.push(shapes);
             if self.vertical {
                 cur_x += w + self.gap_mm.max(0.0);
             } else {
-                cur_y += h + self.gap_mm.max(0.0);
+                cur_y -= h + self.gap_mm.max(0.0);
             }
         }
         out
@@ -797,10 +803,28 @@ impl App {
                         page: self.page,
                         size: Size::new(tot_w.max(100.0), tot_h.max(100.0)),
                     });
-                    (0.0, 0.0)
+                    if banner.vertical {
+                        (0.0, 0.0)
+                    } else {
+                        (tot_h, 0.0)
+                    }
                 } else {
                     let page_h = self.doc().page(self.page).map(|p| p.size.height).unwrap_or(297.0);
-                    (page_h + banner.gap_mm.max(50.0), 0.0)
+                    let mut tot_h: f64 = 0.0;
+                    for (i, slogan) in lines.iter().enumerate() {
+                        let (_, h, _, _) = banner.calculate_size(slogan);
+                        if banner.vertical {
+                            tot_h = tot_h.max(h);
+                        } else {
+                            tot_h += if i == 0 { h } else { h + banner.gap_mm.max(0.0) };
+                        }
+                    }
+                    let base_y = page_h + banner.gap_mm.max(50.0);
+                    if banner.vertical {
+                        (base_y, 0.0)
+                    } else {
+                        (base_y + tot_h, 0.0)
+                    }
                 };
 
                 let built = banner.build(top, left);
@@ -842,7 +866,8 @@ impl App {
 mod tests {
     use super::*;
 
-    /// A batch of banners: one banner per slogan, each a group of its own.
+    /// A batch of banners: one banner per slogan, each a group of its own,
+    /// arranged from top to bottom.
     #[test]
     fn a_batch_of_banners_is_a_group_for_each_slogan() {
         let mut app = App::headless();
@@ -854,11 +879,22 @@ mod tests {
         };
         app.create_banners(&banner);
         let shapes = app.selected_shapes();
-        let groups = shapes
+        let group_shapes: Vec<&Shape> = shapes
             .iter()
             .filter(|s| matches!(s.kind, ShapeKind::Group { .. }))
-            .count();
-        assert_eq!(groups, 3, "{groups} groups in {shapes:?}");
+            .collect();
+        assert_eq!(group_shapes.len(), 3, "{group_shapes:?} in {shapes:?}");
+        let b0 = group_shapes[0].bounds();
+        let b1 = group_shapes[1].bounds();
+        let b2 = group_shapes[2].bounds();
+        assert!(
+            b0.y0 > b1.y0,
+            "first banner should be above second banner: {b0:?} vs {b1:?}"
+        );
+        assert!(
+            b1.y0 > b2.y0,
+            "second banner should be above third banner: {b1:?} vs {b2:?}"
+        );
     }
 
     /// The empty lines are left out: a blank line is not a banner.

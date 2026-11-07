@@ -471,7 +471,7 @@ impl Dimension {
                 };
                 let v = units.world_from_mm(self.value());
                 let unit = if s.show_units {
-                    format!(" {}", units.short())
+                    format!(" {}", units.short().to_lowercase())
                 } else {
                     String::new()
                 };
@@ -1101,14 +1101,16 @@ impl App {
                 continue;
             }
             let char_dim = (w * h).sqrt().max(w.max(h) * 0.25);
-            let char_h_mm = (char_dim * 0.035).clamp(3.5, 120.0);
+            let char_h_mm = (char_dim * 0.06).clamp(4.0, 170.0);
             let text_size_pt = (char_h_mm * (72.0 / 25.4)).max(self.dimension_style.text_size);
-            let offset_w = (char_h_mm * 1.8).max(8.0);
-            let offset_h = (char_h_mm * 1.8).max(8.0);
+            let offset_w = (char_h_mm * 1.5).max(10.0);
+            let offset_h = (char_h_mm * 1.5).max(10.0);
 
             let mut style = self.dimension_style.clone();
             style.precision = 0;
             style.text_size = text_size_pt;
+            style.units = style.units.to_lowercase();
+            style.suffix = style.suffix.to_lowercase();
 
             // Horizontal dimension (width / length): placed on top of the object
             let p_tl = Point::new(x0, y1);
@@ -1119,10 +1121,10 @@ impl App {
                 created.push(gid);
             }
 
-            // Vertical dimension (height): to the right of the object
-            let p_br = Point::new(x1, y0);
-            let at_right = Point::new(x1 + offset_h, (y0 + y1) * 0.5);
-            self.create_dimension_with_style(p_br, p_tr, at_right, style);
+            // Vertical dimension (height): placed to the left of the object
+            let p_bl = Point::new(x0, y0);
+            let at_left = Point::new(x0 - offset_h, (y0 + y1) * 0.5);
+            self.create_dimension_with_style(p_bl, p_tl, at_left, style);
             if let Some(&gid) = self.selection.last() {
                 created.push(gid);
             }
@@ -2799,9 +2801,9 @@ mod tests {
     }
 
     /// One-click dimensioning scales text size with the object, removes decimals,
-    /// and places the length dimension on top of the object.
+    /// places the length dimension on top and height on the left.
     #[test]
-    fn auto_dimension_scales_text_removes_decimals_and_labels_top() {
+    fn auto_dimension_scales_text_removes_decimals_and_labels_top_and_left() {
         let mut app = App::headless();
         let rect_id = app
             .new_shape(ShapeKind::Rect {
@@ -2822,9 +2824,9 @@ mod tests {
         assert_eq!(dim1.style.precision, 0);
         assert_eq!(dim2.style.precision, 0);
 
-        // Text size must scale with object size (> 100 pt for a 6000x700 banner).
-        assert!(dim1.style.text_size > 100.0);
-        assert!(dim2.style.text_size > 100.0);
+        // Text size must scale with object size (> 250 pt for a 6000x700 banner).
+        assert!(dim1.style.text_size > 250.0);
+        assert!(dim2.style.text_size > 250.0);
 
         // Find width (horizontal) and height (vertical) dimensions.
         let (width_dim, width_id, height_dim, height_id) = match (dim1.measure, dim2.measure) {
@@ -2848,14 +2850,14 @@ mod tests {
         }
         assert_eq!(label_of(&app, width_id), "6000 mm");
 
-        // Vertical dimension (height) must be to the right of the object.
+        // Vertical dimension (height) must be to the left of the object.
         match height_dim.measure {
             Measure::Linear { a, b, at } => {
-                assert!((a.x - 6000.0).abs() < 1e-6);
-                assert!((b.x - 6000.0).abs() < 1e-6);
+                assert!((a.x - 0.0).abs() < 1e-6);
+                assert!((b.x - 0.0).abs() < 1e-6);
                 assert!(
-                    at.x > 6000.0,
-                    "vertical dimension line should be to the right"
+                    at.x < 0.0,
+                    "vertical dimension line should be to the left"
                 );
             }
             _ => panic!("expected linear measure"),
