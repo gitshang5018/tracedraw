@@ -12,7 +12,7 @@
 
 use crate::app::App;
 use tracedraw_core::{
-    document::{ParagraphStyle, Shape, ShapeKind, TextAlign, TextSpan, VerticalAlign},
+    document::{text_outline::TextRequest, ParagraphStyle, Shape, ShapeKind, TextAlign, TextSpan, VerticalAlign},
     geometry::{Affine, Point, Rect, Size},
     Color, Command, Fill, Stroke,
 };
@@ -190,6 +190,79 @@ fn is_punct(c: char) -> bool {
     )
 }
 
+/// Measure unscaled natural width of a slogan using the text shaping engine.
+fn measure_slogan_w(slogan: &str, size_pt: f64, spacing_mm: f64) -> f64 {
+    let char_h = size_pt * (25.4 / 72.0);
+    let tracking_pct = if char_h > 0.0 { (spacing_mm / char_h) * 100.0 } else { 0.0 };
+    let span = TextSpan {
+        bold: true,
+        tracking_pct,
+        ..TextSpan::new(slogan, FONT, size_pt)
+    };
+    let req = TextRequest {
+        spans: std::slice::from_ref(&span),
+        frame: None,
+        align: TextAlign::Left,
+        para: &ParagraphStyle::default(),
+        on_path: None,
+    };
+    let w = tracedraw_text::fonts().layout(&req).bounds.width();
+    if w.is_finite() && w > 1.0 {
+        w
+    } else {
+        let chars: Vec<char> = slogan.chars().collect();
+        let mut raw = 0.0;
+        for &c in &chars {
+            if c.is_ascii_graphic() || c.is_ascii_digit() {
+                raw += char_h * 0.60;
+            } else if c.is_whitespace() {
+                raw += char_h * 0.50;
+            } else {
+                raw += char_h * 1.08;
+            }
+        }
+        (raw + (chars.len() as f64) * spacing_mm.max(0.0)).max(10.0)
+    }
+}
+
+/// Measure unscaled natural height of a vertical slogan using the text shaping engine.
+fn measure_slogan_h(slogan: &str, size_pt: f64, spacing_mm: f64) -> f64 {
+    let char_h = size_pt * (25.4 / 72.0);
+    let tracking_pct = if char_h > 0.0 { (spacing_mm / char_h) * 100.0 } else { 0.0 };
+    let span = TextSpan {
+        bold: true,
+        tracking_pct,
+        ..TextSpan::new(slogan, FONT, size_pt)
+    };
+    let req = TextRequest {
+        spans: std::slice::from_ref(&span),
+        frame: None,
+        align: TextAlign::Left,
+        para: &ParagraphStyle {
+            vertical: true,
+            ..Default::default()
+        },
+        on_path: None,
+    };
+    let h = tracedraw_text::fonts().layout(&req).bounds.height();
+    if h.is_finite() && h > 1.0 {
+        h
+    } else {
+        let chars: Vec<char> = slogan.chars().collect();
+        let mut raw = 0.0;
+        for &c in &chars {
+            if c.is_ascii_graphic() || c.is_ascii_digit() {
+                raw += char_h * 0.60;
+            } else if c.is_whitespace() {
+                raw += char_h * 0.50;
+            } else {
+                raw += char_h * 1.08;
+            }
+        }
+        (raw + (chars.len() as f64) * spacing_mm.max(0.0)).max(10.0)
+    }
+}
+
 impl Banner {
     /// Clean banner text according to punctuation mode.
     pub fn clean_slogan(&self, raw: &str) -> String {
@@ -236,79 +309,6 @@ impl Banner {
             self.band_color = preset.bg_color();
         }
     }
-
-/// Measure unscaled natural width of a slogan using the text shaping engine.
-fn measure_slogan_w(slogan: &str, size_pt: f64, spacing_mm: f64) -> f64 {
-    let char_h = size_pt * (25.4 / 72.0);
-    let tracking_pct = if char_h > 0.0 { (spacing_mm / char_h) * 100.0 } else { 0.0 };
-    let span = TextSpan {
-        bold: true,
-        tracking_pct,
-        ..TextSpan::new(slogan, FONT, size_pt)
-    };
-    let req = tracedraw_text::TextRequest {
-        spans: std::slice::from_ref(&span),
-        frame: None,
-        align: TextAlign::Left,
-        para: &ParagraphStyle::default(),
-        on_path: None,
-    };
-    let w = tracedraw_text::fonts().layout(&req).bounds.width();
-    if w.is_finite() && w > 1.0 {
-        w
-    } else {
-        let chars: Vec<char> = slogan.chars().collect();
-        let mut raw = 0.0;
-        for &c in &chars {
-            if c.is_ascii_graphic() || c.is_ascii_digit() {
-                raw += char_h * 0.60;
-            } else if c.is_whitespace() {
-                raw += char_h * 0.50;
-            } else {
-                raw += char_h * 1.08;
-            }
-        }
-        (raw + (chars.len() as f64) * spacing_mm.max(0.0)).max(10.0)
-    }
-}
-
-/// Measure unscaled natural height of a vertical slogan using the text shaping engine.
-fn measure_slogan_h(slogan: &str, size_pt: f64, spacing_mm: f64) -> f64 {
-    let char_h = size_pt * (25.4 / 72.0);
-    let tracking_pct = if char_h > 0.0 { (spacing_mm / char_h) * 100.0 } else { 0.0 };
-    let span = TextSpan {
-        bold: true,
-        tracking_pct,
-        ..TextSpan::new(slogan, FONT, size_pt)
-    };
-    let req = tracedraw_text::TextRequest {
-        spans: std::slice::from_ref(&span),
-        frame: None,
-        align: TextAlign::Left,
-        para: &ParagraphStyle {
-            vertical: true,
-            ..Default::default()
-        },
-        on_path: None,
-    };
-    let h = tracedraw_text::fonts().layout(&req).bounds.height();
-    if h.is_finite() && h > 1.0 {
-        h
-    } else {
-        let chars: Vec<char> = slogan.chars().collect();
-        let mut raw = 0.0;
-        for &c in &chars {
-            if c.is_ascii_graphic() || c.is_ascii_digit() {
-                raw += char_h * 0.60;
-            } else if c.is_whitespace() {
-                raw += char_h * 0.50;
-            } else {
-                raw += char_h * 1.08;
-            }
-        }
-        (raw + (chars.len() as f64) * spacing_mm.max(0.0)).max(10.0)
-    }
-}
 
     /// Calculate dimensions (width_mm, height_mm, font_size_pt, deformation_scale) for a single slogan.
     /// The font height (size_pt) and spacing_mm are kept intact; deformation_scale stretches or compresses
@@ -880,7 +880,7 @@ mod tests {
             length_mode: LengthMode::Fixed,
             ..Banner::default()
         };
-        let (w, h, size_pt, scale) = banner.calculate_size(slogan);
+        let (w, h, _size_pt, scale) = banner.calculate_size(slogan);
         assert_eq!(w, 6000.0);
         assert_eq!(h, 700.0);
         assert!(scale < 1.0, "19 characters in 6m banner should compress: {scale}");
