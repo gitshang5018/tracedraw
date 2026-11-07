@@ -323,10 +323,10 @@ impl Banner {
             let margin_side = self.margin_tb_mm.max(0.0);
             let avail_w = (cloth_w - 2.0 * margin_side).max(20.0);
             // Slogan and signature are placed side-by-side across cloth roll width
-            let sign_pt = 300.0.max(self.signature_pt);
+            let sign_pt = self.signature_pt.max(300.0);
             let sign_char_h = if has_sign { sign_pt * (25.4 / 72.0) } else { 0.0 };
             let col_gap = if has_sign { 30.0 } else { 0.0 };
-            let max_total_w = 500.0f64.min(avail_w);
+            let max_total_w = avail_w.min(500.0);
             let max_char_h = if has_sign {
                 (max_total_w - sign_char_h - col_gap).max(30.0)
             } else {
@@ -372,11 +372,11 @@ impl Banner {
             let cloth_h = self.height_mm.max(100.0);
             let margin_tb = self.margin_tb_mm.max(0.0);
             let avail_h = (cloth_h - 2.0 * margin_tb).max(20.0);
-            let sign_pt = 300.0.max(self.signature_pt);
+            let sign_pt = self.signature_pt.max(300.0);
             let sign_char_h = if has_sign { sign_pt * (25.4 / 72.0) } else { 0.0 };
             let gap = if has_sign { 20.0 } else { 0.0 };
             // Total height of slogan + signature (+ gap) must not exceed 500mm
-            let max_total_h = 500.0f64.min(avail_h);
+            let max_total_h = avail_h.min(500.0);
             let max_char_h = if has_sign {
                 (max_total_h - sign_char_h - gap).max(30.0)
             } else {
@@ -463,9 +463,9 @@ impl Banner {
             let slogan_bottom = banner_cy - slogan_len * 0.5;
 
             let (slogan_x, sign_x) = if has_sign {
-                let sign_pt = 300.0.max(self.signature_pt);
+                let sign_pt = self.signature_pt.max(300.0);
                 let sign_char_h = sign_pt * (25.4 / 72.0);
-                let col_gap = 30.0.max(char_h * 0.1);
+                let col_gap = (char_h * 0.1).max(30.0);
                 let group_w = char_h + col_gap + sign_char_h;
                 let sx = (banner_cx - group_w * 0.5) + sign_char_h * 0.5;
                 let mx = (banner_cx + group_w * 0.5) - char_h * 0.5;
@@ -503,7 +503,7 @@ impl Banner {
 
             // Optional signature in second column to the left of slogan, shifted upward by one slogan character
             if has_sign {
-                let sign_pt = 300.0.max(self.signature_pt);
+                let sign_pt = self.signature_pt.max(300.0);
                 let slogan_char_h = (char_h * scale).max(20.0);
                 let sign_bottom = slogan_bottom + slogan_char_h;
                 let sign_natural_h = measure_slogan_h(self.signature.trim(), sign_pt, self.spacing_mm * 0.5);
@@ -547,7 +547,7 @@ impl Banner {
             };
 
             if has_sign {
-                let sign_pt = 300.0.max(self.signature_pt);
+                let sign_pt = self.signature_pt.max(300.0);
                 let sign_char_h = sign_pt * (25.4 / 72.0);
                 let gap = 20.0;
                 let content_h = char_h + gap + sign_char_h;
