@@ -349,20 +349,9 @@ impl Banner {
                     let banner_len = self.width_mm.max(2.0 * margin_ends + 100.0);
                     let avail_h = (banner_len - 2.0 * margin_ends).max(50.0);
                     let safe_h = (avail_h - 10.0).max(40.0);
-                    if raw_total_h > safe_h {
-                        // Overflow: compress characters vertically without changing font size or spacing
-                        let scale = safe_h / raw_total_h;
-                        (banner_len, scale)
-                    } else {
-                        // Few characters: stretch characters vertically up to 2.5x to fill ~75% of banner
-                        let target_span = safe_h * 0.75;
-                        if raw_total_h < target_span {
-                            let scale = (target_span / raw_total_h).min(2.5);
-                            (banner_len, scale)
-                        } else {
-                            (banner_len, 1.0)
-                        }
-                    }
+                    // Stretch or compress characters vertically to fill safe height (capped at 2.5x)
+                    let scale = (safe_h / raw_total_h).min(2.5);
+                    (banner_len, scale)
                 }
             };
 
@@ -399,20 +388,9 @@ impl Banner {
                     let banner_w = self.width_mm.max(2.0 * margin_lr + 100.0);
                     let avail_w = (banner_w - 2.0 * margin_lr).max(50.0);
                     let safe_w = (avail_w - 10.0).max(40.0);
-                    if raw_total_w > safe_w {
-                        // Overflow: compress characters horizontally without changing font size or spacing
-                        let scale = safe_w / raw_total_w;
-                        (banner_w, scale)
-                    } else {
-                        // Few characters: stretch characters horizontally up to 2.5x to fill ~75% of banner
-                        let target_span = safe_w * 0.75;
-                        if raw_total_w < target_span {
-                            let scale = (target_span / raw_total_w).min(2.5);
-                            (banner_w, scale)
-                        } else {
-                            (banner_w, 1.0)
-                        }
-                    }
+                    // Stretch or compress characters horizontally to fill safe width (capped at 2.5x)
+                    let scale = (safe_w / raw_total_w).min(2.5);
+                    (banner_w, scale)
                 }
             };
 
@@ -1063,5 +1041,31 @@ mod tests {
             assert!(sign_spans[0].bold);
             assert_eq!(*sign_fill, Fill::Solid(banner.slogan_color));
         }
+    }
+
+    /// Moderate length slogan with signature in fixed mode stretches horizontally to fill safe width.
+    #[test]
+    fn fixed_mode_with_signature_stretches_to_fill_width() {
+        let slogan = "热烈庆祝建党百年华诞";
+        let banner = Banner {
+            slogans: vec![slogan.into()],
+            signature: "支部委员会".into(),
+            height_mm: 700.0,
+            width_mm: 6000.0,
+            length_mode: LengthMode::Fixed,
+            margin_lr_mm: 200.0,
+            ..Banner::default()
+        };
+        let (w, h, size_pt, scale) = banner.calculate_size(slogan);
+        assert_eq!(w, 6000.0);
+        assert_eq!(h, 700.0);
+        let char_h = size_pt * (25.4 / 72.0);
+        let sign_pt = banner.signature_pt.max(300.0);
+        let sign_char_h = sign_pt * (25.4 / 72.0);
+        assert!(char_h + sign_char_h <= 500.0);
+        assert!(scale > 1.1, "slogan should stretch horizontally to fill safe width: got {scale}");
+        let safe_w = 6000.0 - 2.0 * 200.0 - 10.0;
+        let raw_w = measure_slogan_w(slogan, size_pt, banner.spacing_mm);
+        assert!((raw_w * scale - safe_w).abs() < 1.0, "scaled slogan width should reach safe width: {} vs {}", raw_w * scale, safe_w);
     }
 }
