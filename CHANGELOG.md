@@ -6,6 +6,8 @@ full, row-by-row status.
 
 ## Unreleased
 
+- 批量条幅 overhaul: standard roll presets (400 to 1200 mm), automatic length calculation from text count, side and top/bottom margins, classic color presets, punctuation cleaning, grommets punching marks, and multi-page document generation.
+
 ## 0.40.0 (2026-11-06)
 
 - 异形拼版 keeps the spacing that was asked for. The parts were grown by a square, which leaves the spacing along the diagonal a corner further away: the parts sat ten millimetres apart where they met side to side and fourteen where they met at an angle. They are grown by a disc now, so the spacing is the same in every direction, and a test measures it.
