@@ -167,7 +167,7 @@ impl Default for Banner {
             height_ratio: 0.75,
             gap_mm: 100.0,
             slogan_pt: 1400.0,
-            signature_pt: 500.0,
+            signature_pt: 300.0,
             punctuation: PunctuationMode::Space,
             color_preset: ColorPreset::RedYellow,
             background: Color::rgb8(218, 24, 24),
@@ -325,7 +325,7 @@ impl Banner {
             // Character height stays full size across the cloth roll
             let char_h = (avail_w * self.height_ratio.clamp(0.4, 0.95)).max(15.0);
             let font_size_pt = char_h * (72.0 / 25.4);
-            let sign_h = if has_sign { (char_h * 2.0).clamp(60.0, 300.0) } else { 0.0 };
+            let sign_h = if has_sign { (char_h * 2.0).clamp(120.0, 600.0) } else { 0.0 };
 
             let raw_total_h = measure_slogan_h(slogan, font_size_pt, base_spacing);
             let margin_ends = self.margin_lr_mm.max(0.0);
@@ -361,7 +361,12 @@ impl Banner {
             // Horizontal banner: cloth roll is height (h), banner length is width (w).
             let cloth_h = self.height_mm.max(100.0);
             let margin_tb = self.margin_tb_mm.max(0.0);
-            let sign_h = if has_sign { (cloth_h * 0.20).clamp(40.0, 160.0) } else { 0.0 };
+            let sign_pt_h = 300.0 * (25.4 / 72.0);
+            let sign_h = if has_sign {
+                (cloth_h * 0.22).clamp(sign_pt_h * 1.15, 300.0).min(cloth_h * 0.35)
+            } else {
+                0.0
+            };
             let avail_h = (cloth_h - sign_h - 2.0 * margin_tb).max(20.0);
             // Character height stays full size across the cloth roll
             let char_h = (avail_h * self.height_ratio.clamp(0.4, 0.95)).max(15.0);
@@ -430,7 +435,7 @@ impl Banner {
             // Vertical banner
             let margin_side = self.margin_tb_mm.max(0.0);
             let margin_ends = self.margin_lr_mm.max(0.0);
-            let sign_h = if has_sign { (char_h * 2.0).clamp(60.0, 300.0) } else { 0.0 };
+            let sign_h = if has_sign { (char_h * 2.0).clamp(120.0, 600.0) } else { 0.0 };
             let avail_h = (h - 2.0 * margin_ends - sign_h).max(10.0);
             let avail_w = (w - 2.0 * margin_side).max(10.0);
 
@@ -476,7 +481,7 @@ impl Banner {
 
             // Optional signature at bottom of vertical banner
             if has_sign {
-                let sign_pt = (size_pt * 0.40).clamp(14.0, 72.0);
+                let sign_pt = (size_pt * 0.40).max(self.signature_pt).max(300.0);
                 let sign_span = TextSpan {
                     bold: false,
                     fill: Some(Fill::Solid(self.signature_color)),
@@ -504,7 +509,12 @@ impl Banner {
             // Horizontal banner
             let margin_lr = self.margin_lr_mm.max(0.0);
             let margin_tb = self.margin_tb_mm.max(0.0);
-            let sign_h = if has_sign { (h * 0.20).clamp(40.0, 160.0) } else { 0.0 };
+            let sign_pt_h = 300.0 * (25.4 / 72.0);
+            let sign_h = if has_sign {
+                (h * 0.22).clamp(sign_pt_h * 1.15, 300.0).min(h * 0.35)
+            } else {
+                0.0
+            };
             let avail_w = (w - 2.0 * margin_lr).max(10.0);
             let avail_h = (h - 2.0 * margin_tb - sign_h).max(10.0);
 
@@ -549,7 +559,9 @@ impl Banner {
 
             // Optional signature at bottom-right of horizontal banner
             if has_sign {
-                let sign_pt = (size_pt * 0.35).clamp(14.0, 72.0);
+                let sign_pt = (size_pt * 0.35).max(self.signature_pt).max(300.0);
+                let slogan_char_w = (char_h * scale).max(20.0);
+                let sign_frame_w = (avail_w - slogan_char_w).max(10.0);
                 let sign_span = TextSpan {
                     bold: false,
                     fill: Some(Fill::Solid(self.signature_color)),
@@ -559,7 +571,7 @@ impl Banner {
                     ShapeKind::Text {
                         spans: vec![sign_span],
                         origin: Point::new(left + margin_lr, top + margin_tb),
-                        frame: Some(Size::new(avail_w, sign_h)),
+                        frame: Some(Size::new(sign_frame_w, sign_h)),
                         align: TextAlign::Right,
                         para: ParagraphStyle {
                             vertical_align: VerticalAlign::Center,
@@ -891,6 +903,40 @@ mod tests {
             assert_eq!(spans[0].text, slogan);
             assert!(frame.unwrap().width >= 6000.0, "frame width must not constrain characters into wrapping");
             assert_ne!(*transform, Affine::IDENTITY);
+        }
+    }
+
+    /// Signature is at least 300pt and indented from the right by one slogan character.
+    #[test]
+    fn signature_size_and_right_indent() {
+        let banner = Banner {
+            slogans: vec!["热烈庆祝中华人民共和国成立七十五周年".into()],
+            signature: "中国共产党支部委员会".into(),
+            height_mm: 700.0,
+            width_mm: 6000.0,
+            length_mode: LengthMode::Fixed,
+            ..Banner::default()
+        };
+        let (w, _h, size_pt, scale) = banner.calculate_size(&banner.slogans[0]);
+        let (_, _, shapes) = banner.build_single(&banner.slogans[0], 0.0, 0.0);
+        let sign_shape = shapes.iter().find(|(kind, _, _, _)| {
+            if let ShapeKind::Text { spans, .. } = kind {
+                spans.iter().any(|s| s.text == "中国共产党支部委员会")
+            } else {
+                false
+            }
+        });
+        assert!(sign_shape.is_some(), "signature shape should be generated");
+        if let Some((ShapeKind::Text { spans, frame, origin, align, .. }, _, _, _)) = sign_shape {
+            assert!(spans[0].size >= 300.0, "signature font size must be at least 300pt, got {}", spans[0].size);
+            assert_eq!(*align, TextAlign::Right);
+            let frame = frame.unwrap();
+            let margin_lr = banner.margin_lr_mm;
+            let char_h = size_pt * (25.4 / 72.0);
+            let slogan_char_w = (char_h * scale).max(20.0);
+            let right_edge = origin.x + frame.width;
+            let expected_right = (w - margin_lr) - slogan_char_w;
+            assert!((right_edge - expected_right).abs() < 1e-3, "right edge should be indented by one slogan character: {right_edge} vs {expected_right}");
         }
     }
 }
