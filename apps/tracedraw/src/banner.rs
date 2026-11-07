@@ -411,7 +411,7 @@ impl App {
                             corners: None,
                         },
                     );
-                    bg.fill = Some(Fill::Solid(banner.background));
+                    bg.fill = Fill::Solid(banner.background);
                     bg.stroke = None;
                     let _ = self.engine.run(&Command::AddShape { layer, shape: bg });
 
@@ -425,7 +425,7 @@ impl App {
                                 corners: None,
                             },
                         );
-                        band_shape.fill = Some(Fill::Solid(banner.band_color));
+                        band_shape.fill = Fill::Solid(banner.band_color);
                         let _ = self.engine.run(&Command::AddShape { layer, shape: band_shape });
                     }
 
@@ -514,7 +514,7 @@ impl App {
                                     arc: None,
                                 },
                             );
-                            circle.fill = Some(Fill::Solid(Color::WHITE));
+                            circle.fill = Fill::Solid(Color::WHITE);
                             circle.stroke = Some(Stroke::hairline(Color::rgb8(120, 120, 120)));
                             let _ = self.engine.run(&Command::AddShape { layer, shape: circle });
                         }
@@ -540,15 +540,17 @@ impl App {
                     for (kind, fill, stroke) in shapes {
                         let id = self.engine.new_shape_id();
                         let mut s = Shape::new(id, kind);
-                        s.fill = Some(fill);
+                        s.fill = fill;
                         s.stroke = stroke;
                         ids.push(id);
                         let _ = self.engine.run(&Command::AddShape { layer, shape: s });
                     }
                     if ids.len() > 1 {
                         let _ = self.engine.run(&Command::Group { shapes: ids });
-                        if let Some(s) = self.doc().shapes_on(layer).last() {
-                            created.push(s.id);
+                        if let Ok(l) = self.doc().layer(layer) {
+                            if let Some(s) = l.shapes.last() {
+                                created.push(s.id);
+                            }
                         }
                     } else if let Some(&first) = ids.first() {
                         created.push(first);
