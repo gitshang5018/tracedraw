@@ -250,6 +250,14 @@ pub fn root(app: &mut App, ui: &mut Ui) {
 
 /// Clear keyboard focus when clicking outside the currently focused edit box.
 pub(crate) fn clear_focus_on_outside_click(ctx: &egui::Context) {
+    #[cfg(target_os = "android")]
+    {
+        // On Android, text fields are manipulated via touch and the soft keyboard.
+        // Dynamic layout shifts during virtual keyboard animation or panel lifts
+        // must never cause accidental unfocusing. Dismissing the keyboard is handled
+        // by the Android back gesture, IME Done button, or direct canvas clicks.
+        return;
+    }
     let pressed = ctx.input(|i| i.pointer.primary_pressed() || i.pointer.secondary_pressed());
     if !pressed {
         return;
@@ -264,10 +272,6 @@ pub(crate) fn clear_focus_on_outside_click(ctx: &egui::Context) {
     let Some(focused_id) = ctx.memory(|m| m.focused()) else {
         return;
     };
-    #[cfg(target_os = "android")]
-    if crate::android_system::is_keyboard_rising() {
-        return;
-    }
     let Some(r) = ctx.read_response(focused_id) else {
         return;
     };
@@ -756,6 +760,9 @@ fn canvas_window(app: &mut App, ui: &mut Ui, full: egui::Rect, bare: bool) {
     }
 
     let response = ui.allocate_rect(canvas_rect, Sense::click_and_drag());
+    if response.clicked() || response.drag_started() {
+        ui.ctx().memory_mut(|m| m.stop_text_input());
+    }
     let painter = ui.painter_at(canvas_rect);
 
     // Wheel: with the default setting the wheel zooms about the

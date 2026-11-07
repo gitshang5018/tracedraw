@@ -1979,7 +1979,9 @@ pub(crate) fn mobile_number_input(
     );
 
     if resp.has_focus() {
-        resp.scroll_to_me(Some(egui::Align::Center));
+        if resp.gained_focus() {
+            resp.scroll_to_me(Some(egui::Align::Center));
+        }
         if let Ok(v) = buf.trim().parse::<f64>() {
             *value = v.clamp(*range.start(), *range.end());
         }
@@ -2008,7 +2010,7 @@ fn banner_sheet(app: &mut App, ui: &mut Ui, m3: &M3) {
             .desired_width(ui.available_width())
             .hint_text(tr("banner.slogans_hint")),
     );
-    if slogans_resp.has_focus() {
+    if slogans_resp.gained_focus() {
         slogans_resp.scroll_to_me(Some(egui::Align::Center));
     }
     st.banner.slogans = slogans.split('\n').map(|s| s.to_string()).collect();
@@ -2021,7 +2023,7 @@ fn banner_sheet(app: &mut App, ui: &mut Ui, m3: &M3) {
             .desired_width(ui.available_width())
             .hint_text(tr("banner.signature_hint")),
     );
-    if sign_resp.has_focus() {
+    if sign_resp.gained_focus() {
         sign_resp.scroll_to_me(Some(egui::Align::Center));
     }
 
@@ -2724,11 +2726,19 @@ fn sheet_ui(
             frame
         }
     };
+    let typing = ctx.memory(|m| m.focused().is_some());
+    #[cfg(target_os = "android")]
+    let keyboard_active = ime > 0.0 || crate::android_system::is_keyboard_rising();
+    #[cfg(not(target_os = "android"))]
+    let keyboard_active = false;
+
     if ctx.cumulative_frame_nr() > since
+        && !typing
+        && !keyboard_active
         && ctx.input(|i| i.pointer.any_pressed() || i.pointer.any_click())
     {
         if let Some(at) = ctx.pointer_latest_pos() {
-            if !card_rect.contains(at) {
+            if !card_rect.contains(at) && at.y < card_rect.bottom() {
                 *open = Sheet::None;
             }
         }

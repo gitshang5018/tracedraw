@@ -362,6 +362,10 @@ impl<N: Numeric> NumField<'_, N> {
                 state.store(ui.ctx(), id);
             }
         }
+        let entered = ui.input(|i| i.key_pressed(egui::Key::Enter));
+        if entered && resp.has_focus() {
+            resp.surrender_focus();
+        }
         if resp.has_focus() {
             ui.data_mut(|d| d.insert_temp(id, buf.clone()));
         } else if stored.is_some() || resp.lost_focus() {
