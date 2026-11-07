@@ -119,7 +119,7 @@ pub struct Banner {
     pub length_mode: LengthMode,
     /// The length of a banner in fixed mode (millimetres).
     pub width_mm: f64,
-    /// Tying margins at both ends in millimetres (default: 400 mm).
+    /// Tying margins at both ends in millimetres (default: 200 mm).
     pub margin_lr_mm: f64,
     /// Top and bottom safety margins in millimetres (default: 50 mm).
     pub margin_tb_mm: f64,
@@ -161,7 +161,7 @@ impl Default for Banner {
             height_mm: 700.0,
             length_mode: LengthMode::Fixed,
             width_mm: 6000.0,
-            margin_lr_mm: 400.0,
+            margin_lr_mm: 200.0,
             margin_tb_mm: 50.0,
             spacing_mm: 50.0,
             height_ratio: 0.75,
@@ -322,22 +322,32 @@ impl Banner {
             let cloth_w = self.height_mm.max(100.0);
             let margin_side = self.margin_tb_mm.max(0.0);
             let avail_w = (cloth_w - 2.0 * margin_side).max(20.0);
-            // Character height stays full size across the cloth roll
-            let char_h = (avail_w * self.height_ratio.clamp(0.4, 0.95)).max(15.0);
+            // Slogan and signature are placed side-by-side across cloth roll width
+            let sign_pt = 300.0.max(self.signature_pt);
+            let sign_char_h = if has_sign { sign_pt * (25.4 / 72.0) } else { 0.0 };
+            let col_gap = if has_sign { 30.0 } else { 0.0 };
+            let max_total_w = 500.0f64.min(avail_w);
+            let max_char_h = if has_sign {
+                (max_total_w - sign_char_h - col_gap).max(30.0)
+            } else {
+                max_total_w
+            };
+            let char_h = (avail_w * self.height_ratio.clamp(0.4, 0.95))
+                .min(max_char_h)
+                .max(15.0);
             let font_size_pt = char_h * (72.0 / 25.4);
-            let sign_h = if has_sign { (char_h * 2.0).clamp(120.0, 600.0) } else { 0.0 };
 
             let raw_total_h = measure_slogan_h(slogan, font_size_pt, base_spacing);
             let margin_ends = self.margin_lr_mm.max(0.0);
 
             let (banner_len, scale_y) = match self.length_mode {
                 LengthMode::Auto => {
-                    let banner_len = (2.0 * margin_ends + sign_h + raw_total_h).max(500.0);
+                    let banner_len = (2.0 * margin_ends + raw_total_h).max(500.0);
                     (banner_len, 1.0)
                 }
                 LengthMode::Fixed => {
                     let banner_len = self.width_mm.max(2.0 * margin_ends + 100.0);
-                    let avail_h = (banner_len - 2.0 * margin_ends - sign_h).max(50.0);
+                    let avail_h = (banner_len - 2.0 * margin_ends).max(50.0);
                     let safe_h = (avail_h - 10.0).max(40.0);
                     if raw_total_h > safe_h {
                         // Overflow: compress characters vertically without changing font size or spacing
@@ -361,15 +371,20 @@ impl Banner {
             // Horizontal banner: cloth roll is height (h), banner length is width (w).
             let cloth_h = self.height_mm.max(100.0);
             let margin_tb = self.margin_tb_mm.max(0.0);
-            let sign_pt_h = 300.0 * (25.4 / 72.0);
-            let sign_h = if has_sign {
-                (cloth_h * 0.22).clamp(sign_pt_h * 1.15, 300.0).min(cloth_h * 0.35)
+            let avail_h = (cloth_h - 2.0 * margin_tb).max(20.0);
+            let sign_pt = 300.0.max(self.signature_pt);
+            let sign_char_h = if has_sign { sign_pt * (25.4 / 72.0) } else { 0.0 };
+            let gap = if has_sign { 20.0 } else { 0.0 };
+            // Total height of slogan + signature (+ gap) must not exceed 500mm
+            let max_total_h = 500.0f64.min(avail_h);
+            let max_char_h = if has_sign {
+                (max_total_h - sign_char_h - gap).max(30.0)
             } else {
-                0.0
+                max_total_h
             };
-            let avail_h = (cloth_h - sign_h - 2.0 * margin_tb).max(20.0);
-            // Character height stays full size across the cloth roll
-            let char_h = (avail_h * self.height_ratio.clamp(0.4, 0.95)).max(15.0);
+            let char_h = (avail_h * self.height_ratio.clamp(0.4, 0.95))
+                .min(max_char_h)
+                .max(15.0);
             let font_size_pt = char_h * (72.0 / 25.4);
 
             let raw_total_w = measure_slogan_w(slogan, font_size_pt, base_spacing);
@@ -432,19 +447,9 @@ impl Banner {
         let tracking_pct = if char_h > 0.0 { (self.spacing_mm / char_h) * 100.0 } else { 0.0 };
 
         if self.vertical {
-            // Vertical banner
-            let margin_side = self.margin_tb_mm.max(0.0);
-            let margin_ends = self.margin_lr_mm.max(0.0);
-            let sign_h = if has_sign { (char_h * 2.0).clamp(120.0, 600.0) } else { 0.0 };
-            let avail_h = (h - 2.0 * margin_ends - sign_h).max(10.0);
-            let avail_w = (w - 2.0 * margin_side).max(10.0);
-
-            let natural_h = measure_slogan_h(slogan, size_pt, self.spacing_mm);
-            // Generous frame height so vertical text breaker NEVER wraps into second column or drops characters
-            let frame_h = (natural_h * 4.0).max(avail_h / scale.max(0.05) * 4.0).max(100_000.0);
-
-            let cx = left + margin_side + avail_w * 0.5;
-            let cy = top + margin_ends + sign_h + avail_h * 0.5;
+            // Vertical banner: cloth roll is width (w), banner length is height (h).
+            let banner_cx = left + w * 0.5;
+            let banner_cy = top + h * 0.5;
 
             let slogan_span = TextSpan {
                 bold: true,
@@ -453,10 +458,28 @@ impl Banner {
                 ..TextSpan::new(slogan, FONT, size_pt)
             };
 
+            let natural_h = measure_slogan_h(slogan, size_pt, self.spacing_mm);
+            let slogan_len = natural_h * scale;
+            let slogan_bottom = banner_cy - slogan_len * 0.5;
+
+            let (slogan_x, sign_x) = if has_sign {
+                let sign_pt = 300.0.max(self.signature_pt);
+                let sign_char_h = sign_pt * (25.4 / 72.0);
+                let col_gap = 30.0.max(char_h * 0.1);
+                let group_w = char_h + col_gap + sign_char_h;
+                let sx = (banner_cx - group_w * 0.5) + sign_char_h * 0.5;
+                let mx = (banner_cx + group_w * 0.5) - char_h * 0.5;
+                (mx, sx)
+            } else {
+                (banner_cx, banner_cx)
+            };
+
+            // Slogan: artistic text (frame: None), centered at (slogan_x, banner_cy)
+            let slogan_origin = Point::new(slogan_x, banner_cy + natural_h * 0.5);
             let slogan_transform = if (scale - 1.0).abs() > 1e-4 {
-                Affine::translate((cx, cy))
+                Affine::translate((slogan_x, banner_cy))
                     * Affine::scale_non_uniform(1.0, scale)
-                    * Affine::translate((-cx, -cy))
+                    * Affine::translate((-slogan_x, -banner_cy))
             } else {
                 Affine::IDENTITY
             };
@@ -464,12 +487,11 @@ impl Banner {
             shapes.push((
                 ShapeKind::Text {
                     spans: vec![slogan_span],
-                    origin: Point::new(left + margin_side, cy - frame_h * 0.5),
-                    frame: Some(Size::new(avail_w, frame_h)),
-                    align: TextAlign::Center,
+                    origin: slogan_origin,
+                    frame: None,
+                    align: TextAlign::Left,
                     para: ParagraphStyle {
                         vertical: true,
-                        vertical_align: VerticalAlign::Center,
                         ..Default::default()
                     },
                     on_path: None,
@@ -479,51 +501,43 @@ impl Banner {
                 slogan_transform,
             ));
 
-            // Optional signature at bottom of vertical banner
+            // Optional signature in second column to the left of slogan, shifted upward by one slogan character
             if has_sign {
-                let sign_pt = (size_pt * 0.40).max(self.signature_pt).max(300.0);
+                let sign_pt = 300.0.max(self.signature_pt);
+                let slogan_char_h = (char_h * scale).max(20.0);
+                let sign_bottom = slogan_bottom + slogan_char_h;
+                let sign_natural_h = measure_slogan_h(self.signature.trim(), sign_pt, self.spacing_mm * 0.5);
+                let sign_origin = Point::new(sign_x, sign_bottom + sign_natural_h);
+
                 let sign_span = TextSpan {
-                    bold: false,
-                    fill: Some(Fill::Solid(self.signature_color)),
+                    bold: true,
+                    fill: Some(Fill::Solid(self.slogan_color)),
                     ..TextSpan::new(self.signature.trim(), FONT, sign_pt)
                 };
+
                 shapes.push((
                     ShapeKind::Text {
                         spans: vec![sign_span],
-                        origin: Point::new(left + margin_side, top + margin_ends),
-                        frame: Some(Size::new(avail_w, sign_h)),
-                        align: TextAlign::Center,
+                        origin: sign_origin,
+                        frame: None,
+                        align: TextAlign::Left,
                         para: ParagraphStyle {
                             vertical: true,
-                            vertical_align: VerticalAlign::Bottom,
                             ..Default::default()
                         },
                         on_path: None,
                     },
-                    Fill::Solid(self.signature_color),
+                    Fill::Solid(self.slogan_color),
                     None,
                     Affine::IDENTITY,
                 ));
             }
         } else {
-            // Horizontal banner
+            // Horizontal banner: cloth roll is height (h), banner length is width (w).
             let margin_lr = self.margin_lr_mm.max(0.0);
-            let margin_tb = self.margin_tb_mm.max(0.0);
-            let sign_pt_h = 300.0 * (25.4 / 72.0);
-            let sign_h = if has_sign {
-                (h * 0.22).clamp(sign_pt_h * 1.15, 300.0).min(h * 0.35)
-            } else {
-                0.0
-            };
             let avail_w = (w - 2.0 * margin_lr).max(10.0);
-            let avail_h = (h - 2.0 * margin_tb - sign_h).max(10.0);
-
-            let natural_w = measure_slogan_w(slogan, size_pt, self.spacing_mm);
-            // Generous frame width so horizontal text breaker NEVER wraps onto 2nd line or drops characters
-            let frame_w = (natural_w * 4.0).max(avail_w / scale.max(0.05) * 4.0).max(100_000.0);
-
+            let banner_cy = top + h * 0.5;
             let cx = left + margin_lr + avail_w * 0.5;
-            let cy = top + margin_tb + sign_h + avail_h * 0.5;
 
             let slogan_span = TextSpan {
                 bold: true,
@@ -532,56 +546,128 @@ impl Banner {
                 ..TextSpan::new(slogan, FONT, size_pt)
             };
 
-            let slogan_transform = if (scale - 1.0).abs() > 1e-4 {
-                Affine::translate((cx, cy))
-                    * Affine::scale_non_uniform(scale, 1.0)
-                    * Affine::translate((-cx, -cy))
-            } else {
-                Affine::IDENTITY
-            };
-
-            shapes.push((
-                ShapeKind::Text {
-                    spans: vec![slogan_span],
-                    origin: Point::new(cx - frame_w * 0.5, top + margin_tb + sign_h),
-                    frame: Some(Size::new(frame_w, avail_h)),
-                    align: TextAlign::Center,
-                    para: ParagraphStyle {
-                        vertical_align: VerticalAlign::Center,
-                        ..Default::default()
-                    },
-                    on_path: None,
-                },
-                Fill::Solid(self.slogan_color),
-                None,
-                slogan_transform,
-            ));
-
-            // Optional signature at bottom-right of horizontal banner
             if has_sign {
-                let sign_pt = (size_pt * 0.35).max(self.signature_pt).max(300.0);
+                let sign_pt = 300.0.max(self.signature_pt);
+                let sign_char_h = sign_pt * (25.4 / 72.0);
+                let gap = 20.0;
+                let content_h = char_h + gap + sign_char_h;
+                let block_bottom = banner_cy - content_h * 0.5;
+                let block_top = banner_cy + content_h * 0.5;
+
+                let slogan_cy = block_top - char_h * 0.5;
+                let sign_cy = block_bottom + sign_char_h * 0.5;
+
+                let slogan_req = TextRequest {
+                    spans: std::slice::from_ref(&slogan_span),
+                    frame: None,
+                    align: TextAlign::Center,
+                    para: &ParagraphStyle::default(),
+                    on_path: None,
+                };
+                let slogan_bounds = tracedraw_text::fonts().layout(&slogan_req).bounds;
+                let slogan_offset_y = if slogan_bounds.center().y.is_finite() {
+                    slogan_bounds.center().y
+                } else {
+                    char_h * 0.35
+                };
+                let slogan_origin_y = slogan_cy - slogan_offset_y;
+
+                let slogan_transform = if (scale - 1.0).abs() > 1e-4 {
+                    Affine::translate((cx, slogan_cy))
+                        * Affine::scale_non_uniform(scale, 1.0)
+                        * Affine::translate((-cx, -slogan_cy))
+                } else {
+                    Affine::IDENTITY
+                };
+
+                shapes.push((
+                    ShapeKind::Text {
+                        spans: vec![slogan_span],
+                        origin: Point::new(cx, slogan_origin_y),
+                        frame: None,
+                        align: TextAlign::Center,
+                        para: ParagraphStyle::default(),
+                        on_path: None,
+                    },
+                    Fill::Solid(self.slogan_color),
+                    None,
+                    slogan_transform,
+                ));
+
+                // Signature artistic text: same font and color as slogan, right indented by one slogan character
                 let slogan_char_w = (char_h * scale).max(20.0);
-                let sign_frame_w = (avail_w - slogan_char_w).max(10.0);
+                let sign_right_x = (left + w - margin_lr) - slogan_char_w;
+
                 let sign_span = TextSpan {
-                    bold: false,
-                    fill: Some(Fill::Solid(self.signature_color)),
+                    bold: true,
+                    fill: Some(Fill::Solid(self.slogan_color)),
                     ..TextSpan::new(self.signature.trim(), FONT, sign_pt)
                 };
+
+                let sign_req = TextRequest {
+                    spans: std::slice::from_ref(&sign_span),
+                    frame: None,
+                    align: TextAlign::Right,
+                    para: &ParagraphStyle::default(),
+                    on_path: None,
+                };
+                let sign_bounds = tracedraw_text::fonts().layout(&sign_req).bounds;
+                let sign_offset_y = if sign_bounds.center().y.is_finite() {
+                    sign_bounds.center().y
+                } else {
+                    sign_char_h * 0.35
+                };
+                let sign_origin_y = sign_cy - sign_offset_y;
+
                 shapes.push((
                     ShapeKind::Text {
                         spans: vec![sign_span],
-                        origin: Point::new(left + margin_lr, top + margin_tb),
-                        frame: Some(Size::new(sign_frame_w, sign_h)),
+                        origin: Point::new(sign_right_x, sign_origin_y),
+                        frame: None,
                         align: TextAlign::Right,
-                        para: ParagraphStyle {
-                            vertical_align: VerticalAlign::Center,
-                            ..Default::default()
-                        },
+                        para: ParagraphStyle::default(),
                         on_path: None,
                     },
-                    Fill::Solid(self.signature_color),
+                    Fill::Solid(self.slogan_color),
                     None,
                     Affine::IDENTITY,
+                ));
+            } else {
+                let slogan_req = TextRequest {
+                    spans: std::slice::from_ref(&slogan_span),
+                    frame: None,
+                    align: TextAlign::Center,
+                    para: &ParagraphStyle::default(),
+                    on_path: None,
+                };
+                let slogan_bounds = tracedraw_text::fonts().layout(&slogan_req).bounds;
+                let slogan_offset_y = if slogan_bounds.center().y.is_finite() {
+                    slogan_bounds.center().y
+                } else {
+                    char_h * 0.35
+                };
+                let slogan_origin_y = banner_cy - slogan_offset_y;
+
+                let slogan_transform = if (scale - 1.0).abs() > 1e-4 {
+                    Affine::translate((cx, banner_cy))
+                        * Affine::scale_non_uniform(scale, 1.0)
+                        * Affine::translate((-cx, -banner_cy))
+                } else {
+                    Affine::IDENTITY
+                };
+
+                shapes.push((
+                    ShapeKind::Text {
+                        spans: vec![slogan_span],
+                        origin: Point::new(cx, slogan_origin_y),
+                        frame: None,
+                        align: TextAlign::Center,
+                        para: ParagraphStyle::default(),
+                        on_path: None,
+                    },
+                    Fill::Solid(self.slogan_color),
+                    None,
+                    slogan_transform,
                 ));
             }
         }
@@ -901,12 +987,12 @@ mod tests {
         assert!(text_shape.is_some());
         if let Some((ShapeKind::Text { spans, frame, .. }, _, _, transform)) = text_shape {
             assert_eq!(spans[0].text, slogan);
-            assert!(frame.unwrap().width >= 6000.0, "frame width must not constrain characters into wrapping");
+            assert!(frame.is_none(), "slogan must be artistic text (no paragraph frame)");
             assert_ne!(*transform, Affine::IDENTITY);
         }
     }
 
-    /// Signature is at least 300pt and indented from the right by one slogan character.
+    /// Signature is at least 300pt, artistic text, same color/font, total height <= 500mm, and indented from the right.
     #[test]
     fn signature_size_and_right_indent() {
         let banner = Banner {
@@ -927,16 +1013,55 @@ mod tests {
             }
         });
         assert!(sign_shape.is_some(), "signature shape should be generated");
-        if let Some((ShapeKind::Text { spans, frame, origin, align, .. }, _, _, _)) = sign_shape {
-            assert!(spans[0].size >= 300.0, "signature font size must be at least 300pt, got {}", spans[0].size);
+        if let Some((ShapeKind::Text { spans, frame, origin, align, .. }, fill, _, _)) = sign_shape {
+            assert!(spans[0].size_pt >= 300.0, "signature font size must be at least 300pt, got {}", spans[0].size_pt);
+            assert!(frame.is_none(), "signature must be artistic text");
             assert_eq!(*align, TextAlign::Right);
-            let frame = frame.unwrap();
+            assert_eq!(spans[0].font_family, FONT);
+            assert!(spans[0].bold);
+            assert_eq!(*fill, Fill::Solid(banner.slogan_color));
             let margin_lr = banner.margin_lr_mm;
             let char_h = size_pt * (25.4 / 72.0);
             let slogan_char_w = (char_h * scale).max(20.0);
-            let right_edge = origin.x + frame.width;
             let expected_right = (w - margin_lr) - slogan_char_w;
-            assert!((right_edge - expected_right).abs() < 1e-3, "right edge should be indented by one slogan character: {right_edge} vs {expected_right}");
+            assert!((origin.x - expected_right).abs() < 1e-3, "right edge should be indented by one slogan character: {} vs {}", origin.x, expected_right);
+            let sign_char_h = spans[0].size_pt * (25.4 / 72.0);
+            assert!(char_h + sign_char_h <= 500.0, "total height must not exceed 500mm: {}", char_h + sign_char_h);
+        }
+    }
+
+    /// Vertical banner signature is placed to the left of slogan and shifted upward by one slogan character.
+    #[test]
+    fn vertical_banner_signature_left_and_upward_by_one_character() {
+        let slogan = "热烈庆祝建党百年华诞";
+        let banner = Banner {
+            slogans: vec![slogan.into()],
+            signature: "支部委员会".into(),
+            height_mm: 700.0,
+            width_mm: 5000.0,
+            vertical: true,
+            length_mode: LengthMode::Fixed,
+            ..Banner::default()
+        };
+        let (_, _, shapes) = banner.build_single(slogan, 0.0, 0.0);
+        let slogan_shape = shapes.iter().find(|(kind, _, _, _)| {
+            matches!(kind, ShapeKind::Text { spans, .. } if spans[0].text == slogan)
+        });
+        let sign_shape = shapes.iter().find(|(kind, _, _, _)| {
+            matches!(kind, ShapeKind::Text { spans, .. } if spans[0].text == "支部委员会")
+        });
+        assert!(slogan_shape.is_some());
+        assert!(sign_shape.is_some());
+        if let (
+            Some((ShapeKind::Text { origin: s_origin, frame: s_frame, .. }, _, _, _)),
+            Some((ShapeKind::Text { origin: sign_origin, frame: sign_frame, spans: sign_spans, .. }, sign_fill, _, _)),
+        ) = (slogan_shape, sign_shape) {
+            assert!(s_frame.is_none(), "slogan must not be paragraph text");
+            assert!(sign_frame.is_none(), "signature must not be paragraph text");
+            assert!(sign_origin.x < s_origin.x, "signature must be to the left of slogan: sign_x={}, slogan_x={}", sign_origin.x, s_origin.x);
+            assert_eq!(sign_spans[0].font_family, FONT);
+            assert!(sign_spans[0].bold);
+            assert_eq!(*sign_fill, Fill::Solid(banner.slogan_color));
         }
     }
 }
