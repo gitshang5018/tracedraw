@@ -572,8 +572,8 @@ impl Banner {
                     slogan_transform,
                 ));
 
-                // Signature artistic text: same font and color as slogan, indented by 20cm (200mm) from right margin
-                let sign_indent = 200.0; // 20 cm
+                // Signature artistic text: same font and color as slogan, indented by 40cm (400mm) from right margin
+                let sign_indent = 400.0; // 40 cm
                 let sign_right_x = (left + w - margin_lr) - sign_indent;
 
                 let sign_span = TextSpan {
@@ -1000,8 +1000,8 @@ mod tests {
             assert_eq!(*fill, Fill::Solid(banner.slogan_color));
             let margin_lr = banner.margin_lr_mm;
             let char_h = size_pt * (25.4 / 72.0);
-            let expected_right = (w - margin_lr) - 200.0;
-            assert!((origin.x - expected_right).abs() < 1e-3, "right edge should be indented by 20cm (200mm) from right margin: {} vs {}", origin.x, expected_right);
+            let expected_right = (w - margin_lr) - 400.0;
+            assert!((origin.x - expected_right).abs() < 1e-3, "right edge should be indented by 40cm (400mm) from right margin: {} vs {}", origin.x, expected_right);
             let sign_char_h = spans[0].size_pt * (25.4 / 72.0);
             assert!(char_h + sign_char_h <= 500.0, "total height must not exceed 500mm: {}", char_h + sign_char_h);
         }
