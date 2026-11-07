@@ -615,8 +615,8 @@ impl App {
                 let empty_page = self.doc().layer(layer).map(|l| l.shapes.is_empty()).unwrap_or(true);
                 let (top, left) = if empty_page {
                     // Empty canvas: calculate total extents and resize page to fit nicely
-                    let mut tot_w = 0.0;
-                    let mut tot_h = 0.0;
+                    let mut tot_w: f64 = 0.0;
+                    let mut tot_h: f64 = 0.0;
                     for (i, slogan) in lines.iter().enumerate() {
                         let (w, h, _, _) = banner.calculate_size(slogan);
                         if banner.vertical {
