@@ -436,7 +436,7 @@ impl Banner {
 
             let natural_h = measure_slogan_h(slogan, size_pt, self.spacing_mm);
             // Generous frame height so vertical text breaker NEVER wraps into second column or drops characters
-            let frame_h = (natural_h * 2.0).max(avail_h / scale.max(0.05) * 2.0).max(20_000.0);
+            let frame_h = (natural_h * 4.0).max(avail_h / scale.max(0.05) * 4.0).max(100_000.0);
 
             let cx = left + margin_side + avail_w * 0.5;
             let cy = top + margin_ends + sign_h + avail_h * 0.5;
@@ -510,7 +510,7 @@ impl Banner {
 
             let natural_w = measure_slogan_w(slogan, size_pt, self.spacing_mm);
             // Generous frame width so horizontal text breaker NEVER wraps onto 2nd line or drops characters
-            let frame_w = (natural_w * 2.0).max(avail_w / scale.max(0.05) * 2.0).max(20_000.0);
+            let frame_w = (natural_w * 4.0).max(avail_w / scale.max(0.05) * 4.0).max(100_000.0);
 
             let cx = left + margin_lr + avail_w * 0.5;
             let cy = top + margin_tb + sign_h + avail_h * 0.5;

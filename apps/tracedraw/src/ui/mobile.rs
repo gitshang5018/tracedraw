@@ -1985,8 +1985,14 @@ pub(crate) fn mobile_number_input(
         if let Ok(v) = buf.trim().parse::<f64>() {
             *value = v.clamp(*range.start(), *range.end());
         }
+        if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+            resp.surrender_focus();
+        }
         ui.ctx().data_mut(|d| d.insert_temp(id, buf));
     } else {
+        if let Ok(v) = buf.trim().parse::<f64>() {
+            *value = v.clamp(*range.start(), *range.end());
+        }
         ui.ctx().data_mut(|d| d.insert_temp(id, shown));
     }
 
@@ -2062,6 +2068,32 @@ fn banner_sheet(app: &mut App, ui: &mut Ui, m3: &M3) {
             }
         }
     });
+
+    // Margins and letter spacing directly under banner size (两端留白, 上下边距, 字间距 一行)
+    ui.add_space(4.0);
+    let field = ((ui.available_width() - 16.0) / 3.0).max(64.0);
+    egui::Grid::new("banner_margins_grid")
+        .num_columns(3)
+        .spacing([8.0, 4.0])
+        .show(ui, |ui| {
+            ui.add_sized(
+                [field, 16.0],
+                egui::Label::new(egui::RichText::new(format!("{} (mm)", tr("banner.margin_lr"))).size(11.0).color(m3.variant)),
+            );
+            ui.add_sized(
+                [field, 16.0],
+                egui::Label::new(egui::RichText::new(format!("{} (mm)", tr("banner.margin_tb"))).size(11.0).color(m3.variant)),
+            );
+            ui.add_sized(
+                [field, 16.0],
+                egui::Label::new(egui::RichText::new(format!("{} (mm)", tr("banner.spacing"))).size(11.0).color(m3.variant)),
+            );
+            ui.end_row();
+            mobile_number_input(ui, m3, "banner_margin_lr", &mut st.banner.margin_lr_mm, 0.0..=2000.0, field);
+            mobile_number_input(ui, m3, "banner_margin_tb", &mut st.banner.margin_tb_mm, 0.0..=500.0, field);
+            mobile_number_input(ui, m3, "banner_spacing", &mut st.banner.spacing_mm, 0.0..=500.0, field);
+            ui.end_row();
+        });
 
     // 5. Length mode (Fixed length default vs Auto by text)
     ui.add_space(6.0);
@@ -2139,58 +2171,29 @@ fn banner_sheet(app: &mut App, ui: &mut Ui, m3: &M3) {
         }
     });
 
-    // 8. Output Mode (默认当前画布)
+    // 8. Output Mode (默认当前画布) 与条幅间距放同一行
     ui.add_space(6.0);
     property_label(ui, m3, &tr("banner.output"));
-    ui.horizontal_wrapped(|ui| {
+    ui.horizontal(|ui| {
         if chip(ui, m3, &tr("banner.output_current"), st.banner.output_mode == OutputMode::CurrentPage).clicked() {
             st.banner.output_mode = OutputMode::CurrentPage;
         }
         if chip(ui, m3, &tr("banner.output_pages"), st.banner.output_mode == OutputMode::Pages).clicked() {
             st.banner.output_mode = OutputMode::Pages;
         }
+        if st.banner.output_mode == OutputMode::CurrentPage {
+            ui.add_space(6.0);
+            ui.label(egui::RichText::new(format!("{}:", tr("banner.gap"))).size(11.5).color(m3.variant));
+            mobile_number_input(ui, m3, "banner_gap", &mut st.banner.gap_mm, 0.0..=2000.0, 60.0);
+            ui.label(egui::RichText::new("mm").size(11.0).color(m3.variant));
+        }
     });
 
-    // 9. Spacing & Margins (间距放到输出方式后面)
-    ui.add_space(6.0);
-    property_label(ui, m3, &tr("banner.margins_and_spacing"));
-    if st.banner.output_mode == OutputMode::CurrentPage {
-        ui.horizontal(|ui| {
-            ui.label(egui::RichText::new(format!("{}:", tr("banner.gap"))).size(11.5).color(m3.variant));
-            mobile_number_input(ui, m3, "banner_gap", &mut st.banner.gap_mm, 0.0..=2000.0, 72.0);
-            ui.label(egui::RichText::new("mm").size(11.0).color(m3.variant));
-        });
-        ui.add_space(3.0);
-    }
-    let field = ((ui.available_width() - 16.0) / 3.0).max(64.0);
-    egui::Grid::new("banner_margins_grid")
-        .num_columns(3)
-        .spacing([8.0, 4.0])
-        .show(ui, |ui| {
-            ui.add_sized(
-                [field, 16.0],
-                egui::Label::new(egui::RichText::new(format!("{} (mm)", tr("banner.margin_lr"))).size(11.0).color(m3.variant)),
-            );
-            ui.add_sized(
-                [field, 16.0],
-                egui::Label::new(egui::RichText::new(format!("{} (mm)", tr("banner.margin_tb"))).size(11.0).color(m3.variant)),
-            );
-            ui.add_sized(
-                [field, 16.0],
-                egui::Label::new(egui::RichText::new(format!("{} (mm)", tr("banner.spacing"))).size(11.0).color(m3.variant)),
-            );
-            ui.end_row();
-            mobile_number_input(ui, m3, "banner_margin_lr", &mut st.banner.margin_lr_mm, 0.0..=2000.0, field);
-            mobile_number_input(ui, m3, "banner_margin_tb", &mut st.banner.margin_tb_mm, 0.0..=500.0, field);
-            mobile_number_input(ui, m3, "banner_spacing", &mut st.banner.spacing_mm, 0.0..=500.0, field);
-            ui.end_row();
-        });
-
-    // 10. Fabrication options
+    // 9. Fabrication options
     ui.add_space(6.0);
     ui.checkbox(&mut st.banner.grommets, tr("banner.grommets"));
 
-    // 11. Generate action button
+    // 10. Generate action button
     ui.add_space(10.0);
     if filled_button(ui, m3, &tr("banner.run")).clicked() {
         app.create_banners(&st.banner);
