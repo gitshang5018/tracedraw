@@ -4,8 +4,8 @@
 //! - Standard roll widths: 400 to 1200 mm (700 mm default)
 //! - Side margins for tying ropes: 400 mm
 //! - Top and bottom margins: 50 mm
-//! - Letter spacing: 50 mm (auto expanded for few characters)
-//! - Automatic text compression in fixed length mode (no truncation)
+//! - Letter spacing: 50 mm
+//! - Font non-uniform scaling: character width compresses when long, stretches when short, keeping full height
 //! - Horizontal and vertical banner orientations
 //! - Classic color presets (red cloth with yellow text, etc.)
 //! - Output to current canvas (default) or separate pages
@@ -13,7 +13,7 @@
 use crate::app::App;
 use tracedraw_core::{
     document::{ParagraphStyle, Shape, ShapeKind, TextAlign, TextSpan, VerticalAlign},
-    geometry::{Point, Rect, Size},
+    geometry::{Affine, Point, Rect, Size},
     Color, Command, Fill, Stroke,
 };
 
@@ -237,11 +237,12 @@ impl Banner {
         }
     }
 
-    /// Calculate dimensions (width_mm, height_mm, font_size_pt, eff_spacing_mm) for a single slogan.
+    /// Calculate dimensions (width_mm, height_mm, font_size_pt, deformation_scale) for a single slogan.
+    /// The font height (size_pt) and spacing_mm are kept intact; deformation_scale stretches or compresses
+    /// the font along the length dimension.
     pub fn calculate_size(&self, slogan: &str) -> (f64, f64, f64, f64) {
         let chars: Vec<char> = slogan.chars().collect();
-        let n_chars = chars.len();
-        let n_gaps = n_chars.saturating_sub(1);
+        let n_gaps = chars.len().saturating_sub(1);
         let base_spacing = self.spacing_mm.max(0.0);
         let has_sign = !self.signature.trim().is_empty();
 
@@ -250,112 +251,111 @@ impl Banner {
             let cloth_w = self.height_mm.max(100.0);
             let margin_side = self.margin_tb_mm.max(0.0);
             let avail_w = (cloth_w - 2.0 * margin_side).max(20.0);
-            let target_char_h = (avail_w * self.height_ratio.clamp(0.4, 0.95)).max(15.0);
-            let sign_h = if has_sign { (target_char_h * 2.0).clamp(60.0, 300.0) } else { 0.0 };
+            // Character height stays full size across the cloth roll
+            let char_h = (avail_w * self.height_ratio.clamp(0.4, 0.95)).max(15.0);
+            let font_size_pt = char_h * (72.0 / 25.4);
+            let sign_h = if has_sign { (char_h * 2.0).clamp(60.0, 300.0) } else { 0.0 };
 
             let mut raw_chars_h = 0.0;
             for &c in &chars {
                 if c.is_ascii_graphic() || c.is_ascii_digit() {
-                    raw_chars_h += target_char_h * 0.55;
+                    raw_chars_h += char_h * 0.55;
                 } else if c.is_whitespace() {
-                    raw_chars_h += target_char_h * 0.45;
+                    raw_chars_h += char_h * 0.45;
                 } else {
-                    raw_chars_h += target_char_h;
+                    raw_chars_h += char_h;
                 }
             }
-            let raw_total_h = raw_chars_h + (n_gaps as f64) * base_spacing;
+            let raw_total_h = (raw_chars_h + (n_gaps as f64) * base_spacing).max(10.0);
             let margin_ends = self.margin_lr_mm.max(0.0);
 
-            let (banner_len, char_h, eff_spacing) = match self.length_mode {
+            let (banner_len, scale_y) = match self.length_mode {
                 LengthMode::Auto => {
                     let banner_len = (2.0 * margin_ends + sign_h + raw_total_h).max(500.0);
-                    (banner_len, target_char_h, base_spacing)
+                    (banner_len, 1.0)
                 }
                 LengthMode::Fixed => {
                     let banner_len = self.width_mm.max(2.0 * margin_ends + 100.0);
                     let avail_h = (banner_len - 2.0 * margin_ends - sign_h).max(50.0);
                     if raw_total_h > avail_h {
-                        // Overflow: compress font and spacing proportionally so text fits without truncation
+                        // Overflow: compress characters vertically without changing font size or spacing
                         let scale = avail_h / raw_total_h;
-                        (banner_len, target_char_h * scale, base_spacing * scale)
+                        (banner_len, scale)
                     } else {
-                        // Few characters: expand spacing to gracefully fill ~72% of the banner
-                        let target_span = avail_h * 0.72;
-                        if raw_total_h < target_span && n_gaps > 0 {
-                            let needed_gap_space = target_span - raw_chars_h;
-                            let expanded = (needed_gap_space / n_gaps as f64).clamp(base_spacing, target_char_h * 2.5);
-                            (banner_len, target_char_h, expanded)
-                        } else if n_chars == 1 {
-                            let enlarged = (target_char_h * 1.15).min(avail_w * 0.9);
-                            (banner_len, enlarged, base_spacing)
+                        // Few characters: stretch characters vertically up to 2.5x to fill ~75% of banner
+                        let target_span = avail_h * 0.75;
+                        if raw_total_h < target_span {
+                            let scale = (target_span / raw_total_h).min(2.5);
+                            (banner_len, scale)
                         } else {
-                            (banner_len, target_char_h, base_spacing)
+                            (banner_len, 1.0)
                         }
                     }
                 }
             };
 
-            let font_size_pt = char_h * (72.0 / 25.4);
-            (cloth_w, banner_len, font_size_pt, eff_spacing)
+            (cloth_w, banner_len, font_size_pt, scale_y)
         } else {
             // Horizontal banner: cloth roll is height (h), banner length is width (w).
             let cloth_h = self.height_mm.max(100.0);
             let margin_tb = self.margin_tb_mm.max(0.0);
             let sign_h = if has_sign { (cloth_h * 0.20).clamp(40.0, 160.0) } else { 0.0 };
             let avail_h = (cloth_h - sign_h - 2.0 * margin_tb).max(20.0);
-            let target_char_h = (avail_h * self.height_ratio.clamp(0.4, 0.95)).max(15.0);
+            // Character height stays full size across the cloth roll
+            let char_h = (avail_h * self.height_ratio.clamp(0.4, 0.95)).max(15.0);
+            let font_size_pt = char_h * (72.0 / 25.4);
 
             let mut raw_chars_w = 0.0;
             for &c in &chars {
                 if c.is_ascii_graphic() || c.is_ascii_digit() {
-                    raw_chars_w += target_char_h * 0.55;
+                    raw_chars_w += char_h * 0.55;
                 } else if c.is_whitespace() {
-                    raw_chars_w += target_char_h * 0.45;
+                    raw_chars_w += char_h * 0.45;
                 } else {
-                    raw_chars_w += target_char_h;
+                    raw_chars_w += char_h;
                 }
             }
-            let raw_total_w = raw_chars_w + (n_gaps as f64) * base_spacing;
+            let raw_total_w = (raw_chars_w + (n_gaps as f64) * base_spacing).max(10.0);
             let margin_lr = self.margin_lr_mm.max(0.0);
 
-            let (banner_w, char_h, eff_spacing) = match self.length_mode {
+            let (banner_w, scale_x) = match self.length_mode {
                 LengthMode::Auto => {
                     let banner_w = (2.0 * margin_lr + raw_total_w).max(500.0);
-                    (banner_w, target_char_h, base_spacing)
+                    (banner_w, 1.0)
                 }
                 LengthMode::Fixed => {
                     let banner_w = self.width_mm.max(2.0 * margin_lr + 100.0);
                     let avail_w = (banner_w - 2.0 * margin_lr).max(50.0);
                     if raw_total_w > avail_w {
-                        // Overflow: compress font and spacing proportionally so text fits without truncation
+                        // Overflow: compress characters horizontally without changing font size or spacing
                         let scale = avail_w / raw_total_w;
-                        (banner_w, target_char_h * scale, base_spacing * scale)
+                        (banner_w, scale)
                     } else {
-                        // Few characters: expand spacing to gracefully fill ~72% of the banner
-                        let target_span = avail_w * 0.72;
-                        if raw_total_w < target_span && n_gaps > 0 {
-                            let needed_gap_space = target_span - raw_chars_w;
-                            let expanded = (needed_gap_space / n_gaps as f64).clamp(base_spacing, target_char_h * 2.5);
-                            (banner_w, target_char_h, expanded)
-                        } else if n_chars == 1 {
-                            let enlarged = (target_char_h * 1.15).min(avail_h * 0.9);
-                            (banner_w, enlarged, base_spacing)
+                        // Few characters: stretch characters horizontally up to 2.5x to fill ~75% of banner
+                        let target_span = avail_w * 0.75;
+                        if raw_total_w < target_span {
+                            let scale = (target_span / raw_total_w).min(2.5);
+                            (banner_w, scale)
                         } else {
-                            (banner_w, target_char_h, base_spacing)
+                            (banner_w, 1.0)
                         }
                     }
                 }
             };
 
-            let font_size_pt = char_h * (72.0 / 25.4);
-            (banner_w, cloth_h, font_size_pt, eff_spacing)
+            (banner_w, cloth_h, font_size_pt, scale_x)
         }
     }
 
     /// Build shapes for a single banner at (left, top).
-    pub fn build_single(&self, slogan: &str, left: f64, top: f64) -> (f64, f64, Vec<(ShapeKind, Fill, Option<Stroke>)>) {
-        let (w, h, size_pt, eff_spacing) = self.calculate_size(slogan);
-        let mut shapes: Vec<(ShapeKind, Fill, Option<Stroke>)> = Vec::new();
+    pub fn build_single(
+        &self,
+        slogan: &str,
+        left: f64,
+        top: f64,
+    ) -> (f64, f64, Vec<(ShapeKind, Fill, Option<Stroke>, Affine)>) {
+        let (w, h, size_pt, scale) = self.calculate_size(slogan);
+        let mut shapes: Vec<(ShapeKind, Fill, Option<Stroke>, Affine)> = Vec::new();
         let has_sign = !self.signature.trim().is_empty();
 
         // 1. Cloth rectangle
@@ -367,10 +367,11 @@ impl Banner {
             },
             Fill::Solid(self.background),
             None,
+            Affine::IDENTITY,
         ));
 
         let char_h = size_pt * (25.4 / 72.0);
-        let tracking_pct = if char_h > 0.0 { (eff_spacing / char_h) * 100.0 } else { 0.0 };
+        let tracking_pct = if char_h > 0.0 { (self.spacing_mm / char_h) * 100.0 } else { 0.0 };
 
         if self.vertical {
             // Vertical banner
@@ -380,18 +381,44 @@ impl Banner {
             let avail_h = (h - 2.0 * margin_ends - sign_h).max(10.0);
             let avail_w = (w - 2.0 * margin_side).max(10.0);
 
-            // Slogan
+            // Natural raw text column height
+            let chars: Vec<char> = slogan.chars().collect();
+            let mut raw_chars_h = 0.0;
+            for &c in &chars {
+                if c.is_ascii_graphic() || c.is_ascii_digit() {
+                    raw_chars_h += char_h * 0.55;
+                } else if c.is_whitespace() {
+                    raw_chars_h += char_h * 0.45;
+                } else {
+                    raw_chars_h += char_h;
+                }
+            }
+            let n_gaps = chars.len().saturating_sub(1);
+            let raw_total_h = (raw_chars_h + (n_gaps as f64) * self.spacing_mm.max(0.0)).max(10.0);
+
+            let cx = left + margin_side + avail_w * 0.5;
+            let cy = top + margin_ends + sign_h + avail_h * 0.5;
+
             let slogan_span = TextSpan {
                 bold: true,
                 tracking_pct,
                 fill: Some(Fill::Solid(self.slogan_color)),
                 ..TextSpan::new(slogan, FONT, size_pt)
             };
+
+            let slogan_transform = if (scale - 1.0).abs() > 1e-4 {
+                Affine::translate((cx, cy))
+                    * Affine::scale_non_uniform(1.0, scale)
+                    * Affine::translate((-cx, -cy))
+            } else {
+                Affine::IDENTITY
+            };
+
             shapes.push((
                 ShapeKind::Text {
                     spans: vec![slogan_span],
-                    origin: Point::new(left + margin_side, top + margin_ends + sign_h),
-                    frame: Some(Size::new(avail_w, avail_h)),
+                    origin: Point::new(left + margin_side, cy - raw_total_h * 0.5),
+                    frame: Some(Size::new(avail_w, raw_total_h)),
                     align: TextAlign::Center,
                     para: ParagraphStyle {
                         vertical: true,
@@ -402,6 +429,7 @@ impl Banner {
                 },
                 Fill::Solid(self.slogan_color),
                 None,
+                slogan_transform,
             ));
 
             // Optional signature at bottom of vertical banner
@@ -427,6 +455,7 @@ impl Banner {
                     },
                     Fill::Solid(self.signature_color),
                     None,
+                    Affine::IDENTITY,
                 ));
             }
         } else {
@@ -437,18 +466,44 @@ impl Banner {
             let avail_w = (w - 2.0 * margin_lr).max(10.0);
             let avail_h = (h - 2.0 * margin_tb - sign_h).max(10.0);
 
-            // Slogan
+            // Natural raw text width
+            let chars: Vec<char> = slogan.chars().collect();
+            let mut raw_chars_w = 0.0;
+            for &c in &chars {
+                if c.is_ascii_graphic() || c.is_ascii_digit() {
+                    raw_chars_w += char_h * 0.55;
+                } else if c.is_whitespace() {
+                    raw_chars_w += char_h * 0.45;
+                } else {
+                    raw_chars_w += char_h;
+                }
+            }
+            let n_gaps = chars.len().saturating_sub(1);
+            let raw_total_w = (raw_chars_w + (n_gaps as f64) * self.spacing_mm.max(0.0)).max(10.0);
+
+            let cx = left + margin_lr + avail_w * 0.5;
+            let cy = top + margin_tb + sign_h + avail_h * 0.5;
+
             let slogan_span = TextSpan {
                 bold: true,
                 tracking_pct,
                 fill: Some(Fill::Solid(self.slogan_color)),
                 ..TextSpan::new(slogan, FONT, size_pt)
             };
+
+            let slogan_transform = if (scale - 1.0).abs() > 1e-4 {
+                Affine::translate((cx, cy))
+                    * Affine::scale_non_uniform(scale, 1.0)
+                    * Affine::translate((-cx, -cy))
+            } else {
+                Affine::IDENTITY
+            };
+
             shapes.push((
                 ShapeKind::Text {
                     spans: vec![slogan_span],
-                    origin: Point::new(left + margin_lr, top + margin_tb + sign_h),
-                    frame: Some(Size::new(avail_w, avail_h)),
+                    origin: Point::new(cx - raw_total_w * 0.5, top + margin_tb + sign_h),
+                    frame: Some(Size::new(raw_total_w, avail_h)),
                     align: TextAlign::Center,
                     para: ParagraphStyle {
                         vertical_align: VerticalAlign::Center,
@@ -458,6 +513,7 @@ impl Banner {
                 },
                 Fill::Solid(self.slogan_color),
                 None,
+                slogan_transform,
             ));
 
             // Optional signature at bottom-right of horizontal banner
@@ -482,6 +538,7 @@ impl Banner {
                     },
                     Fill::Solid(self.signature_color),
                     None,
+                    Affine::IDENTITY,
                 ));
             }
         }
@@ -531,6 +588,7 @@ impl Banner {
                     },
                     Fill::Solid(Color::WHITE),
                     Some(Stroke::hairline(Color::rgb8(120, 120, 120))),
+                    Affine::IDENTITY,
                 ));
             }
         }
@@ -539,8 +597,8 @@ impl Banner {
     }
 
     /// The banners as shapes, laid out from `(top, left)`.
-    pub fn build(&self, top: f64, left: f64) -> Vec<Vec<(ShapeKind, Fill, Option<Stroke>)>> {
-        let mut out: Vec<Vec<(ShapeKind, Fill, Option<Stroke>)>> = Vec::new();
+    pub fn build(&self, top: f64, left: f64) -> Vec<Vec<(ShapeKind, Fill, Option<Stroke>, Affine)>> {
+        let mut out: Vec<Vec<(ShapeKind, Fill, Option<Stroke>, Affine)>> = Vec::new();
         let mut cur_x = left;
         let mut cur_y = top;
 
@@ -593,11 +651,12 @@ impl App {
                         continue;
                     };
 
-                    for (kind, fill, stroke) in shapes {
+                    for (kind, fill, stroke, transform) in shapes {
                         let id = self.engine.new_shape_id();
                         let mut s = Shape::new(id, kind);
                         s.fill = fill;
                         s.stroke = stroke;
+                        s.transform = transform;
                         let _ = self.engine.run(&Command::AddShape { layer, shape: s });
                     }
                 }
@@ -641,11 +700,12 @@ impl App {
                 let mut created: Vec<tracedraw_core::ShapeId> = Vec::new();
                 for shapes in built {
                     let mut ids: Vec<tracedraw_core::ShapeId> = Vec::new();
-                    for (kind, fill, stroke) in shapes {
+                    for (kind, fill, stroke, transform) in shapes {
                         let id = self.engine.new_shape_id();
                         let mut s = Shape::new(id, kind);
                         s.fill = fill;
                         s.stroke = stroke;
+                        s.transform = transform;
                         ids.push(id);
                         let _ = self.engine.run(&Command::AddShape { layer, shape: s });
                     }
@@ -724,34 +784,40 @@ mod tests {
         assert_eq!(app.doc().pages.len(), 3);
     }
 
-    /// Long text in fixed mode scales down character size and spacing to fit.
+    /// Long text in fixed mode compresses character width without changing font height.
     #[test]
     fn fixed_mode_compresses_overflowing_text() {
         let banner = Banner {
             slogans: vec!["这是一个非常非常非常非常非常非常非常非常非常长的标语测试".into()],
+            height_mm: 700.0,
             width_mm: 3000.0,
             length_mode: LengthMode::Fixed,
             ..Banner::default()
         };
-        let (w, _h, size_pt, spacing) = banner.calculate_size(&banner.slogans[0]);
+        let (w, h, size_pt, scale) = banner.calculate_size(&banner.slogans[0]);
         assert_eq!(w, 3000.0);
+        assert_eq!(h, 700.0);
         let char_h = size_pt * (25.4 / 72.0);
-        assert!(char_h < 400.0, "font should be scaled down: {char_h}");
-        assert!(spacing < banner.spacing_mm, "spacing should be scaled down: {spacing}");
+        assert!((char_h - 450.0).abs() < 1.0, "font height should stay full height: {char_h}");
+        assert!(scale < 1.0, "scale should compress horizontally: {scale}");
     }
 
-    /// Short text in fixed mode expands spacing to fill a suitable span.
+    /// Short text in fixed mode stretches characters horizontally without changing font height.
     #[test]
     fn few_characters_expand_spacing() {
         let banner = Banner {
             slogans: vec!["庆祝元旦".into()],
+            height_mm: 700.0,
             width_mm: 6000.0,
             length_mode: LengthMode::Fixed,
             ..Banner::default()
         };
-        let (w, _h, _size_pt, spacing) = banner.calculate_size(&banner.slogans[0]);
+        let (w, h, size_pt, scale) = banner.calculate_size(&banner.slogans[0]);
         assert_eq!(w, 6000.0);
-        assert!(spacing > banner.spacing_mm, "spacing should be expanded: {spacing}");
+        assert_eq!(h, 700.0);
+        let char_h = size_pt * (25.4 / 72.0);
+        assert!((char_h - 450.0).abs() < 1.0, "font height should stay full height: {char_h}");
+        assert!(scale > 1.0, "scale should stretch horizontally: {scale}");
     }
 
     /// Vertical banner sets roll width as width and length as height.
@@ -765,10 +831,10 @@ mod tests {
             length_mode: LengthMode::Fixed,
             ..Banner::default()
         };
-        let (w, h, size_pt, spacing) = banner.calculate_size(&banner.slogans[0]);
+        let (w, h, size_pt, scale) = banner.calculate_size(&banner.slogans[0]);
         assert_eq!(w, 700.0, "cloth roll width is width");
         assert_eq!(h, 5000.0, "banner length is height");
         assert!(size_pt > 0.0);
-        assert!(spacing >= banner.spacing_mm);
+        assert!(scale > 1.0);
     }
 }
