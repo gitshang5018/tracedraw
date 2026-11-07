@@ -1955,7 +1955,7 @@ fn arrange_sheet(_app: &mut App, ui: &mut Ui, m3: &M3) {
 pub(crate) fn mobile_number_input(
     ui: &mut Ui,
     _m3: &M3,
-    id_salt: impl std::hash::Hash,
+    id_salt: &str,
     value: &mut f64,
     range: std::ops::RangeInclusive<f64>,
     width: f32,
