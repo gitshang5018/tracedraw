@@ -1404,6 +1404,8 @@ enum AiMenu {
     Arrange,
     Group,
     Dimension,
+    ClearDimensions,
+    ShareProof,
     Vectorize,
     Banner,
 }
@@ -1435,6 +1437,8 @@ fn ai_chip(app: &mut App, ui: &mut Ui, m3: &M3, full: Rect, open: &mut Sheet) {
         (AiMenu::Sheet(Sheet::Trace), "ai.trace"),
         (AiMenu::Vectorize, "ai.native_vectorize"),
         (AiMenu::Dimension, "ai.dimension"),
+        (AiMenu::ClearDimensions, "ai.clear_dimensions"),
+        (AiMenu::ShareProof, "ai.share_proof"),
         (AiMenu::Arrange, "docker.smart_arrange"),
         (AiMenu::Group, "docker.smart_group"),
         (AiMenu::Banner, "banner.title"),
@@ -1484,6 +1488,8 @@ fn ai_chip(app: &mut App, ui: &mut Ui, m3: &M3, full: Rect, open: &mut Sheet) {
                                 AiMenu::Arrange => *open = Sheet::Arrange,
                                 AiMenu::Group => app.smart_group(),
                                 AiMenu::Dimension => app.auto_dimension_selection(),
+                                AiMenu::ClearDimensions => app.clear_all_dimensions(),
+                                AiMenu::ShareProof => app.quick_share_proof(),
                                 AiMenu::Vectorize => app.native_vectorize_selection(),
                                 AiMenu::Banner => *open = Sheet::Banner,
                             }
@@ -3357,6 +3363,15 @@ fn selection_actions(app: &mut App, ui: &mut Ui, m3: &M3) {
                 }
                 if action_chip(ui, m3, &tr("menu.object.convert_to_curves")).clicked() {
                     app.convert_to_curves();
+                }
+                if action_chip(ui, m3, &tr("ai.share_proof")).clicked() {
+                    app.quick_share_proof();
+                }
+                if app.selection.iter().any(|id| {
+                    app.doc().find_shape(*id).is_some_and(crate::dimensions::is_dimension)
+                }) && action_chip(ui, m3, &tr("ai.clear_dimensions")).clicked()
+                {
+                    app.clear_all_dimensions();
                 }
             });
         });

@@ -978,6 +978,14 @@ fn ai_button(app: &mut App, ui: &mut Ui) {
                 app.auto_dimension_selection();
                 ui.close();
             }
+            if ui.button(tr("ai.clear_dimensions")).clicked() {
+                app.clear_all_dimensions();
+                ui.close();
+            }
+            if ui.button(tr("ai.share_proof")).clicked() {
+                app.quick_share_proof();
+                ui.close();
+            }
             if ui.button(tr("ai.native_vectorize")).clicked() {
                 app.native_vectorize_selection();
                 ui.close();

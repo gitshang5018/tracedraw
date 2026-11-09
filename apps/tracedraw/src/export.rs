@@ -1313,6 +1313,143 @@ impl App {
             Err(e) => self.status = trf("status.export_failed", &[("e", &e.to_string())]),
         }
     }
+
+    /// Render the current selection (or the entire page and its visible shapes)
+    /// onto a crisp white-background PNG image suitable for client review/proof.
+    pub fn render_proof_image(&self) -> Option<Vec<u8>> {
+        let mut all_bounds: Option<Rect> = None;
+        for layer in self.page_layers() {
+            if layer.visible {
+                for s in &layer.shapes {
+                    if s.visible {
+                        let b = self.visual_bounds(s);
+                        all_bounds = Some(match all_bounds {
+                            Some(cur) => cur.union(b),
+                            None => b,
+                        });
+                    }
+                }
+            }
+        }
+
+        let content_rect = if let Some(sb) = self.selection_bounds() {
+            sb
+        } else if let Some(ab) = all_bounds {
+            ab.union(self.page_rect())
+        } else {
+            self.page_rect()
+        };
+
+        let longest_mm = content_rect.width().max(content_rect.height());
+        if longest_mm <= 1e-4 {
+            return None;
+        }
+
+        let margin = (longest_mm * 0.03).clamp(10.0, 60.0);
+        let target_bounds = content_rect.inflate(margin, margin);
+
+        // Cap maximum resolution to 3000px so mobile memory is protected and rendering is fast
+        let target_longest_mm = target_bounds.width().max(target_bounds.height());
+        let dpi = ((3000.0 * 25.4) / target_longest_mm).clamp(10.0, 150.0);
+        let zoom = dpi / 25.4;
+        let w = ((target_bounds.width() * zoom).ceil() as u32).max(1);
+        let h = ((target_bounds.height() * zoom).ceil() as u32).max(1);
+
+        let view = tracedraw_render::ViewTransform {
+            zoom,
+            origin_x: -target_bounds.x0 * zoom,
+            origin_y: target_bounds.y1 * zoom,
+        };
+
+        let opts = tracedraw_render::RenderOptions {
+            width: w,
+            height: h,
+            view,
+            preview: None,
+            wireframe: false,
+            simulate_overprints: false,
+            complex_effects: true,
+            anti_alias: true,
+            draft: false,
+            focus: None,
+        };
+
+        let pm = tracedraw_render::render_page(self.doc(), self.page, &opts)?;
+        let mut white = tiny_skia::Pixmap::new(w, h)?;
+        white.fill(tiny_skia::Color::WHITE);
+        white.draw_pixmap(
+            0,
+            0,
+            pm.as_ref(),
+            &Default::default(),
+            tiny_skia::Transform::identity(),
+            None,
+        );
+        white.encode_png().ok()
+    }
+
+    /// One-click export proof image and trigger system share sheet (Android)
+    /// or save to Documents folder (Desktop/Web).
+    pub fn quick_share_proof(&mut self) {
+        let Some(png) = self.render_proof_image() else {
+            self.status = crate::i18n::tr("ai.no_selection");
+            return;
+        };
+
+        let stamp = web_time::SystemTime::now()
+            .duration_since(web_time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let title = if self.has_document() {
+            self.document_tab_title(self.active_doc)
+        } else {
+            "proof".to_string()
+        };
+        let sanitized: String = title
+            .chars()
+            .map(|c| if c.is_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
+            .collect();
+        let name = format!("{sanitized}_{stamp}.png");
+
+        #[cfg(target_os = "android")]
+        {
+            if let Some(phone) = crate::android_system::phone() {
+                match crate::android_system::save_and_share(phone, &name, "image/png", &png) {
+                    Ok(_) => {
+                        self.status = crate::i18n::tr("status.proof_shared");
+                    }
+                    Err(e) => {
+                        self.status = crate::i18n::trf("status.export_failed", &[("e", &e)]);
+                    }
+                }
+            } else {
+                let dir = crate::files::android_documents();
+                let path = dir.join(&name);
+                let _ = crate::files::write_creating(&path, &png);
+                self.status = crate::i18n::trf(
+                    "status.proof_saved",
+                    &[("path", &path.display().to_string())],
+                );
+            }
+        }
+
+        #[cfg(not(target_os = "android"))]
+        {
+            let dir = crate::files::android_documents();
+            let path = dir.join(&name);
+            match crate::files::write_creating(&path, &png) {
+                Ok(()) => {
+                    self.status = crate::i18n::trf(
+                        "status.proof_saved",
+                        &[("path", &path.display().to_string())],
+                    );
+                }
+                Err(e) => {
+                    self.status = crate::i18n::trf("status.export_failed", &[("e", &e.to_string())]);
+                }
+            }
+        }
+    }
 }
 
 /// Destinations of File > Send To.
@@ -1626,6 +1763,27 @@ mod tests {
         assert!(!paths[0].exists(), "the oldest is cleared away");
         assert!(paths[1].exists() && paths[2].exists());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn render_proof_image_outputs_valid_png_and_respects_bounds() {
+        let mut app = App::headless();
+        let rect = app.new_shape(ShapeKind::Rect {
+            rect: Rect::from_origin_size((0.0, 0.0), (200.0, 100.0)),
+            radii: [0.0; 4],
+        });
+        app.select(vec![rect]);
+        app.auto_dimension_selection();
+
+        let png = app.render_proof_image();
+        assert!(png.is_some(), "render_proof_image should return Some(bytes)");
+        let bytes = png.unwrap();
+        assert!(bytes.len() > 100, "PNG output should contain image data");
+        assert_eq!(&bytes[0..8], &[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]);
+
+        let img = image::load_from_memory(&bytes).expect("valid png image");
+        assert!(img.width() > 0);
+        assert!(img.height() > 0);
     }
 
     use super::*;

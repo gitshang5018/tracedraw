@@ -1138,6 +1138,44 @@ impl App {
         }
     }
 
+    /// One-click clear dimensions: removes selected dimensions or all dimensions on the active page.
+    pub fn clear_all_dimensions(&mut self) {
+        let mut dim_ids = Vec::new();
+        let selected_dims: Vec<_> = self
+            .selection
+            .iter()
+            .copied()
+            .filter(|id| self.doc().find_shape(*id).is_some_and(is_dimension))
+            .collect();
+
+        if !selected_dims.is_empty() {
+            dim_ids = selected_dims;
+        } else {
+            for layer in self.page_layers() {
+                if !layer.locked {
+                    for s in &layer.shapes {
+                        if is_dimension(s) {
+                            dim_ids.push(s.id);
+                        }
+                    }
+                }
+            }
+        }
+
+        if dim_ids.is_empty() {
+            self.status = crate::i18n::tr("ai.no_dimensions_to_clear");
+            return;
+        }
+
+        let count = dim_ids.len();
+        self.selection.retain(|id| !dim_ids.contains(id));
+        self.run(Command::DeleteShapes { shapes: dim_ids });
+        self.status = crate::i18n::trf(
+            "ai.clear_dimensions_done",
+            &[("count", &count.to_string())],
+        );
+    }
+
     /// An angular dimension: at `center` from `a` to `b`, the arc through
     /// `label_at`.
     pub fn create_angular_dimension(&mut self, center: Point, a: Point, b: Point, label_at: Point) {
@@ -2863,5 +2901,35 @@ mod tests {
             _ => panic!("expected linear measure"),
         }
         assert_eq!(label_of(&app, height_id), "700 mm");
+    }
+
+    #[test]
+    fn clear_all_dimensions_removes_dimensions_and_supports_undo() {
+        let mut app = App::headless();
+        let rect = app.new_shape(ShapeKind::Rect {
+            rect: Rect::from_origin_size((0.0, 0.0), (100.0, 50.0)),
+            radii: [0.0; 4],
+        });
+        app.select(vec![rect]);
+        app.auto_dimension_selection();
+
+        let initial_count = app.page_layers().iter().flat_map(|l| &l.shapes).count();
+        assert_eq!(initial_count, 3); // 1 rect + 2 dimensions
+
+        app.clear_all_dimensions();
+        let after_count = app.page_layers().iter().flat_map(|l| &l.shapes).count();
+        assert_eq!(after_count, 1);
+        let remaining = app.page_layers().iter().flat_map(|l| &l.shapes).next().unwrap().id;
+        assert_eq!(remaining, rect);
+
+        // Undo brings dimensions back
+        app.undo();
+        let undone_count = app.page_layers().iter().flat_map(|l| &l.shapes).count();
+        assert_eq!(undone_count, 3);
+
+        // Redo clears them again
+        app.redo();
+        let redone_count = app.page_layers().iter().flat_map(|l| &l.shapes).count();
+        assert_eq!(redone_count, 1);
     }
 }
