@@ -3597,6 +3597,7 @@ mod tests {
         assert_eq!(app.settings.angular_dimension.precision, 2);
         assert_eq!(app.dimension_style.precision, 3, "the linear one stays");
         assert_eq!(app.new_dimension_style().prefix, "A=");
+    }
 
     /// One-click dimensioning scales text size with the object, removes decimals,
     /// places the length dimension on top and height on the left.
