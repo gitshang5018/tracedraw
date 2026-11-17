@@ -1107,6 +1107,429 @@ pub fn draw(app: &App, painter: &egui::Painter, color: egui::Color32) {
             color
         };
         painter.circle_filled(w.at, 1.5, dot);
+    }
+}
+
+/// A small dark tag with `text`, its top left corner at `at`.
+fn tag(painter: &egui::Painter, at: egui::Pos2, text: &str) {
+    let galley = painter.layout_no_wrap(
+        text.to_string(),
+        egui::FontId::proportional(11.0),
+        egui::Color32::WHITE,
+    );
+    let rect = egui::Rect::from_min_size(at, galley.size() + egui::vec2(10.0, 6.0));
+    painter.rect_filled(
+        rect,
+        3.0,
+        egui::Color32::from_rgba_unmultiplied(30, 30, 30, 230),
+    );
+    painter.galley(
+        rect.min + egui::vec2(5.0, 3.0),
+        galley,
+        egui::Color32::WHITE,
+    );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn widget_dimensions_are_positive_and_usable() {
+        assert!(widget_pick_px() >= 7.0);
+        assert!(widget_radius_px() >= 4.0);
+    }
+    use tracedraw_core::geometry::PathEl;
+    use tracedraw_core::geometry::Shape as _;
+
+    fn shapes() -> Vec<(&'static str, BezPath)> {
+        let mut out = Vec::new();
+        let mut lens = BezPath::new();
+        lens.move_to((20.0, 40.0));
+        lens.curve_to((30.0, 52.0), (50.0, 52.0), (60.0, 40.0));
+        lens.curve_to((50.0, 28.0), (30.0, 28.0), (20.0, 40.0));
+        lens.close_path();
+        out.push(("lens", lens));
+        let mut heart = BezPath::new();
+        heart.move_to((40.0, 20.0));
+        heart.curve_to((10.0, 40.0), (25.0, 65.0), (40.0, 50.0));
+        heart.curve_to((55.0, 65.0), (70.0, 40.0), (40.0, 20.0));
+        heart.close_path();
+        out.push(("heart", heart));
+        let mut half = BezPath::new();
+        half.move_to((20.0, 20.0));
+        half.line_to((60.0, 20.0));
+        half.curve_to((60.0, 46.0), (20.0, 46.0), (20.0, 20.0));
+        half.close_path();
+        out.push(("half disc", half));
+        let mut drop = BezPath::new();
+        drop.move_to((20.0, 20.0));
+        drop.curve_to((28.0, 30.0), (32.0, 40.0), (35.0, 60.0));
+        drop.curve_to((38.0, 40.0), (42.0, 30.0), (50.0, 20.0));
+        drop.line_to((20.0, 20.0));
+        drop.close_path();
+        out.push(("drop", drop));
+        out
+    }
+
+    /// A corner between curved sides rounds, keeps its widget once it is
+    /// rounded, rounds further from the radius it has and goes back to
+    /// sharp, as a corner between straight sides does (#2223). Before,
+    /// its widget was gone after the first drag, however short, and the
+    /// corner could not be rounded any more.
+    #[test]
+    fn corners_between_curves_keep_their_widgets_and_round_again() {
+        for (name, path) in shapes() {
+            let sharp = corners(&path);
+            for i in 0..sharp.len() {
+                let mut app = App::headless();
+                let id = app
+                    .new_shape(ShapeKind::Path {
+                        path: path.clone(),
+                        closed: true,
+                    })
+                    .expect("a curve");
+                app.select(vec![id]);
+                app.tool = Tool::Shape;
+                app.settings.nodes.corner_widgets = true;
+                let path_of = |app: &App| match &app.doc().find_shape(id).expect("curve").kind {
+                    ShapeKind::Path { path, .. } => path.clone(),
+                    _ => panic!("a curve"),
+                };
+                let widgets = app.corner_widgets();
+                assert_eq!(widgets.len(), sharp.len(), "{name}");
+                let w = widgets[i];
+                let at = w.corner.at;
+                // The widget of the corner at `at`, dragged `by` mm into
+                // it; the radius the drag gave.
+                let pull = |app: &mut App, by: f64| -> f64 {
+                    let w = app
+                        .corner_widgets()
+                        .into_iter()
+                        .find(|w| (w.corner.at - at).hypot() < 1e-6)
+                        .unwrap_or_else(|| panic!("{name} corner {i}: no widget"));
+                    let p = app.view.to_page(w.at);
+                    assert!(app.start_corner_drag(w, p, false), "{name} corner {i}");
+                    let Drag::CornerWidget(d) = app.drag.clone() else {
+                        panic!("{name} corner {i}: no drag");
+                    };
+                    app.corner_drag_to(*d, p + w.corner.inside * by);
+                    app.drag = Drag::None;
+                    fillets(&path_of(app))
+                        .iter()
+                        .find(|f| (f.corner - at).hypot() < 1e-6)
+                        .map_or(0.0, |f| f.radius)
+                };
+                // A short drag: a small rounding, and the widget stays.
+                let first = pull(&mut app, 0.2);
+                assert!(first > 0.01, "{name} corner {i}: {first}");
+                assert_eq!(app.corner_widgets().len(), sharp.len(), "{name} corner {i}");
+                assert_eq!(corners(&path_of(&app)).len(), sharp.len() - 1, "{name}");
+                // Dragged again, it rounds further from there.
+                let second = pull(&mut app, 0.2);
+                assert!(second > first * 1.5, "{name} corner {i}: {first} {second}");
+                assert_eq!(app.corner_widgets().len(), sharp.len(), "{name} corner {i}");
+                // The property bar's field reads it and sets it.
+                app.node_selection.clear();
+                assert!(app.set_corner_rounding(first), "{name} corner {i}");
+                let radii: Vec<f64> = fillets(&path_of(&app)).iter().map(|f| f.radius).collect();
+                assert_eq!(radii.len(), sharp.len(), "{name} corner {i}: {radii:?}");
+                assert!(
+                    radii.iter().all(|r| (r - first).abs() < 1e-6),
+                    "{name} corner {i}: {first} {radii:?}"
+                );
+                // Clear Rounding gives the sharp curve back.
+                assert!(app.set_corner_rounding(0.0), "{name} corner {i}");
+                let back = path_of(&app);
+                assert_eq!(corners(&back).len(), sharp.len(), "{name} corner {i}");
+                assert!(fillets(&back).is_empty(), "{name} corner {i}");
+                assert!(
+                    (back.area() - path.area()).abs() < 1e-6,
+                    "{name} corner {i}"
+                );
+            }
+        }
+    }
+
+    /// A rectangle turned into a curve, its corners scalloped or chamfered
+    /// with the property bar's field or the rings (#2336): a new distance,
+    /// typed or scrolled, cuts the rectangle again, so the curve keeps the
+    /// nodes of one cut (it grew to 120 and more as each try cut the cuts);
+    /// the field shows the distance; the other kind cuts the same corners
+    /// the new way; a ring stays on each corner and dragging it cuts the
+    /// bar's kind, never a rounding; Clear Rounding gives the rectangle
+    /// back.
+    #[test]
+    fn scalloped_and_chamfered_corners_stay_editable() {
+        use crate::corners::CornerOp;
+        use tracedraw_core::geometry::PathEl;
+        let mut rect = BezPath::new();
+        rect.move_to((20.0, 20.0));
+        rect.line_to((80.0, 20.0));
+        rect.line_to((80.0, 60.0));
+        rect.line_to((20.0, 60.0));
+        rect.close_path();
+        let mut app = App::headless();
+        let id = app
+            .new_shape(ShapeKind::Path {
+                path: rect.clone(),
+                closed: true,
+            })
+            .expect("a curve");
+        app.select(vec![id]);
+        app.tool = Tool::Shape;
+        app.settings.nodes.corner_widgets = true;
+        let path_of = |app: &App| match &app.doc().find_shape(id).expect("curve").kind {
+            ShapeKind::Path { path, .. } => path.clone(),
+            _ => panic!("a curve"),
+        };
+        let nodes = |app: &App| node_points(&path_of(app)).len();
+        let has = |app: &App, x: f64, y: f64| {
+            node_points(&path_of(app))
+                .iter()
+                .any(|(_, p)| (p.x - x).abs() < 1e-6 && (p.y - y).abs() < 1e-6)
+        };
+        let arcs = |app: &App| {
+            path_of(app)
+                .elements()
+                .iter()
+                .filter(|e| matches!(e, PathEl::CurveTo(..)))
+                .count()
+        };
+        for op in [CornerOp::Scallop, CornerOp::Chamfer] {
+            app.set_corner_op(op);
+            assert!(app.set_corner_rounding(3.0), "{op:?}");
+            let once = nodes(&app);
+            assert!(has(&app, 23.0, 20.0) && has(&app, 20.0, 23.0), "{op:?}");
+            assert_eq!(app.corner_rounding(), Some((3.0, false)), "{op:?}");
+            // Typed and scrolled values, each cutting the rectangle again.
+            for d in [4.0, 5.0, 6.0, 5.5, 2.0, 7.0] {
+                assert!(app.set_corner_rounding(d), "{op:?} {d}");
+                assert_eq!(nodes(&app), once, "{op:?} {d}: nodes multiplied");
+                assert!(
+                    has(&app, 20.0 + d, 20.0) && has(&app, 80.0, 60.0 - d),
+                    "{op:?} {d}"
+                );
+                assert_eq!(app.corner_rounding(), Some((d, false)), "{op:?} {d}");
+            }
+            // One ring on each corner cut.
+            assert_eq!(app.corner_widgets().len(), 4, "{op:?}");
+            // Clear Rounding gives the rectangle back.
+            assert!(app.set_corner_rounding(0.0), "{op:?}");
+            assert_eq!(path_of(&app), rect, "{op:?}");
+        }
+        // Switching the kind cuts the same corners the other way.
+        app.set_corner_op(CornerOp::Scallop);
+        assert!(app.set_corner_rounding(4.0));
+        let scalloped = nodes(&app);
+        assert!(arcs(&app) >= 4);
+        assert!(app.set_corner_op(CornerOp::Chamfer));
+        assert_eq!(arcs(&app), 0, "straight cuts");
+        assert!(has(&app, 24.0, 20.0) && has(&app, 20.0, 24.0));
+        assert!(app.set_corner_op(CornerOp::Scallop));
+        assert_eq!(nodes(&app), scalloped);
+        assert!(app.set_corner_rounding(0.0));
+        assert_eq!(path_of(&app), rect);
+        // A ring dragged with Scalloped chosen scallops, and dragged again
+        // cuts the rectangle again from where its cut is.
+        let pull = |app: &mut App, at: Point, by: f64| {
+            let w = app
+                .corner_widgets()
+                .into_iter()
+                .find(|w| (w.corner.at - at).hypot() < 1e-6)
+                .expect("a ring on the corner");
+            let p = app.view.to_page(w.at);
+            assert!(app.start_corner_drag(w, p, true));
+            let Drag::CornerWidget(d) = app.drag.clone() else {
+                panic!("no drag");
+            };
+            app.corner_drag_to(*d, p + w.corner.inside * by);
+            app.drag = Drag::None;
+        };
+        let corner = Point::new(20.0, 20.0);
+        pull(&mut app, corner, 3.0);
+        assert!(fillets(&path_of(&app)).is_empty(), "no rounding");
+        assert!(arcs(&app) >= 4, "scallops");
+        assert_eq!(app.engine.history_labels().0.last(), Some(&"Scallop"));
+        let (first, _) = app.corner_rounding().expect("a distance");
+        assert!(first > 2.0, "{first}");
+        let once = nodes(&app);
+        assert_eq!(app.corner_widgets().len(), 4);
+        pull(&mut app, corner, 2.0);
+        let (second, _) = app.corner_rounding().expect("a distance");
+        assert!((second - first - 2.0).abs() < 0.1, "{first} {second}");
+        assert_eq!(nodes(&app), once, "nodes multiplied");
+        // Chamfered, the same.
+        app.corner_bar_op = CornerOp::Chamfer;
+        pull(&mut app, corner, -1.0);
+        assert_eq!(arcs(&app), 0, "chamfers");
+        assert_eq!(app.engine.history_labels().0.last(), Some(&"Chamfer"));
+        assert_eq!(app.corner_widgets().len(), 4);
+        // Any other change of the curve ends it: the cut is then a curve
+        // like any other.
+        app.undo();
+        app.undo();
+        app.undo();
+        assert_eq!(path_of(&app), rect);
+        assert_eq!(app.corner_widgets().len(), 4);
+    }
+
+    fn disc(x: f64, y: f64, r: f64) -> BezPath {
+        tracedraw_core::geometry::ellipse_path(tracedraw_core::geometry::Rect::new(
+            x - r,
+            y - r,
+            x + r,
+            y + r,
+        ))
+    }
+
+    /// The Shape tool on a shape cut out of three discs whose corners the
+    /// Corners panel rounded (#2222): every rounded corner has its ring,
+    /// and only they do. The shaping commands leave a disc its own
+    /// nodes, and a piece of a disc between two of them read as a
+    /// rounded corner, so the shape showed rings along its round sides,
+    /// with a rounding radius of the disc's. Each ring rounds its corner
+    /// further,
+    /// and Clear Rounding gives the sharp shape back.
+    #[test]
+    fn a_shape_cut_out_of_discs_keeps_one_ring_per_rounded_corner() {
+        use tracedraw_core::shaping::{overlay, Op};
+        let a = disc(60.0, 60.0, 30.0);
+        let b = disc(95.0, 65.0, 30.0);
+        let c = disc(72.0, 27.0, 30.0);
+        let cut = overlay(&overlay(&a, &b, Op::Trim), &c, Op::Trim);
+        let sharp = corners(&cut);
+        assert_eq!(sharp.len(), 3, "{sharp:?}");
+        let mut app = App::headless();
+        let id = app
+            .new_shape(ShapeKind::Path {
+                path: cut.clone(),
+                closed: true,
+            })
+            .expect("a curve");
+        app.select(vec![id]);
+        app.settings.nodes.corner_widgets = true;
+        let path_of = |app: &App| match &app.doc().find_shape(id).expect("curve").kind {
+            ShapeKind::Path { path, .. } => path.clone(),
+            _ => panic!("a curve"),
+        };
+        // Sharp: a ring in each corner, none along the round sides.
+        app.tool = Tool::Shape;
+        assert!(fillets(&cut).is_empty(), "{:?}", fillets(&cut));
+        assert_eq!(app.corner_widgets().len(), 3);
+        assert_eq!(app.corner_rounding(), Some((0.0, false)));
+        // The Corners panel rounds them.
+        app.tool = Tool::Pick;
+        app.corners.radius = 3.0;
+        assert_eq!(app.apply_corners(), 3);
+        // Back in the Shape tool: the three rounded corners, each with
+        // its ring, read at the radius they were given.
+        app.tool = Tool::Shape;
+        let rounded = fillets(&path_of(&app));
+        assert_eq!(rounded.len(), 3, "{rounded:?}");
+        for f in &rounded {
+            assert!((f.radius - 3.0).abs() < 1e-6, "{rounded:?}");
+            assert!(
+                sharp.iter().any(|c| (c.at - f.corner).hypot() < 1e-6),
+                "{rounded:?}"
+            );
+        }
+        let widgets = app.corner_widgets();
+        assert_eq!(widgets.len(), 3);
+        let radius = app.corner_rounding().expect("corners");
+        assert!((radius.0 - 3.0).abs() < 1e-6 && !radius.1, "{radius:?}");
+        // Each ring rounds its corner further.
+        for w in widgets {
+            let at = w.corner.at;
+            let w = app
+                .corner_widgets()
+                .into_iter()
+                .find(|w| (w.corner.at - at).hypot() < 1e-6)
+                .expect("the corner's ring");
+            let p = app.view.to_page(w.at);
+            assert!(app.start_corner_drag(w, p, false));
+            let Drag::CornerWidget(d) = app.drag.clone() else {
+                panic!("no drag");
+            };
+            app.corner_drag_to(*d, p + w.corner.inside * 0.5);
+            app.drag = Drag::None;
+            let now = fillets(&path_of(&app));
+            assert_eq!(now.len(), 3, "{now:?}");
+            let r = now
+                .iter()
+                .find(|f| (f.corner - at).hypot() < 1e-6)
+                .map_or(0.0, |f| f.radius);
+            assert!(r > 3.2, "{r}");
+            assert_eq!(app.corner_widgets().len(), 3);
+        }
+        // Clear Rounding: the sharp shape again.
+        app.node_selection.clear();
+        assert!(app.set_corner_rounding(0.0));
+        let back = path_of(&app);
+        assert!(fillets(&back).is_empty());
+        assert_eq!(corners(&back).len(), 3);
+        assert!((back.area() - cut.area()).abs() < 1e-6);
+    }
+
+    /// #2700: dragging the ring of a corner with a node a little way
+    /// along one side rounds up to that node and stops there; the
+    /// rounding never runs on past it and never takes the node away.
+    #[test]
+    fn a_corner_rounds_up_to_the_node_beside_it_and_keeps_it() {
+        let mut p = BezPath::new();
+        p.move_to((60.0, 60.0));
+        p.line_to((65.0, 60.0));
+        p.line_to((80.0, 60.0));
+        p.line_to((80.0, 80.0));
+        p.line_to((60.0, 80.0));
+        p.close_path();
+        let mut app = App::headless();
+        let id = app
+            .new_shape(ShapeKind::Path {
+                path: p,
+                closed: true,
+            })
+            .expect("a curve");
+        app.select(vec![id]);
+        app.tool = Tool::Shape;
+        app.settings.nodes.corner_widgets = true;
+        app.view.zoom = 4.0;
+        let at = Point::new(60.0, 60.0);
+        let w = app
+            .corner_widgets()
+            .into_iter()
+            .find(|w| (w.corner.at - at).hypot() < 1e-3)
+            .expect("the corner's ring");
+        let p = app.view.to_page(w.at);
+        assert!(app.start_corner_drag(w, p, false));
+        let Drag::CornerWidget(d) = app.drag.clone() else {
+            panic!("no drag");
+        };
+        assert!(d.max <= 5.0 + 1e-6, "{}", d.max);
+        // Dragged far into the corner.
+        app.corner_drag_to(*d, p + w.corner.inside * 30.0);
+        app.drag = Drag::None;
+        let now = match &app.doc().find_shape(id).expect("curve").kind {
+            ShapeKind::Path { path, .. } => path.clone(),
+            _ => panic!("a curve"),
+        };
+        let rounded = fillets(&now);
+        assert_eq!(rounded.len(), 1, "{rounded:?}");
+        assert!(rounded[0].radius <= 5.0 + 1e-6, "{rounded:?}");
+        // The node beside the corner is still there.
+        let ends: Vec<Point> = now
+            .elements()
+            .iter()
+            .filter_map(|e| match *e {
+                PathEl::MoveTo(q) | PathEl::LineTo(q) | PathEl::QuadTo(_, q) => Some(q),
+                PathEl::CurveTo(_, _, q) => Some(q),
+                PathEl::ClosePath => None,
+            })
+            .collect();
+        assert!(
+            ends.iter()
+                .any(|q| (*q - Point::new(65.0, 60.0)).hypot() < 1e-6),
+            "the node at 65,60 is gone: {ends:?}"
         );
     }
 
@@ -1299,16 +1722,5 @@ pub fn draw(app: &App, painter: &egui::Painter, color: egui::Color32) {
             }
         }
         assert!(failures.is_empty(), "{}", failures.join("\n"));
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn widget_dimensions_are_positive_and_usable() {
-        assert!(widget_pick_px() >= 7.0);
-        assert!(widget_radius_px() >= 4.0);
     }
 }
