@@ -1983,7 +1983,12 @@ impl Dialog {
             let name = self.file_name.unwrap_or_else(|| "Drawing".into());
             return Some(android_save_path(&name));
         }
-        #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+        // Unit tests answer the dialog themselves (see `test_save`).
+        #[cfg(all(test, not(any(target_arch = "wasm32", target_os = "android"))))]
+        {
+            return test_save::ask(self);
+        }
+        #[cfg(not(any(target_arch = "wasm32", target_os = "android", test)))]
         {
             let mut d = rfd::FileDialog::new();
             for (name, exts) in &self.filters {

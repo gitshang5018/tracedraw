@@ -340,7 +340,7 @@ fn phone_sorter(app: &mut App, ui: &mut Ui) {
                         );
                         let mut bx = rect.right() - 6.0;
                         for (glyph, enabled) in [
-                            ("\u{2715}", n > 1),
+                            ("\u{00D7}", n > 1),
                             ("\u{25B6}", k + 1 < n),
                             ("\u{25C0}", k > 0),
                         ] {

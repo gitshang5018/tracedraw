@@ -184,8 +184,30 @@ impl App {
             return None;
         }
         let tol = pick_px() / self.view.zoom.max(1e-6) as f64;
-        let page = self.doc().page(self.page).ok()?;
-        page.guides.iter().rposition(|g| g.distance(p).abs() <= tol)
+        self.page_guides()
+            .iter()
+            .rposition(|g| !g.hidden && g.distance(p).abs() <= tol)
+    }
+
+    /// The guideline under `p` to pick: one of the guidelines being edited,
+    /// else one of the other set (the master page's while the page's own
+    /// are edited, and the other way round), which then becomes the set
+    /// being edited, so a guideline a file brought on the master page
+    /// answers a click at once (#2029).
+    pub fn pick_guide_at(&mut self, p: Point) -> Option<usize> {
+        if let Some(i) = self.guide_at(p) {
+            return Some(i);
+        }
+        if !self.other_guides_shown() {
+            return None;
+        }
+        let tol = pick_px() / self.view.zoom.max(1e-6) as f64;
+        let i = self
+            .other_guides_on_page()
+            .iter()
+            .rposition(|g| !g.hidden && g.distance(p).abs() <= tol)?;
+        self.choose_master_guides(!self.edit_master_guides);
+        Some(i)
     }
 
     /// The colour a guideline is drawn with: its own, or the document's
@@ -624,7 +646,7 @@ impl App {
                 return true;
             }
         }
-        let Some(index) = self.guide_at(p) else {
+        let Some(index) = self.pick_guide_at(p) else {
             return false;
         };
         let Some(g) = self.page_guides().get(index).copied() else {
@@ -664,7 +686,7 @@ impl App {
         if !extend && self.guide_pivot_at(p) {
             return true;
         }
-        let Some(index) = self.guide_at(p) else {
+        let Some(index) = self.pick_guide_at(p) else {
             return false;
         };
         if !self.selection.is_empty() {
@@ -1224,7 +1246,7 @@ mod tests {
             (p.x - 30.4).abs() < 1e-9,
             "not snapped to a hidden one: {p:?}"
         );
-        assert_eq!(app.guide_at(Point::new(30.0, 10.0)), None);
+        assert_eq!(app.pick_guide_at(Point::new(30.0, 10.0)), None);
         assert_eq!(app.guide_at(Point::new(10.0, 50.0)), Some(0));
         // The page's own eye too: nothing left on page 1, page 2 not
         // touched.

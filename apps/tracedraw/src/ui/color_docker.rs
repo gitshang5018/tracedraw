@@ -1064,11 +1064,17 @@ fn eyedropper_button(app: &App, ui: &mut Ui) -> Response {
 /// A small text button with a button's frame, so it reads as one and
 /// not as a label (#1485); `enabled` or pale.
 fn small_action(ui: &mut Ui, enabled: bool, text: &str) -> Response {
-    let min_h = if crate::ui::mobile::phone() { 34.0 } else { 18.0 };
-    ui.add_enabled(
-        enabled,
-        egui::Button::new(egui::RichText::new(text).small()).min_size(Vec2::new(50.0, min_h)),
-    )
+    if crate::ui::mobile::phone() {
+        ui.add_enabled(
+            enabled,
+            egui::Button::new(egui::RichText::new(text).small()).min_size(Vec2::new(50.0, 34.0)),
+        )
+    } else {
+        ui.add_enabled(
+            enabled,
+            egui::Button::new(egui::RichText::new(text).small()),
+        )
+    }
 }
 
 /// The bottom strip: the lock, the fill-over-outline swatch, the

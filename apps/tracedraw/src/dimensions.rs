@@ -1162,7 +1162,8 @@ impl App {
     /// A new dimension on the active layer, in the bar's style, one undo
     /// step.
     pub fn add_dimension(&mut self, measure: Measure, label: &'static str) {
-        self.add_dimension_with_style(measure, self.dimension_style.clone(), label);
+        let style = self.style_for(&measure);
+        self.add_dimension_with_style(measure, style, label);
     }
 
     /// A new dimension on the active layer with the given style, one undo

@@ -346,42 +346,6 @@ pub fn root(app: &mut App, ui: &mut Ui) {
     }
 }
 
-/// Clear keyboard focus when clicking outside the currently focused edit box.
-pub(crate) fn clear_focus_on_outside_click(ctx: &egui::Context) {
-    #[cfg(target_os = "android")]
-    {
-        // On Android, text fields are manipulated via touch and the soft keyboard.
-        // Dynamic layout shifts during virtual keyboard animation or panel lifts
-        // must never cause accidental unfocusing. Dismissing the keyboard is handled
-        // by the Android back gesture, IME Done button, or direct canvas clicks.
-        let _ = ctx;
-    }
-    #[cfg(not(target_os = "android"))]
-    {
-        let pressed = ctx.input(|i| i.pointer.primary_pressed() || i.pointer.secondary_pressed());
-        if !pressed {
-            return;
-        }
-        // When a dropdown popup is open, clicking inside the popup should not unfocus.
-        if egui::Popup::is_any_open(ctx) {
-            return;
-        }
-        let Some(pos) = ctx.input(|i| i.pointer.interact_pos()) else {
-            return;
-        };
-        let Some(focused_id) = ctx.memory(|m| m.focused()) else {
-            return;
-        };
-        let Some(r) = ctx.read_response(focused_id) else {
-            return;
-        };
-        if r.rect.expand(8.0).contains(pos) || r.interact_rect.expand(8.0).contains(pos) {
-            return;
-        }
-        ctx.memory_mut(|m| m.stop_text_input());
-    }
-}
-
 /// widget (a field of the bars), which then took the keys typed after
 /// the tab (#1667). That move is called off before any widget is drawn.
 /// A dialog keeps its own Tab order (`chrome::keep_tab_in`), and a
@@ -413,7 +377,6 @@ fn keep_tab_on_the_drawing(app: &App, ctx: &egui::Context) {
 }
 
 fn root_frame(app: &mut App, ui: &mut Ui) {
-    clear_focus_on_outside_click(ui.ctx());
     // The rest of a notch a number field took scrolls nothing (#783).
     crate::ui::field::hold_taken_wheel(ui.ctx());
     // Dockers set their canvas previews again each frame they are shown;
@@ -3494,111 +3457,6 @@ mod tests {
         assert!(
             font_axes_button_rect(&ctx, "docker").is_some(),
             "in the Text docker"
-        );
-    }
-
-    #[test]
-    fn clicking_outside_an_edit_box_clears_focus() {
-        let ctx = egui::Context::default();
-        let field_id = egui::Id::new("test_box");
-        let field_rect = egui::Rect::from_min_size(egui::pos2(50.0, 50.0), egui::vec2(100.0, 24.0));
-        let mut text = String::from("123");
-
-        // Pass 1: Render the TextEdit widget so egui registers its response
-        let mut out = ctx.run_ui(
-            egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0))),
-                ..Default::default()
-            },
-            |ui| {
-                ui.put(field_rect, egui::TextEdit::singleline(&mut text).id(field_id));
-            },
-        );
-        out.textures_delta.clear();
-
-        // Request focus on the edit box
-        ctx.memory_mut(|m| m.request_focus(field_id));
-        assert_eq!(ctx.memory(|m| m.focused()), Some(field_id));
-
-        // Pass 2: Click INSIDE the edit box -> focus should be preserved
-        let inside = egui::pos2(60.0, 60.0);
-        let mut out = ctx.run_ui(
-            egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0))),
-                events: vec![
-                    egui::Event::PointerMoved(inside),
-                    egui::Event::PointerButton {
-                        pos: inside,
-                        button: egui::PointerButton::Primary,
-                        pressed: true,
-                        modifiers: egui::Modifiers::NONE,
-                    },
-                    egui::Event::PointerButton {
-                        pos: inside,
-                        button: egui::PointerButton::Primary,
-                        pressed: false,
-                        modifiers: egui::Modifiers::NONE,
-                    },
-                ],
-                ..Default::default()
-            },
-            |ui| {
-                clear_focus_on_outside_click(&ctx);
-                ui.put(field_rect, egui::TextEdit::singleline(&mut text).id(field_id));
-            },
-        );
-        out.textures_delta.clear();
-        assert_eq!(ctx.memory(|m| m.focused()), Some(field_id), "clicking inside must keep focus");
-
-        // Pass 3: Click OUTSIDE the edit box (blank space at 400, 300) -> focus should be cleared
-        let outside = egui::pos2(400.0, 300.0);
-        let mut out = ctx.run_ui(
-            egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0))),
-                events: vec![
-                    egui::Event::PointerMoved(outside),
-                    egui::Event::PointerButton {
-                        pos: outside,
-                        button: egui::PointerButton::Primary,
-                        pressed: true,
-                        modifiers: egui::Modifiers::NONE,
-                    },
-                ],
-                ..Default::default()
-            },
-            |ui| {
-                clear_focus_on_outside_click(&ctx);
-                ui.put(field_rect, egui::TextEdit::singleline(&mut text).id(field_id));
-            },
-        );
-        out.textures_delta.clear();
-        assert_eq!(ctx.memory(|m| m.focused()), None, "clicking outside must clear focus");
-
-        // Pass 4: Clicking when response is not yet recorded must keep focus
-        ctx.memory_mut(|m| m.request_focus(egui::Id::new("unrecorded_field")));
-        let mut out = ctx.run_ui(
-            egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0))),
-                events: vec![
-                    egui::Event::PointerMoved(outside),
-                    egui::Event::PointerButton {
-                        pos: outside,
-                        button: egui::PointerButton::Primary,
-                        pressed: true,
-                        modifiers: egui::Modifiers::NONE,
-                    },
-                ],
-                ..Default::default()
-            },
-            |_ui| {
-                clear_focus_on_outside_click(&ctx);
-            },
-        );
-        out.textures_delta.clear();
-        assert_eq!(
-            ctx.memory(|m| m.focused()),
-            Some(egui::Id::new("unrecorded_field")),
-            "unknown response must not clear focus"
         );
     }
 }

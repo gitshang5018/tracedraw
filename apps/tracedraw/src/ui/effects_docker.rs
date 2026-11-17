@@ -225,14 +225,14 @@ fn effect_stack(app: &mut App, ui: &mut Ui) {
                         change = Some(Change::Remove(i));
                     }
                     if ui
-                        .add_enabled(i + 1 < n, egui::Button::new("\u{25BC}").min_size(btn_sz))
+                        .add_enabled(i + 1 < n, egui::Button::new("\u{23F7}").min_size(btn_sz))
                         .rich_tip(tr("effects.down"))
                         .clicked()
                     {
                         change = Some(Change::Down(i));
                     }
                     if ui
-                        .add_enabled(i > 0, egui::Button::new("\u{25B2}").min_size(btn_sz))
+                        .add_enabled(i > 0, egui::Button::new("\u{23F6}").min_size(btn_sz))
                         .rich_tip(tr("effects.up"))
                         .clicked()
                     {

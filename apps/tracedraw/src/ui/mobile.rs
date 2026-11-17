@@ -4027,9 +4027,11 @@ fn save_drawing(app: &mut App, as_new: bool) {
         }
     }
     let name = save_name(app);
-    if let Some(path) = crate::files::Dialog::new().set_file_name(name).save_path() {
-        app.save_to(path);
-    }
+    crate::files::Dialog::new()
+        .set_file_name(name)
+        .save_file(app, |app, path| {
+            app.save_to(path);
+        });
 }
 
 /// The file name a drawing is saved under: its own, without the marker of

@@ -16,8 +16,6 @@ path = "src/main.rs"
 # the system loads the library itself, see src/android.rs). Its doc
 # comments hold prose and paths, not examples to run.
 [lib]
-name = "tracedraw"
-path = "src/lib.rs"
 doctest = false
 
 [build-dependencies]
