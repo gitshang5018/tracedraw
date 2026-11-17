@@ -1425,112 +1425,112 @@ fn ai_chip(app: &mut App, ui: &mut Ui, m3: &M3, full: Rect, open: &mut Sheet) {
     let menu_key = Id::new("mobile_ai_menu");
     let mut shown: bool = ui.ctx().data(|d| d.get_temp(menu_key)).unwrap_or(false);
 
-    let painter = ui.painter();
-    painter.rect_filled(bar_rect, 18.0, m3.container);
-    painter.rect_stroke(
-        bar_rect,
-        18.0,
-        Stroke::new(1.0, m3.outline),
-        egui::StrokeKind::Inside,
-    );
-
-    let mut ai_rect = Rect::NOT_NOTHING;
     let mut shown_keys = Vec::new();
+    let ctx = ui.ctx().clone();
 
-    ui.allocate_ui_at_rect(bar_rect.shrink(3.0), |ui| {
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 2.0;
+    egui::Area::new(Id::new("mobile_ai_chip_area"))
+        .order(egui::Order::Middle)
+        .fixed_pos(bar_rect.min)
+        .show(&ctx, |ui| {
+            Frame::new()
+                .fill(m3.container)
+                .stroke(Stroke::new(1.0, m3.outline))
+                .corner_radius(18.0)
+                .inner_margin(egui::Margin::symmetric(4, 3))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 2.0;
 
-            // 1. AI button
-            let (rect, resp) = ui.allocate_exact_size(Vec2::new(36.0, btn_h), Sense::click());
-            ai_rect = rect;
-            let ai_fill = if shown {
-                m3.primary_container
-            } else if resp.hovered() {
-                mix(m3.primary, m3.surface, 0.12)
-            } else {
-                Color32::TRANSPARENT
-            };
-            let ai_col = if shown { m3.primary } else { m3.on };
-            ui.painter().rect_filled(rect, 12.0, ai_fill);
-            ui.painter().text(
-                rect.center(),
-                egui::Align2::CENTER_CENTER,
-                "AI",
-                egui::FontId::proportional(13.5),
-                ai_col,
-            );
-            if resp.clicked() {
-                shown = !shown;
-                ui.ctx().data_mut(|d| d.insert_temp(menu_key, shown));
-            }
+                        // 1. AI button
+                        let (rect, resp) = ui.allocate_exact_size(Vec2::new(36.0, btn_h), Sense::click());
+                        let ai_fill = if shown {
+                            m3.primary_container
+                        } else if resp.hovered() {
+                            mix(m3.primary, m3.surface, 0.12)
+                        } else {
+                            Color32::TRANSPARENT
+                        };
+                        let ai_col = if shown { m3.primary } else { m3.on };
+                        ui.painter().rect_filled(rect, 12.0, ai_fill);
+                        ui.painter().text(
+                            rect.center(),
+                            egui::Align2::CENTER_CENTER,
+                            "AI",
+                            egui::FontId::proportional(13.5),
+                            ai_col,
+                        );
+                        if resp.clicked() {
+                            shown = !shown;
+                            ui.ctx().data_mut(|d| d.insert_temp(menu_key, shown));
+                        }
 
-            // Divider
-            let (d_rect, _) = ui.allocate_exact_size(Vec2::new(4.0, btn_h), Sense::hover());
-            let dy = d_rect.center().y;
-            ui.painter().line_segment(
-                [
-                    egui::pos2(d_rect.center().x, dy - 7.0),
-                    egui::pos2(d_rect.center().x, dy + 7.0),
-                ],
-                Stroke::new(1.0, mix(m3.outline, m3.container, 0.6)),
-            );
+                        // Divider
+                        let (d_rect, _) = ui.allocate_exact_size(Vec2::new(4.0, btn_h), Sense::hover());
+                        let dy = d_rect.center().y;
+                        ui.painter().line_segment(
+                            [
+                                egui::pos2(d_rect.center().x, dy - 7.0),
+                                egui::pos2(d_rect.center().x, dy + 7.0),
+                            ],
+                            Stroke::new(1.0, mix(m3.outline, m3.container, 0.6)),
+                        );
 
-            // 2. Modifier keys: Shift, Ctrl, Alt
-            for (id, key, width) in [
-                ("shift", crate::touch_modifiers::ModKey::Shift, 42.0),
-                ("ctrl", crate::touch_modifiers::ModKey::Ctrl, 38.0),
-                ("alt", crate::touch_modifiers::ModKey::Alt, 34.0),
-            ] {
-                let held = app.touch_mods.held(key);
-                let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, btn_h), Sense::click());
-                let fill = if held {
-                    m3.primary_container
-                } else if resp.hovered() {
-                    mix(m3.primary, m3.surface, 0.08)
-                } else {
-                    Color32::TRANSPARENT
-                };
-                let col = if held { m3.primary } else { m3.on };
-                ui.painter().rect_filled(rect, 12.0, fill);
-                ui.painter().text(
-                    rect.center(),
-                    egui::Align2::CENTER_CENTER,
-                    key.label(),
-                    egui::FontId::proportional(12.5),
-                    col,
-                );
-                if resp.clicked() {
-                    app.touch_mods.toggle(key);
-                }
-                shown_keys.push((id, resp.rect));
-            }
+                        // 2. Modifier keys: Shift, Ctrl, Alt
+                        for (id, key, width) in [
+                            ("shift", crate::touch_modifiers::ModKey::Shift, 42.0),
+                            ("ctrl", crate::touch_modifiers::ModKey::Ctrl, 38.0),
+                            ("alt", crate::touch_modifiers::ModKey::Alt, 34.0),
+                        ] {
+                            let held = app.touch_mods.held(key);
+                            let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, btn_h), Sense::click());
+                            let fill = if held {
+                                m3.primary_container
+                            } else if resp.hovered() {
+                                mix(m3.primary, m3.surface, 0.08)
+                            } else {
+                                Color32::TRANSPARENT
+                            };
+                            let col = if held { m3.primary } else { m3.on };
+                            ui.painter().rect_filled(rect, 12.0, fill);
+                            ui.painter().text(
+                                rect.center(),
+                                egui::Align2::CENTER_CENTER,
+                                key.label(),
+                                egui::FontId::proportional(12.5),
+                                col,
+                            );
+                            if resp.clicked() {
+                                app.touch_mods.toggle(key);
+                            }
+                            shown_keys.push((id, resp.rect));
+                        }
 
-            // 3. Delete key (删除键)
-            let can = app.has_document() && app.can_delete();
-            let (del_rect, del_resp) = ui.allocate_exact_size(
-                Vec2::new(32.0, btn_h),
-                if can { Sense::click() } else { Sense::hover() },
-            );
-            let del_fill = if can && del_resp.hovered() {
-                mix(m3.primary, m3.surface, 0.08)
-            } else {
-                Color32::TRANSPARENT
-            };
-            ui.painter().rect_filled(del_rect, 12.0, del_fill);
-            let del_col = if can {
-                m3.on
-            } else {
-                mix(m3.on, m3.container, 0.4)
-            };
-            let icon_box = Rect::from_center_size(del_rect.center(), Vec2::splat(16.0));
-            draw_action(ui.painter(), icon_box, Action::Delete, del_col);
-            if can && del_resp.clicked() {
-                app.delete_command();
-            }
-            shown_keys.push(("delete", del_resp.rect));
+                        // 3. Delete key (删除键)
+                        let can = app.has_document() && app.can_delete();
+                        let (del_rect, del_resp) = ui.allocate_exact_size(
+                            Vec2::new(32.0, btn_h),
+                            if can { Sense::click() } else { Sense::hover() },
+                        );
+                        let del_fill = if can && del_resp.hovered() {
+                            mix(m3.primary, m3.surface, 0.08)
+                        } else {
+                            Color32::TRANSPARENT
+                        };
+                        ui.painter().rect_filled(del_rect, 12.0, del_fill);
+                        let del_col = if can {
+                            m3.on
+                        } else {
+                            mix(m3.on, m3.container, 0.4)
+                        };
+                        let icon_box = Rect::from_center_size(del_rect.center(), Vec2::splat(16.0));
+                        draw_action(ui.painter(), icon_box, Action::Delete, del_col);
+                        if can && del_resp.clicked() {
+                            app.delete_command();
+                        }
+                        shown_keys.push(("delete", del_resp.rect));
+                    });
+                });
         });
-    });
 
     app.touch_keys_shown = shown_keys;
 

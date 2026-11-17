@@ -234,7 +234,7 @@ fn frame(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
 /// Capsule frame for the multi-selection floating bar over the drawing.
 fn frame_capsule(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
     let (fill, border) = if crate::ui::mobile::phone() {
-        let m3 = crate::ui::mobile::m3_tokens(ui.ctx());
+        let m3 = crate::ui::mobile::M3::of();
         (m3.container, m3.outline.gamma_multiply(0.4))
     } else {
         (
