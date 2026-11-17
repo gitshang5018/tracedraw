@@ -244,15 +244,18 @@ mod tests {
     use super::*;
 
     fn release(with_package: bool) -> Release {
+        let package = with_package.then(|| Package {
+            url: "https://example.org/a".into(),
+            sha256: "0".repeat(64),
+            size: 1,
+        });
         Release {
             version: "9.0.0".into(),
             page: "https://example.org/r".into(),
+            notes: String::new(),
             download: None,
-            installer: with_package.then(|| Package {
-                url: "https://example.org/a".into(),
-                sha256: "0".repeat(64),
-                size: 1,
-            }),
+            installer: package.clone(),
+            package,
         }
     }
 

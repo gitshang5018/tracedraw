@@ -13036,8 +13036,10 @@ mod tests {
         *app.updates.state.lock().expect("lock") = UpdateState::Available(Release {
             version: "9.0.0".into(),
             page: String::new(),
+            notes: String::new(),
             download: None,
             installer: None,
+            package: None,
         });
         app.update_tick_desktop(10 * crate::updates::DAILY, None);
         assert_eq!(app.settings.pending_update, "9.0.0");

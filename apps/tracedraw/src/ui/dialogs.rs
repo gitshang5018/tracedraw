@@ -1268,6 +1268,67 @@ pub use crate::ui::font_manager::FontManagerState;
 
 pub use crate::ui::palette_editor::PaletteEditorState;
 
+/// What the updates page was asked to do this frame.
+enum Act {
+    Install(String, crate::updates::Package, crate::updates::InstallTarget),
+    Open(String),
+    Skip(String),
+    Check,
+}
+
+/// The models the image tools need, on the updates page: what is on the
+/// phone, what is not, and the way to fetch it. They come from the same
+/// place the page does, so one page fetches everything this build does not
+/// carry.
+fn models_page(ui: &mut egui::Ui) {
+    let ctx = ui.ctx().clone();
+    ui.label(egui::RichText::new(tr("ai.models")).strong());
+    ui.label(egui::RichText::new(tr("ai.models_hint")).small());
+    ui.add_space(4.0);
+    let models = || crate::ai_tools::MATTING.iter();
+    let mut running = false;
+    for model in models() {
+        ui.horizontal(|ui| {
+            ui.label(tr(model.title));
+            if let Some((done, total)) = crate::ai_tools::progress(&ctx, model) {
+                running = true;
+                let share = if total > 0 {
+                    done as f32 / total as f32
+                } else {
+                    0.0
+                };
+                ui.add(
+                    egui::ProgressBar::new(share)
+                        .desired_width(150.0)
+                        .text(format!(
+                            "{} / {}",
+                            crate::ai_tools::size_text(done),
+                            crate::ai_tools::size_text(total)
+                        )),
+                );
+            } else if crate::ai_tools::ready(model) {
+                let size = crate::ai_tools::size_text(crate::ai_tools::size_on_disk(model));
+                ui.label(egui::RichText::new(format!("{}, {}", tr("ai.model_ready"), size)).small());
+            } else if ui.button(tr("ai.download_model")).clicked() {
+                crate::ai_tools::download(&ctx, model);
+            }
+        });
+        if let Some(e) = crate::ai_tools::failed(&ctx, model) {
+            ui.label(egui::RichText::new(e).small());
+        }
+    }
+    if running {
+        ctx.request_repaint_after(std::time::Duration::from_millis(200));
+    }
+    // The folder the models are in, and nothing else: a button that
+    // fetches every model at once is a button that fills a phone's
+    // storage without being asked what for. Each model has its own
+    // button, and what it is for is written beside it.
+    if let Some(dir) = crate::ai_tools::dir() {
+        ui.label(egui::RichText::new(dir.display().to_string()).small());
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Dialog {
     None,
@@ -2577,156 +2638,158 @@ pub fn show(app: &mut App, ctx: &Context) {
             }
         }
         Dialog::Updates => {
-            use crate::updates::UpdateState;
+            use crate::updates::{InstallState, UpdateState};
             let version = crate::updates::version();
-            let close_label = tr("dialog.close");
             let install = app.installer.get();
-            match app.updates.get() {
-                UpdateState::Available(r) if install != crate::updates::InstallState::Idle => {
-                    use crate::ui::update_progress::{self, Action};
-                    let phase = update_progress::phase(&install, app.installer.progress());
-                    let picked = phase
-                        .as_ref()
-                        .and_then(|p| update_progress::dialog(ctx, version, &r.version, p));
-                    match picked {
-                        // Back to Idle: the box offers Install again.
-                        Some(Action::Cancel) => {
-                            app.installer.cancel();
+            let state = app.updates.get();
+            // The dialog is a page rather than a message: the models the
+            // image tools need are downloaded from the same place, and one
+            // page for both keeps Help > Updates the one way to fetch what
+            // this build does not carry.
+            let mut act = None;
+            let res = window(ctx, tr("menu.help.updates")).show(ctx, |ui| {
+                ui.label(trf("updates.running", &[("version", version)]));
+                ui.add_space(6.0);
+                match &state {
+                    UpdateState::Checking => {
+                        ctx.request_repaint_after(std::time::Duration::from_millis(300));
+                        ui.label(tr("updates.checking"));
+                    }
+                    UpdateState::Latest => {
+                        ui.label(tr("updates.latest"));
+                    }
+                    UpdateState::Failed(e) => {
+                        ui.label(trf("updates.failed", &[("error", e)]));
+                        if ui.button(tr("updates.check_now")).clicked() {
+                            act = Some(Act::Check);
                         }
-                        // Restart: exit the usual way (asking about unsaved
-                        // drawings); the new version starts when the
-                        // program has exited.
-                        Some(Action::Restart) => {
-                            if app.installer.arm() {
-                                app.request_exit();
+                    }
+                    UpdateState::Available(r) => {
+                        ui.label(trf(
+                            "updates.available",
+                            &[("new", &r.version), ("version", version)],
+                        ));
+                        // What the release says about itself, in the
+                        // dialog: the notes are the reason to read it,
+                        // and a phone is not a place to open a page in.
+                        // They scroll: a release with many changes says
+                        // more than fits in a window.
+                        if !r.notes.trim().is_empty() {
+                            ui.add_space(4.0);
+                            ui.label(
+                                egui::RichText::new(tr("updates.changes"))
+                                    .strong(),
+                            );
+                            egui::ScrollArea::vertical()
+                                .id_salt("updates_notes")
+                                .max_height(220.0)
+                                .auto_shrink([false, false])
+                                .show(ui, |ui| {
+                                    ui.label(
+                                        egui::RichText::new(&r.notes)
+                                            .small()
+                                            .weak(),
+                                    );
+                                });
+                        }
+                        match &install {
+                            InstallState::Downloading { done, total } => {
+                                ctx.request_repaint_after(std::time::Duration::from_millis(200));
+                                let share = if *total > 0 {
+                                    *done as f32 / *total as f32
+                                } else {
+                                    0.0
+                                };
+                                let mb = |b: u64| format!("{:.1}", b as f64 / 1_048_576.0);
+                                ui.add(egui::ProgressBar::new(share).text(format!(
+                                    "{} / {}",
+                                    mb(*done),
+                                    mb(*total)
+                                )));
                             }
-                            close = true;
+                            InstallState::Installed(v) => {
+                                let key = if cfg!(target_os = "android") {
+                                    "updates.install_ready"
+                                } else {
+                                    "updates.installed"
+                                };
+                                ui.label(trf(key, &[("new", v)]));
+                            }
+                            InstallState::Failed(e) => {
+                                ui.label(trf("updates.install_failed", &[("error", e)]));
+                            }
+                            InstallState::Idle => {}
+                            _ => {}
                         }
-                        Some(Action::TryAgain) => {
-                            match r.installer.clone().zip(crate::updates::install_target()) {
-                                Some((package, target)) => app.installer.start(
-                                    r.version.clone(),
-                                    package,
-                                    target,
-                                    Some(ctx.clone()),
-                                ),
-                                None => {
-                                    let url = r.download.clone().unwrap_or_else(|| r.page.clone());
-                                    app.open_url(&url);
-                                    close = true;
+                        ui.horizontal(|ui| {
+                            let package = r.installer.clone().or_else(|| r.package.clone());
+                            if let Some((package, target)) =
+                                package.zip(crate::updates::install_target())
+                            {
+                                if ui.button(tr("updates.install")).clicked() {
+                                    act = Some(Act::Install(
+                                        r.version.clone(),
+                                        package,
+                                        target,
+                                    ));
                                 }
                             }
-                        }
-                        Some(Action::Website) => {
-                            let url = r.download.clone().unwrap_or_else(|| r.page.clone());
-                            app.open_url(&url);
-                            close = true;
-                        }
-                        // A download goes on behind the card.
-                        Some(Action::Later | Action::Close) => close = true,
-                        None => {}
-                    }
-                }
-                UpdateState::Idle | UpdateState::Checking => {
-                    ctx.request_repaint_after(std::time::Duration::from_millis(200));
-                    if crate::ui::chrome::message_box(
-                        ctx,
-                        crate::ui::chrome::MessageIcon::Busy,
-                        &tr("updates.checking"),
-                        &[&tr("dialog.cancel")],
-                    )
-                    .is_some()
-                    {
-                        close = true;
-                    }
-                }
-                UpdateState::Latest => {
-                    let text = trf("updates.latest", &[("version", version)]);
-                    if crate::ui::chrome::message_box(
-                        ctx,
-                        crate::ui::chrome::MessageIcon::Info,
-                        &text,
-                        &[&close_label],
-                    )
-                    .is_some()
-                    {
-                        close = true;
-                    }
-                }
-                UpdateState::Available(r) => {
-                    let text = trf(
-                        "updates.available",
-                        &[("new", &r.version), ("version", version)],
-                    );
-                    let (download, notes, skip) = (
-                        tr("updates.download"),
-                        tr("updates.notes"),
-                        tr("updates.skip"),
-                    );
-                    // An AppImage, a Windows setup copy and a macOS app
-                    // update themselves in place.
-                    let in_place = r.installer.clone().zip(crate::updates::install_target());
-                    let install_label = tr("updates.install");
-                    let mut labels: Vec<&str> = Vec::new();
-                    if in_place.is_some() {
-                        labels.push(&install_label);
-                    }
-                    labels.extend([download.as_str(), &notes, &skip, &close_label]);
-                    let first = usize::from(in_place.is_some());
-                    match crate::ui::chrome::message_box(
-                        ctx,
-                        crate::ui::chrome::MessageIcon::Info,
-                        &text,
-                        &labels,
-                    )
-                    .map(|i| {
-                        if in_place.is_some() && i == 0 {
-                            usize::MAX
-                        } else {
-                            i - first
-                        }
-                    }) {
-                        Some(usize::MAX) => {
-                            if let Some((package, target)) = in_place {
-                                app.installer.start(
-                                    r.version.clone(),
-                                    package,
-                                    target,
-                                    Some(ctx.clone()),
-                                );
+                            if ui.button(tr("updates.download")).clicked() {
+                                let url = r.download.clone().unwrap_or_else(|| r.page.clone());
+                                act = Some(Act::Open(url));
                             }
+                            if ui.button(tr("updates.notes")).clicked() {
+                                act = Some(Act::Open(r.page.clone()));
+                            }
+                            if ui.button(tr("updates.skip")).clicked() {
+                                act = Some(Act::Skip(r.version.clone()));
+                            }
+                        });
+                    }
+                    UpdateState::Idle => {
+                        if ui.button(tr("updates.check_now")).clicked() {
+                            act = Some(Act::Check);
                         }
-                        Some(0) => {
-                            let url = r.download.clone().unwrap_or_else(|| r.page.clone());
-                            app.open_url(&url);
-                            close = true;
-                        }
-                        Some(1) => app.open_url(&r.page),
-                        Some(2) => {
-                            app.settings.skipped_update = r.version.clone();
-                            close = true;
-                        }
-                        Some(_) => close = true,
-                        None => {}
                     }
                 }
-                UpdateState::Failed(e) => {
-                    let text = trf("updates.failed", &[("error", &e)]);
-                    let open = tr("updates.open_releases");
-                    match crate::ui::chrome::message_box(
-                        ctx,
-                        crate::ui::chrome::MessageIcon::Info,
-                        &text,
-                        &[&open, &close_label],
-                    ) {
-                        Some(0) => {
-                            app.open_url(crate::updates::RELEASES_PAGE);
-                            close = true;
-                        }
-                        Some(_) => close = true,
-                        None => {}
+                // The models the image tools need come below the notes:
+                // what the program is about comes first, and what it may
+                // need is the last thing in the window. The window is
+                // closed by its own cross, so there is no close button
+                // at the end of it.
+                ui.add_space(8.0);
+                ui.separator();
+                ui.add_space(4.0);
+                models_page(ui);
+            });
+            if res.is_none() {
+                close = true;
+            }
+            match act {
+                Some(Act::Install(version, package, target)) => {
+                    if crate::updates::can_install_in_place() {
+                        app.installer
+                            .start(version, package, target, Some(ctx.clone()));
+                    } else {
+                        // A phone must be allowed to install packages
+                        // first: the system's screen for that.
+                        crate::updates::ask_install_permission();
+                        app.status = tr("updates.allow_install");
+                        close = true;
                     }
                 }
+                Some(Act::Open(url)) => {
+                    app.open_url(&url);
+                    close = true;
+                }
+                Some(Act::Skip(v)) => {
+                    app.settings.skipped_update = v;
+                    close = true;
+                }
+                Some(Act::Check) => {
+                    app.updates.start(Some(ctx.clone()));
+                }
+                None => {}
             }
         }
         Dialog::Recover(found) => {
@@ -9686,15 +9749,18 @@ pub(crate) mod tests {
         use crate::updates::{InstallState, Package, Release, UpdateState};
         let mut app = App::headless();
         let ctx = crate::theme::ui_context();
+        let package = Package {
+            url: "https://example.org/a.AppImage".into(),
+            sha256: "0".repeat(64),
+            size: 3 << 20,
+        };
         let release = Release {
             version: "9.0.0".into(),
             page: "https://example.org/r".into(),
+            notes: "The notes of the release.".into(),
             download: None,
-            installer: Some(Package {
-                url: "https://example.org/a.AppImage".into(),
-                sha256: "0".repeat(64),
-                size: 3 << 20,
-            }),
+            installer: Some(package.clone()),
+            package: Some(package),
         };
         let checks = [
             UpdateState::Idle,
@@ -9785,15 +9851,18 @@ pub(crate) mod tests {
         type Widgets = [(Role, String, bool, NodeId)];
         let mut app = App::headless();
         let ctx = crate::theme::ui_context();
+        let package = Package {
+            url: "https://example.org/a.AppImage".into(),
+            sha256: "0".repeat(64),
+            size: 3 << 20,
+        };
         let release = Release {
             version: "9.0.0".into(),
             page: "https://example.org/r".into(),
+            notes: "The notes of the release.".into(),
             download: None,
-            installer: Some(Package {
-                url: "https://example.org/a.AppImage".into(),
-                sha256: "0".repeat(64),
-                size: 3 << 20,
-            }),
+            installer: Some(package.clone()),
+            package: Some(package),
         };
         *app.updates.state.lock().expect("lock") = UpdateState::Available(release);
         app.dialog = Dialog::Updates;

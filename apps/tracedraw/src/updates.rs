@@ -21,6 +21,23 @@ use std::sync::{Arc, Mutex};
 
 /// The project's latest release, as GitHub describes it.
 pub const LATEST_URL: &str = "https://api.github.com/repos/gitshang5018/tracedraw/releases/latest";
+/// A proxy of GitHub's file host, for networks where a release's files
+/// download slowly or not at all.
+pub const PROXY: &str = "https://github.adc.dpdns.org/";
+
+/// A release file's `url` reached through the proxy; anything that is not
+/// a file of a release is left as it is. Only downloads come through here:
+/// the release list and the release page are read directly.
+pub fn through_proxy(url: &str) -> String {
+    let file = (url.starts_with("https://github.com/") && url.contains("/releases/download/"))
+        || url.starts_with("https://objects.githubusercontent.com/")
+        || url.starts_with("https://release-assets.githubusercontent.com/");
+    if file {
+        format!("{PROXY}{url}")
+    } else {
+        url.to_string()
+    }
+}
 /// The release list, for when no download fits this system.
 pub const RELEASES_PAGE: &str = "https://github.com/gitshang5018/tracedraw/releases";
 /// TraceDraw's page in the Microsoft Store (the browser version offers it
@@ -50,12 +67,17 @@ pub struct Release {
     pub version: String,
     /// The release's page (its notes).
     pub page: String,
+    /// What the release says about itself, in plain text: the notes the
+    /// dialog shows under the version.
+    pub notes: String,
     /// The download for this system, when the release has one.
     pub download: Option<String>,
     /// The release file that updates this copy in place (the AppImage,
     /// the Windows setup program or the macOS disk image), with its
     /// digest.
     pub installer: Option<Package>,
+    /// Compatibility alias for installer.
+    pub package: Option<Package>,
 }
 
 /// A release file that can be installed in place.
@@ -94,6 +116,8 @@ struct Asset {
 struct ApiRelease {
     tag_name: String,
     html_url: String,
+    #[serde(default)]
+    body: Option<String>,
     #[serde(default)]
     prerelease: bool,
     #[serde(default)]
@@ -137,6 +161,8 @@ pub enum Kind {
     Portable,
     /// macOS, the disk image's app.
     Dmg,
+    /// Android, the APK packed for the phone's own ABI.
+    Apk,
     /// Anything the release has no file for (an rpm or other distribution
     /// package, a sandboxed copy, the browser): no download is offered.
     Other,
@@ -164,7 +190,26 @@ fn arch_names(arch: &str) -> Option<(&'static str, &'static str)> {
 /// before the arm64 one for updaters of 0.19.8 and earlier, which take
 /// the first AppImage listed (#1038); older releases name it `linux-x86_64`.
 /// 32-bit Windows (`x86`) has its own `windows-x86` files (#1975).
+fn android_abi(arch: &str) -> Option<&'static str> {
+    match arch {
+        "aarch64" => Some("arm64-v8a"),
+        "arm" | "armv7" => Some("armeabi-v7a"),
+        "x86_64" => Some("x86_64"),
+        "x86" => Some("x86"),
+        _ => None,
+    }
+}
+
 pub fn asset_names(version: &str, os: &str, arch: &str, kind: Kind) -> Vec<String> {
+    if os == "android" {
+        let Some(abi) = android_abi(arch) else {
+            return Vec::new();
+        };
+        return match kind {
+            Kind::Apk => vec![format!("tracedraw-{version}-android-{abi}.apk")],
+            _ => Vec::new(),
+        };
+    }
     let Some((a, deb)) = arch_names(arch) else {
         return Vec::new();
     };
@@ -255,7 +300,7 @@ pub fn store_install() -> bool {
 /// never asks at its first start whether to.
 #[cfg(target_os = "android")]
 pub fn store_install() -> bool {
-    true
+    false
 }
 
 #[cfg(not(any(windows, target_os = "android")))]
@@ -285,8 +330,154 @@ pub fn current_kind() -> Kind {
             None => Kind::Setup,
         },
         "macos" => Kind::Dmg,
+        "android" => Kind::Apk,
         _ => Kind::Other,
     }
+}
+
+
+/// What the release notes say, in plain text: Markdown headings, lists,
+/// links and emphasis are stripped to their words so the text renders
+/// cleanly in the interface.
+pub fn plain_notes(markdown: &str) -> String {
+    let mut out: Vec<String> = Vec::new();
+    for line in markdown.lines() {
+        let line = line.trim_end();
+        if line.trim().is_empty() {
+            if !out.is_empty() && out.last().map(|s| !s.is_empty()).unwrap_or(false) {
+                out.push(String::new());
+            }
+            continue;
+        }
+        let body = line.trim_start();
+        let body = body
+            .strip_prefix("### ")
+            .or_else(|| body.strip_prefix("## "))
+            .or_else(|| body.strip_prefix("# "))
+            .unwrap_or(body);
+        let body = body.strip_prefix("> ").unwrap_or(body);
+        let bullet = body.starts_with("- ") || body.starts_with("* ");
+        let body = body
+            .strip_prefix("- ")
+            .or_else(|| body.strip_prefix("* "))
+            .unwrap_or(body);
+        let numbered = body
+            .split_once(". ")
+            .filter(|(n, _)| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()))
+            .map(|(n, rest)| (Some(n.to_string()), rest));
+        let (number, body) = match numbered {
+            Some((n, rest)) => (n, rest),
+            None => (None, body),
+        };
+        let body = inline_marks(body);
+        let mut line = String::new();
+        if let Some(n) = number {
+            line.push_str(&n);
+            line.push_str(". ");
+        } else if bullet {
+            line.push_str("\u{2022} ");
+        }
+        line.push_str(&body);
+        out.push(line);
+    }
+    while out.last().map(|s| s.is_empty()).unwrap_or(false) {
+        out.pop();
+    }
+    out.join("\n")
+}
+
+fn inline_marks(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        match c {
+            '[' => {
+                let mut label = String::new();
+                let mut j = i + 1;
+                while j < chars.len() && chars[j] != ']' {
+                    label.push(chars[j]);
+                    j += 1;
+                }
+                let mut url = String::new();
+                let mut after = j;
+                if j < chars.len() && chars[j] == ']' {
+                    let mut k = j + 1;
+                    if k < chars.len() && chars[k] == '(' {
+                        k += 1;
+                        while k < chars.len() && chars[k] != ')' {
+                            url.push(chars[k]);
+                            k += 1;
+                        }
+                        if k < chars.len() {
+                            after = k + 1;
+                        }
+                    }
+                }
+                out.push_str(label.trim());
+                if !url.trim().is_empty() {
+                    out.push_str(" (");
+                    out.push_str(url.trim());
+                    out.push(')');
+                }
+                i = after;
+            }
+            '*' | '`' | '_' => {
+                if c == '_' && !at_word_edge(&out, chars.get(i + 1).copied()) {
+                    out.push(c);
+                    i += 1;
+                    continue;
+                }
+                let mut run = 1;
+                while i + run < chars.len() && chars[i + run] == c {
+                    run += 1;
+                }
+                let width = if run >= 2 { 2 } else { 1 };
+                let mut rest = String::new();
+                let mut j = i + run;
+                let mut closed_at = None;
+                while j < chars.len() {
+                    if chars[j] == c {
+                        let mut k = 0;
+                        while j + k < chars.len() && chars[j + k] == c {
+                            k += 1;
+                        }
+                        if k >= width {
+                            closed_at = Some(j + width);
+                            break;
+                        }
+                        j += k;
+                        continue;
+                    }
+                    rest.push(chars[j]);
+                    j += 1;
+                }
+                match closed_at {
+                    Some(end) => {
+                        out.push_str(&rest);
+                        i = end;
+                    }
+                    None => {
+                        out.push(c);
+                        out.push_str(&rest);
+                        i = chars.len();
+                    }
+                }
+            }
+            '~' => {}
+            _ => {
+                out.push(c);
+                i += 1;
+            }
+        }
+    }
+    out
+}
+
+fn at_word_edge(before: &str, after: Option<char>) -> bool {
+    let word = |c: Option<char>| c.map(|c| c.is_alphanumeric()).unwrap_or(false);
+    !(word(before.chars().last()) && word(after))
 }
 
 /// Read GitHub's answer: the release when it is newer than `current`
@@ -327,11 +518,14 @@ pub fn parse_latest(
     } else {
         None
     };
+    let notes = plain_notes(r.body.as_deref().unwrap_or(""));
     Ok(Some(Release {
         version,
         page: r.html_url,
+        notes,
         download,
-        installer,
+        installer: installer.clone(),
+        package: installer,
     }))
 }
 
@@ -455,6 +649,9 @@ pub enum InstallTarget {
     /// package is installed with `pkexec dpkg -i`, which asks for the
     /// administrator's password, once TraceDraw has closed.
     Deb(std::path::PathBuf),
+    /// An Android APK package file.
+    #[cfg(target_os = "android")]
+    Apk(std::path::PathBuf),
 }
 
 /// What the running copy can update itself with, `None` for a copy that
@@ -467,20 +664,52 @@ pub fn install_target() -> Option<InstallTarget> {
     static TARGET: std::sync::OnceLock<Option<InstallTarget>> = std::sync::OnceLock::new();
     TARGET
         .get_or_init(|| {
-            let exe = std::env::current_exe().ok();
-            match current_kind() {
-                Kind::AppImage => appimage_target().map(InstallTarget::AppImage),
-                Kind::Setup => Some(InstallTarget::Setup),
-                Kind::Portable => exe.map(InstallTarget::Portable),
-                Kind::Dmg => exe
-                    .and_then(|exe| app_bundle_of(&exe))
-                    .map(InstallTarget::Bundle),
-                Kind::Tarball => exe.map(InstallTarget::Tarball),
-                Kind::Deb => exe.filter(|_| on_path("pkexec")).map(InstallTarget::Deb),
-                Kind::Other => None,
+            #[cfg(target_os = "android")]
+            {
+                crate::android_system::phone()
+                    .and_then(crate::android_system::cache_dir)
+                    .map(|dir| InstallTarget::Apk(dir.join("tracedraw-update.apk")))
+            }
+            #[cfg(not(target_os = "android"))]
+            {
+                let exe = std::env::current_exe().ok();
+                match current_kind() {
+                    Kind::AppImage => appimage_target().map(InstallTarget::AppImage),
+                    Kind::Setup => Some(InstallTarget::Setup),
+                    Kind::Portable => exe.map(InstallTarget::Portable),
+                    Kind::Dmg => exe
+                        .and_then(|exe| app_bundle_of(&exe))
+                        .map(InstallTarget::Bundle),
+                    Kind::Tarball => exe.map(InstallTarget::Tarball),
+                    Kind::Deb => exe.filter(|_| on_path("pkexec")).map(InstallTarget::Deb),
+                    Kind::Apk | Kind::Other => None,
+                }
             }
         })
         .clone()
+}
+
+/// Whether this build may put a new one in place by itself: a phone has to
+/// be allowed to install packages, which the user grants for TraceDraw on a
+/// screen of the system's; every other build can.
+pub fn can_install_in_place() -> bool {
+    #[cfg(target_os = "android")]
+    let allowed = crate::android_system::phone()
+        .map(crate::android_system::can_install_packages)
+        .unwrap_or(false);
+    #[cfg(not(target_os = "android"))]
+    let allowed = true;
+    allowed
+}
+
+/// The system's screen for allowing TraceDraw to install packages.
+pub fn ask_install_permission() {
+    #[cfg(target_os = "android")]
+    {
+        if let Some(phone) = crate::android_system::phone() {
+            crate::android_system::ask_install_permission(phone);
+        }
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -1192,6 +1421,12 @@ fn stage(
     progress: Report,
 ) -> Result<(Launch, bool), String> {
     match target {
+        #[cfg(target_os = "android")]
+        InstallTarget::Apk(path) => {
+            install_file(body, package, path, progress)?;
+            crate::android_system::install_package(path)?;
+            Ok((Launch { program: String::new(), args: Vec::new() }, true))
+        }
         InstallTarget::AppImage(path) => {
             install_file(body, package, path, progress)?;
             Ok((appimage_launch(path), true))
@@ -1844,8 +2079,10 @@ pub fn demo(checker: &Checker, installer: &Installer, ctx: Option<egui::Context>
         *s = UpdateState::Available(Release {
             version: version.clone(),
             page: RELEASES_PAGE.into(),
+            notes: String::new(),
             download: None,
             installer: Some(package.clone()),
+            package: Some(package),
         });
     }
     let dir = std::env::temp_dir().join("tracedraw-update-demo");
@@ -1875,6 +2112,24 @@ pub fn demo(checker: &Checker, installer: &Installer, ctx: Option<egui::Context>
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn download(url: &str) -> Result<Box<dyn std::io::Read + Send>, String> {
+    let mut addresses = Vec::new();
+    let proxied = through_proxy(url);
+    if proxied != url {
+        addresses.push(proxied);
+    }
+    addresses.push(url.to_string());
+    let mut last_err = String::new();
+    for addr in addresses {
+        match download_direct(&addr) {
+            Ok(r) => return Ok(r),
+            Err(e) => last_err = e,
+        }
+    }
+    Err(last_err)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn download_direct(url: &str) -> Result<Box<dyn std::io::Read + Send>, String> {
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_connect(Some(std::time::Duration::from_secs(20)))
         .tls_config(crate::net::tls_config())
