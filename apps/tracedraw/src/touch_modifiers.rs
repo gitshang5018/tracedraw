@@ -301,7 +301,7 @@ const KEYS_MARGIN: egui::Vec2 = egui::vec2(10.0, 40.0);
 /// them (#1996). Their places go to `App::touch_keys_shown`.
 pub fn keys_on_drawing(app: &mut App, ui: &mut egui::Ui, canvas: egui::Rect) {
     app.touch_keys_shown.clear();
-    if !app.settings.touch_keys || !offered(ui.ctx()) {
+    if !app.settings.touch_keys || !offered(ui.ctx()) || crate::ui::mobile::phone() {
         return;
     }
     let ctx = ui.ctx().clone();
