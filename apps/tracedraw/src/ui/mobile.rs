@@ -1609,7 +1609,7 @@ fn ai_chip(app: &mut App, ui: &mut Ui, m3: &M3, full: Rect, open: &mut Sheet) {
     // the way a menu over a drawing behaves everywhere else.
     if ctx.input(|i| i.pointer.any_pressed()) {
         if let Some(at) = ctx.input(|i| i.pointer.interact_pos()) {
-            if !menu.response.rect.contains(at) && !ai_rect.contains(at) {
+            if !menu.response.rect.contains(at) && !bar_rect.contains(at) {
                 ctx.data_mut(|d| d.insert_temp(menu_key, false));
             }
         }
