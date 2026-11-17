@@ -935,15 +935,23 @@ pub fn install_file(
 #[derive(Debug, Clone, Default)]
 pub struct Installer {
     pub state: Arc<Mutex<InstallState>>,
+    pub armed: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Installer {
 
     pub fn staged_for_test(&self, _launch: Launch) {}
     pub fn arm(&self) -> bool {
+        self.armed.store(true, std::sync::atomic::Ordering::SeqCst);
         true
     }
-    pub fn disarm(&self) {}
+    pub fn disarm(&self) {
+        self.armed.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+    pub fn is_armed(&self) -> bool {
+        self.armed.load(std::sync::atomic::Ordering::SeqCst)
+    }
+    pub fn run_pending(&self) {}
     pub fn get(&self) -> InstallState {
         self.state.lock().map(|s| s.clone()).unwrap_or_default()
     }

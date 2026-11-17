@@ -2719,7 +2719,6 @@ pub fn show(app: &mut App, ctx: &Context) {
                                 ui.label(trf("updates.install_failed", &[("error", e)]));
                             }
                             InstallState::Idle => {}
-                            _ => {}
                         }
                         ui.horizontal(|ui| {
                             if let Some((package, target)) =
