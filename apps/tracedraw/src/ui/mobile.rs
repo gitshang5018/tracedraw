@@ -1416,11 +1416,25 @@ enum AiMenu {
 fn ai_chip(app: &mut App, ui: &mut Ui, m3: &M3, full: Rect, open: &mut Sheet) {
     let bar_h = 36.0;
     let btn_h = 28.0;
-    let bar_w = 200.0;
     let bottom = full.bottom() - 16.0;
-    let bar_rect = Rect::from_min_size(
-        egui::pos2(full.left() + 16.0, bottom - bar_h),
-        Vec2::new(bar_w, bar_h),
+    let top = bottom - bar_h;
+    let center_y = bottom - 18.0;
+    let btn_top = center_y - btn_h * 0.5;
+    let btn_btm = center_y + btn_h * 0.5;
+
+    let pad = 4.0;
+    let gap = 2.0;
+    let ai_w = 34.0;
+    let div_w = 3.0;
+    let shift_w = 40.0;
+    let ctrl_w = 36.0;
+    let alt_w = 32.0;
+    let del_w = 30.0;
+    let bar_w = pad + ai_w + gap + div_w + gap + shift_w + gap + ctrl_w + gap + alt_w + gap + del_w + pad;
+
+    let bar_rect = Rect::from_min_max(
+        egui::pos2(full.left() + 16.0, top),
+        egui::pos2(full.left() + 16.0 + bar_w, bottom),
     );
 
     let menu_key = Id::new("mobile_ai_menu");
@@ -1433,106 +1447,113 @@ fn ai_chip(app: &mut App, ui: &mut Ui, m3: &M3, full: Rect, open: &mut Sheet) {
         .order(egui::Order::Middle)
         .fixed_pos(bar_rect.min)
         .show(&ctx, |ui| {
-            Frame::new()
-                .fill(m3.container)
-                .stroke(Stroke::new(1.0, m3.outline))
-                .corner_radius(18.0)
-                .inner_margin(egui::Margin::symmetric(6, 4))
-                .show(ui, |ui| {
-                    ui.set_height(btn_h);
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 2.0;
-                        ui.spacing_mut().item_spacing.y = 0.0;
+            ui.allocate_rect(bar_rect, Sense::hover());
+            let painter = ui.painter();
 
-                        // 1. AI button
-                        let (rect, resp) = ui.allocate_exact_size(Vec2::new(34.0, btn_h), Sense::click());
-                        let ai_fill = if shown {
-                            m3.primary_container
-                        } else if resp.hovered() {
-                            mix(m3.primary, m3.surface, 0.12)
-                        } else {
-                            Color32::TRANSPARENT
-                        };
-                        let ai_col = if shown { m3.primary } else { m3.on };
-                        ui.painter().rect_filled(rect, 11.0, ai_fill);
-                        ui.painter().text(
-                            rect.center(),
-                            egui::Align2::CENTER_CENTER,
-                            "AI",
-                            egui::FontId::proportional(13.0),
-                            ai_col,
-                        );
-                        if resp.clicked() {
-                            shown = !shown;
-                            ui.ctx().data_mut(|d| d.insert_temp(menu_key, shown));
-                        }
+            // Background capsule & border: outer height strictly matches zoom chip (36.0)
+            painter.rect_filled(bar_rect, 18.0, m3.container);
+            painter.rect_stroke(
+                bar_rect,
+                18.0,
+                Stroke::new(1.0, m3.outline),
+                egui::StrokeKind::Inside,
+            );
 
-                        // Divider
-                        let (d_rect, _) = ui.allocate_exact_size(Vec2::new(3.0, btn_h), Sense::hover());
-                        let dy = d_rect.center().y;
-                        ui.painter().line_segment(
-                            [
-                                egui::pos2(d_rect.center().x, dy - 6.5),
-                                egui::pos2(d_rect.center().x, dy + 6.5),
-                            ],
-                            Stroke::new(1.0, mix(m3.outline, m3.container, 0.6)),
-                        );
+            let mut cur_x = bar_rect.left() + pad;
 
-                        // 2. Modifier keys: Shift, Ctrl, Alt
-                        for (id, key, width) in [
-                            ("shift", crate::touch_modifiers::ModKey::Shift, 40.0),
-                            ("ctrl", crate::touch_modifiers::ModKey::Ctrl, 36.0),
-                            ("alt", crate::touch_modifiers::ModKey::Alt, 32.0),
-                        ] {
-                            let held = app.touch_mods.held(key);
-                            let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, btn_h), Sense::click());
-                            let fill = if held {
-                                m3.primary_container
-                            } else if resp.hovered() {
-                                mix(m3.primary, m3.surface, 0.08)
-                            } else {
-                                Color32::TRANSPARENT
-                            };
-                            let col = if held { m3.primary } else { m3.on };
-                            ui.painter().rect_filled(rect, 11.0, fill);
-                            ui.painter().text(
-                                rect.center(),
-                                egui::Align2::CENTER_CENTER,
-                                key.label(),
-                                egui::FontId::proportional(12.0),
-                                col,
-                            );
-                            if resp.clicked() {
-                                app.touch_mods.toggle(key);
-                            }
-                            shown_keys.push((id, resp.rect));
-                        }
+            // 1. AI button
+            let ai_rect = Rect::from_min_max(egui::pos2(cur_x, btn_top), egui::pos2(cur_x + ai_w, btn_btm));
+            let ai_resp = ui.interact(ai_rect, Id::new("mobile_ai_btn"), Sense::click());
+            let ai_fill = if shown {
+                m3.primary_container
+            } else if ai_resp.hovered() {
+                mix(m3.primary, m3.surface, 0.12)
+            } else {
+                Color32::TRANSPARENT
+            };
+            let ai_col = if shown { m3.primary } else { m3.on };
+            painter.rect_filled(ai_rect, 11.0, ai_fill);
+            painter.text(
+                ai_rect.center(),
+                egui::Align2::CENTER_CENTER,
+                "AI",
+                egui::FontId::proportional(13.0),
+                ai_col,
+            );
+            if ai_resp.clicked() {
+                shown = !shown;
+                ui.ctx().data_mut(|d| d.insert_temp(menu_key, shown));
+            }
+            cur_x += ai_w + gap;
 
-                        // 3. Delete key (删除键)
-                        let can = app.has_document() && app.can_delete();
-                        let (del_rect, del_resp) = ui.allocate_exact_size(
-                            Vec2::new(30.0, btn_h),
-                            if can { Sense::click() } else { Sense::hover() },
-                        );
-                        let del_fill = if can && del_resp.hovered() {
-                            mix(m3.primary, m3.surface, 0.08)
-                        } else {
-                            Color32::TRANSPARENT
-                        };
-                        ui.painter().rect_filled(del_rect, 11.0, del_fill);
-                        let del_col = if can {
-                            m3.on
-                        } else {
-                            mix(m3.on, m3.container, 0.4)
-                        };
-                        let icon_box = Rect::from_center_size(del_rect.center(), Vec2::splat(14.5));
-                        draw_action(ui.painter(), icon_box, Action::Delete, del_col);
-                        if can && del_resp.clicked() {
-                            app.delete_command();
-                        }
-                        shown_keys.push(("delete", del_resp.rect));
-                    });
-                });
+            // Divider
+            let div_x = cur_x + div_w * 0.5;
+            painter.line_segment(
+                [
+                    egui::pos2(div_x, center_y - 6.5),
+                    egui::pos2(div_x, center_y + 6.5),
+                ],
+                Stroke::new(1.0, mix(m3.outline, m3.container, 0.6)),
+            );
+            cur_x += div_w + gap;
+
+            // 2. Modifier keys: Shift, Ctrl, Alt
+            for (id, key, width) in [
+                ("shift", crate::touch_modifiers::ModKey::Shift, shift_w),
+                ("ctrl", crate::touch_modifiers::ModKey::Ctrl, ctrl_w),
+                ("alt", crate::touch_modifiers::ModKey::Alt, alt_w),
+            ] {
+                let held = app.touch_mods.held(key);
+                let key_rect = Rect::from_min_max(egui::pos2(cur_x, btn_top), egui::pos2(cur_x + width, btn_btm));
+                let key_resp = ui.interact(key_rect, Id::new(format!("mobile_mod_{id}")), Sense::click());
+                let fill = if held {
+                    m3.primary_container
+                } else if key_resp.hovered() {
+                    mix(m3.primary, m3.surface, 0.08)
+                } else {
+                    Color32::TRANSPARENT
+                };
+                let col = if held { m3.primary } else { m3.on };
+                painter.rect_filled(key_rect, 11.0, fill);
+                painter.text(
+                    key_rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    key.label(),
+                    egui::FontId::proportional(12.0),
+                    col,
+                );
+                if key_resp.clicked() {
+                    app.touch_mods.toggle(key);
+                }
+                shown_keys.push((id, key_rect));
+                cur_x += width + gap;
+            }
+
+            // 3. Delete key (删除键)
+            let can = app.has_document() && app.can_delete();
+            let del_rect = Rect::from_min_max(egui::pos2(cur_x, btn_top), egui::pos2(cur_x + del_w, btn_btm));
+            let del_resp = ui.interact(
+                del_rect,
+                Id::new("mobile_del_btn"),
+                if can { Sense::click() } else { Sense::hover() },
+            );
+            let del_fill = if can && del_resp.hovered() {
+                mix(m3.primary, m3.surface, 0.08)
+            } else {
+                Color32::TRANSPARENT
+            };
+            painter.rect_filled(del_rect, 11.0, del_fill);
+            let del_col = if can {
+                m3.on
+            } else {
+                mix(m3.on, m3.container, 0.4)
+            };
+            let icon_box = Rect::from_center_size(del_rect.center(), Vec2::splat(14.5));
+            draw_action(painter, icon_box, Action::Delete, del_col);
+            if can && del_resp.clicked() {
+                app.delete_command();
+            }
+            shown_keys.push(("delete", del_rect));
         });
 
     app.touch_keys_shown = shown_keys;
