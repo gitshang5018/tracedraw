@@ -21,6 +21,7 @@ mod ai_image;
 mod ai_retry;
 // Custom modules for TraceDraw fork
 pub mod ai_tools;
+#[cfg(target_os = "android")]
 pub mod android_system;
 pub mod arrange;
 pub mod banner;
@@ -378,7 +379,7 @@ pub fn run() -> eframe::Result<()> {
     updates::clean_leftovers();
     tracedraw_text::install();
     tracedraw_io::emf::install();
-    fonts_folder::install();
+    fonts_folder::scan();
     // `tracedraw --mcp`: no window, a Model Context Protocol server on
     // stdin/stdout (see mcp.rs and docs/behavior/mcp.md).
     if args.iter().any(|a| a == "--mcp") {
