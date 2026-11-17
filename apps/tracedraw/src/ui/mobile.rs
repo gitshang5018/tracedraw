@@ -1414,9 +1414,9 @@ enum AiMenu {
 /// trigger with the touch modifier keys (Shift, Ctrl, Alt) and Delete into a
 /// single compact control strip.
 fn ai_chip(app: &mut App, ui: &mut Ui, m3: &M3, full: Rect, open: &mut Sheet) {
-    let bar_h = 36.0;
-    let btn_h = 30.0;
-    let bar_w = 210.0;
+    let bar_h = 30.0;
+    let btn_h = 24.0;
+    let bar_w = 192.0;
     let bar_rect = Rect::from_min_size(
         egui::pos2(full.left() + 16.0, full.bottom() - 16.0 - bar_h),
         Vec2::new(bar_w, bar_h),
@@ -1435,14 +1435,14 @@ fn ai_chip(app: &mut App, ui: &mut Ui, m3: &M3, full: Rect, open: &mut Sheet) {
             Frame::new()
                 .fill(m3.container)
                 .stroke(Stroke::new(1.0, m3.outline))
-                .corner_radius(18.0)
-                .inner_margin(egui::Margin::symmetric(4, 3))
+                .corner_radius(15.0)
+                .inner_margin(egui::Margin::symmetric(3, 2))
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 2.0;
 
                         // 1. AI button
-                        let (rect, resp) = ui.allocate_exact_size(Vec2::new(36.0, btn_h), Sense::click());
+                        let (rect, resp) = ui.allocate_exact_size(Vec2::new(32.0, btn_h), Sense::click());
                         let ai_fill = if shown {
                             m3.primary_container
                         } else if resp.hovered() {
@@ -1451,12 +1451,12 @@ fn ai_chip(app: &mut App, ui: &mut Ui, m3: &M3, full: Rect, open: &mut Sheet) {
                             Color32::TRANSPARENT
                         };
                         let ai_col = if shown { m3.primary } else { m3.on };
-                        ui.painter().rect_filled(rect, 12.0, ai_fill);
+                        ui.painter().rect_filled(rect, 10.0, ai_fill);
                         ui.painter().text(
                             rect.center(),
                             egui::Align2::CENTER_CENTER,
                             "AI",
-                            egui::FontId::proportional(13.5),
+                            egui::FontId::proportional(12.5),
                             ai_col,
                         );
                         if resp.clicked() {
@@ -1465,21 +1465,21 @@ fn ai_chip(app: &mut App, ui: &mut Ui, m3: &M3, full: Rect, open: &mut Sheet) {
                         }
 
                         // Divider
-                        let (d_rect, _) = ui.allocate_exact_size(Vec2::new(4.0, btn_h), Sense::hover());
+                        let (d_rect, _) = ui.allocate_exact_size(Vec2::new(3.0, btn_h), Sense::hover());
                         let dy = d_rect.center().y;
                         ui.painter().line_segment(
                             [
-                                egui::pos2(d_rect.center().x, dy - 7.0),
-                                egui::pos2(d_rect.center().x, dy + 7.0),
+                                egui::pos2(d_rect.center().x, dy - 5.5),
+                                egui::pos2(d_rect.center().x, dy + 5.5),
                             ],
                             Stroke::new(1.0, mix(m3.outline, m3.container, 0.6)),
                         );
 
                         // 2. Modifier keys: Shift, Ctrl, Alt
                         for (id, key, width) in [
-                            ("shift", crate::touch_modifiers::ModKey::Shift, 42.0),
-                            ("ctrl", crate::touch_modifiers::ModKey::Ctrl, 38.0),
-                            ("alt", crate::touch_modifiers::ModKey::Alt, 34.0),
+                            ("shift", crate::touch_modifiers::ModKey::Shift, 40.0),
+                            ("ctrl", crate::touch_modifiers::ModKey::Ctrl, 36.0),
+                            ("alt", crate::touch_modifiers::ModKey::Alt, 32.0),
                         ] {
                             let held = app.touch_mods.held(key);
                             let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, btn_h), Sense::click());
@@ -1491,12 +1491,12 @@ fn ai_chip(app: &mut App, ui: &mut Ui, m3: &M3, full: Rect, open: &mut Sheet) {
                                 Color32::TRANSPARENT
                             };
                             let col = if held { m3.primary } else { m3.on };
-                            ui.painter().rect_filled(rect, 12.0, fill);
+                            ui.painter().rect_filled(rect, 10.0, fill);
                             ui.painter().text(
                                 rect.center(),
                                 egui::Align2::CENTER_CENTER,
                                 key.label(),
-                                egui::FontId::proportional(12.5),
+                                egui::FontId::proportional(11.5),
                                 col,
                             );
                             if resp.clicked() {
@@ -1508,7 +1508,7 @@ fn ai_chip(app: &mut App, ui: &mut Ui, m3: &M3, full: Rect, open: &mut Sheet) {
                         // 3. Delete key (删除键)
                         let can = app.has_document() && app.can_delete();
                         let (del_rect, del_resp) = ui.allocate_exact_size(
-                            Vec2::new(32.0, btn_h),
+                            Vec2::new(30.0, btn_h),
                             if can { Sense::click() } else { Sense::hover() },
                         );
                         let del_fill = if can && del_resp.hovered() {
@@ -1516,13 +1516,13 @@ fn ai_chip(app: &mut App, ui: &mut Ui, m3: &M3, full: Rect, open: &mut Sheet) {
                         } else {
                             Color32::TRANSPARENT
                         };
-                        ui.painter().rect_filled(del_rect, 12.0, del_fill);
+                        ui.painter().rect_filled(del_rect, 10.0, del_fill);
                         let del_col = if can {
                             m3.on
                         } else {
                             mix(m3.on, m3.container, 0.4)
                         };
-                        let icon_box = Rect::from_center_size(del_rect.center(), Vec2::splat(16.0));
+                        let icon_box = Rect::from_center_size(del_rect.center(), Vec2::splat(14.0));
                         draw_action(ui.painter(), icon_box, Action::Delete, del_col);
                         if can && del_resp.clicked() {
                             app.delete_command();

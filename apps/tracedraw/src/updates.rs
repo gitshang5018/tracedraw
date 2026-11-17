@@ -943,6 +943,7 @@ impl Installer {
     pub fn arm(&self) -> bool {
         true
     }
+    pub fn disarm(&self) {}
     pub fn get(&self) -> InstallState {
         self.state.lock().map(|s| s.clone()).unwrap_or_default()
     }
@@ -1043,14 +1044,9 @@ pub fn download(url: &str) -> Result<Box<dyn std::io::Read + Send>, String> {
 
 #[cfg(not(target_arch = "wasm32"))]
 pub fn open_stream(url: &str) -> Result<Box<dyn std::io::Read + Send>, String> {
-    use ureq::tls::TlsConfig;
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_connect(Some(std::time::Duration::from_secs(20)))
-        .tls_config(
-            TlsConfig::builder()
-                .root_certs(crate::net::roots())
-                .build(),
-        )
+        .tls_config(crate::net::tls_config())
         .build()
         .into();
     // Redirects (GitHub sends downloads to its file host) are followed
@@ -1116,16 +1112,11 @@ fn fetch() -> Result<String, String> {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn fetch_from(url: &str) -> Result<String, String> {
-    use ureq::tls::TlsConfig;
     let agent: ureq::Agent = ureq::Agent::config_builder()
         // A small answer: the three attempts of a check (GitHub, the proxy,
         // the update host) have to fit in the box's patience.
         .timeout_global(Some(std::time::Duration::from_secs(12)))
-        .tls_config(
-            TlsConfig::builder()
-                .root_certs(crate::net::roots())
-                .build(),
-        )
+        .tls_config(crate::net::tls_config())
         .build()
         .into();
     let mut resp = agent
