@@ -80,18 +80,6 @@ impl App {
 
     /// Keep a thumbnail of the active drawing for the recent list entry
     /// `path`; the picture shown for it is drawn again.
-    /// Take one drawing off the recent documents list, with its
-    /// thumbnail; the others stay (#1152). The file itself is left alone.
-    pub fn remove_recent(&mut self, path: &Path) {
-        let before = self.settings.recent_files.len();
-        self.settings.recent_files.retain(|p| p != path);
-        if self.settings.recent_files.len() != before {
-            self.settings.save();
-        }
-        self.recent_thumbs.remove(path);
-        forget(path);
-    }
-
     pub fn store_thumbnail(&mut self, path: &Path) {
         if crate::files::WEB {
             return;

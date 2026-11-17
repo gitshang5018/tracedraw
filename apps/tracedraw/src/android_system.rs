@@ -23,6 +23,7 @@
 //! The language is the third: a phone keeps it in the configuration, not
 //! in `LANG`, which is what the desktop reads.
 
+use jni_021 as jni;
 use jni::objects::{JObject, JString, JValue};
 use jni::JavaVM;
 use std::ffi::c_void;

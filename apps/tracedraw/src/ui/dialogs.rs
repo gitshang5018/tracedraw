@@ -8095,7 +8095,6 @@ fn paragraph_dialog(app: &mut App, ctx: &Context, which: &Dialog, close: &mut bo
                 changed |= columns_settings(ui, &mut p, u);
             }
             Dialog::TextBullets => {
-                let mobile = crate::ui::mobile::phone();
                 changed |= ui
                     .checkbox(&mut p.bullets, tr("dialog.use_bullets"))
                     .rich_tip(crate::ui::tips::keyed("dialog.use_bullets"))

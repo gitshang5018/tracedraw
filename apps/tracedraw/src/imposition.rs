@@ -1345,7 +1345,7 @@ fn tile_marks(t: &Tiling, a: Rect, o: f64, near: [bool; 4], name: &str) -> Vec<S
     if near[1] {
         vline(a.x1 - o / 2.0);
     }
-    let mut hline = |y: f64, p: &mut BezPath| {
+    let hline = |y: f64, p: &mut BezPath| {
         let (l, r) = (tick(ml), tick(mr));
         p.move_to((a.x0 - l.min(0.0), y));
         p.line_to((a.x0 - l.max(0.0), y));

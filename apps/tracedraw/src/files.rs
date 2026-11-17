@@ -1831,12 +1831,6 @@ impl Dialog {
             let _ = app;
             self.web_pick(Box::new(then));
         }
-        // The system's document picker; `then` runs when it answers.
-        #[cfg(target_os = "android")]
-        {
-            let _ = app;
-            android_pickers::pick_one(Box::new(then));
-        }
     }
 
     /// Pick one or more files and run `then` with their paths: at once
@@ -1900,11 +1894,6 @@ impl Dialog {
         {
             let _ = app;
             self.web_pick_many(Box::new(then));
-        }
-        #[cfg(target_os = "android")]
-        {
-            let _ = app;
-            android_pickers::pick_many(Box::new(then));
         }
     }
 

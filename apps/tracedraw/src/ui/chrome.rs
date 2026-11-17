@@ -887,7 +887,14 @@ fn access_label(text: &str) -> egui::WidgetText {
 /// is underlined and pressing it (with no field focused) picks it. Returns
 /// the index of the button picked this frame.
 pub fn button_row(ui: &mut Ui, labels: &[&str], access_keys: bool) -> Option<usize> {
-    let left = (ui.min_rect().width() - row_width(labels.len())).max(0.0);
+    let m3 = material(ui.ctx());
+    let (w, spacing) = if m3.is_some() {
+        (88.0, 4.0)
+    } else {
+        (100.0, ROW_SPACING)
+    };
+    let total = labels.len() as f32 * w + (labels.len().saturating_sub(1)) as f32 * spacing;
+    let left = (ui.min_rect().width() - total).max(0.0);
     button_row_after(ui, labels, access_keys, left)
 }
 
@@ -913,8 +920,6 @@ pub fn button_row_after(
     } else {
         (100.0, 27.0, ROW_SPACING)
     };
-    let total = labels.len() as f32 * w + (labels.len().saturating_sub(1)) as f32 * spacing;
-    let left = (ui.min_rect().width() - total).max(0.0);
     ui.add_space(if m3.is_some() { 6.0 } else { 10.0 });
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = spacing;

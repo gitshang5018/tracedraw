@@ -354,29 +354,32 @@ pub(crate) fn clear_focus_on_outside_click(ctx: &egui::Context) {
         // Dynamic layout shifts during virtual keyboard animation or panel lifts
         // must never cause accidental unfocusing. Dismissing the keyboard is handled
         // by the Android back gesture, IME Done button, or direct canvas clicks.
-        return;
+        let _ = ctx;
     }
-    let pressed = ctx.input(|i| i.pointer.primary_pressed() || i.pointer.secondary_pressed());
-    if !pressed {
-        return;
+    #[cfg(not(target_os = "android"))]
+    {
+        let pressed = ctx.input(|i| i.pointer.primary_pressed() || i.pointer.secondary_pressed());
+        if !pressed {
+            return;
+        }
+        // When a dropdown popup is open, clicking inside the popup should not unfocus.
+        if egui::Popup::is_any_open(ctx) {
+            return;
+        }
+        let Some(pos) = ctx.input(|i| i.pointer.interact_pos()) else {
+            return;
+        };
+        let Some(focused_id) = ctx.memory(|m| m.focused()) else {
+            return;
+        };
+        let Some(r) = ctx.read_response(focused_id) else {
+            return;
+        };
+        if r.rect.expand(8.0).contains(pos) || r.interact_rect.expand(8.0).contains(pos) {
+            return;
+        }
+        ctx.memory_mut(|m| m.stop_text_input());
     }
-    // When a dropdown popup is open, clicking inside the popup should not unfocus.
-    if egui::Popup::is_any_open(ctx) {
-        return;
-    }
-    let Some(pos) = ctx.input(|i| i.pointer.interact_pos()) else {
-        return;
-    };
-    let Some(focused_id) = ctx.memory(|m| m.focused()) else {
-        return;
-    };
-    let Some(r) = ctx.read_response(focused_id) else {
-        return;
-    };
-    if r.rect.expand(8.0).contains(pos) || r.interact_rect.expand(8.0).contains(pos) {
-        return;
-    }
-    ctx.memory_mut(|m| m.stop_text_input());
 }
 
 /// widget (a field of the bars), which then took the keys typed after
