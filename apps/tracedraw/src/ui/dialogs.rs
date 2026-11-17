@@ -2647,7 +2647,7 @@ pub fn show(app: &mut App, ctx: &Context) {
             // page for both keeps Help > Updates the one way to fetch what
             // this build does not carry.
             let mut act = None;
-            let res = window(ctx, tr("menu.help.updates")).show(ctx, |ui| {
+            window(ctx, tr("menu.help.updates")).show(ctx, |ui| {
                 ui.label(trf("updates.running", &[("version", version)]));
                 ui.add_space(6.0);
                 match &state {
@@ -2762,9 +2762,6 @@ pub fn show(app: &mut App, ctx: &Context) {
                 ui.add_space(4.0);
                 models_page(ui);
             });
-            if res.is_none() {
-                close = true;
-            }
             match act {
                 Some(Act::Install(version, package, target)) => {
                     if crate::updates::can_install_in_place() {

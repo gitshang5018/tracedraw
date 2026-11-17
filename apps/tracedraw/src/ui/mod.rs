@@ -538,6 +538,25 @@ fn root_frame(app: &mut App, ui: &mut Ui) {
     } else {
         desktop(app, ui, &ctx);
     }
+
+    if app.has_document() && !app.show_welcome && !app.page_sorter {
+        symmetry_bar::show(app, &ctx);
+        clip_bar::show(app, &ctx);
+        focus_bar::show(app, &ctx);
+        effect_picker::show(app, &ctx);
+        crate::perspective_draw::show_bar(app, &ctx);
+    }
+    update_card::show(app, &ctx);
+    command_search::show(app, &ctx);
+    dialogs::show(app, &ctx);
+    // A 转曲保存 still running draws over everything.
+    crate::curves_cdr::progress_box(app, &ctx);
+    // A change this frame made to a master shows on its clones at once.
+    let before = app.engine.revision();
+    app.sync_object_clones();
+    if app.engine.revision() != before {
+        ctx.request_repaint();
+    }
 }
 
 fn desktop(app: &mut App, ui: &mut Ui, ctx: &egui::Context) {
@@ -841,9 +860,6 @@ fn desktop(app: &mut App, ui: &mut Ui, ctx: &egui::Context) {
         egui::CentralPanel::default()
             .frame(Frame::new().fill(Tokens::panel()))
             .show(ui, |ui| welcome::welcome_screen(app, ui));
-        update_card::show(app, &ctx);
-        command_search::show(app, &ctx);
-        dialogs::show(app, &ctx);
         return;
     }
     // The Welcome Screen closed and no drawing open: an empty workspace.
@@ -851,18 +867,12 @@ fn desktop(app: &mut App, ui: &mut Ui, ctx: &egui::Context) {
         egui::CentralPanel::default()
             .frame(Frame::new().fill(Tokens::panel()))
             .show(ui, |_| {});
-        update_card::show(app, &ctx);
-        command_search::show(app, &ctx);
-        dialogs::show(app, &ctx);
         return;
     }
     if app.page_sorter && !app.multipage {
         egui::CentralPanel::default()
             .frame(Frame::new().fill(Tokens::panel()))
             .show(ui, |ui| preview::page_sorter(app, ui));
-        update_card::show(app, &ctx);
-        command_search::show(app, &ctx);
-        dialogs::show(app, &ctx);
         return;
     }
 
@@ -877,23 +887,6 @@ fn desktop(app: &mut App, ui: &mut Ui, ctx: &egui::Context) {
             }
         });
     crate::frame_mark("the drawing");
-
-    if app.has_document() && !app.show_welcome {
-        symmetry_bar::show(app, &ctx);
-        clip_bar::show(app, &ctx);
-        focus_bar::show(app, &ctx);
-        effect_picker::show(app, &ctx);
-        crate::perspective_draw::show_bar(app, &ctx);
-    }
-    update_card::show(app, &ctx);
-    command_search::show(app, &ctx);
-    dialogs::show(app, &ctx);
-    // A change this frame made to a master shows on its clones at once.
-    let before = app.engine.revision();
-    app.sync_object_clones();
-    if app.engine.revision() != before {
-        ctx.request_repaint();
-    }
 }
 
 /// The docker column at `place` (its side's edge at the left when
