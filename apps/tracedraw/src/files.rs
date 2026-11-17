@@ -1759,6 +1759,7 @@ fn android_save_path(name: &str) -> PathBuf {
         n += 1;
     }
     candidate
+}
 
 /// Whether the file picker of a browser with this user agent, platform
 /// and number of touch points filters by the system's file types rather

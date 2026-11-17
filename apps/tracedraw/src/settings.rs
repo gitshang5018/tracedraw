@@ -1254,7 +1254,6 @@ impl NodePrefs {
     pub fn handle_pick_px(&self) -> f64 {
         let head = f64::from(self.control_head());
         self.pick_px().max(head * 1.25f64.sqrt() + 1.0)
-        }
     }
 }
 

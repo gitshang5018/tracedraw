@@ -397,6 +397,8 @@ fn phone_sorter(app: &mut App, ui: &mut Ui) {
             app.page = app.doc().pages[0].id;
         }
     }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

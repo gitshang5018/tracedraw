@@ -1062,7 +1062,6 @@ fn message_box_with(
                     }
                     ui.label(rich);
                 }
-                }
             });
         });
         if let Some((label, checked)) = check {

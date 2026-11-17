@@ -210,7 +210,6 @@ fn effect_stack(app: &mut App, ui: &mut Ui) {
                 {
                     change = Some(Change::Toggle(i));
                 }
-                }
                 let name = egui::RichText::new(tr(effect_key(effect)));
                 ui.label(if *on {
                     name
