@@ -65,7 +65,10 @@ selection (or of new objects, with nothing selected).
   remove it. The picked node's color, transparency, position and
   [[edit_fill.midpoint]] are under the band, with [[edit_fill.reverse]].
   [[edit_fill.transform]] has the rotation, the center (for radial, conical
-  and square gradients), the edge pad, mirror and inversion.
+  and square gradients), the edge pad, mirror and inversion. The preview has
+  the object's proportions and shows the start, end and skew nodes: drag them
+  to move, turn and stretch the gradient as on the canvas (<kbd>Ctrl</kbd>
+  turns in steps of 15 degrees).
 - **OK** changes only what you changed on every selected object, with
   [[edit_fill.overprint]].
 - While the dialog box is open, the selection shows the fill as you change it; **Cancel** or <kbd>Esc</kbd> puts the old fill back.
@@ -105,9 +108,9 @@ overlapping objects, by making a new object of that area. The objects around
 it stay as they are.
 
 1. Choose the [[tool.area_fill]] tool.
-2. Choose the fill and outline on the property bar: **Use default** (the fill
-   and outline of new objects; a color when that is no fill, so the area
-   shows), **Specify** (the color, and for the outline the width, beside it)
+2. Choose the fill and outline on the property bar: **Specify** (the color,
+   and for the outline the width, beside it), **Use default** (the fill and
+   outline of new objects; a color when that is no fill, so the area shows)
    or **None**.
 3. Click inside the area.
 
@@ -125,8 +128,8 @@ realistic shading.
 2. Click an object. It gets a mesh in the color of its fill.
 3. Click a node to select it, then click a color of the palette to color it.
    Drag nodes to bend the flow of colors.
-4. Double-click inside the mesh to add a row or column through the nearest
-   node; select a node and press <kbd>Delete</kbd> to remove its row and
+4. Double-click inside the mesh to add a node exactly there, on a new row
+   and column through that point; select a node and press <kbd>Delete</kbd> to remove its row and
    column.
 
 The property bar also has **Smooth color**, which blends the colors more

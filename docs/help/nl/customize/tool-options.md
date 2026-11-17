@@ -1,5 +1,7 @@
 # Gereedschapsopties
 
+> *Machinevertaling: deze pagina kan achterlopen op de Engelse versie.*
+
 [[menu.tools > menu.tools.options > menu.tools.options_tools]] stelt in hoe
 gereedschappen zich gedragen en welke nieuwe objecten ze tekenen. De meeste van
 deze waarden staan ook op de eigenschappenbalk van elk gereedschap.
@@ -15,6 +17,18 @@ deze waarden staan ook op de eigenschappenbalk van elk gereedschap.
   objecten die het alleen raakt; <kbd>Alt</kbd> selecteert dan alleen de
   objecten die er helemaal binnen liggen.
 
+- [[options.ctrl_shift_keys]] [[options.keys_traditional]]: [[options.keys_traditional_tip]]
+  [[options.keys_windows]]: [[options.keys_windows_tip]]
+
+## Gum {#eraser}
+
+![De opties van het gereedschap Gum](../../img/customize-tool-options-eraser.png)
+
+[[options.eraser_width]] (in het begin 6,35 mm), en [[options.eraser_round]] of
+[[options.eraser_square]].
+
+[[options.eraser_reduce_nodes]]: [[options.eraser_reduce_nodes_tip]]
+
 ## Zoomen en pannen {#zoom-pan}
 
 ![De opties voor zoomen en pannen](../../img/customize-tool-options-zoom-pan.png)
@@ -22,15 +36,45 @@ deze waarden staan ook op de eigenschappenbalk van elk gereedschap.
 - [[options.zoom_right_button]]: [[options.zoom_out]] (in het begin) of het
   [[options.context_menu]].
 - [[options.wheel_action]]: [[options.wheel_zoom]] of [[options.wheel_scroll]].
+- [[options.zoom_relative_1to1]] (aan): zoom 100% is de echte grootte bij de
+  gekalibreerde schermresolutie; uit is het 96 pixels per inch.
+- [[options.wheel_center_mouse]] (uit): zoomen met het wiel brengt de plek onder de
+  aanwijzer naar het midden van de weergave, en de aanwijzer mee.
+- [[options.smooth_zoom]] (aan): een klik van het wiel zoomt in een korte
+  glijbeweging in plaats van een sprong; hoe sneller het wiel draait, hoe
+  korter. Uit: elke klik zoomt meteen.
+- [[options.light_zoom]]: [[options.light_zoom_tip]]
+- [[options.wheel_zoom_step]] hoeveel één klik in- of uitzoomt, van 1 tot 100
+  procent (eerst 15 %).
+- [[options.pan_right_button]] [[options.zoom_out]] of het [[options.context_menu]] (eerst).
+- [[options.pan_inertia]] (uit): een pan die u loslaat terwijl de aanwijzer nog
+  beweegt, laat de weergave dezelfde kant op doorglijden en uitlopen. Een klik
+  of het wiel stopt hem. Geldt voor het pangereedschap, de middelste knop en
+  twee vingers.
 
-## Curven {#curves}
+## Vrije hand/Bézier {#curves}
 
-![De opties van de curvegereedschappen](../../img/customize-tool-options-curves.png)
+![De opties van de gereedschappen Vrije hand/Bézier](../../img/customize-tool-options-curves.png)
 
 - [[options.freehand_smoothing]]: 0 tot 100 (in het begin 50).
 - [[options.join_within]]: hoe dicht bij een eindknooppunt een lijn moet
   beginnen om de curve voort te zetten (in het begin 5 schermpixels). Zie
   [Een curve voortzetten](../lines-shapes/lines.md#continue).
+
+- [[options.pen_preview]] en [[options.pen_auto_add_delete]] (beide aan) voor
+  het gereedschap [[tool.pen]]; zie [Pen](../lines-shapes/lines.md#pen).
+- [[options.pen_tablet]]: [[options.pen_pressure]] (aan); zie
+  [Tekenen met een tekentablet](../lines-shapes/pen-pressure.md).
+
+- [[options.corner_threshold]]: [[options.corner_threshold_tip]]
+- [[options.straight_threshold]]: [[options.straight_threshold_tip]]
+
+## Vormherkenning {#shape-recognition}
+
+![De opties van het gereedschap Vormherkenning](../../img/customize-tool-options-shape-recognition.png)
+
+[[recognize.recognition]] en [[recognize.smoothing]] van het gereedschap
+Vormherkenning, van uit tot hoogste, zoals op de eigenschappenbalk.
 
 ## Rechthoek {#rectangle}
 
@@ -48,11 +92,20 @@ hoekgrootten en [[toolbar.corners_together]]. [[options.scale_corners]]:
 [[options.ellipse]], [[options.pie]] of [[options.arc]], met de
 [[options.starting_angle]] en [[options.ending_angle]].
 
+[[options.arc_direction]]: [[options.counterclockwise]] / [[options.clockwise]].
+[[options.arc_direction_desc]]
+
 ## Veelhoek {#polygon}
 
 ![De opties van het gereedschap Veelhoek](../../img/customize-tool-options-polygon.png)
 
 [[options.number_of_points]] en [[options.sharpness]].
+
+## Ruitjespapier {#graph-paper}
+
+![De opties van het gereedschap Ruitjespapier](../../img/customize-tool-options-graph-paper.png)
+
+[[options.rows]] en [[options.columns]] van het raster.
 
 ## Spiraal {#spiral}
 
@@ -61,11 +114,8 @@ hoekgrootten en [[toolbar.corners_together]]. [[options.scale_corners]]:
 [[options.revolutions]], en [[options.symmetrical_spiral]] of
 [[options.logarithmic_spiral]].
 
-## Ruitjespapier {#graph-paper}
-
-![De opties van het gereedschap Ruitjespapier](../../img/customize-tool-options-graph-paper.png)
-
-[[options.rows]] en [[options.columns]] van het raster.
+[[options.spiral_expansion]]: [[options.spiral_expansion_tip]]
+[[options.spiral_preview_tip]]
 
 ## Tabel {#table}
 
@@ -73,9 +123,37 @@ hoekgrootten en [[toolbar.corners_together]]. [[options.scale_corners]]:
 
 [[options.rows]] en [[options.columns]] van nieuwe tabellen.
 
-## Gum {#eraser}
+## Maatlijn {#dimension}
 
-![De opties van het gereedschap Gum](../../img/customize-tool-options-eraser.png)
+![De opties van het gereedschap Maatlijn](../../img/customize-tool-options-dimension.png)
 
-[[options.eraser_width]] (in het begin 6,35 mm), en [[options.eraser_round]] of
-[[options.eraser_square]].
+Hoe het label van nieuwe maatlijnen luidt: [[dimension.precision]],
+[[dimension.units]], [[dimension.show_units]], [[dimension.prefix]] en
+[[dimension.suffix]]. Al getekende maatlijnen houden hun label; selecteer er
+een en gebruik de eigenschappenbalk om het te wijzigen.
+
+[[options.dimension_style]]: [[options.decimal]] / [[options.fractional]].
+[[options.dimension_style_tip]]
+
+## Hoekmaat {#angular-dimension}
+
+[[dimension.precision]], [[dimension.show_units]], [[dimension.prefix]] and
+[[dimension.suffix]] of new angular dimensions.
+[[options.angular_units_tip]]
+
+## Verbindingslijn {#connector}
+
+![De opties van het gereedschap Verbindingslijn](../../img/customize-tool-options-connector.png)
+
+[[connector.radius]] van nieuwe afgeronde verbindingslijnen (eerst 3 mm).
+
+[[options.connector_gap]]: [[options.connector_gap_tip]]
+
+[[options.connector_geometric_anchors]]: [[options.connector_geometric_anchors_tip]]
+
+## Meshvulling {#mesh-fill}
+
+![De opties van het gereedschap Meshvulling](../../img/customize-tool-options-mesh-fill.png)
+
+[[options.columns]] en [[options.rows]] van het raster waarmee een nieuwe
+meshvulling begint (eerst 2 bij 2).

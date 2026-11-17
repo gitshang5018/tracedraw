@@ -37,16 +37,34 @@ frame is edited node by node, and the clip frame stays one
   show it too while they wait for their object (#379,
   `ui::cursors::tests::tools_get_their_cursors`).
 - Extract Contents: the contents become ordinary objects again; the frame
-  stays (an empty frame shows a hatched preview).
-- Edit Contents: takes the contents out of the frame to edit them; the
-  rest of the page fades to a quarter of its strength while the frame
-  and the contents are drawn in full (`App::render_focus`, the
-  renderer's focus option with several objects, `CLIP_EDIT_VISIBILITY`).
-  Finish Editing Contents (the bar's Finish) puts them back. The
+  stays (an empty frame shows a hatched preview). A clip frame moved,
+  turned or resized since it was made comes apart where it shows: its
+  own transform goes onto the frame and each content (#1562,
+  `command::tests::extracting_a_moved_clip_frame_keeps_the_frame_and_contents_in_place`).
+- The canvas context menu of a selection holding a clip frame offers
+  Edit Contents and Extract Contents (the Object menu's commands); while
+  a clip frame's contents are edited, the menu on the contents or on the
+  empty page offers Finish Editing. Ctrl+Shift+F3 runs Edit Contents on
+  the selected clip frame and Finish Editing while inside; both menu
+  rows show it (#1273,
+  `pick_drag_tests::the_context_menu_and_a_key_edit_and_extract_clip_frame_contents`).
+- Edit Contents: takes the contents out of the frame to edit them (where
+  they show, as Extract Contents does); the rest of the page fades to the
+  "Visibility of inactive objects" of focus mode (Tools > Options >
+  TraceDraw > Edit, 20 % at first) while the frame and the contents are
+  drawn in full (`App::render_focus`, the renderer's focus option with
+  several objects; #981). At 0 % the rest is not drawn at all.
+  Finish Editing Contents (the bar's Finish) puts them back; so does a
+  Ctrl+click off the contents, on bare canvas or on a faded object (a
+  plain click there only empties the selection; #1337,
+  `pick_drag_tests::a_ctrl_click_off_the_contents_finishes_editing_a_clip_frame_and_alt_drops_inside`). The
   contents are every object on the page that was not there besides the
   frame when editing began (`App::clip_edit_contents`): a group inside
   ungrouped stays in as its members, drawn in full, and objects drawn or
-  pasted while editing go in too; the members of an ungrouped group were
+  pasted while editing go in too (a paste that would land wholly outside
+  the frame's box is centred on the frame, so it shows in it, #2044,
+  `pick_drag_tests::a_paste_while_editing_a_clip_frame_lands_inside_the_frame`);
+  the members of an ungrouped group were
   left out and faded, and Finish emptied the frame (#537,
   `a_group_inside_a_clip_frame_being_edited_drags_and_ungroups`).
   While editing, only the contents can be picked: the faded objects and
@@ -58,6 +76,28 @@ frame is edited node by node, and the clip frame stays one
   Redo of that step enters the edit again; undoing Finish goes back
   into the edit and redoing it leaves (#851,
   `clip_frame_edit_keeps_to_its_contents_and_its_own_undo`).
+- Ungroup, Break Apart and the Knife take a clip frame apart through
+  its frame, as they take the frame itself apart, and each piece is a
+  clip frame holding the contents (the first keeps the clip frame, the
+  others get ids of their own and copies of the contents), so the
+  picture stays where it shows. Ungroup (Ctrl+U, Ungroup All too) on a
+  clip frame whose frame is a group gives one clip frame per object of
+  the group (#1605,
+  `command::tests::a_clip_frame_of_a_group_ungroups_into_clip_frames_of_its_objects`);
+  Break Apart (Ctrl+K) on one whose frame is a curve of several parts
+  gives one per part (#1607,
+  `command::tests::a_clip_frame_of_a_combined_curve_breaks_into_clip_frames_of_its_parts`,
+  `ops2::clip_frame_tests::clip_frames_ungroup_and_break_apart_through_their_frame`);
+  the Knife cuts the frame as it cuts a closed object, the pieces
+  keeping the frame's fill and outline (#1606,
+  `knife::tests::a_clip_frame_is_cut_through_its_frame`). The pieces
+  come out selected; one undo step. A cropped picture (a clip frame
+  holding one bitmap) is cut as a picture, see `crop-knife-eraser.md`.
+- The Eraser erases a clip frame through its frame (#1672): the frame
+  loses the band, keeping its fill, outline and id, and the contents
+  stay inside, clipped by what is left, so they are gone along the
+  band; a frame erased away deletes the clip frame. One undo step
+  (`shape_tool::eraser_tests::a_clip_frame_is_erased_through_its_frame`).
 - Lock Contents to Frame (default on, stored as `clip_frame.unlocked` in
   the object data when off): with the lock on, moving, scaling or
   rotating the frame transforms the contents too. With it off, the frame
@@ -77,14 +117,19 @@ Frame Proportionally (scaled alike to cover it) and Stretch Contents to
 Fill (scaled to the frame's box), each one "Fit Contents" undo step
 (`App::fit_clip_contents`, `ops2::fit_contents_transform`). While the
 contents are edited the bar shows Finish, as the symmetry bar does
-(`ops2::clip_frame_tests::contents_fit_the_frame_four_ways`).
+(`ops2::clip_frame_tests::contents_fit_the_frame_four_ways`). The four
+Fit Contents choices are also rows of Object > Clip to Frame
+(`menus::CLIP_FIT_ROWS`), so Options > Customization > Commands lists
+them and they take shortcuts; from the menu each selected clip frame
+fits its own contents, one "Fit Contents" undo step for them all
+(`App::fit_clips_contents`, #1299).
 
 ## Dropping onto a frame
 
 While the selection is moved over a clip frame that is not part of it,
 the frame shows filled in the selection colour and a note under the
 pointer says what the release does: drop here, outside the frame
-(nothing held); hold W to add the objects to the frame (Place Inside
+(nothing held); hold W or Alt to add the objects to the frame (Place Inside
 Frame, the objects where they were dropped); hold K to replace the
 frame's contents with them (the old contents are deleted; one "Place
 Inside Frame" undo step, `App::replace_clip_contents`). W and K pick
@@ -93,7 +138,10 @@ no tool during the move (`App::frame_under_pointer`, `drop_frame`,
 
 ## Picking
 
-A click selects the clip frame (anywhere in its box). Ctrl+click on a
+A click selects the clip frame (anywhere in its box). A double click
+brings it into focus mode with the content under the pointer selected;
+there a click picks a content and a double click on a text edits it in
+place (#2157, see `focus-mode.md`). Ctrl+click on a
 clip frame lying on a layer starts Edit Contents: the contents come out
 of the frame with the object under the pointer selected (every content
 when the click is off them, inside the frame's box), and while they are
@@ -146,6 +194,19 @@ in place and lock work as for any clip frame. One undo step each.
 - Given a `.cdr` bitmap with a crop outline smaller than the image, then
   the reader produces a clip frame of the bitmap inside the crop path
   (confirmed with the 2019 banner file).
+- Given a clip frame saved as `.cdr` version 11 or later, then the file
+  holds a clip container (the frame object naming a group of the
+  document's clip contents list, as files of that format hold one) and
+  the frame comes back with its look and its contents (#1222;
+  `write::tests::clip_frames_go_out_as_clip_containers_from_version_11`;
+  version 11 from 2026-10-30, #1226, as the version 11 file of #896 holds
+  its clip frames),
+  see `docs/cdr-format.md`, Writing).
+- Given text and two clip frames saved as `.cdr` version 11 or later, then
+  each frame's contents group holds its own number plus one in its link
+  argument, a number no other object takes, as every clip group of the
+  sample files does, and the checker passes the file (#1226;
+  `write::tests::clip_groups_hold_their_number_plus_one_after_text_and_other_clips`).
 - `render::tests::opacity_masks_show_the_contents_by_the_frame_brightness`,
   `svg::tests::opacity_masks_are_svg_masks`,
   `pdf::tests::opacity_masks_go_in_as_transparent_pictures`,

@@ -1,5 +1,7 @@
 # Mesclagem de impressão
 
+> *Tradução automática: esta página pode estar atrasada em relação à versão em inglês.*
+
 A mesclagem de impressão preenche um desenho com dados, para fazer muitas
 versões dele: crachás, ingressos numerados, certificados, etiquetas com códigos
 QR. Cada registro dos seus dados vira uma cópia da página, preenchida.
@@ -40,13 +42,24 @@ fonte de dados que você criou ou carregou:
   escolha [[merge.scale_actual]], [[merge.scale_fit]], [[merge.scale_fill]]
   (a moldura corta o que sobra) ou [[merge.scale_stretch]].
 - **[[merge.insert_field]]** põe o campo no texto que você está editando, ou
-  cria um texto, uma moldura de imagem ou um quadrado de QR no meio da
-  visualização. Mova e redimensione como qualquer objeto.
+  cria um texto, uma moldura de imagem ou um código QR de amostra no meio da
+  visualização. Mova e redimensione como qualquer objeto. Pinte o código QR
+  de amostra com qualquer cor e coloque-o dentro de uma forma com Colocar
+  dentro do quadro: o código de cada registro sai nessa cor, dentro dessa
+  forma. Um código de barras mantém do mesmo jeito as cores dadas às barras,
+  ao fundo e aos dígitos.
 - Para colocar cada foto dentro de uma forma sua (um círculo, um oval,
   qualquer contorno, também dentro de um cartão agrupado), escolha Imagem e a
   coluna da foto, selecione a forma e clique em **[[merge.place_inside]]**. A
   foto de cada cartão vai para dentro dessa forma, conforme o alinhamento e a
   escala.
+- Marque **[[merge.all_pages]]** (desligado de início) antes de
+  **[[merge.insert_field]]** para pôr um campo de texto, imagem ou código QR no
+  mesmo lugar em todas as páginas do desenho. **[[merge.create_document]]**
+  então preenche as próprias páginas do desenho, um registro em cada, em vez
+  de criar um desenho novo. Mova ou redimensione o campo na página dele e as
+  cópias nas outras páginas o acompanham ao mesclar; uma cópia que você moveu
+  à mão na própria página fica onde você a pôs.
 - Selecione um campo e clique em **[[merge.update_field]]** para mudar a coluna
   ou o alinhamento e a escala.
 - **[[merge.create_document]]** cria as páginas mescladas em um desenho novo: a
@@ -62,7 +75,27 @@ número do registro.
 
 - **Texto**: substitui `<Field>` em todos os textos da página.
 - **Número**: um contador que você não digita: um início, um passo e um número
-  de dígitos (início 7, passo 3, dígitos 3 dá 007, 010, 013).
+  de dígitos (início 7, passo 3, dígitos 3 dá 007, 010, 013). O
+  [[merge.format]] é [[merge.format_digits]] (o padrão), [[merge.format_upper]]
+  ou [[merge.format_lower]] (1 é A, 26 é Z, depois AA), ou
+  [[merge.format_custom]], que põe um texto seu antes e depois do número, para
+  ingressos e números de série ("Ingresso T-" antes, 4 dígitos e início 98 dão
+  Ingresso T-0098, Ingresso T-0099 e assim por diante). Ao acrescentar uma
+  coluna Número, desmarque [[merge.increment]] para dar o mesmo número a todos
+  os registros, ou informe um valor final para criar de uma vez os registros
+  do início ao fim (15 a 25 com três dígitos cria onze registros, de 015 a
+  025), sem arquivo de dados nenhum.
+- **[[merge.kind_random]]**: um número inteiro aleatório para cada registro,
+  sorteado [[merge.random_min]] um número [[merge.random_max]] outro,
+  completado com zeros até os [[merge.digits]] e escrito depois do
+  [[merge.prefix]] que você der (rifas, códigos). Com [[merge.random_unique]]
+  (ligado de início) nenhum número se repete; quando o intervalo tem menos
+  números que registros, a caixa de diálogo avisa e a mesclagem não é feita,
+  então amplie o intervalo ou permita repetições. [[merge.random_records]]
+  cria esse número de registros quando há menos, assim números aleatórios
+  dispensam arquivo de dados. Os números ficam os mesmos, na grade, nas
+  páginas mescladas e na impressão, até você clicar em [[merge.random_draw]]
+  em Configurar colunas.
 - **Imagem**: a célula tem o caminho de uma imagem. Um texto que contém apenas
   `<Field>` vira a imagem, do maior tamanho que caiba na caixa dele. Ponha esse
   texto dentro de uma moldura com [[menu.object.clip_frame_place_inside]] (uma moldura de
@@ -74,6 +107,18 @@ Os campos funcionam também em grupos e molduras, então um cartão pode estar
 agrupado.
 - **Código QR**: um texto que contém apenas `<Field>` vira um código QR do
   texto da célula.
+- **Código de barras**: escolha [[merge.kind_barcode]] no painel e clique em
+  [[merge.insert_field]]. O assistente de código de barras abre com o campo
+  como dados; escolha o padrão, os tamanhos e o texto como em qualquer
+  [código de barras](../objects/barcodes.md#barcode-data) e clique em
+  Concluir. A página de cada registro recebe seu próprio código de barras
+  feito do seu valor, no lugar e no tamanho do que você colocou. Com
+  [[merge.all_pages]] marcado, o código vai para todas as páginas. Os dados
+  podem misturar texto fixo e campos: com um campo Número `Serial` de seis
+  dígitos começando em 15, os dados `590123<Serial>` dão os códigos EAN-13
+  590123000015, 590123000016 e assim por diante, mudando só os últimos
+  dígitos. Um registro cujo valor o padrão não comporta fica sem código de
+  barras.
 
 Uma célula vazia, ou uma imagem que não carrega, remove esse objeto da página
 do registro.

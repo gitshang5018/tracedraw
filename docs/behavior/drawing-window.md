@@ -8,10 +8,22 @@
   `#BFBFBF`: the bordered page rectangle moved 6 px right and 4 px down,
   drawn behind the page, so a 6 px band shows on the right and a 4 px
   band at the bottom. The page rectangle is snapped to whole pixels.
+  View > Page > Page Border hides the border and View > Page > Page
+  Shadow the shadow, each on its own, so a white page on a white
+  desktop keeps its edge without the shadow (#1906; also in Options >
+  Page Size and kept with the view's preferences and in workspaces;
+  `canvas::tests::the_page_border_and_its_shadow_are_separate_options`).
   View > Page > Page Border hides the border and the shadow.
-- View > Mask Outside Page, right after the view modes (Pixels), as in
-  the reference program (off by default, kept with the other view
-  settings): an opaque colour covers everything outside the page
+- View > Page > Printable Area dashes the part of the page the printer
+  can print: inside the hard margins of the printer printed to last
+  (else the system's default printer), as the system reports them (see
+  printing.md, Print Preview), turned with a page wider than tall; a
+  typical 5 mm a side only while they are read or when the system does
+  not say (#1924,
+  `print_preview::tests::the_printable_area_is_the_printers_own`).
+- View > Mask Outside Page, right after the view modes (Pixels; off by
+  default, kept with the other view settings): an opaque colour covers
+  everything outside the page
   (outside every page in Multipage View) over the objects, and the page
   border is drawn over the objects, so the page shows as it will print
   or export. The colour is the desktop colour, or a near-black `#222222`
@@ -26,7 +38,7 @@
   `canvas::tests::the_mask_covers_everything_outside_the_pages`).
 - Double-clicking the page border (within 3 px) or its shadow with the
   Pick tool, where no object is hit, opens the page size options
-  (Layout > Document Options at Page Size).
+  (Page > Document Setup at Page Size).
 
 ## Scrollbars
 
@@ -38,6 +50,13 @@
   whatever is visible. Dragging the thumb pans; a click on the track pages
   by 90 % of the window towards the click; an arrow moves 40 px, then
   repeats every 50 ms after 0.4 s while held.
+- View > Scrollbars (on by default, kept in the preferences as
+  `show_scrollbars`) hides both (#1344): the drawing takes the vertical
+  bar's 17 px on the right, the bottom row keeps the document navigator,
+  the page tabs (now up to the corner, no splitter) and the Navigator
+  button in its corner. Panning stays with Space, the middle button, the
+  Pan tool and the wheel. Check:
+  `ui::window_bars::tests::view_scrollbars_hides_and_shows_them`.
 
 ## Bottom row
 
@@ -59,18 +78,28 @@ From the left, after the ruler's width:
    showed, so in a long drawing (a merged document) their pages could be
    reached only with Go To Page (#794,
    `pick_drag_tests::page_tabs_slide_to_the_current_page_of_a_long_drawing`). A right click makes the
-   page current and opens its menu, six rows with a picture each and no
+   page current and opens its menu, seven rows with a picture each and no
    separators: Rename Page... (a page with a text cursor), Insert Page
    After and Insert Page Before (two pages side by side, the new one with
    a green plus, on the right or on the left, under an arrow toward it),
    Duplicate Page... (two pages with a green plus; opens the Duplicate
-   Page dialog, see [pages.md](pages.md)), Delete Page (a page with a red
+   Page dialog, see [pages.md](pages.md)), Duplicate Page to New Document
+   (the same picture; a new untitled drawing in its own tab with a copy
+   of the page, its size and settings, layers and objects, #2510,
+   `duplicate_page_to_new_document_opens_a_copy_of_the_page`), Delete Page (a page with a red
    cross; greyed when it is the only page) and Switch Page Orientation.
    Only the rows that open a dialog end in an ellipsis. Page size and
-   background are in the Layout menu
-   (`ui::window_bars::tests::the_page_tab_menu_has_six_rows_in_order_each_with_a_picture`,
+   background are in the Page menu
+   (`ui::window_bars::tests::the_page_tab_menu_has_seven_rows_in_order_each_with_a_picture`,
    `the_page_tab_menu_has_no_separators`,
    `the_page_tab_menu_inserts_duplicates_turns_and_deletes_pages`).
+   A page nobody named is called after its place: when pages are
+   inserted in between, moved or deleted, the default names ("Page 3",
+   in the interface's language or in English) are given again from the
+   first page on, in the same undo step, so the tabs always read Page 1,
+   Page 2, Page 3 from left to right. A page with a name of its own
+   (and a copy, "Page 2 (copy)") keeps it wherever it goes (#2374,
+   #2355, `page_names::tests`).
 3. A dotted splitter: dragging it shares the row between the page tabs and
    the horizontal scrollbar (45 % for the tabs by default).
 4. The horizontal scrollbar.
@@ -82,7 +111,7 @@ the vertical scrollbar; see `zoom-and-pan.md`.
 
 With drawings open, Window > Cascade, Tile Horizontally and Tile
 Vertically put every drawing in a window of its own inside the drawing
-area (`ui/windows.rs`); Combine Windows and Dock Window bring the tabs
+area (`ui/windows.rs`); Merge Windows and Dock Window bring the tabs
 back. The tabs stay above the area and still choose the active drawing.
 
 - Tile Horizontally: the windows one above the other, each as wide as
@@ -146,13 +175,78 @@ window shows.
   bounds (effects, drop shadows, symbols, the objects of a drag preview)
   are always drawn. Zoomed into a page of ten thousand rectangles the
   render takes less than half the time it did.
-- While the view moves (a pan, a scroll, a zoom) the last render is
-  shown moved or scaled into place at once, and the page is rendered
-  anew once the view has rested for 0.12 s (`raster::SETTLE_SECONDS`);
-  the part the last render did not cover stays blank until then. So a
+- While the view pans or scrolls the last render is shown moved into
+  place at once (as sharp as it was), and the page is rendered anew
+  once the view has rested for 0.12 s (`raster::SETTLE_SECONDS`). So a
   page of thousands of objects pans at the screen's rate whatever its
-  size; a zoom looks coarse for that moment. The Pixels view never
-  shows a moved render.
+  size. The Pixels view never shows a moved render.
+- The part of the page the last render does not cover (a render covers
+  the canvas only: what a pan brings in from the edge, and most of the
+  page after a zoom out) shows the whole page drawn small, the backdrop,
+  until the new render comes (#2048). It stayed blank paper before: a
+  white flash round the old picture at every step out of a dark design.
+  The backdrop is the page, with whatever is drawn beside it up to two
+  page sizes away (`app::BACKDROP_REACH`; with the page alone a drawing
+  laid out around a small page came back piece by piece at every zoom
+  out, #2354), fitted into the canvas (at most 2048 pixels a
+  side: one more picture no larger than the render's own, whatever the
+  zoom), drawn on one thread of its own (not on every core, as a render
+  somebody waits for is) once the picture has been the one asked for
+  during 0.4 s (`raster::BACKDROP_REST`) and the pointer is still with
+  no button or key held, so once per change of the drawing and never
+  while the drawing changes, the view moves or the hand is busy.
+  It takes no render turn: a zoom that starts while it is drawn renders
+  at once all the same. Only the backdrop of the drawing as it is now is
+  shown (one of an earlier state would bring back what was deleted), it
+  is painted only where the render does not reach (never under it:
+  see-through objects would show twice as dense) and not at all at rest.
+  The two meet edge to edge: no strip of bare paper shows between them
+  while the view zooms out (#2899,
+  `canvas::tests::the_backdrop_meets_the_shrunk_picture_without_a_gap`).
+  It covers the page, not what lies off it, and is not drawn while a
+  drag is previewed, in the Pixels view or while only some objects show.
+  The browser build, which has no thread to draw it on, has none.
+  (`raster::tests::the_whole_page_is_drawn_small_once_the_picture_rests`,
+  `pick_drag_tests::zooming_out_shows_the_whole_page_small_where_the_picture_does_not_reach`.)
+- A zoom (the wheel, a pinch, the Zoom tool, the zoom keys) does not
+  wait for the view to rest: the last render, scaled into place, would
+  look blurry, so the main canvas renders the new zoom at once on a
+  thread of its own (`raster::Raster::zooms_at_once`), the scaled
+  picture showing meanwhile. A zoom step that comes while that render
+  runs does not restart it (nothing is thrown away): when it ends its
+  picture is shown, nearer the zoom on screen than the one before, and
+  the next render starts in the same frame for the latest zoom. A burst
+  of wheel notches so shows a sharper picture after every render, and
+  the sharp one about one render after the last step instead of 0.12 s
+  plus a render. Like every render it covers only the canvas, the part
+  of the page on screen, drawn in bands on all cores at once (so the
+  whole visible part comes about as fast as a tile under the pointer
+  would). The pages beside the current one in the Multipage View still
+  wait for the view to rest (many of them come due at once), and the
+  browser build, which draws on one thread, keeps the wait too.
+  `frame_times_of_a_zoom_burst` (in `pick_drag_tests.rs`) measures the
+  wait from the last step to the sharp picture.
+- The main canvas's picture drawn on a thread comes a band at a time
+  (`render_page_progressive`): about three bands for each core, the
+  band at the middle of the window first and the others outward from
+  it, each laid over the last picture as soon as it is done
+  (`Raster::incoming`, a see-through texture the picture's size). After
+  a zoom on a large drawing the window sharpens from the middle out
+  while the rest is still drawn, as CorelDRAW fills its window in,
+  instead of showing the scaled, blurry picture until the whole new one
+  is ready (discussion #2389). The bands of a render that gave up are
+  not shown; the pages beside the current one come whole.
+  (`band_tests::a_picture_comes_a_band_at_a_time_from_the_middle` in the
+  render crate.)
+- Only what can show is drawn: an object (or, inside a group, each of
+  its objects) whose bounds, grown by what its outline may reach, lie
+  wholly off the canvas is skipped, while objects with effects or a
+  shadow are always drawn. Zoomed in on a design kept as one large
+  group, every object of the group was drawn at the zoom's detail, so a
+  zoom in drew far slower than the page fitted in the window
+  (discussion #2389,
+  `culling_tests::a_zoom_into_a_group_draws_only_the_members_that_show`
+  in the render crate).
 - The page is rendered in horizontal bands, one per processor core
   (up to 16), each on its own thread, when the canvas has a quarter of
   a million pixels or more; a band reaches past its edges by twice the
@@ -191,6 +285,7 @@ window shows.
 - `raster::tests::a_moving_view_shows_the_last_render_until_it_rests`
 - `raster::tests::a_canvas_that_moves_renders_again`
 - `raster::tests::a_slow_page_is_drawn_on_its_own_thread`
+- `raster::tests::the_latest_zoom_wins_without_restarting_renders`
 - `raster::tests::one_render_job_runs_at_a_time_and_the_current_page_goes_first`
 - `raster::tests::the_current_page_gets_the_next_turn`
 - `tracedraw_core::engine::tests::the_history_keeps_to_its_memory_limit`

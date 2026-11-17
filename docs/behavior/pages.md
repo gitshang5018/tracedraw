@@ -2,7 +2,7 @@
 
 ## Duplicate Page
 
-Layout > Duplicate Page..., the page tab menu's Duplicate Page... and the
+Page > Duplicate Page..., the page tab menu's Duplicate Page... and the
 Duplicate Page button of the Pages panel open the Duplicate Page dialog
 for the current page:
 
@@ -19,7 +19,7 @@ The copy keeps the page size, guides and background, is named after the
 page with " (copy)", and becomes the current page. It is one command,
 `Command::DuplicatePage { page, before, contents }`, so one undo step
 removes it. A saved or scripted command that names only the page copies
-it with its contents after it, as before (Print Merge works that way).
+it with its contents after it, as before (Data Merge works that way).
 
 Tests: `command::tests::duplicate_page_goes_before_or_after_with_or_without_contents`,
 `command::tests::a_saved_duplicate_page_without_options_copies_contents_after`,
@@ -41,20 +41,37 @@ orientation. Custom... opens the Page Size dialog with the page's width
 and height, to type any size (#650, #1092); the page width and height fields
 next to the list also take any size at once. Both resize the current
 page or every page as the All Pages / Current Page buttons say.
-Edit This List... opens Document Options > Page Size, where the
+A page is resized about its centre: its objects move by half of what
+the page grew or shrank, in the same undo step, so a drawing centred on
+the page stays centred. The Page Size dialog, Document Setup and Switch
+Page Orientation do the same; guidelines keep their place
+(`ops2::tests::a_page_is_resized_about_its_centre`, #2356).
+page or every page as the All Pages / Current Page buttons say.
+Edit This List... opens Document Setup > Page Size, where the
 save button next to Size keeps a custom size under a typed name and the
 delete button forgets the saved size shown; saved sizes are kept in the
 preferences and listed in every page size list (the property bar, the
-Page Size dialog, Document Options and Create a New Document).
+Page Size dialog, Document Setup and Create a New Document).
 Checked by `ui::propbar::tests::the_page_size_list_offers_a_custom_size`,
 `ui::dialogs::tests::page_size_presets_are_distinct_and_keep_their_names`,
 `ui::dialogs::tests::a_page_size_finds_its_name`.
 
+## Page Spacing
+
+Page > Page Spacing, after Page Layout: a submenu of presets (0, 5, 10,
+20, 30 and 50 mm, the one in use marked) and Custom..., a dialog with
+one number field in the document's units (0 to 1000 mm) that OK applies.
+It sets the space between the pages of the Multipage View, the same
+value as Document Setup > Layout > Page spacing; one undo step, saved
+with the drawing (see `multipage-view.md`,
+`ui::menus::tests::the_page_menu_sets_the_page_spacing`,
+`ui::dialogs::tests::the_page_spacing_dialog_sets_the_drawing_s_spacing`).
+
 ## Fit Page to Selection, Fit Page to Drawing
 
-Layout > Fit Page to Selection (pale with nothing selected) and Fit
+Page > Fit Page to Selection (pale with nothing selected) and Fit
 Page to Drawing (pale on an empty page), also as buttons on the
-Document Options > Page Size page and, Fit Page to Drawing, on the
+Document Setup > Page Size page and, Fit Page to Drawing, on the
 property bar with nothing selected (after the page width and height):
 the current page takes the size of
 the selection's bounds (effects included), or of everything on the page,
@@ -69,6 +86,12 @@ free on every side (`App::fit_page_to_drawing_with_margin`; a margin
 that is not a number counts as none). Checked by
 `ops2::fit_page_tests::the_page_fits_the_selection_or_the_drawing` and
 `ui::propbar::tests::the_page_bar_draws_with_its_fit_page_button`.
+Autofit Page follows the page bar's All Pages and Current Page buttons,
+as the page size fields do: with All Pages on, every page is fitted to
+its own drawing with the margin, in one undo step, and a page with
+nothing on it keeps its size; the button is pale only when no page has
+anything on it (#1393, `App::autofit_pages`,
+`ops2::fit_page_tests::autofit_with_all_pages_fits_every_page`).
 While the popup is open the page itself shows at the size Autofit Page
 would give it, around the drawing, following the margin as it is typed;
 nothing else is drawn, and closing the popup without OK puts it back
@@ -84,7 +107,7 @@ Autofit Page closes it
 
 ## Delete Page
 
-Layout > Delete Page... and the Delete Page... button of the Pages panel
+Page > Delete Page... and the Delete Page... button of the Pages panel
 open the Delete Page dialog (#500): Delete page (the current page to start
 with) and a Through to page check box with the last page of a range, off
 to start with (the range may be given in either order; numbers are kept to
@@ -93,3 +116,56 @@ them, else the one before, becomes the current page. A range of every page
 deletes nothing and the dialog says a drawing keeps at least one page. The
 page tab menu's Delete Page deletes that page at once
 (`app::tests::delete_page_takes_a_range_of_pages`).
+
+## Moving objects to another page by its tab
+
+With the Pick tool, the selection dragged onto another page's tab goes
+to that page (#1346, `page_drop`):
+
+- While the selection is moved over a page tab, that tab lights up.
+  Resting there for 0.6 seconds sends the selection to that page, which
+  becomes the current page, and the move goes on there: while the
+  pointer stays on the tabs the objects stay at their place on the
+  page, and back on the drawing they follow the pointer from there, to
+  be let go anywhere.
+- Let go on a page tab (another page's at once, or the tab of the page
+  the rest opened), the selection lands at its place on that page; the
+  way the pointer went to the tab is not applied.
+- With Ctrl (Cmd on macOS) held, or after a right click during the
+  move, copies go to the page and the originals stay where they were.
+- The objects go to the page's topmost visible, unlocked layer (its
+  topmost unlocked one when none is visible); a page with only locked
+  layers takes nothing and the status bar says so. They stay selected
+  on the page they went to.
+- The whole drag is one undo step, the move after the page changed
+  included.
+
+- A colour or a fill dragged the same way (a palette swatch, the fill
+  swatch of the status bar or of the property bar, or an object dragged
+  with the right mouse button) and rested 0.6 seconds on another page's
+  tab opens that page, so it can be let go on an object there (#2704).
+  A right-button drag carried over keeps the object it started from: let
+  go on an object of the new page, that object takes its fill (with
+  Shift its outline, with Ctrl both and the transparency), with no menu;
+  the dragged objects stay on their page.
+
+Checks: `pick_drag_tests::a_selection_dropped_on_a_page_tab_moves_to_that_page`,
+`pick_drag_tests::ctrl_on_a_page_tab_sends_a_copy`,
+`pick_drag_tests::resting_on_a_page_tab_opens_the_page_and_the_move_goes_on`,
+`pick_drag_tests::a_palette_colour_rested_on_a_page_tab_opens_the_page_and_fills_there`,
+`pick_drag_tests::a_right_drag_rested_on_a_page_tab_copies_the_fill_onto_that_page`.
+
+## Gather Pages on Page 1
+
+Layout > Gather Pages on Page 1 (when there is more than one page) puts
+the objects of every page side by side on the first page, to print or
+cut a run of pages on one sheet (#2098). Each page's objects keep their
+place on their page and go to the right of the page before, a **gap**
+apart (5 mm at first, up to 1 m), the pages' tops in line; each layer's
+objects go into the first page's layer at the same place in the list,
+else into its first layer. With **Fit page 1 to them** (on at
+first) the first page grows to the pages' widths and gaps side by side
+and the tallest page's height; with **Delete the emptied pages** (off at
+first) the other pages go. It is one undo step ("Gather Pages"); a
+drawing of one page has nothing to gather and says so on the status
+line (`gather_pages::tests::every_pages_objects_come_side_by_side_on_the_first`).

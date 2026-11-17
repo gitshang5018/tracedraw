@@ -1,8 +1,7 @@
 # Aligning and distributing objects
 
 Aligning lines objects up by their edges or centers; distributing spaces them
-evenly. Use the [[docker.align_distribute]] panel
-(<kbd>Ctrl+Shift+A</kbd>), the commands of
+evenly. Use the [[docker.align_distribute]] panel, the commands of
 [[menu.object > menu.object.align_distribute]], or the keys below.
 
 ![The Align and Distribute panel](../../img/objects-align-distribute.png)
@@ -42,38 +41,31 @@ The keys always align to the object selected last:
    - [[docker.distribute_selection]] (at first): the first and last objects
      stay where they are, and the others move between them;
    - [[docker.distribute_page]]: the objects spread across the whole page,
-     the first touching one side and the last the other.
+     the first touching one side and the last the other;
+   - [[docker.distribute_spacing]]: the first object stays and the others
+     follow it at the distance in [[docker.distribute_gap]] (between the
+     objects for the gaps, else between their edges or centers).
 3. Click one of the eight buttons: left edges, centers, gaps or right edges
    across the page, or top edges, centers, gaps or bottom edges down it.
    Spreading the gaps gives equal space between the objects whatever their
    sizes.
 
+With [[docker.distribute_spacing]], once a button has spread the
+selection you can change the spacing and watch the objects follow: turn
+the mouse wheel over the box, or drag the slider under it. Let go of the
+slider, or move the pointer away from the box, to keep the result as one
+undo step; press <kbd>Esc</kbd> to put the spacing and the objects back.
+
 With too few objects the buttons are pale and the panel says how many are
 needed. Each align or distribute is one undo step.
 
 To place copies at even distances in one step, see
-[Step and repeat](step-and-repeat.md).
+[Repeat copies](step-and-repeat.md).
 
 ## Fit objects to a path {#fit-to-path}
 
 The [[docker.fit_to_path]] panel places objects along a line, a curve or the
-outline of a shape. Open it with
-[[menu.object > menu.object.fit_objects_to_path]].
-
-1. Select the objects to place, then the path last (Shift+click).
-2. Under [[docker.fit_to_path_spacing]], choose
-   [[docker.fit_to_path_even]] to spread the objects over the whole path, or
-   [[docker.fit_to_path_distance]] and type the [[docker.fit_to_path_distance_value]]
-   between the centers of neighbouring objects.
-3. [[docker.fit_to_path_offset]] moves the first object along the path from
-   its start.
-4. Tick [[docker.fit_to_path_rotate]] to turn each object with the direction
-   of the path, and [[docker.fit_to_path_reverse]] to start from the other
-   end.
-5. Once you change a value, the outlines on the canvas show where the
-   objects will go. Click [[docker.apply]].
-
-The panel starts from its default values, with no outlines, each time you
-select other objects (or work in another drawing); the values you enter
-stay while the same objects are selected. On a closed shape the objects go all the way round without the first and
-last meeting. Fitting is one undo step.
+outline of a shape, with copies, spacing, placement and rotation of your
+choice. Select the objects, then the path last (Shift+click), and choose
+[[menu.object > menu.object.fit_objects_to_path]]. See
+[Fitting objects to a path](fit-objects-to-path.md) for every setting.

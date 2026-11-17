@@ -4,7 +4,8 @@
 //! messages show. See docs/behavior/options.md.
 
 use crate::ui::dialogs::{
-    ExportState, PrintState, EXPORT_FORMATS, EXPORT_SCALE_RANGE, EXPORT_SIZE_UNITS, PDF_STANDARDS,
+    ExportState, PrintState, AI_VERSIONS, EXPORT_COLOR_MODES, EXPORT_FORMATS, EXPORT_SCALE_RANGE,
+    EXPORT_SIZE_UNITS, PDF_STANDARDS,
 };
 use serde::{Deserialize, Serialize};
 
@@ -28,8 +29,15 @@ pub struct PrintPrefs {
     /// pages).
     pub sheet: usize,
     pub landscape: bool,
-    /// Space between pages on the sheet, mm.
+    /// Space between pages side by side on the sheet, mm.
     pub gutter: f64,
+    /// Space between the rows of pages, mm (#1795); preferences saved
+    /// before have none and take `gutter`.
+    pub gutter_y: Option<f64>,
+    /// The gaps across and down linked (#2162).
+    pub gaps_linked: bool,
+    /// Layout presets saved in Print and Print Preview, by name (#1796).
+    pub layout_presets: Vec<LayoutPreset>,
     /// Printing keeps the dialog's choices here for the next time.
     pub remember_last: bool,
     /// The Print dialog runs the preflight checks and shows what they find.
@@ -42,8 +50,15 @@ pub struct PrintPrefs {
     pub orientation: usize,
     #[serde(default = "yes")]
     pub collate: bool,
+    /// Grayscale composite output (#1657).
+    pub grayscale: bool,
+    /// The sheets printed last first (#1394).
+    pub reverse_order: bool,
     pub spot_to_cmyk: bool,
     pub text_black: bool,
+    /// The pages' background colour prints (#1651).
+    #[serde(default = "yes")]
+    pub page_background: bool,
     pub overprint_black: bool,
     pub bleed_limit: f64,
     pub page_numbers: bool,
@@ -73,14 +88,20 @@ impl Default for PrintPrefs {
             sheet: st.sheet,
             landscape: st.landscape,
             gutter: st.gutter,
+            gutter_y: None,
+            gaps_linked: false,
+            layout_presets: Vec::new(),
             remember_last: false,
             preflight: true,
             destination: st.destination,
             printer: st.printer.clone(),
             orientation: st.orientation,
             collate: st.collate,
+            grayscale: st.grayscale,
+            reverse_order: st.reverse_order,
             spot_to_cmyk: st.spot_to_cmyk,
             text_black: st.text_black,
+            page_background: st.page_background,
             overprint_black: st.overprint_black,
             bleed_limit: st.bleed_limit,
             page_numbers: st.page_numbers,
@@ -118,8 +139,11 @@ impl PrintPrefs {
             printer: self.printer.clone(),
             orientation: self.orientation.min(2),
             collate: self.collate,
+            grayscale: self.grayscale,
+            reverse_order: self.reverse_order,
             spot_to_cmyk: self.spot_to_cmyk,
             text_black: self.text_black,
+            page_background: self.page_background,
             overprint_black: self.overprint_black,
             bleed_limit: if self.bleed_limit.is_finite() && self.bleed_limit > 0.0 {
                 self.bleed_limit.min(50.0)
@@ -129,11 +153,12 @@ impl PrintPrefs {
             page_numbers: self.page_numbers,
             ps_level: self.ps_level.clamp(2, 3),
             keep_size: self.keep_size,
-            gutter: if self.gutter.is_finite() {
-                self.gutter.clamp(0.0, 100.0)
-            } else {
-                PrintState::default().gutter
-            },
+            gutter: gap_or(self.gutter, PrintState::default().gutter),
+            gutter_y: gap_or(
+                self.gutter_y.unwrap_or(self.gutter),
+                PrintState::default().gutter_y,
+            ),
+            gaps_linked: self.gaps_linked,
             ..PrintState::default()
         }
     }
@@ -152,12 +177,17 @@ impl PrintPrefs {
         self.sheet = st.sheet;
         self.landscape = st.landscape;
         self.gutter = st.gutter;
+        self.gutter_y = Some(st.gutter_y);
+        self.gaps_linked = st.gaps_linked;
         self.destination = st.destination;
         self.printer = st.printer.clone();
         self.orientation = st.orientation;
         self.collate = st.collate;
+        self.grayscale = st.grayscale;
+        self.reverse_order = st.reverse_order;
         self.spot_to_cmyk = st.spot_to_cmyk;
         self.text_black = st.text_black;
+        self.page_background = st.page_background;
         self.overprint_black = st.overprint_black;
         self.bleed_limit = st.bleed_limit;
         self.page_numbers = st.page_numbers;
@@ -204,6 +234,8 @@ pub struct FormatPrefs {
     pub export_size_unit: usize,
     /// Bitmaps: the scale of the artwork (1 = as drawn, #617).
     pub export_scale: f64,
+    /// JPEG and TIFF colour mode (#1763).
+    pub export_color_mode: usize,
     /// The choices of the last export of each format (the preset name
     /// unused), so choosing a format in the Export dialog brings back how
     /// it was exported last (#617).
@@ -211,6 +243,9 @@ pub struct FormatPrefs {
     /// Exporting keeps the dialog's choices here for the next time.
     pub remember_last: bool,
     pub import_place: ImportPlace,
+    /// File > Import waits for a click, a drag or Space to place what
+    /// came (#1936); off, it comes in at once where `import_place` says.
+    pub import_with_cursor: bool,
     /// The `.cdr` version Save As starts at (#613).
     pub cdr_version: u16,
     /// Save As starts at `.cdr` rather than TraceDraw for a drawing
@@ -222,8 +257,21 @@ pub struct FormatPrefs {
     /// PDF and AI files: text read in as curves from the fonts the file
     /// embeds (else as editable text, #386).
     pub pdf_text_as_curves: bool,
+    /// PDF and AI files read as text: lines one under another in the same
+    /// font come in as paragraph text frames, linked where the text goes
+    /// on in the next column or page (#2323).
+    pub pdf_text_paragraphs: bool,
     /// Ask how to read a PDF's text each time one is opened or imported.
     pub pdf_ask_text: bool,
+    /// PDF and AI files: pictures larger than 80 megapixels come in
+    /// shrunk (Reduce very large pictures). Off: they come in at their
+    /// own size, unless the memory guard says otherwise (#1835). The
+    /// browser and Android always reduce them.
+    pub pdf_reduce_pictures: bool,
+    /// File > Import of a PDF or AI file: each page comes in as one
+    /// picture (Import as Picture, #1916), at `pdf_picture_dpi`.
+    pub pdf_as_picture: bool,
+    pub pdf_picture_dpi: f64,
 }
 
 impl Default for FormatPrefs {
@@ -240,15 +288,413 @@ impl Default for FormatPrefs {
             pdf_bleed_mm: st.bleed_mm,
             export_size_unit: st.size_unit,
             export_scale: st.scale,
+            export_color_mode: st.color_mode,
             export_by_format: Vec::new(),
             remember_last: true,
             import_place: ImportPlace::AsInFile,
+            import_with_cursor: true,
             cdr_version: tracedraw_cdr::write::NEWEST_VERSION,
             save_new_as_cdr: false,
             skip_export_dialog: false,
             pdf_text_as_curves: false,
+            pdf_text_paragraphs: true,
             pdf_ask_text: true,
+            pdf_reduce_pictures: false,
+            pdf_as_picture: false,
+            pdf_picture_dpi: 300.0,
             export_presets: Vec::new(),
+        }
+    }
+}
+
+/// A gap between pages kept to 0..=100 mm (`default` when not a number).
+fn gap_or(v: f64, default: f64) -> f64 {
+    if v.is_finite() {
+        v.clamp(0.0, 100.0)
+    } else {
+        default
+    }
+}
+
+/// What a print layout file starts with, so another JSON file is not
+/// taken for one (#1796).
+pub const LAYOUT_FILE_FORMAT: &str = "tracedraw-print-layout";
+
+/// A named print layout (#1796): the imposition, the sheet, the gaps
+/// and margins, the booklet's binding, the bleed and the printers'
+/// marks; what Print and Print Preview save as a preset or a file and
+/// load again. Values read from a file are kept in range on loading.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LayoutPreset {
+    pub name: String,
+    /// 0 as in the document, 1 several pages per sheet, 2 booklet,
+    /// 3 repeat on the sheet.
+    pub layout_kind: usize,
+    pub cols: u32,
+    pub rows: u32,
+    pub page_order: usize,
+    /// The sheet by name: "fit" (fitted to the pages), "custom", or a
+    /// paper size's name ("A4"); `sheet_size` is the Custom size.
+    pub sheet: String,
+    pub sheet_size: tracedraw_core::geometry::Size,
+    pub landscape: bool,
+    pub stretch_fit: bool,
+    pub keep_size: bool,
+    pub back_side: bool,
+    pub gutter: f64,
+    pub gutter_y: f64,
+    /// Left, right, top, bottom, mm.
+    pub margins: [f64; 4],
+    pub booklet_binding: usize,
+    pub signature_sheets: u32,
+    pub creep: f64,
+    pub booklet_gap: f64,
+    pub bleed: bool,
+    pub bleed_limit: f64,
+    pub crop_marks: bool,
+    pub registration_marks: bool,
+    pub color_bars: bool,
+    pub densitometer: bool,
+    pub page_info: bool,
+    pub page_numbers: bool,
+    /// The rest of the print settings, so that a preset is a whole print
+    /// style; presets and files saved before have none and leave those
+    /// settings as they are.
+    #[serde(default)]
+    pub style: Option<PrintStyle>,
+}
+
+/// The print settings a preset keeps besides the layout: the artwork's
+/// size and place on the sheet, the copies, the colour output and the
+/// file's PostScript level.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PrintStyle {
+    pub fit_to_page: bool,
+    /// Percent.
+    pub scale: f64,
+    pub art_offset: (f64, f64),
+    pub art_stretch: (f64, f64),
+    pub art_rotation: f64,
+    pub cell_rotation: Vec<f64>,
+    pub cell_order: Vec<usize>,
+    /// The sheets' orientation: 0 as the pages are, 1 portrait, 2
+    /// landscape (#2795).
+    pub orientation: usize,
+    pub info_offset: (f64, f64),
+    pub copies: u32,
+    pub collate: bool,
+    pub reverse_order: bool,
+    pub separations: bool,
+    pub skip_empty_plates: bool,
+    pub plate_files: bool,
+    pub manual_duplex: bool,
+    pub duplex_reverse: bool,
+    pub screens: bool,
+    pub screen_lpi: f64,
+    pub screen_angles: Vec<(String, f64)>,
+    pub grayscale: bool,
+    pub mirror: bool,
+    pub invert: bool,
+    pub spot_to_cmyk: bool,
+    pub text_black: bool,
+    pub overprint_black: bool,
+    pub page_background: bool,
+    pub as_bitmap: bool,
+    pub bitmap_dpi: f64,
+    pub ps_level: u8,
+    pub tile: bool,
+    pub tile_overlap: f64,
+    pub tile_marks: bool,
+    pub crop_length: f64,
+    pub crop_offset: f64,
+    pub crop_width: f64,
+    pub crop_between: bool,
+}
+
+impl Default for PrintStyle {
+    fn default() -> Self {
+        PrintStyle::from_state(&PrintState::default())
+    }
+}
+
+impl PrintStyle {
+    /// These settings of `st`.
+    pub fn from_state(st: &PrintState) -> Self {
+        PrintStyle {
+            fit_to_page: st.fit_to_page,
+            scale: st.scale,
+            art_offset: st.art_offset,
+            art_stretch: st.art_stretch,
+            art_rotation: st.art_rotation,
+            cell_rotation: st.cell_rotation.clone(),
+            cell_order: st.cell_order.clone(),
+            orientation: st.orientation,
+            info_offset: st.info_offset,
+            copies: st.copies,
+            collate: st.collate,
+            reverse_order: st.reverse_order,
+            separations: st.separations,
+            skip_empty_plates: st.skip_empty_plates,
+            plate_files: st.plate_files,
+            manual_duplex: st.manual_duplex,
+            duplex_reverse: st.duplex_reverse,
+            screens: st.screens,
+            screen_lpi: st.screen_lpi,
+            screen_angles: st.screen_angles.clone(),
+            grayscale: st.grayscale,
+            mirror: st.mirror,
+            invert: st.invert,
+            spot_to_cmyk: st.spot_to_cmyk,
+            text_black: st.text_black,
+            overprint_black: st.overprint_black,
+            page_background: st.page_background,
+            as_bitmap: st.as_bitmap,
+            bitmap_dpi: st.bitmap_dpi,
+            ps_level: st.ps_level,
+            tile: st.tile,
+            tile_overlap: st.tile_overlap,
+            tile_marks: st.tile_marks,
+            crop_length: st.crop_length,
+            crop_offset: st.crop_offset,
+            crop_width: st.crop_width,
+            crop_between: st.crop_between,
+        }
+    }
+
+    /// Put these settings into `st`, each number kept in its field's
+    /// range.
+    pub fn apply(&self, st: &mut PrintState) {
+        let d = PrintState::default();
+        let num = |v: f64, lo: f64, hi: f64, d: f64| {
+            if v.is_finite() {
+                v.clamp(lo, hi)
+            } else {
+                d
+            }
+        };
+        let pair =
+            |v: (f64, f64), lo: f64, hi: f64, d: f64| (num(v.0, lo, hi, d), num(v.1, lo, hi, d));
+        st.fit_to_page = self.fit_to_page;
+        st.scale = num(self.scale, 1.0, 1000.0, d.scale);
+        st.art_offset = pair(self.art_offset, -5000.0, 5000.0, 0.0);
+        st.art_stretch = pair(self.art_stretch, 0.01, 10.0, 1.0);
+        st.art_rotation = num(self.art_rotation, -360.0, 360.0, 0.0);
+        st.cell_rotation = self
+            .cell_rotation
+            .iter()
+            .take(9999)
+            .map(|v| num(*v, -360.0, 360.0, 0.0))
+            .collect();
+        // An arrangement of the places, or none.
+        st.cell_order = if self.cell_order.len() <= 9999
+            && crate::imposition::place_order(&self.cell_order, self.cell_order.len())
+                == self.cell_order
+        {
+            self.cell_order.clone()
+        } else {
+            Vec::new()
+        };
+        st.orientation = self.orientation.min(2);
+        st.info_offset = pair(self.info_offset, -5000.0, 5000.0, 0.0);
+        st.copies = self.copies.clamp(1, 999);
+        st.collate = self.collate;
+        st.reverse_order = self.reverse_order;
+        st.separations = self.separations;
+        st.skip_empty_plates = self.skip_empty_plates;
+        st.plate_files = self.plate_files;
+        st.manual_duplex = self.manual_duplex;
+        st.duplex_reverse = self.duplex_reverse;
+        st.screens = self.screens;
+        st.screen_lpi = self.screen_lpi;
+        st.screen_angles = self.screen_angles.clone();
+        st.grayscale = self.grayscale;
+        st.mirror = self.mirror;
+        st.invert = self.invert;
+        st.spot_to_cmyk = self.spot_to_cmyk;
+        st.text_black = self.text_black;
+        st.overprint_black = self.overprint_black;
+        st.page_background = self.page_background;
+        st.as_bitmap = self.as_bitmap;
+        st.bitmap_dpi = num(self.bitmap_dpi, 36.0, 1200.0, d.bitmap_dpi);
+        st.ps_level = self.ps_level.clamp(2, 3);
+        st.tile = self.tile;
+        st.tile_overlap = num(self.tile_overlap, 0.0, 100.0, d.tile_overlap);
+        st.tile_marks = self.tile_marks;
+        let crop = crate::imposition::CropStyle {
+            length: self.crop_length,
+            offset: self.crop_offset,
+            width: self.crop_width,
+            between: self.crop_between,
+        }
+        .clamped();
+        st.crop_length = crop.length;
+        st.crop_offset = crop.offset;
+        st.crop_width = crop.width;
+        st.crop_between = crop.between;
+    }
+}
+
+impl Default for LayoutPreset {
+    fn default() -> Self {
+        LayoutPreset::from_state("", &PrintState::default())
+    }
+}
+
+/// A print layout file: its format, version and layout (#1796).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct LayoutFile {
+    format: String,
+    version: u32,
+    layout: LayoutPreset,
+}
+
+impl LayoutPreset {
+    /// The layout of the Print settings `st`, named `name`.
+    pub fn from_state(name: &str, st: &PrintState) -> Self {
+        use crate::ui::dialogs::{CUSTOM_SHEET, SHEETS};
+        let sheet = if st.sheet == 0 {
+            "fit".to_string()
+        } else if st.sheet >= CUSTOM_SHEET {
+            "custom".to_string()
+        } else {
+            SHEETS
+                .get(st.sheet)
+                .map(|(n, _)| n.to_string())
+                .unwrap_or_else(|| "fit".into())
+        };
+        LayoutPreset {
+            name: name.to_string(),
+            layout_kind: st.layout_kind,
+            cols: st.cols,
+            rows: st.rows,
+            page_order: st.page_order,
+            sheet,
+            sheet_size: st.custom_sheet,
+            landscape: st.landscape,
+            stretch_fit: st.stretch_fit,
+            keep_size: st.keep_size,
+            back_side: st.back_side,
+            gutter: st.gutter,
+            gutter_y: st.gutter_y,
+            margins: st.margins,
+            booklet_binding: st.booklet_binding,
+            signature_sheets: st.signature_sheets,
+            creep: st.creep,
+            booklet_gap: st.booklet_gap,
+            bleed: st.bleed,
+            bleed_limit: st.bleed_limit,
+            crop_marks: st.crop_marks,
+            registration_marks: st.registration_marks,
+            color_bars: st.color_bars,
+            densitometer: st.densitometer,
+            page_info: st.page_info,
+            page_numbers: st.page_numbers,
+            style: Some(PrintStyle::from_state(st)),
+        }
+    }
+
+    /// Put the layout into the Print settings `st`, each value kept in
+    /// the range its field allows; the preset becomes the chosen one.
+    pub fn apply(&self, st: &mut PrintState) {
+        use crate::ui::dialogs::{CUSTOM_SHEET, SHEETS};
+        let num = |v: f64, lo: f64, hi: f64, d: f64| {
+            if v.is_finite() {
+                v.clamp(lo, hi)
+            } else {
+                d
+            }
+        };
+        let d = PrintState::default();
+        st.layout_kind = self.layout_kind.min(3);
+        st.cols = self.cols.clamp(1, 99);
+        st.rows = self.rows.clamp(1, 99);
+        st.page_order = self.page_order.min(3);
+        let size_ok = |s: tracedraw_core::geometry::Size| {
+            s.width.is_finite()
+                && s.height.is_finite()
+                && (10.0..=5000.0).contains(&s.width)
+                && (10.0..=5000.0).contains(&s.height)
+        };
+        st.sheet = match self.sheet.as_str() {
+            "fit" => 0,
+            "custom" if size_ok(self.sheet_size) => CUSTOM_SHEET,
+            name => SHEETS
+                .iter()
+                .position(|(n, _)| *n == name)
+                .filter(|&i| i > 0)
+                .unwrap_or(if size_ok(self.sheet_size) {
+                    CUSTOM_SHEET
+                } else {
+                    0
+                }),
+        };
+        if size_ok(self.sheet_size) {
+            st.custom_sheet = self.sheet_size;
+        }
+        st.landscape = self.landscape;
+        st.stretch_fit = self.stretch_fit;
+        st.keep_size = self.keep_size;
+        st.back_side = self.back_side;
+        st.gutter = num(self.gutter, 0.0, 100.0, d.gutter);
+        st.gutter_y = num(self.gutter_y, 0.0, 100.0, d.gutter_y);
+        for (m, v) in st.margins.iter_mut().zip(self.margins) {
+            *m = num(v, 0.0, 200.0, 0.0);
+        }
+        st.booklet_binding = self.booklet_binding.min(1);
+        st.signature_sheets = self.signature_sheets.clamp(1, 32);
+        st.creep = num(self.creep, 0.0, 20.0, 0.0);
+        st.booklet_gap = num(self.booklet_gap, 0.0, 100.0, 0.0);
+        st.bleed = self.bleed;
+        st.bleed_limit = num(self.bleed_limit, 0.0, 50.0, d.bleed_limit);
+        st.crop_marks = self.crop_marks;
+        st.registration_marks = self.registration_marks;
+        st.color_bars = self.color_bars;
+        st.densitometer = self.densitometer;
+        st.page_info = self.page_info;
+        st.page_numbers = self.page_numbers;
+        if let Some(style) = &self.style {
+            style.apply(st);
+        }
+        st.layout_preset = self.name.clone();
+    }
+
+    /// The preset as the text of a print layout file.
+    pub fn to_file(&self) -> String {
+        let file = LayoutFile {
+            format: LAYOUT_FILE_FORMAT.into(),
+            version: 1,
+            layout: self.clone(),
+        };
+        serde_json::to_string_pretty(&file).unwrap_or_default()
+    }
+
+    /// The preset in the text of a print layout file; `None` for any
+    /// other text.
+    pub fn from_file(text: &str) -> Option<Self> {
+        let file: LayoutFile = serde_json::from_str(text).ok()?;
+        (file.format == LAYOUT_FILE_FORMAT).then_some(file.layout)
+    }
+
+    /// The same layout as `other`, the names aside; a preset saved
+    /// before presets kept the whole style matches on its layout alone.
+    pub fn same_layout(&self, other: &LayoutPreset) -> bool {
+        let style = |p: &LayoutPreset| {
+            if self.style.is_some() {
+                p.style.clone()
+            } else {
+                None
+            }
+        };
+        LayoutPreset {
+            name: String::new(),
+            style: style(self),
+            ..self.clone()
+        } == LayoutPreset {
+            name: String::new(),
+            style: style(other),
+            ..other.clone()
         }
     }
 }
@@ -265,12 +711,27 @@ pub struct ExportPreset {
     pub selection_only: bool,
     pub all_pages: bool,
     pub pdf_standard: usize,
+    /// AI: PDF-compatible (0) or classic version 8 (1, #1728).
+    pub ai_version: usize,
     pub bleed_mm: f64,
     pub output_condition: String,
     pub webp_lossless: bool,
     /// The bitmap size's unit and the scale (#617).
     pub size_unit: usize,
     pub scale: f64,
+    /// JPEG and TIFF colour mode (0 RGB, 1 CMYK, 2 Grayscale; #1763);
+    /// presets saved before have none and stay RGB.
+    pub color_mode: usize,
+    /// PLT's choices (#2652): scale, origin at the page's middle,
+    /// units per inch, HPGL/2, one pen, curve resolution (mm).
+    pub plt_scale: f64,
+    pub plt_centre: bool,
+    pub plt_units: f64,
+    pub plt_hpgl2: bool,
+    pub plt_one_pen: bool,
+    pub plt_resolution: f64,
+    /// SVG's text: as curves, as text, as text with its fonts (#2289).
+    pub svg_text: usize,
 }
 
 impl Default for ExportPreset {
@@ -304,11 +765,20 @@ impl ExportPreset {
             selection_only: st.selection_only,
             all_pages: st.all_pages,
             pdf_standard: st.pdf_standard,
+            ai_version: st.ai_version,
             bleed_mm: st.bleed_mm,
             output_condition: st.output_condition.clone(),
             webp_lossless: st.webp_lossless,
             size_unit: st.size_unit,
             scale: st.scale,
+            color_mode: st.color_mode,
+            plt_scale: st.plt_scale,
+            plt_centre: st.plt_centre,
+            plt_units: st.plt_units,
+            plt_hpgl2: st.plt_hpgl2,
+            plt_one_pen: st.plt_one_pen,
+            plt_resolution: st.plt_resolution,
+            svg_text: st.svg_text,
         }
     }
 
@@ -329,6 +799,9 @@ impl ExportPreset {
         if self.pdf_standard < PDF_STANDARDS.len() {
             st.pdf_standard = self.pdf_standard;
         }
+        if self.ai_version < AI_VERSIONS.len() {
+            st.ai_version = self.ai_version;
+        }
         if self.bleed_mm.is_finite() {
             st.bleed_mm = self.bleed_mm.clamp(0.0, 50.0);
         }
@@ -336,8 +809,32 @@ impl ExportPreset {
             st.output_condition = self.output_condition.chars().take(64).collect();
         }
         st.webp_lossless = self.webp_lossless;
+        if self.svg_text < crate::ui::dialogs::SVG_TEXT_KEYS.len() {
+            st.svg_text = self.svg_text;
+        }
+        if self.color_mode < EXPORT_COLOR_MODES.len() {
+            st.color_mode = self.color_mode;
+        }
+        self.apply_plt(st);
         self.apply_size(st);
         st.preset = self.name.clone();
+    }
+
+    /// PLT's choices into the dialog, each brought into its range.
+    fn apply_plt(&self, st: &mut ExportState) {
+        let o = tracedraw_io::plt::PltOptions {
+            scale: self.plt_scale,
+            units_per_inch: self.plt_units,
+            curve_resolution: self.plt_resolution,
+            ..Default::default()
+        }
+        .sane();
+        st.plt_scale = o.scale;
+        st.plt_units = o.units_per_inch;
+        st.plt_resolution = o.curve_resolution;
+        st.plt_centre = self.plt_centre;
+        st.plt_hpgl2 = self.plt_hpgl2;
+        st.plt_one_pen = self.plt_one_pen;
     }
 
     /// The bitmap size's unit and scale into the dialog, when usable.
@@ -453,12 +950,20 @@ impl FormatPrefs {
     /// fall back to the usual ones.
     pub fn state(&self) -> ExportState {
         let d = ExportState::default();
+        let format = if self.export_format < EXPORT_FORMATS.len() {
+            self.export_format
+        } else {
+            d.format
+        };
+        // A remembered export of this format keeps its page choice.
+        let all_pages = self
+            .export_by_format
+            .iter()
+            .find(|p| self.remember_last && p.format == format)
+            .map_or(ExportState::pages_by_default(format), |p| p.all_pages);
         ExportState {
-            format: if self.export_format < EXPORT_FORMATS.len() {
-                self.export_format
-            } else {
-                d.format
-            },
+            format,
+            all_pages,
             dpi: if self.export_dpi.is_finite() {
                 self.export_dpi
                     .clamp(crate::ui::dialogs::MIN_EXPORT_DPI, 2400.0)
@@ -496,6 +1001,11 @@ impl FormatPrefs {
             } else {
                 d.scale
             },
+            color_mode: if self.export_color_mode < EXPORT_COLOR_MODES.len() {
+                self.export_color_mode
+            } else {
+                d.color_mode
+            },
             ..d
         }
     }
@@ -513,6 +1023,7 @@ impl FormatPrefs {
         self.pdf_bleed_mm = st.bleed_mm;
         self.export_size_unit = st.size_unit;
         self.export_scale = st.scale;
+        self.export_color_mode = st.color_mode;
         keep_format_choices(&mut self.export_by_format, st);
     }
 }
@@ -521,20 +1032,26 @@ impl FormatPrefs {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TracePrefs {
-    /// The preset Bitmaps > Quick Trace uses.
+    /// The preset Image > Trace > Automatic uses.
     pub quick_preset: crate::trace::Preset,
     /// Every trace starts with these.
     pub remove_background: bool,
     pub delete_original: bool,
+    /// The Trace dialog's "Enlarge small pictures first": a small
+    /// picture is traced enlarged (see `upscale.rs`).
+    pub enlarge: bool,
 }
 
 impl Default for TracePrefs {
     fn default() -> Self {
-        let s = crate::trace::Preset::Clipart.settings();
+        // The automatic trace draws the picture as it is in the fewest nodes it
+        // can.
+        let s = crate::trace::Preset::Optimized.settings();
         TracePrefs {
-            quick_preset: crate::trace::Preset::Clipart,
-            remove_background: s.remove_background,
+            quick_preset: crate::trace::Preset::Optimized,
+            remove_background: s.removes_background(),
             delete_original: s.delete_original,
+            enlarge: false,
         }
     }
 }
@@ -543,7 +1060,11 @@ impl TracePrefs {
     /// The settings of `preset` with the choices every trace starts with.
     pub fn settings(&self, preset: crate::trace::Preset) -> crate::trace::Settings {
         crate::trace::Settings {
-            remove_background: self.remove_background,
+            remove: if self.remove_background {
+                crate::trace::Remove::Background
+            } else {
+                crate::trace::Remove::None
+            },
             delete_original: self.delete_original,
             ..preset.settings()
         }
@@ -557,10 +1078,20 @@ impl TracePrefs {
 pub struct WarningPrefs {
     /// When objects of an opened file could not be read.
     pub unread_objects: bool,
-    /// When an opened drawing uses fonts that are not installed.
+    /// When an opened drawing uses fonts that are not installed: the
+    /// plain note naming them.
     pub missing_fonts: bool,
+    /// The Missing Fonts dialog (#936) after such a drawing opens, which
+    /// asks which installed font draws each missing one. A choice of its
+    /// own, so "Do not show this message again" ticked on the plain note
+    /// before the dialog existed does not silence the dialog (#1243).
+    pub ask_missing_fonts: bool,
     /// Before an item is taken off the Shelf.
     pub shelf_remove: bool,
+    /// The hint to turn on hardware acceleration when the window is
+    /// drawn on the CPU and slow while a graphics card is idle
+    /// (`ui::gpu_hint`); desktop only.
+    pub hardware_acceleration: bool,
 }
 
 impl Default for WarningPrefs {
@@ -568,7 +1099,9 @@ impl Default for WarningPrefs {
         WarningPrefs {
             unread_objects: true,
             missing_fonts: true,
+            ask_missing_fonts: true,
             shelf_remove: true,
+            hardware_acceleration: true,
         }
     }
 }
@@ -594,6 +1127,26 @@ pub struct CurvePrefs {
     /// steps of the constrain angle while a curve is drawn.
     #[serde(default)]
     pub constrain_key: ConstrainKey,
+    /// A graphics tablet's pen: its pressure along a Freehand or Brush
+    /// Strokes drag sets the stroke's width (#850). The mouse, and a pen
+    /// whose platform gives no pressure, draw an even width either way.
+    #[serde(default = "yes")]
+    pub pen_pressure: bool,
+    /// Android: while a pen touches the screen or hovers over it, the
+    /// hand's touches are ignored (palm rejection, #1832, `palm.rs`).
+    #[serde(default = "yes")]
+    pub pen_ignores_hand: bool,
+    /// Freehand corner threshold, 0 (off) to 10 (#1436): a node where
+    /// the stroke turns by more than `180 - 12 x` degrees becomes a cusp,
+    /// so higher values make more corners.
+    #[serde(default)]
+    pub corner_threshold: u32,
+    /// Freehand straight line threshold, screen pixels, 0 (off) to 10
+    /// (#1436): a stretch between two nodes at least 20 pixels long whose
+    /// stroke stays this near the line between them becomes a straight
+    /// segment, so higher values make more lines.
+    #[serde(default)]
+    pub straight_threshold: u32,
 }
 
 /// The modifier key that constrains the angle while drawing curves.
@@ -635,6 +1188,10 @@ impl Default for CurvePrefs {
             pen_preview: true,
             pen_auto_add_delete: true,
             constrain_key: ConstrainKey::Ctrl,
+            pen_pressure: true,
+            pen_ignores_hand: true,
+            corner_threshold: 0,
+            straight_threshold: 0,
         }
     }
 }
@@ -659,6 +1216,15 @@ impl CurvePrefs {
             base
         }
     }
+
+    /// The turn, degrees, past which a freehand node is a cusp; `None`
+    /// with the corner threshold off.
+    pub fn corner_turn_deg(&self) -> Option<f64> {
+        match self.corner_threshold.min(10) {
+            0 => None,
+            t => Some(180.0 - 12.0 * f64::from(t)),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -668,6 +1234,60 @@ mod tests {
     /// Export presets keep the format and its settings under a name;
     /// choosing one puts them back; they can be renamed and deleted, and
     /// last in the preferences (#547).
+    #[test]
+    fn export_presets_keep_the_colour_mode() {
+        // A CMYK JPEG preset comes back CMYK, through the preferences
+        // file too (#1763).
+        let st = ExportState {
+            format: 3,
+            color_mode: 1,
+            ..ExportState::default()
+        };
+        let mut prefs = FormatPrefs::default();
+        assert!(prefs.save_preset("Print JPEG", &st));
+        let json = serde_json::to_string(&prefs).expect("json");
+        let back: FormatPrefs = serde_json::from_str(&json).expect("back");
+        let mut d = ExportState::default();
+        back.export_presets[0].apply(&mut d);
+        assert_eq!((d.format, d.color_mode), (3, 1));
+        // The last export's colour mode is remembered with the rest.
+        prefs.remember(&st);
+        assert_eq!(prefs.state().color_mode, 1);
+        // Presets and preferences from before have none: RGB, as before;
+        // a mode this version does not know is ignored.
+        let old: ExportPreset =
+            serde_json::from_str(r#"{"name":"x","format":3,"quality":80}"#).expect("old");
+        assert_eq!(old.color_mode, 0);
+        let mut d = ExportState::default();
+        old.apply(&mut d);
+        assert_eq!((d.color_mode, d.quality), (0, 80));
+        let old: FormatPrefs = serde_json::from_str(r#"{"export_format":3}"#).expect("old");
+        assert_eq!(old.state().color_mode, 0);
+        let odd = ExportPreset {
+            color_mode: 9,
+            ..ExportPreset::from_state("y", &st)
+        };
+        odd.apply(&mut d);
+        assert_eq!(d.color_mode, 0);
+        assert_eq!(
+            d.color_mode_for("jpg"),
+            crate::ui::dialogs::ExportColorMode::Rgb
+        );
+        // Only JPEG and TIFF take a colour mode.
+        let cmyk = ExportState {
+            color_mode: 1,
+            ..ExportState::default()
+        };
+        assert_eq!(
+            cmyk.color_mode_for("tif"),
+            crate::ui::dialogs::ExportColorMode::Cmyk
+        );
+        assert_eq!(
+            cmyk.color_mode_for("png"),
+            crate::ui::dialogs::ExportColorMode::Rgb
+        );
+    }
+
     #[test]
     fn export_presets_save_apply_rename_and_delete() {
         let mut f = FormatPrefs::default();
@@ -827,6 +1447,62 @@ mod tests {
         assert_eq!((g.state().format, g.state().pdf_standard), (1, 3));
     }
 
+    /// PDF and PostScript export every page unless that format was last
+    /// exported with the current page alone; other formats start with the
+    /// current page (#1161).
+    #[test]
+    fn pdf_exports_every_page_by_default() {
+        use crate::ui::dialogs::EXPORT_FORMATS;
+        let at = |ext: &str| EXPORT_FORMATS.iter().position(|f| f.1 == ext).expect(ext);
+        let (pdf, png) = (at("pdf"), at("png"));
+        assert!(ExportState::pages_by_default(pdf));
+        assert!(ExportState::pages_by_default(at("ps")));
+        assert!(!ExportState::pages_by_default(png));
+        let mut app = crate::app::App::headless();
+        app.settings.formats.remember_last = false;
+        app.settings.formats.export_format = pdf;
+        assert!(app.settings.formats.state().all_pages);
+        let mut st = app.settings.formats.state();
+        st.remember = true;
+        app.recall_export_format(&mut st, png);
+        assert!(!st.all_pages);
+        app.recall_export_format(&mut st, pdf);
+        assert!(st.all_pages);
+        // The current page alone, once chosen, is what PDF comes back with.
+        st.all_pages = false;
+        app.keep_export_choices(&st);
+        app.recall_export_format(&mut st, png);
+        app.recall_export_format(&mut st, pdf);
+        assert!(!st.all_pages);
+    }
+
+    /// The AI export's kind (PDF-compatible or classic version 8) is
+    /// kept in a preset and comes back; an unknown one is ignored (#1728).
+    #[test]
+    fn a_preset_keeps_the_ai_version() {
+        let st = ExportState {
+            ai_version: 1,
+            ..ExportState::default()
+        };
+        let p = ExportPreset::from_state("old ai", &st);
+        let json = serde_json::to_string(&p).unwrap();
+        let back: ExportPreset = serde_json::from_str(&json).unwrap();
+        let mut fresh = ExportState::default();
+        back.apply(&mut fresh);
+        assert!(fresh.classic_ai());
+        // Presets saved before the choice existed: PDF-compatible.
+        let old: ExportPreset = serde_json::from_str(r#"{"name": "x"}"#).unwrap();
+        let mut fresh = ExportState::default();
+        old.apply(&mut fresh);
+        assert!(!fresh.classic_ai());
+        let bad = ExportPreset {
+            ai_version: 9,
+            ..ExportPreset::default()
+        };
+        bad.apply(&mut fresh);
+        assert_eq!(fresh.ai_version, 0);
+    }
+
     /// Choosing a format in the Export dialog brings back how that format
     /// was exported last: in this session, and with Remember the settings
     /// of the last export on, in the next one too (#617).
@@ -907,6 +1583,8 @@ mod tests {
         assert!(matches!(&app.dialog, Dialog::Print(st) if st.crop_marks));
         app.settings.formats.export_format = 1;
         app.settings.formats.remember_last = true;
+        // The Save dialog first; a name without an extension keeps PDF.
+        crate::files::test_save::answer(Some(std::env::temp_dir().join("td-prefs")));
         app.export();
         assert!(matches!(&app.dialog, Dialog::Export(st) if st.format == 1 && st.remember));
         // The presets for the web and office never overwrite the choices.
@@ -1038,10 +1716,11 @@ mod tests {
             quick_preset: crate::trace::Preset::Logo,
             remove_background: false,
             delete_original: true,
+            enlarge: false,
         };
         let s = t.settings(crate::trace::Preset::HighQualityImage);
         let p = crate::trace::Preset::HighQualityImage.settings();
-        assert!(!s.remove_background && s.delete_original);
+        assert!(s.remove == crate::trace::Remove::None && s.delete_original);
         assert_eq!((s.detail, s.colors), (p.detail, p.colors));
         // Preferences written before these existed read as the defaults.
         let old: crate::settings::Settings = serde_json::from_str("{}").expect("settings");
@@ -1069,5 +1748,161 @@ mod tests {
         );
         p.custom_sheet = Size::new(0.0, 450.0);
         assert_eq!(p.state().custom_sheet, PrintState::default().custom_sheet);
+    }
+
+    /// A preset keeps every print setting: the artwork's size and place,
+    /// the copies and the colour output come back with the layout.
+    #[test]
+    fn a_preset_keeps_the_whole_print_style() {
+        let st = PrintState {
+            separations: true,
+            mirror: true,
+            invert: true,
+            grayscale: true,
+            copies: 4,
+            collate: false,
+            fit_to_page: false,
+            scale: 150.0,
+            art_offset: (12.0, -3.0),
+            art_stretch: (1.5, 0.5),
+            art_rotation: 90.0,
+            cell_rotation: vec![0.0, 180.0],
+            cell_order: vec![2, 0, 1],
+            orientation: 2,
+            as_bitmap: true,
+            bitmap_dpi: 600.0,
+            ps_level: 3,
+            ..PrintState::default()
+        };
+        let p = LayoutPreset::from_state("Film", &st);
+        let back = LayoutPreset::from_file(&p.to_file()).expect("read back");
+        assert_eq!(back, p);
+        let mut fresh = PrintState::default();
+        back.apply(&mut fresh);
+        assert_eq!(PrintStyle::from_state(&fresh), PrintStyle::from_state(&st));
+        assert!(back.same_layout(&LayoutPreset::from_state("", &fresh)));
+        // A setting changed afterwards: the preset is no longer the one.
+        fresh.copies = 5;
+        assert!(!back.same_layout(&LayoutPreset::from_state("", &fresh)));
+        // Out of range values come back into range.
+        let wild = r#"{"format":"tracedraw-print-layout","version":1,"layout":{
+            "name":"w","style":{"scale":0.0,"copies":0,"bitmap_dpi":1e9,
+            "ps_level":9,"art_stretch":[0.0,99.0],"art_rotation":1000.0,
+            "cell_order":[1,1,5]}}}"#;
+        let p = LayoutPreset::from_file(wild).expect("a layout");
+        let mut st = PrintState::default();
+        p.apply(&mut st);
+        assert_eq!(st.scale, 1.0);
+        assert_eq!(st.copies, 1);
+        assert!(st.cell_order.is_empty(), "not an arrangement");
+        assert_eq!(st.bitmap_dpi, 1200.0);
+        assert_eq!(st.ps_level, 3);
+        assert_eq!(st.art_stretch, (0.01, 10.0));
+        assert_eq!(st.art_rotation, 360.0);
+        // A preset from before keeps its layout only: the colour settings
+        // stay, and it still shows chosen.
+        let old = r#"{"format":"tracedraw-print-layout","version":1,"layout":{
+            "name":"old","cols":2}}"#;
+        let p = LayoutPreset::from_file(old).expect("a layout");
+        assert!(p.style.is_none());
+        let mut st = PrintState {
+            separations: true,
+            copies: 3,
+            ..PrintState::default()
+        };
+        p.apply(&mut st);
+        assert!(st.separations);
+        assert_eq!(st.copies, 3);
+        assert_eq!(st.cols, 2);
+        assert!(p.same_layout(&LayoutPreset::from_state("", &st)));
+    }
+
+    /// #1796: a layout saved as a preset or a file and loaded again puts
+    /// back the imposition, the sheet, the gaps, the margins and the
+    /// marks; another file is refused; values out of range are kept in
+    /// range on loading.
+    #[test]
+    fn layout_presets_round_trip_through_a_file() {
+        use crate::ui::dialogs::CUSTOM_SHEET;
+        let st = PrintState {
+            layout_kind: 1,
+            cols: 2,
+            rows: 3,
+            page_order: 2,
+            sheet: 2,
+            landscape: true,
+            gutter: 4.0,
+            gutter_y: 9.0,
+            margins: [1.0, 2.0, 3.0, 4.0],
+            crop_marks: true,
+            bleed: true,
+            bleed_limit: 3.0,
+            ..PrintState::default()
+        };
+        let p = LayoutPreset::from_state("ID cards", &st);
+        assert_eq!(p.sheet, "A4");
+        let text = p.to_file();
+        assert!(text.contains(LAYOUT_FILE_FORMAT));
+        let back = LayoutPreset::from_file(&text).expect("read back");
+        assert_eq!(back, p);
+        let mut fresh = PrintState::default();
+        back.apply(&mut fresh);
+        assert_eq!(LayoutPreset::from_state("ID cards", &fresh), p);
+        assert_eq!(fresh.layout_preset, "ID cards");
+        assert_eq!((fresh.gutter, fresh.gutter_y), (4.0, 9.0));
+        assert_eq!(fresh.page_order, 2);
+        assert_eq!(fresh.sheet, 2);
+        // Not a layout file.
+        assert!(
+            LayoutPreset::from_file("{\"format\":\"other\",\"version\":1,\"layout\":{}}").is_none()
+        );
+        assert!(LayoutPreset::from_file("not json").is_none());
+        // Out of range, and a Custom size; a file from before presets
+        // kept the whole style leaves the other settings alone.
+        let wild = r#"{"format":"tracedraw-print-layout","version":1,"layout":{
+            "name":"x","layout_kind":9,"cols":0,"rows":500,"page_order":7,
+            "sheet":"custom","sheet_size":{"width":300.0,"height":400.0},
+            "gutter":-3.0,"gutter_y":1e9,"margins":[-1.0,999.0,5.0,5.0],
+            "signature_sheets":0,"creep":50.0}}"#;
+        let w = LayoutPreset::from_file(wild).expect("a layout");
+        let mut st = PrintState::default();
+        w.apply(&mut st);
+        assert_eq!(
+            (st.layout_kind, st.cols, st.rows, st.page_order),
+            (3, 1, 99, 3)
+        );
+        assert_eq!(st.sheet, CUSTOM_SHEET);
+        assert_eq!(
+            st.custom_sheet,
+            tracedraw_core::geometry::Size::new(300.0, 400.0)
+        );
+        assert_eq!((st.gutter, st.gutter_y), (0.0, 100.0));
+        assert_eq!(st.margins, [0.0, 200.0, 5.0, 5.0]);
+        assert_eq!((st.signature_sheets, st.creep), (1, 20.0));
+        // Presets last in the preferences.
+        let mut prefs = PrintPrefs::default();
+        prefs.layout_presets.push(p.clone());
+        let json = serde_json::to_string(&prefs).expect("written");
+        let read: PrintPrefs = serde_json::from_str(&json).expect("read");
+        assert_eq!(read.layout_presets, vec![p]);
+    }
+
+    /// #1795: the row gap is remembered apart from the column gap;
+    /// preferences saved before it existed take the column gap for both.
+    #[test]
+    fn the_row_gap_is_remembered_and_old_preferences_take_the_column_gap() {
+        let mut p = PrintPrefs::default();
+        let st = PrintState {
+            gutter: 3.0,
+            gutter_y: 8.0,
+            ..PrintState::default()
+        };
+        p.remember(&st);
+        let back = p.state();
+        assert_eq!((back.gutter, back.gutter_y), (3.0, 8.0));
+        let old: PrintPrefs = serde_json::from_str(r#"{"gutter": 6.0}"#).expect("read");
+        assert_eq!(old.gutter_y, None);
+        let st = old.state();
+        assert_eq!((st.gutter, st.gutter_y), (6.0, 6.0));
     }
 }

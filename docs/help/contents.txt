@@ -12,10 +12,12 @@ get-started/index
   get-started/undo-and-views
   get-started/hints
   get-started/browser-version
+  get-started/tablets-and-android
   get-started/github
 lines-shapes/index
   lines-shapes/lines
   lines-shapes/artistic-media
+  lines-shapes/pen-pressure
   lines-shapes/shape-recognition
   lines-shapes/rectangles-and-ellipses
   lines-shapes/polygons-stars-spirals
@@ -31,6 +33,7 @@ objects/index
   objects/selecting
   objects/transforming
   objects/align-distribute
+  objects/fit-objects-to-path
   objects/step-and-repeat
   objects/objects-and-layers
   objects/properties-docker
@@ -43,9 +46,12 @@ objects/index
   objects/paste-special
   objects/shelf
   objects/find-replace
+  objects/find-by-properties
   objects/comments
   objects/tables
   objects/barcodes
+  objects/formulas
+  objects/tracecut
 color/index
   color/color-docker
   color/palettes
@@ -53,9 +59,11 @@ color/index
   color/patterns
   color/eyedroppers
   color/color-styles
+  color/color-harmonies
   color/transparency
   color/spot-colors
   color/color-management
+  color/convert-colors
 effects/index
   effects/effects-docker
   effects/blend
@@ -76,6 +84,7 @@ text/index
   text/adding-text
   text/paragraphs
   text/fonts
+  text/missing-fonts
   text/writing-tools
 templates-styles/index
   templates-styles/templates
@@ -91,11 +100,14 @@ bitmaps/index
   bitmaps/convert-to-bitmap
   bitmaps/color-modes
   bitmaps/resample-and-straighten
+  bitmaps/before-after-preview
   bitmaps/tracing
   bitmaps/bitmap-mask
   bitmaps/remove-background
+  bitmaps/picture-captions
 printing/index
   printing/print
+  printing/booklet
   printing/print-merge
   printing/preflight
   printing/border-and-grommet
@@ -107,6 +119,8 @@ file-formats/index
   file-formats/import
   file-formats/export
   file-formats/publish-pdf
+  file-formats/pdf-prepress-marks
+  file-formats/package
 customize/index
   customize/options-app
   customize/customization
@@ -116,6 +130,7 @@ customize/index
   customize/reset-settings
   customize/ai
   customize/scripts
+  customize/plugins
   customize/time-tracker
 reference/index
   reference/keyboard-shortcuts

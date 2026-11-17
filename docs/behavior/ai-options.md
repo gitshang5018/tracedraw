@@ -26,6 +26,9 @@ Remove Background (see `ai-generate.md`), with the same key.
 Fields: Preset, Service, Address, Model (the text model), API key, an
 Image model row (only for a service that can make pictures), Show the
 prompt bar, Remember the key, and the hint for local model servers.
+Below, the Vectorization section sets up the separate vectorization
+service of Vectorize with AI (address, API id, key, Remember the key,
+Test mode, Replace the bitmap; see `ai-vectorize.md`).
 The Model field can be typed in, and the arrow beside it lists the
 models to pick from: the ones the service listed (Test Connection or
 Refresh list, the last entry, asks for them), else the usual ones of its
@@ -74,7 +77,7 @@ key.
 ## Picture commands while the service cannot make pictures
 
 AI Generate's picture modes, Remix, Create vectors (picture + trace),
-Remove Background (Bitmaps menu, Object > AI Generate, the property bar,
+Remove Background (Image menu, Object > AI Generate, the property bar,
 the AI Generate button's list, a bitmap's context menu) and AI Art
 Styles stay greyed while the service makes drawings only. Their hover
 tip says the chosen AI service makes drawings only and to choose one

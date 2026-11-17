@@ -37,7 +37,11 @@ when nothing is selected:
   circle cut inwards) or **Chamfered** (a straight cut).
 - The four sizes: top left, top right, bottom left and bottom right. The size
   is the radius, or for a chamfer how far from the corner the cut starts. A
-  corner is at most half the shorter side.
+  corner can take what the corners beside it leave of its two sides: on a
+  100 x 80 mm rectangle with a 10 mm corner at the top left and square
+  corners at the bottom, the top right corner can be 80 mm. When two corners
+  are too big for the side they share, all the corners are drawn smaller by
+  the same amount and the fields show the sizes drawn.
 - **Edit corners together** (the lock, on at first) gives all four the size
   you type in one.
 - **Relative corner scaling** (on at first): the corners grow and shrink with
@@ -65,13 +69,20 @@ arc, set the start and end angles (in degrees, counterclockwise from the
 right) and the direction. You can also drag the node of an ellipse with the
 [[tool.shape]] tool to make a pie (drag inside) or an arc (drag outside).
 
+An arc is an open curve: its fill shows only while
+[[options.fill_open_curves]] is on in the document options. A pie is closed
+and keeps its fill.
+
 ## 3-Point Ellipse {#three-point-ellipse}
 
 The [[tool.three_point_ellipse]] tool draws an ellipse at an angle:
 
-1. Drag to draw the center line of the ellipse, at any angle (hold
-   <kbd>Ctrl</kbd> for steps of 15 degrees).
+1. Drag to draw the center line of the ellipse, at any angle.
 2. Move the pointer to set the height and click.
+
+For a circle around a point, press on the point and drag out with
+<kbd>Ctrl</kbd> held: the line you drag is the radius, and the circle is
+drawn when you let go, with no click for the height.
 
 ## The Corners panel {#corners}
 
@@ -97,3 +108,5 @@ of curves, which the rectangle settings cannot do. Open it from
 A corner is a node where two segments meet at an angle; smooth nodes are not
 corners. With the [[tool.shape]] tool and some nodes selected, only those
 corners are cut. A corner whose sides are too short for the cut is skipped.
+On a stretched object a fillet or scallop still comes out round, with the
+radius measured on the page.

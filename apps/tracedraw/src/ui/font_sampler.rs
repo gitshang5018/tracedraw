@@ -88,13 +88,11 @@ pub fn font_sampler(app: &mut App, ui: &mut Ui) {
                 .color(Tokens::text_dim())
                 .size(11.0),
         );
-        ui.add(crate::ui::Rail(
-            egui::Slider::new(&mut app.font_sampler.size, 10.0..=96.0).suffix(" px"),
-        ))
-        .rich_tip(crate::ui::tips::pair(
-            "font_sampler.size",
-            "font_sampler.size_desc",
-        ));
+        ui.add(crate::ui::Slider::new(&mut app.font_sampler.size, 10.0..=96.0).suffix(" px"))
+            .rich_tip(crate::ui::tips::pair(
+                "font_sampler.size",
+                "font_sampler.size_desc",
+            ));
     });
     // Add a font: type to narrow the list, click to add.
     ui.horizontal(|ui| {
@@ -149,7 +147,7 @@ pub fn font_sampler(app: &mut App, ui: &mut Ui) {
                             .size(11.0),
                     );
                     if app.text_font == *family {
-                        ui.label(egui::RichText::new("\u{2713}").size(11.0));
+                        ui.label(egui::RichText::new("\u{2714}").size(11.0));
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui

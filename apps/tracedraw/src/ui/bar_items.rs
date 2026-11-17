@@ -21,7 +21,7 @@ pub const SEP: &str = "sep";
 /// Prefix of a toolbox tool's button: "tool:" and the tool's id.
 pub const TOOL: &str = "tool:";
 
-const STANDARD: [&str; 33] = [
+const STANDARD: [&str; 35] = [
     "new",
     "open",
     "save",
@@ -32,6 +32,7 @@ const STANDARD: [&str; 33] = [
     "cut",
     "copy",
     "paste",
+    "delete",
     SEP,
     "undo",
     "redo",
@@ -51,6 +52,7 @@ const STANDARD: [&str; 33] = [
     "snap_to",
     SEP,
     "options",
+    "dockers",
     SEP,
     "launch",
     SEP,
@@ -121,6 +123,7 @@ pub fn menu_command(id: &str) -> Option<&'static str> {
         "cut" => "menu.edit.cut",
         "copy" => "menu.edit.copy",
         "paste" => "menu.edit.paste",
+        "delete" => "menu.edit.delete",
         "undo" => "menu.edit.undo",
         "redo" => "menu.edit.redo",
         "import" => "menu.file.import",
@@ -185,7 +188,10 @@ pub struct Slot {
 pub fn customizing(app: &App, ctx: &egui::Context) -> bool {
     let options = matches!(app.dialog, crate::ui::dialogs::Dialog::Options)
         && app.options_page.set() == crate::ui::options::OptionsSet::Customization;
-    options || ctx.input(|i| i.modifiers.alt)
+    // Alt held from the toolbar (#1499) is no Alt held on the keyboard:
+    // the bars would take its own button's tap as the start of a move.
+    let alt = ctx.input(|i| i.modifiers.alt) && !crate::touch_modifiers::alt_from_toolbar(app);
+    options || alt
 }
 
 /// Draw `bar`'s buttons with `draw` (each one's id, the bar's id as a
@@ -226,7 +232,8 @@ pub fn draw_bar(app: &mut App, ui: &mut Ui, bar: ItemBar, draw: fn(&mut App, &mu
                     egui::StrokeKind::Inside,
                 );
             }
-            if resp.drag_started() {
+            // Not while a finger slides the bar along (#1997).
+            if resp.drag_started() && !crate::ui::overflow::finger_sliding(ui.ctx()) {
                 app.bar_item_drag = Some(ItemDrag {
                     item: id.to_string(),
                     from: Some((bar, i)),

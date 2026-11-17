@@ -1,8 +1,7 @@
 # Alinhar e distribuir objetos
 
 Alinhar coloca objetos em fila pelas bordas ou pelos centros; distribuir os
-espaça por igual. Use o painel [[docker.align_distribute]]
-(<kbd>Ctrl+Shift+A</kbd>), os comandos de
+espaça por igual. Use o painel [[docker.align_distribute]], os comandos de
 [[menu.object > menu.object.align_distribute]] ou as teclas abaixo.
 
 ![O painel Alinhar e distribuir](../../img/objects-align-distribute.png)
@@ -44,11 +43,20 @@ As teclas sempre alinham pelo objeto selecionado por último:
    - [[docker.distribute_selection]] (de início): o primeiro e o último objeto
      ficam onde estão, e os outros se movem entre eles;
    - [[docker.distribute_page]]: os objetos se espalham pela página inteira, o
-     primeiro tocando um lado e o último o outro.
+     primeiro tocando um lado e o último o outro;
+   - [[docker.distribute_spacing]]: o primeiro objeto fica e os outros o
+     seguem à distância de [[docker.distribute_gap]] (entre os objetos para
+     os espaços, senão entre suas bordas ou centros).
 3. Clique em um dos oito botões: bordas esquerdas, centros, espaços ou bordas
    direitas na horizontal, ou bordas superiores, centros, espaços ou bordas
    inferiores na vertical. Distribuir os espaços dá a mesma distância entre os
    objetos, sejam quais forem os tamanhos.
+
+Com [[docker.distribute_spacing]], depois que um botão espalhou a seleção,
+você pode mudar o espaçamento e ver os objetos acompanharem: gire a roda do
+mouse sobre a caixa ou arraste o controle deslizante abaixo dela. Solte o
+controle, ou afaste o ponteiro da caixa, para manter o resultado como um
+único passo de desfazer; <kbd>Esc</kbd> devolve o espaçamento e os objetos.
 
 Com poucos objetos, os botões ficam claros e o painel diz quantos são
 necessários. Cada alinhamento ou distribuição é um passo de desfazer.
@@ -59,23 +67,7 @@ Para colocar cópias a distâncias iguais de uma vez, veja
 ## Encaixar objetos num caminho {#fit-to-path}
 
 O painel [[docker.fit_to_path]] coloca objetos ao longo de uma linha, de uma
-curva ou do contorno de uma forma. Abra-o com
-[[menu.object > menu.object.fit_objects_to_path]].
-
-1. Selecione os objetos a colocar e, por último, o caminho (Shift+clique).
-2. Em [[docker.fit_to_path_spacing]], escolha
-   [[docker.fit_to_path_even]] para espalhar os objetos pelo caminho inteiro, ou
-   [[docker.fit_to_path_distance]] e digite a [[docker.fit_to_path_distance_value]]
-   entre os centros de objetos vizinhos.
-3. [[docker.fit_to_path_offset]] afasta o primeiro objeto do início do
-   caminho.
-4. Marque [[docker.fit_to_path_rotate]] para girar cada objeto com a direção
-   do caminho, e [[docker.fit_to_path_reverse]] para começar pela outra
-   ponta.
-5. Assim que você muda um valor, os contornos na tela mostram onde os
-   objetos vão ficar. Clique em [[docker.apply]].
-
-O painel começa com os valores padrão, sem contornos, sempre que você
-seleciona outros objetos (ou trabalha em outro desenho); os valores que
-você digita ficam enquanto os mesmos objetos estão selecionados. Numa forma fechada, os objetos dão a volta inteira sem que o primeiro e o
-último se encontrem. Encaixar é um passo de desfazer.
+curva ou do contorno de uma forma, com cópias, espaçamento, posição e rotação
+à sua escolha. Selecione os objetos e, por último, o caminho (Shift+clique), e
+escolha [[menu.object > menu.object.fit_objects_to_path]]. Veja
+[Encaixar objetos num caminho](fit-objects-to-path.md) para cada opção.

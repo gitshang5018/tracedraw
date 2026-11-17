@@ -19,14 +19,33 @@ pub enum ColorTarget {
     /// The end handle of a drop shadow (Drop Shadow tool): its colour.
     Shadow(ShapeId),
     DocumentPalette,
+    /// The bar of the user's palette (by its index): it joins it.
+    Palette(usize),
     Nothing,
 }
 
 impl App {
+    /// The user's palette whose bar lies at `at` (screen), shown now and
+    /// taking colours.
+    pub fn palette_bar_at(&self, at: Pos2) -> Option<usize> {
+        self.palette_drop_rects
+            .iter()
+            .rev()
+            .find(|(_, r)| r.contains(at))
+            .map(|(i, _)| *i)
+            .filter(|i| {
+                self.palette_takes_colors(*i)
+                    && self.visible_palettes.iter().skip(1).any(|k| k == i)
+            })
+    }
+
     /// What a colour dropped at `at` (screen) would change.
     pub fn color_target(&self, at: Pos2) -> ColorTarget {
         if self.doc_palette_rect.is_some_and(|r| r.contains(at)) && self.has_document() {
             return ColorTarget::DocumentPalette;
+        }
+        if let Some(i) = self.palette_bar_at(at) {
+            return ColorTarget::Palette(i);
         }
         if !self.canvas_rect.contains(at) || !self.has_document() || self.show_welcome {
             return ColorTarget::Nothing;
@@ -37,6 +56,12 @@ impl App {
                 return ColorTarget::Shadow(id);
             }
         }
+        // A square at an end of the blend in hand (Blend tool): the fill
+        // of that end's object, wherever the square lies on it, as the
+        // middle of a letter may be outside its outline (#965).
+        if let Some(id) = self.blend_end_object_at(p) {
+            return ColorTarget::Fill(id);
+        }
         // Inside a closed object counts even when it has no fill yet.
         let Some(id) = self.hit_test_inside(p) else {
             return ColorTarget::Nothing;
@@ -44,12 +69,35 @@ impl App {
         let Some(shape) = self.doc().find_shape(id) else {
             return ColorTarget::Nothing;
         };
-        let tol = OUTLINE_PX / f64::from(self.view.zoom.max(1e-6));
+        // Anywhere on a thick outline as it shows, too (#1935).
+        let tol = OUTLINE_PX / f64::from(self.view.zoom.max(1e-6))
+            + crate::interaction::outline_reach(shape, shape.transform);
         if crate::canvas::distance_to_path(&shape.page_path(), p) <= tol {
             ColorTarget::Outline(id)
         } else {
             ColorTarget::Fill(id)
         }
+    }
+
+    /// The object a fill dragged from the status bar would go to at `at`
+    /// (screen): the one under the pointer, inside or on its outline.
+    pub fn fill_target(&self, at: Pos2) -> Option<ShapeId> {
+        match self.color_target(at) {
+            ColorTarget::Fill(id) | ColorTarget::Outline(id) => Some(id),
+            _ => None,
+        }
+    }
+
+    /// Drop a whole `fill` (colour, fountain, pattern, none) on the object
+    /// at `at`; the selection stays as it was. False when nothing took it.
+    pub fn drop_fill(&mut self, fill: Fill, at: Pos2) -> bool {
+        let Some(id) = self.fill_target(at) else {
+            return false;
+        };
+        let saved = std::mem::replace(&mut self.selection, vec![id]);
+        self.apply_fill(fill);
+        self.selection = saved;
+        true
     }
 
     /// Drop `color` (`None`: No Color) at `at` (screen); false when
@@ -61,6 +109,10 @@ impl App {
             }
         }
         match self.color_target(at) {
+            ColorTarget::Palette(i) => match color {
+                Some(c) => self.add_colors_to_palette(i, &[c]),
+                None => false,
+            },
             ColorTarget::DocumentPalette => match color {
                 Some(c) => {
                     self.add_to_document_palette(c);
@@ -114,6 +166,21 @@ mod tests {
         app.apply_fill(Fill::Solid(Color::rgb8(0, 0, 255)));
         app.select(Vec::new());
         (app, id)
+    }
+
+    #[test]
+    fn a_fill_dropped_on_an_object_replaces_its_fill() {
+        let (mut app, id) = app_with_rect();
+        let inside = app.view.to_screen(Point::new(35.0, 25.0));
+        let green = Fill::Solid(Color::rgb8(0, 200, 0));
+        assert!(app.drop_fill(green.clone(), inside));
+        assert_eq!(
+            app.doc().find_shape(id).map(|s| s.fill.clone()),
+            Some(green)
+        );
+        assert!(app.selection.is_empty());
+        let outside = app.view.to_screen(Point::new(150.0, 150.0));
+        assert!(!app.drop_fill(Fill::None, outside));
     }
 
     #[test]

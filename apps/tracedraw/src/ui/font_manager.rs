@@ -83,12 +83,194 @@ pub fn install_saved(prefs: &FontManagerPrefs) -> Vec<String> {
 }
 
 fn install_saved_in(fonts: &tracedraw_text::FontSystem, prefs: &FontManagerPrefs) -> Vec<String> {
+    // The font list's filter lists these folders, not their subfolders (#867).
+    fonts.set_font_roots(&prefs.folders);
     let mut paths = prefs.installed.clone();
     paths.extend(folder_files(prefs));
     if paths.is_empty() {
         return Vec::new();
     }
     fonts.install_paths(&paths)
+}
+
+/// Where the browser build names the fonts it stores for TraceDraw
+/// (`/fonts/<file name>`, kept in the page's IndexedDB, #1400).
+pub const WEB_FONTS: &str = "/fonts";
+
+/// The folder of the font files Add Font copied (Android: a font the
+/// system's picker returned is a content URI, which neither the font
+/// database nor the next start can open, #1400): `fonts` in the
+/// configuration folder.
+pub fn kept_fonts_dir() -> Option<PathBuf> {
+    crate::settings::config_dir().map(|d| d.join("fonts"))
+}
+
+/// How Add Font keeps a picked font for the next start.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Keep {
+    /// Where it is: a file of the file system.
+    InPlace,
+    /// A copy in [`kept_fonts_dir`]: a document the Android picker
+    /// returned.
+    Copy,
+    /// In the browser's storage under [`WEB_FONTS`].
+    Stored,
+}
+
+/// How a font picked at `path` is kept, in a browser (`web`) or not.
+pub fn keep_for(path: &std::path::Path, web: bool) -> Keep {
+    if web {
+        Keep::Stored
+    } else if crate::files::is_document_path(path) {
+        Keep::Copy
+    } else {
+        Keep::InPlace
+    }
+}
+
+/// A file name of its own in `dir` for a copy of `bytes` named `name`:
+/// the name itself when it is free or holds the same bytes, else
+/// "stem (2).ext" and on.
+fn copy_path(dir: &std::path::Path, name: &str, bytes: &[u8]) -> PathBuf {
+    let name = crate::files::safe_file_name(name);
+    let p = std::path::Path::new(&name);
+    let stem = p
+        .file_stem()
+        .map_or(name.clone(), |s| s.to_string_lossy().to_string());
+    let ext = p.extension().map(|e| e.to_string_lossy().to_string());
+    for n in 1..1000 {
+        let candidate = match (n, &ext) {
+            (1, _) => dir.join(&name),
+            (n, Some(ext)) => dir.join(format!("{stem} ({n}).{ext}")),
+            (n, None) => dir.join(format!("{stem} ({n})")),
+        };
+        match std::fs::read(&candidate) {
+            Ok(old) if old != bytes => continue,
+            _ => return candidate,
+        }
+    }
+    dir.join(name)
+}
+
+/// Add Font: install the font picked at `path` for TraceDraw and keep it
+/// for the next start as [`keep_for`] says: remembered where it is, a
+/// copy in `dir` (read with `read`), or stored in the browser. Returns
+/// the families added; nothing is remembered for a file that is not a
+/// font.
+pub fn add_font_in(
+    fonts: &tracedraw_text::FontSystem,
+    prefs: &mut FontManagerPrefs,
+    path: &std::path::Path,
+    keep: Keep,
+    dir: Option<&std::path::Path>,
+    read: impl Fn(&std::path::Path) -> std::io::Result<Vec<u8>>,
+) -> Result<Vec<String>, String> {
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "font.ttf".into());
+    // A Type 1 font (.pfb, or the .pfm beside one) copied or stored is
+    // kept as the OpenType font it is turned into, the .pfm's names
+    // with it (#193).
+    let type1 = tracedraw_text::type1::is_type1_file(path) && keep != Keep::InPlace;
+    let name = if type1 {
+        let stem = path
+            .file_stem()
+            .map_or("font".into(), |s| s.to_string_lossy().to_string());
+        format!("{stem}.otf")
+    } else {
+        name
+    };
+    let read = |p: &std::path::Path| -> std::io::Result<Vec<u8>> {
+        if !type1 {
+            return read(p);
+        }
+        let converted = if keep == Keep::Stored {
+            read(p)
+                .ok()
+                .and_then(|b| tracedraw_text::type1::convert(&b, None))
+        } else {
+            tracedraw_text::type1::convert_file(p)
+        };
+        converted.ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, p.display().to_string())
+        })
+    };
+    let (kept, added) = match keep {
+        Keep::InPlace => {
+            let added = fonts.install_paths(&[path.to_path_buf()]);
+            if !fonts.installed_paths().iter().any(|p| p == path) {
+                return Ok(Vec::new());
+            }
+            (path.to_path_buf(), added)
+        }
+        Keep::Copy => {
+            let bytes = read(path).map_err(|e| e.to_string())?;
+            let dir = dir.ok_or_else(|| tr("font_manager.no_font_folder"))?;
+            std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+            let copy = copy_path(dir, &name, &bytes);
+            std::fs::write(&copy, &bytes).map_err(|e| e.to_string())?;
+            let added = fonts.install_paths(std::slice::from_ref(&copy));
+            if !fonts.installed_paths().contains(&copy) {
+                let _ = std::fs::remove_file(&copy);
+                return Ok(Vec::new());
+            }
+            (copy, added)
+        }
+        Keep::Stored => {
+            let bytes = read(path).map_err(|e| e.to_string())?;
+            let stored = PathBuf::from(WEB_FONTS).join(crate::files::safe_file_name(&name));
+            let added = fonts.install_named(vec![(stored.clone(), bytes.clone())]);
+            if !fonts.installed_paths().contains(&stored) {
+                return Ok(Vec::new());
+            }
+            #[cfg(target_arch = "wasm32")]
+            crate::web::stored_fonts::save(&stored, bytes);
+            #[cfg(not(target_arch = "wasm32"))]
+            let _ = bytes;
+            (stored, added)
+        }
+    };
+    if !prefs.installed.contains(&kept) {
+        prefs.installed.push(kept);
+    }
+    Ok(added)
+}
+
+/// Uninstall: a font Add Font copied or stored goes with it, so it does
+/// not come back at the next start.
+fn forget_kept(path: &std::path::Path, dir: Option<&std::path::Path>) {
+    if dir.is_some_and(|d| path.starts_with(d)) {
+        if let Err(e) = std::fs::remove_file(path) {
+            log::warn!("{}: {e}", path.display());
+        }
+    }
+    #[cfg(target_arch = "wasm32")]
+    if path.starts_with(WEB_FONTS) {
+        crate::web::stored_fonts::remove(path);
+    }
+}
+
+/// The fonts the browser read back from its storage since the last
+/// frame (installed already): remembered as installed for TraceDraw,
+/// so the Font Manager lists them as such and can uninstall them.
+#[cfg(target_arch = "wasm32")]
+pub fn take_stored_fonts(app: &mut App) {
+    let arrived = crate::web::stored_fonts::take_arrived();
+    if arrived.is_empty() {
+        return;
+    }
+    let installed = &mut app.settings.font_manager.installed;
+    let mut changed = false;
+    for name in arrived {
+        if !installed.contains(&name) {
+            installed.push(name);
+            changed = true;
+        }
+    }
+    if changed {
+        app.save_settings();
+    }
 }
 
 /// The font files of the added folders: usable in drawings for as long as
@@ -694,51 +876,86 @@ impl FontManagerState {
     }
 }
 
+/// Add the picked font files: kept for the next start on every
+/// platform, a copy of a document the Android picker returned, the bytes
+/// in the browser's storage (#1400). The status line counts the faces
+/// added, or tells the first failure.
+pub(crate) fn add_picked_fonts(app: &mut App, paths: &[PathBuf]) {
+    let dir = kept_fonts_dir();
+    let mut faces = 0;
+    let mut failed = None;
+    for path in paths {
+        match add_font_in(
+            tracedraw_text::fonts(),
+            &mut app.settings.font_manager,
+            path,
+            keep_for(path, crate::files::WEB),
+            dir.as_deref(),
+            |p| crate::files::read(p),
+        ) {
+            Ok(added) => faces += added.len(),
+            Err(e) => {
+                failed.get_or_insert(e);
+            }
+        }
+    }
+    app.font_families = tracedraw_text::fonts().available_families();
+    app.status = match failed {
+        Some(e) if faces == 0 => trf("font_manager.add_failed", &[("e", &e)]),
+        _ => trf("font_manager.installed_n", &[("n", &faces.to_string())]),
+    };
+    app.save_settings();
+}
+
+/// The Add Folder buttons work: they pick a folder or the font files.
+fn folder_enabled(folder: crate::files::FolderUse) -> bool {
+    !matches!(folder.action(), crate::files::FolderAction::Unavailable(_))
+}
+
 /// Carry out an action.
 fn run(app: &mut App, st: &mut FontManagerState, a: Action) {
     let fonts = tracedraw_text::fonts();
     let prefs = &mut app.settings.font_manager;
     match a {
-        Action::AddFolder => {
-            if let Some(dir) = crate::files::pick_folder() {
-                if !prefs.folders.contains(&dir) {
-                    prefs.folders.push(dir.clone());
+        Action::AddFolder => match crate::files::FolderUse::FontFolder.action() {
+            crate::files::FolderAction::PickFolder(token) => {
+                if let Some(dir) = crate::files::pick_folder(token) {
+                    if !prefs.folders.contains(&dir) {
+                        prefs.folders.push(dir.clone());
+                    }
+                    fonts.set_font_roots(&prefs.folders);
+                    // Its fonts are usable at once, without Install (#866).
+                    let files = catalog::font_files(&dir);
+                    let added = fonts.install_paths(&files);
+                    log::info!("fonts of {}: {}", dir.display(), added.join(", "));
+                    st.note = Some(trf(
+                        "font_manager.installed_n",
+                        &[("n", &files.len().to_string())],
+                    ));
+                    app.font_families = fonts.available_families();
+                    st.library = Library::Folder(dir);
+                    app.save_settings();
                 }
-                // Its fonts are usable at once, without Install (#866).
-                let files = catalog::font_files(&dir);
-                let added = fonts.install_paths(&files);
-                log::info!("fonts of {}: {}", dir.display(), added.join(", "));
-                st.note = Some(trf(
-                    "font_manager.installed_n",
-                    &[("n", &files.len().to_string())],
-                ));
-                app.font_families = fonts.available_families();
-                st.library = Library::Folder(dir);
-                app.save_settings();
             }
-        }
+            // No folder can be read: the fonts it would hold are picked,
+            // several at once, and added as Add Font adds one (#1399).
+            crate::files::FolderAction::OpenFiles => {
+                crate::files::Dialog::new()
+                    .add_filter(
+                        tr("font_manager.font_files"),
+                        &["ttf", "otf", "ttc", "otc", "pfb", "pfm"],
+                    )
+                    .pick_files(app, |app, paths| add_picked_fonts(app, &paths));
+            }
+            crate::files::FolderAction::SaveZip | crate::files::FolderAction::Unavailable(_) => {}
+        },
         Action::AddFont => {
             crate::files::Dialog::new()
-                .add_filter(tr("font_manager.font_files"), &["ttf", "otf", "ttc", "otc"])
-                .pick_file(app, |app, path| {
-                    let added = if crate::files::WEB {
-                        crate::files::read(&path)
-                            .map(|d| tracedraw_text::fonts().install_data(vec![d]))
-                            .unwrap_or_default()
-                    } else {
-                        let p = &mut app.settings.font_manager.installed;
-                        if !p.contains(&path) {
-                            p.push(path.clone());
-                        }
-                        tracedraw_text::fonts().install_paths(&[path])
-                    };
-                    app.font_families = tracedraw_text::fonts().available_families();
-                    app.status = trf(
-                        "font_manager.installed_n",
-                        &[("n", &added.len().to_string())],
-                    );
-                    app.save_settings();
-                });
+                .add_filter(
+                    tr("font_manager.font_files"),
+                    &["ttf", "otf", "ttc", "otc", "pfb", "pfm"],
+                )
+                .pick_file(app, |app, path| add_picked_fonts(app, &[path]));
         }
         Action::Install(faces) => {
             let paths: Vec<PathBuf> = faces
@@ -771,6 +988,7 @@ fn run(app: &mut App, st: &mut FontManagerState, a: Action) {
                 if fonts.uninstall_path(p) {
                     n += 1;
                 }
+                forget_kept(p, kept_fonts_dir().as_deref());
             }
             st.note = Some(trf("font_manager.uninstalled_n", &[("n", &n.to_string())]));
             app.font_families = fonts.available_families();
@@ -778,6 +996,7 @@ fn run(app: &mut App, st: &mut FontManagerState, a: Action) {
         }
         Action::RemoveFolder(dir) => {
             prefs.folders.retain(|f| f != &dir);
+            fonts.set_font_roots(&prefs.folders);
             if remove_folder_fonts(fonts, prefs, &dir) > 0 {
                 app.font_families = fonts.available_families();
             }
@@ -854,13 +1073,15 @@ fn menu_row(
     let any = !selected.is_empty();
     egui::MenuBar::new().ui(ui, |ui| {
         ui.menu_button(tr("font_manager.menu_file"), |ui| {
-            if ui
-                .add_enabled(
-                    !crate::files::WEB,
-                    egui::Button::new(tr("font_manager.add_folder")),
-                )
-                .clicked()
-            {
+            let folder = crate::files::FolderUse::FontFolder;
+            let mut add = ui.add_enabled(
+                folder_enabled(folder),
+                egui::Button::new(tr("font_manager.add_folder")),
+            );
+            if let Some(tip) = folder.tip() {
+                add = add.rich_tip_always(tr(tip));
+            }
+            if add.clicked() {
                 actions.push(Action::AddFolder);
                 ui.close();
             }
@@ -1181,15 +1402,12 @@ fn toolbar(
     let any = !selected.is_empty();
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 2.0;
-        if icon_button(
-            ui,
-            Icon::AddFolder,
-            &tr("font_manager.add_folder"),
-            !crate::files::WEB,
-            false,
-        )
-        .clicked()
-        {
+        let folder = crate::files::FolderUse::FontFolder;
+        let tip = match folder.tip() {
+            Some(why) => format!("{}\n{}", tr("font_manager.add_folder"), tr(why)),
+            None => tr("font_manager.add_folder"),
+        };
+        if icon_button(ui, Icon::AddFolder, &tip, folder_enabled(folder), false).clicked() {
             actions.push(Action::AddFolder);
         }
         if icon_button(ui, Icon::AddFont, &tr("font_manager.add_font"), true, false).clicked() {
@@ -1773,7 +1991,7 @@ fn sample_and_search(ui: &mut Ui, st: &mut FontManagerState, prefs: &mut FontMan
             "font_manager.sample_desc",
         ));
         let arrow = ui
-            .add_sized([22.0, 20.0], egui::Button::new("\u{25BE}"))
+            .add_sized([22.0, 20.0], egui::Button::new("\u{23F7}"))
             .rich_tip(crate::ui::tips::keyed("font_manager.sample_presets"));
         egui::Popup::menu(&arrow)
             .id(egui::Id::new("font_manager_samples"))
@@ -2147,7 +2365,7 @@ fn status_line(
             ui.label(egui::RichText::new("A").size(18.0));
             let mut px = prefs.sample_px();
             if ui
-                .add(egui::Slider::new(&mut px, SAMPLE_PX).show_value(false))
+                .add(crate::ui::Slider::new(&mut px, SAMPLE_PX).show_value(false))
                 .rich_tip(tr("font_manager.sample_size"))
                 .changed()
             {
@@ -2333,6 +2551,118 @@ mod tests {
         let back: FontManagerPrefs = serde_json::from_str(&json).expect("back");
         assert_eq!(back, prefs);
         assert_eq!(back.sample_px(), DEFAULT_SAMPLE_PX);
+    }
+
+    /// Add Font (#1400): a font picked through the Android picker (a
+    /// content URI the font database cannot open) is copied into the
+    /// app's own font folder and installed from there; in a browser it is
+    /// installed and kept under `/fonts/<name>`; a file elsewhere is kept
+    /// where it is. Each is remembered, so the next start installs it
+    /// again, and Uninstall takes the copy away. A file that is not a
+    /// font is neither kept nor remembered.
+    #[test]
+    fn an_added_font_is_kept_for_the_next_start_everywhere() {
+        const SELAWIK: &[u8] = include_bytes!("../../assets/fonts/Selawik-Regular.ttf");
+        let root = std::env::temp_dir().join(format!("tracedraw-fm-add-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let kept = root.join("fonts");
+        let picked = crate::files::document_path(
+            "content://com.android.providers.downloads.documents/document/42",
+            "Selawik.ttf",
+        );
+        assert_eq!(keep_for(&picked, false), Keep::Copy);
+        assert_eq!(keep_for(&picked, true), Keep::Stored);
+        assert_eq!(
+            keep_for(std::path::Path::new("/home/a/x.ttf"), false),
+            Keep::InPlace
+        );
+        let read_picked = |p: &std::path::Path| {
+            assert!(crate::files::is_document_path(p));
+            Ok(SELAWIK.to_vec())
+        };
+
+        // Android: copied, installed, remembered.
+        let fonts = tracedraw_text::FontSystem::empty();
+        let mut prefs = FontManagerPrefs::default();
+        let added = add_font_in(
+            &fonts,
+            &mut prefs,
+            &picked,
+            Keep::Copy,
+            Some(&kept),
+            read_picked,
+        )
+        .expect("added");
+        assert_eq!(added, vec!["Selawik".to_string()]);
+        let copy = kept.join("Selawik.ttf");
+        assert_eq!(std::fs::read(&copy).expect("copied"), SELAWIK);
+        assert_eq!(prefs.installed, vec![copy.clone()]);
+        // The same font again: the same copy, nothing new.
+        let again = add_font_in(
+            &fonts,
+            &mut prefs,
+            &picked,
+            Keep::Copy,
+            Some(&kept),
+            read_picked,
+        );
+        assert_eq!(again, Ok(Vec::new()));
+        assert_eq!(prefs.installed, vec![copy.clone()]);
+        // The next start installs it from the copy.
+        let next = tracedraw_text::FontSystem::empty();
+        assert_eq!(install_saved_in(&next, &prefs), vec!["Selawik".to_string()]);
+        // Uninstall takes the copy away.
+        assert!(next.uninstall_path(&copy));
+        forget_kept(&copy, Some(&kept));
+        assert!(!copy.exists());
+
+        // Not a font: no copy left, nothing remembered.
+        let mut none = FontManagerPrefs::default();
+        let junk = |_: &std::path::Path| Ok(b"not a font".to_vec());
+        let fresh = tracedraw_text::FontSystem::empty();
+        let got = add_font_in(&fresh, &mut none, &picked, Keep::Copy, Some(&kept), junk);
+        assert_eq!(got, Ok(Vec::new()));
+        assert!(none.installed.is_empty());
+        assert_eq!(std::fs::read_dir(&kept).map_or(0, |d| d.count()), 0);
+        // A different font of the same name gets a name of its own; the
+        // same bytes reuse the copy.
+        std::fs::write(&copy, SELAWIK).expect("write");
+        assert_eq!(copy_path(&kept, "Selawik.ttf", SELAWIK), copy);
+        assert_eq!(
+            copy_path(&kept, "Selawik.ttf", b"other"),
+            kept.join("Selawik (2).ttf")
+        );
+        std::fs::remove_file(&copy).expect("removed");
+
+        // Browser: kept under /fonts/<name> and listed as installed.
+        let web = tracedraw_text::FontSystem::empty();
+        let mut wprefs = FontManagerPrefs::default();
+        let upload = PathBuf::from("/upload/Selawik.ttf");
+        let read_upload = |_: &std::path::Path| Ok(SELAWIK.to_vec());
+        let added = add_font_in(&web, &mut wprefs, &upload, Keep::Stored, None, read_upload)
+            .expect("added");
+        assert_eq!(added, vec!["Selawik".to_string()]);
+        let stored = PathBuf::from("/fonts/Selawik.ttf");
+        assert_eq!(wprefs.installed, vec![stored.clone()]);
+        let listed = web.catalog();
+        assert!(listed.iter().any(|r| uninstallable(r, &wprefs)));
+        assert!(web.uninstall_path(&stored));
+
+        // Desktop: kept where it is.
+        let file = root.join("Selawik-Regular.ttf");
+        std::fs::write(&file, SELAWIK).expect("write");
+        let desk = tracedraw_text::FontSystem::empty();
+        let mut dprefs = FontManagerPrefs::default();
+        let added = add_font_in(&desk, &mut dprefs, &file, Keep::InPlace, Some(&kept), |p| {
+            std::fs::read(p)
+        })
+        .expect("added");
+        assert_eq!(added, vec!["Selawik".to_string()]);
+        assert_eq!(dprefs.installed, vec![file.clone()]);
+        // Uninstalling it leaves the user's own file alone.
+        forget_kept(&file, Some(&kept));
+        assert!(file.exists());
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

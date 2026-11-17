@@ -9,7 +9,7 @@
 
 use crate::app::{App, Workspace};
 use crate::i18n::{tr, trf};
-use crate::settings::{PalettePrefs, ShownBars};
+use crate::settings::{PaletteBarPrefs, PalettePrefs, ShownBars};
 use crate::ui::bars::BarLayout;
 use crate::ui::status::StatusInfo;
 use serde::{Deserialize, Serialize};
@@ -107,6 +107,8 @@ pub struct AppearancePart {
     /// The desktop colour was picked (white is then white, #530).
     pub desktop_custom: bool,
     pub page_border: bool,
+    /// The page's shadow (#1906).
+    pub page_shadow: bool,
 }
 
 impl Default for AppearancePart {
@@ -116,6 +118,7 @@ impl Default for AppearancePart {
             desktop_rgb: [255, 255, 255],
             desktop_custom: false,
             page_border: true,
+            page_shadow: true,
         }
     }
 }
@@ -137,6 +140,16 @@ pub struct WorkspaceFile {
     pub bars: Option<BarsPart>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub palette: Option<PalettePrefs>,
+    /// The palette bars open besides the default one (with the palette
+    /// part).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub palette_bars: Option<Vec<PaletteBarPrefs>>,
+    /// The palette the default bar shows (with the palette part).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub main_palette: Option<String>,
+    /// The names given to palettes (with the palette part).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub palette_names: Option<std::collections::BTreeMap<String, String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub appearance: Option<AppearancePart>,
 }
@@ -214,6 +227,14 @@ impl WorkspaceFile {
                     *pos = default;
                 }
             }
+            // The floating toolbox's size: a usable one, else as at first.
+            if l.toolbox_size.is_some_and(|size| {
+                !size
+                    .iter()
+                    .all(|v| v.is_finite() && *v > 0.0 && *v <= MAX_POSITION)
+            }) {
+                l.toolbox_size = None;
+            }
             // A pick out of bounds keeps its group's place, as nothing.
             bars.toolbox.truncate(MAX_LIST);
             for id in &mut bars.toolbox {
@@ -232,6 +253,15 @@ impl WorkspaceFile {
                 list.truncate(MAX_LIST);
                 list.retain(|id| short_text(id));
             }
+        }
+        if let Some(bars) = &mut self.palette_bars {
+            bars.truncate(MAX_LIST);
+            // A palette's id may be a file's whole path.
+            bars.retain(|b| !b.palette.trim().is_empty() && b.palette.len() <= 4096);
+            bars.iter_mut().for_each(PaletteBarPrefs::sanitize);
+        }
+        if let Some(names) = &mut self.palette_names {
+            names.retain(|id, name| id.len() <= 4096 && !id.is_empty() && short_text(name));
         }
         if let Some(a) = &mut self.appearance {
             if !(a.ui_size == 0.0 || (0.5..=4.0).contains(&a.ui_size)) {
@@ -289,11 +319,15 @@ impl App {
                 bar_items: s.bar_items.clone(),
             }),
             palette: parts.palette.then_some(s.palette),
+            palette_bars: parts.palette.then(|| s.palette_bars.clone()),
+            main_palette: parts.palette.then(|| s.main_palette.clone()),
+            palette_names: parts.palette.then(|| s.palette_names.clone()),
             appearance: parts.appearance.then_some(AppearancePart {
                 ui_size: s.ui_size,
                 desktop_rgb: s.desktop_rgb,
                 desktop_custom: s.desktop_custom,
                 page_border: self.show_page_border,
+                page_shadow: self.show_page_shadow,
             }),
         }
     }
@@ -322,12 +356,22 @@ impl App {
         }
         if let (true, Some(list)) = (parts.shortcuts, &file.shortcuts) {
             self.settings.shortcuts = list.clone();
+            // A file written before a command key was renamed.
+            crate::settings::migrate_command_keys(&mut self.settings.shortcuts);
             self.shortcut_editor.note = None;
             self.shortcut_editor.capture = None;
             applied.push(PART_SHORTCUTS);
         }
         if let (true, Some(p)) = (parts.palette, file.palette) {
             self.settings.palette = p;
+            // A file written before palette bars existed: the default
+            // palette alone.
+            self.settings.palette_bars = file.palette_bars.clone().unwrap_or_default();
+            self.settings.main_palette = file.main_palette.clone().unwrap_or_default();
+            if let Some(names) = &file.palette_names {
+                self.settings.palette_names = names.clone();
+            }
+            self.rebuild_palette();
             applied.push(PART_PALETTE);
         }
         if let (true, Some(a)) = (parts.appearance, &file.appearance) {
@@ -335,6 +379,7 @@ impl App {
             self.settings.desktop_rgb = a.desktop_rgb;
             self.settings.desktop_custom = a.desktop_custom;
             self.show_page_border = a.page_border;
+            self.show_page_shadow = a.page_shadow;
             applied.push(PART_APPEARANCE);
         }
         applied
@@ -391,7 +436,7 @@ impl App {
         crate::files::Dialog::new()
             .add_filter(tr("workspace.file_filter"), &[EXTENSION])
             .set_file_name(format!("workspace.{EXTENSION}"))
-            .save_file(self, |app, path| {
+            .save_file(self, move |app, path| {
                 let path = with_extension(path);
                 app.export_workspace_to(&path, parts);
             });
@@ -516,6 +561,28 @@ mod tests {
         assert_eq!(applied, vec![PART_SHORTCUTS, PART_PALETTE]);
     }
 
+    /// A workspace file written before a command key was renamed: its
+    /// shortcut for that command comes in under the key used now.
+    #[test]
+    fn a_shortcut_under_a_renamed_key_is_imported_under_the_new_one() {
+        let json = serde_json::json!({
+            "kind": KIND,
+            "version": 1,
+            "shortcuts": [["menu.text.grammatik", "Ctrl+Shift+G"], ["menu.file.open", "Ctrl+O"]],
+        });
+        let file = WorkspaceFile::from_bytes(json.to_string().as_bytes()).expect("read");
+        let mut to = App::headless();
+        let applied = to.import_workspace(&file, WorkspaceParts::ALL);
+        assert_eq!(applied, vec![PART_SHORTCUTS]);
+        assert_eq!(
+            to.settings.shortcuts,
+            [
+                ("menu.text.grammar".to_string(), "Ctrl+Shift+G".to_string()),
+                ("menu.file.open".into(), "Ctrl+O".into()),
+            ]
+        );
+    }
+
     #[test]
     fn odd_files_are_refused_or_tamed() {
         for bytes in [
@@ -551,7 +618,7 @@ mod tests {
             "base": long,
             "shortcuts": shortcuts,
             "bars": {
-                "layout": {"palette_pos": [1e30, 5.0], "standard_pos": [-3.0e5, 0.0]},
+                "layout": {"palette_pos": [1e30, 5.0], "standard_pos": [-3.0e5, 0.0], "toolbox_size": [0.0, 5.0]},
                 "toolbox": ["pick", long, ""],
                 "toolbox_hidden": ["", "eraser", "x".repeat(500)]
             },
@@ -574,6 +641,7 @@ mod tests {
             (bars.layout.palette_pos, bars.layout.standard_pos),
             (d.palette_pos, d.standard_pos)
         );
+        assert_eq!(bars.layout.toolbox_size, None);
         assert_eq!(
             bars.toolbox,
             vec!["pick".to_string(), String::new(), String::new()]

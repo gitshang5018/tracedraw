@@ -1,5 +1,7 @@
 # Özelleştirme seçenekleri
 
+> *Makine çevirisi: bu sayfa İngilizce sürümün gerisinde kalabilir.*
+
 [[menu.tools > menu.tools.options > menu.tools.options_customization]]
 arayüzün görünümünü, kendi klavye kısayollarınızı, hangi çubukların
 görüneceğini ve renk paletinin nasıl davranacağını ayarlar.
@@ -13,6 +15,9 @@ görüneceğini ve renk paletinin nasıl davranacağını ayarlar.
 - [[options.ui_shadows]] (daha az gölge yavaş grafik donanımına yardımcı
   olur).
 - [[options.colored_icons]]: her araç grubu kendi rengini alır.
+- [[options.docker_tabs_icons_only]]: pencerenin kenarlarındaki panel
+  sekmeleri yalnızca resimlerini gösterir, ad ipucunda yer alır. Kapalıyken
+  resmi ve adı gösterir; sığandan fazla sekmesi olan sütun kayar.
 - [[options.ui_size]]: menülerin, çubukların, simgelerin ve panellerin,
   sisteminizin monitöre verdiği ölçeklemeye göre ne kadar büyük olduğu
   (başlangıçta %100). [[options.reset_to_default]] %100'e geri döner. Arayüz
@@ -44,6 +49,14 @@ onu kaldırır; varsayılanlara sıfırlamak hepsini kaldırır. Araç tuşları
 harf veya <kbd>Shift</kbd> ile bir harftir. Bkz.
 [Klavye kısayolları](../reference/keyboard-shortcuts.md).
 
+Bir komutun birden çok kısayolu olabilir: yeni bir tuş mevcut olanlara eklenir
+(yerleşik tuş yanında çalışmaya devam eder) ve her tuşun kendi silme düğmesi
+vardır. Bir menü komutunu çalıştıran çubuk düğmeleri (Yeni, Aç, Kaydet, Geri
+Al, Yakınlaştır ve diğerleri) de menü komutlarıyla aynı kısayolları alır;
+menülerin yalnızca bazen gösterdiği satırlar da öyle. **Araç çubuğu
+düğmeleri** listesi Standart ve Yakınlaştırma çubuklarının tüm düğmelerini
+içerir: çubuktan kaldırdığınız bir düğmeyi oradan geri sürükleyin.
+
 ## Komut Çubukları {#command-bars}
 
 ![Özelleştirme seçeneklerinin Komut Çubukları sayfası](../../img/customize-customization-command-bars.png)
@@ -65,6 +78,9 @@ harf veya <kbd>Shift</kbd> ile bir harftir. Bkz.
 
 - [[options.palette_auto_update]] ve [[options.palette_show_document]]
   (ikisi de açık).
+- Varsayılan paletin [[options.palette_position]] (Üst, Alt, Sol, Sağ veya
+  Serbest), paletin kendi menüsündeki gibi; araç çubukları kilitliyken
+  değişmez.
 - [[options.palette_swatches]]: [[options.palette_no_color]] (açık) ve
   [[options.palette_right_button]] öğesinin ne yaptığı:
   [[options.palette_set_outline]] (başlangıçta) veya

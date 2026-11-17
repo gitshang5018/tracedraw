@@ -1,210 +1,247 @@
 # Updates
 
-The browser build is always the latest: there Help > Updates opens the
-releases page. Every other build checks.
+Desktop only (the browser build is always the latest; there Help >
+Updates opens the releases page).
 
-## Where the releases are
-
-The project publishes from `gitshang5018/tracedraw`. Two kinds of release
-live there, and both are followed:
-
-- the development builds, as the pre-release tagged `nightly`, whose files
-  are replaced on every push to main and named after the commit
-  (`tracedraw-0.19.9-dev.4c864d1-android-arm64-v8a.apk`);
-- a version, as a release of its own (`v0.19.9`), named without the commit.
-
-The check reads the list of releases
-(`api.github.com/repos/gitshang5018/tracedraw/releases`), newest first, and
-takes the first one that carries a file for this system and is newer than
-the build that is running. The list rather than `/releases/latest`: that
-address never names a pre-release, and the development builds are
-pre-releases. A release with nothing for this system is passed over, so a
-Linux build looks past the nightlies (APKs only) to the last release that
-had an AppImage.
-
-The list is read from GitHub directly, and so is the release page. A
-release's file is downloaded through a proxy, for networks where GitHub's
-file host is slow or out of reach: `https://github.adc.dpdns.org/` and then
-the whole file address, as the proxy documents it
-(`https://github.adc.dpdns.org/https://github.com/...`). Only a file of a
-release (`/releases/download/`, or a host GitHub redirects to) is rewritten;
-anything else is left as it is (`updates::through_proxy`).
-
-A network that cannot reach GitHub at all (a phone whose DNS answers
-nothing for it, "No address associated with hostname") is answered by the
-proxy for the list as well: the check asks GitHub first and the proxy
-second, so it costs a second request rather than a failure. A download the
-proxy cannot serve is tried at its own address the same way.
-
-A phone checks certificates against ureq's own roots (Mozilla's), not the
-platform verifier: `rustls-platform-verifier` wants the Android JVM context,
-which a native activity has none of, and a check that panicked there left
-the box saying "checking" for good. The work runs in a thread of its own and
-is given 45 seconds: a panic or a wait longer than that is shown as the
-failure it is, so the box always answers.
-
-## Which build is this
-
-`updates::version()`: the version the packaging scripts passed in
-(`TRACEDRAW_BUILD_VERSION`, through `build.rs`), else the crate version. A
-version release reports `0.19.9`; a development build reports
-`0.19.9-dev.4c864d1`, so two builds of the same version are told apart by
-the commit they were made from. The Android workflow passes the same
-version it puts in the APK's name.
-
-Numbers compare as major, minor, patch. When they are equal:
-
-- a development build is newer than the release of that version (the
-  builds on main come after the tag);
-- two development builds differ by their commit, and any difference counts
-  as newer (the order of the release list is what says which came last);
-- a release is never newer than a development build of the same version.
-
-A development release carries the fixed tag "nightly", so its version is
-read from its file names (`updates::release_version`).
-
-## Which file
-
-Download opens the link of the release file named exactly for this system,
-its processor (x86_64, or arm64 for aarch64) and how this copy was
-installed (`updates::asset_names`); the system's installer does the
-installing:
-
-- Linux run as an AppImage (`APPIMAGE` set): `tracedraw-<v>-linux-<arch>.AppImage`,
-  where x86_64 looks for `linux-amd64` first and then `linux-x86_64`
-  (releases up to 0.19.8). From 0.19.9 on the release names the x86_64
-  AppImage `linux-amd64`, which sorts before `linux-arm64`: updaters of
-  0.19.8 and earlier take the first AppImage in GitHub's list, sorted by
-  name, and so get the x86_64 file (#1038). The tar.gz keeps
-  `linux-x86_64`;
-- Linux installed from the `.deb` (dpkg's list for `tracedraw` names the
-  running program): `tracedraw_<v>_<amd64|arm64>.deb`;
-- Linux unpacked from the tar.gz (a program outside `/usr`):
-  `tracedraw-<v>-linux-<arch>.tar.gz`;
-- Windows installed with setup: `tracedraw-<v>-windows-<arch>-setup.exe`;
-  the portable copy (the `tracedraw-settings` folder next to the program):
-  `tracedraw-<v>-windows-<arch>-portable.zip`;
-- macOS: `tracedraw-<v>-macos-<arch>.dmg`;
-- Android: `tracedraw-<v>-android-<abi>.apk`, one per ABI
-  (`arm64-v8a`, `armeabi-v7a`, `x86_64`), and only the one this build was
-  packed for. It is downloaded from the project's own storage rather than
-  from GitHub (see below).
-
-When the release has no such file (an rpm or other system package under
-`/usr`, a Flatpak or Snap, a processor without a build such as Windows on
-arm64) no file is downloaded and Download opens the release page instead; a
-file for another processor or package is never offered (#1038: the x86_64
-AppImage took the arm64 one, listed first).
-
-## Where a phone downloads from
-
-GitHub cannot be reached from every network a phone is on, and its file
-host is slow from many of them, so a phone's APK is downloaded from a
-bucket of the project's own instead: Cloudflare R2, whose public address is
-`APK_HOST` (`TRACEDRAW_APK_HOST`, a repository variable the workflow passes
-to `build.rs`, so the address is a setting rather than a line of code).
-The Android workflow publishes each build's APKs there under `apk/`, clears
-what was there before (the check always offers the newest build, and an
-older APK is of no use to anyone), and needs `R2_ACCOUNT_ID`,
-`R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` and `R2_BUCKET` for it. Without
-them nothing is uploaded and every phone downloads from the release. The
-settings themselves, and what to do when an upload fails, are in
-[`update-host.md`](../update-host.md).
-
-Every ABI goes up, the emulator's included: an object in a bucket has no
-page size to stay under. Each file is served with the type it is
-(`text/html` for the page, `application/json` for the manifest,
-`application/vnd.android.package-archive` for an APK), so a phone's browser
-offers an APK as a file to install instead of showing it as text.
-
-The bucket carries a manifest of its own as well: `update.json` beside the
-APKs names the newest build, the file of each ABI and its digest. The check
-reads the releases on GitHub first, directly and then through the proxy,
-because a release is written by the same run that builds it; the manifest
-answers only when GitHub cannot be read at all (`updates::check`). It is
-asked for with a value that changes each time, since a bucket may hold a
-copy for a while, and it carries when the build was made (`"built"`,
-seconds since 1970, which `build.rs` bakes into the app as well): a host
-that is behind a build the phone already has offers nothing, since two
-development builds carry a commit each and nothing else says which came
-first.
-
-## Install in place
-
-When the release's file for this system carries a SHA-256 digest (GitHub
-gives one for every uploaded file) and there is somewhere to put it, the
-dialog offers Install first:
-
-- **A phone**: the APK is downloaded into the app's cache, its size and
-  digest are checked, and the file is written into a `PackageInstaller`
-  session and committed, so the system's own prompt asks the user to update
-  TraceDraw. Android 8 and later also need the app to be allowed to install
-  packages, which is granted per app; when it is not, the dialog opens that
-  screen instead and says so. A download that does not match its digest is
-  deleted and never reaches the installer.
-- **A Linux AppImage** (the AppImage runtime names its file in `APPIMAGE`):
-  the new AppImage is written next to the running one
-  (`.<name>.update`), showing the megabytes done, checked the same way,
-  given the running file's permissions and moved over it. The new version
-  runs from the next start. Windows, macOS, the `.deb` and the tar.gz keep
-  Download and the system's installer.
-
-## What the dialog offers
-
-- **A newer release**: what the release says about itself, then Download,
-  Open the release page, Skip this version, plus Install when the file can
-  be put in place. Skip keeps that version out of the daily check.
-- **No newer build**: the version that is running, and Check for updates.
-- **A failed check** (no connection, a proxy that is down): why, and Check
-  for updates.
-
-The notes are in the window itself, not only on the release's page: they
-are what a reader wants to know before installing, and a phone is not a
-place to open a page in. They are written in Markdown and shown as plain
-text: a heading keeps its words, a bullet keeps its dot, a link keeps the
-words it was written with and the address it points at, and the marks
-around them are taken off. An underscore is only a mark at the edge of a
-word, so a name like `ACCESS_KEY_ID` keeps its underscores.
-
-The notes come from the release's own body when the release list is read
-from GitHub, and from the update host's manifest when it is not: a phone
-that cannot reach GitHub cannot reach the release's page either, so the
-manifest carries the notes of the build as well.
-
-Below the notes are the models the image tools need, each with its own
-button: a button that fetched every model at once filled a phone's
-storage without being asked what for. There is no close button at the end
-of the window: the window is closed by its own cross.
-
-On a phone the drawer shows the version it runs, and beside it a Check for
-updates button that starts the same check and opens the same box, one tap
-from the menu rather than three.
-
-Options > Global > General, Check for updates at start (on by default):
-once a day the same check runs in the background at start, and only a
-newer release that was not skipped is shown.
+- Help > Updates asks GitHub for the project's latest release
+  (`api.github.com/repos/tracedraw/tracedraw/releases/latest`) and says
+  whether it is newer than this version (numbers compared as major,
+  minor, patch; drafts, pre-releases and the nightly build never count).
+- A newer release offers Download, Release notes, Skip this version and
+  Close. Download opens the link of the release file named exactly for
+  this system, its processor (x86_64, or arm64 for aarch64) and how this
+  copy was installed; the system's installer does the installing:
+  - Linux run as an AppImage (`APPIMAGE` set): `tracedraw-<v>-linux-<arch>.AppImage`,
+    where x86_64 looks for `linux-amd64` first and then `linux-x86_64`
+    (releases up to 0.19.8). From 0.19.9 on the release names the x86_64
+    AppImage `linux-amd64`, which sorts before `linux-arm64`: updaters of
+    0.19.8 and earlier take the first AppImage in GitHub's list, sorted
+    by name, and so get the x86_64 file (#1038). The tar.gz keeps
+    `linux-x86_64`;
+  - Linux installed from the `.deb` (dpkg's list for `tracedraw` names
+    the running program): `tracedraw_<v>_<amd64|arm64>.deb`;
+  - Linux unpacked from the tar.gz (a program outside `/usr`):
+    `tracedraw-<v>-linux-<arch>.tar.gz`;
+  - Windows installed with setup: `tracedraw-<v>-windows-<arch>-setup.exe`;
+    the portable copy (the `tracedraw-settings` folder next to the
+    program): `tracedraw-<v>-windows-<arch>-portable.zip`;
+  - macOS: `tracedraw-<v>-macos-<arch>.dmg`.
+  When the release has no such file (an rpm or other system package
+  under `/usr`, a Flatpak or Snap, a processor without a build such as
+  Windows on arm64) no file is downloaded and Download opens the release
+  page instead; a file for another processor or package is never offered
+  (#1038: the x86_64 AppImage took the arm64 one, listed first).
+- The update card (`ui/update_card.rs`): once a newer release is known
+  (found by the check at start or by Help > Updates) and was not
+  skipped, a card opens in the middle of the window, over a dimmed
+  window, with the TraceDraw icon, the name, an UPDATE badge, the two
+  versions ("v0.28.0 to 0.29.0") and a line of text. Update now starts
+  the install described below (where the copy cannot install by itself
+  it opens the Updates box, which offers Download); nothing is
+  downloaded before the click. Once the install runs the card shows the
+  same step, bar and detail line as the progress dialog below
+  (`ui::update_progress::status`), with Cancel while the file downloads;
+  once it is ready the button becomes Restart Now, after a failure Try
+  Again. What's new opens the release notes. Dismiss, the cross and Escape
+  close it for the session; a card dismissed during the download comes
+  back once, when the file is ready. It shows on the Welcome Screen, on
+  an empty workspace and over the page sorter as well as over a drawing
+  (TraceDraw opens on the Welcome Screen, so the card must be there at
+  start). It waits for any dialog (the first-start question, recovery)
+  and does not show over one. Help >
+  Updates shows its own box instead of the card.
+- Every start while an update is known: the check at start runs once a
+  day, and also at every start while the last check found a newer release
+  that is not installed or skipped (`settings.pending_update`), so the
+  card is there each time TraceDraw opens until the update is done. It is
+  the same request the daily check makes (GitHub's latest release, nothing
+  about the user); a check that finds this version the latest forgets it.
+  Skip this version in the Updates box stops it.
+- Install in place: a copy that can replace itself shows Install first
+  in the dialog (no uninstalling, the settings and drawings stay). It
+  needs the release file for this system, processor and kind of install
+  to carry a SHA-256 digest (GitHub gives one for every uploaded file); a
+  release without one only gets Download. The download is checked for
+  size and digest before anything is touched; a short, long or mismatched
+  download is deleted and the installed copy is left as it was.
+- The progress dialog (`ui/update_progress.rs`), opened by Install in
+  the Updates box: a window of a fixed size (500 x 280 points with its
+  title bar, so nothing moves while the numbers change), moved by its
+  title bar, with the TraceDraw icon, "Updating TraceDraw" and "Version
+  <this> to <new>". Below them the step (`updates::InstallState`):
+  - Downloading: an egui progress bar, the whole percent done (rounded
+    down, 100 only with the last byte, `updates::percent`) and the line
+    "12.3 MB of 45.0 MB, 3.2 MB/s, about 10 s left". The speed is the
+    rate between samples at least 0.25 s apart, smoothed exponentially
+    with a time constant of 2.5 s; after more than a second without data
+    it decays as if nothing arrived (`updates::Meter`). The time left is
+    the bytes left over that speed, shown once the download has run 3 s
+    with three samples and under a day; under 10 s in whole seconds,
+    under 90 s in steps of 5 s, else in minutes. Cancel stops the
+    download at once (`Installer::cancel`): the state is Idle straight
+    away, the body is read on a thread of its own that the install stops
+    waiting for within a tenth of a second (a hanging connection does not
+    hold it), the partial file is removed and the Updates box offers
+    Install again. A new install waits for the cancelled thread to end.
+    The close button and Escape close the window; the download goes on
+    and the update card shows it.
+  - Checking the download (the size and SHA-256 digest are compared) and
+    Installing (the file is moved, unpacked or copied into place): a
+    moving bar, Cancel greyed (a file is not stopped half way).
+  - Ready (`Installed` or `Ready`): a green check mark, "TraceDraw <new>
+    is ready", a line saying what Restart does, Restart Now (the default,
+    Enter) and Later.
+  - Failed: a red mark, "The update could not be installed", the reason
+    in plain words (`updates::trouble`: the server could not be reached,
+    the download was incomplete or damaged, the folder cannot be
+    written, the disk is full, or something else), the error itself in
+    small type, Try Again (Enter) and Download from the website.
+  The window asks for a frame every 200 ms while downloading (the
+  download also asks when it has news, at most every 150 ms), every
+  40 ms while the bar moves, and none once the update is ready or failed.
+  Six kinds of copy (`updates::InstallTarget`), every one that has a
+  release file:
+  - Linux AppImage (`APPIMAGE` names the running file): the release's
+    AppImage is written next to the running one (`.<name>.update`), given
+    the running file's permissions and moved over it. The new version is
+    in place (`InstallState::Installed`).
+  - Windows installed with setup (not the portable copy, not the Store
+    copy): the release's `tracedraw-<v>-windows-<arch>-setup.exe` is
+    downloaded to `%TEMP%\tracedraw-update` (`InstallState::Ready`) and
+    nothing is run yet.
+  - macOS app bundle (`X.app/Contents/MacOS/<program>`; a build run from
+    the source tree has no bundle and gets Download): the disk image is
+    downloaded, mounted read-only and hidden (`hdiutil attach -nobrowse`),
+    its app is copied next to the running bundle with `ditto`, and the
+    two are swapped by renaming (the old bundle moves aside first and
+    comes back if the new one cannot be moved in). The image is
+    unmounted and the download removed on every outcome. A bundle in a
+    folder the user cannot write to fails the install and offers
+    Download.
+  - Linux unpacked from the tar.gz: the archive is downloaded, checked,
+    and its `tracedraw` replaces the running program (under the running
+    file's name, in case the copy was renamed) and its `tracedraw-cli`
+    the tool beside it, if one is there. Every new file is written as a
+    hidden `.<name>.update` first and moved over the old one by rename
+    (a running program can be replaced that way); a damaged archive, one
+    without the program, or a folder that cannot be written changes
+    nothing.
+  - Windows portable zip: the zip's top-level files (the program, the
+    tool, README and licences) replace the ones beside the running
+    program. Entries in a folder, with a path separator, a drive or a
+    leading dot are skipped, so the `tracedraw-settings` folder, in the
+    zip and beside the program, is never touched. Windows cannot
+    overwrite a running program but can rename it: the old file is set
+    aside as `.<name>.old`, the new one moved in (the old one moves back
+    if that fails) and the leftover removed at the next start
+    (`updates::clean_leftovers`).
+  - Linux installed from the `.deb` (offered only when `pkexec` is on the
+    `PATH`): the package is downloaded and checked to
+    `$XDG_CACHE_HOME/tracedraw-update` (`~/.cache/...`, mode 0700; never
+    a shared `/tmp`, because the file is installed as the administrator
+    and must not be swappable after the check) and nothing is run yet
+    (`InstallState::Ready`).
+  After an in-place install (AppImage, app, tar.gz, portable zip) and
+  after a Windows or `.deb` download the dialog offers Restart Now and
+  Later (for the Windows setup and the `.deb` it says that TraceDraw
+  closes, installs the update and starts again). Later
+  closes the dialog and changes nothing: the new version runs from the
+  next start (Windows: the downloaded setup is not run). Restart exits
+  the usual way (File > Exit): drawings with unsaved changes are asked
+  about first, and answering Cancel to any of them cancels Restart
+  (`Installer::arm`/`disarm`). At exit, after the settings are saved,
+  `Installer::run_pending` starts the new version once:
+  - AppImage: the new file, without `APPDIR`, `ARGV0` and `OWD` of the old
+    mount;
+  - Windows: `cmd /C start "" <setup> /SILENT /SUPPRESSMSGBOXES
+    /NORESTART /relaunch=1`. The shell is used so that the setup can ask
+    for administrator approval (a copy installed for all users). Setup
+    keeps the install folder and install mode of the existing copy, its
+    settings and file associations, and `packaging/windows/tracedraw.iss`
+    starts the new TraceDraw at the end when `/relaunch=1` is given;
+  - macOS: `open -n <bundle>`;
+  - tar.gz and portable zip: the program again;
+  - `.deb`: `sh -c 'pkexec dpkg -i "$1"; rm -f "$1"; exec "$2"'`: the
+    password is asked by the system's authentication dialog, the file is
+    removed and the program (`/usr/bin/tracedraw`) starts whether the
+    install worked or not (a refused password leaves the old version,
+    which starts).
+  Copies with no release file (an rpm or other system package, Flatpak,
+  Snap) keep Download or their store; the Microsoft Store and Google Play
+  copies are updated by the store and the browser build is always the
+  latest. The path of the running program is taken once, before an update
+  replaces it (afterwards the system no longer names it).
+- First start: before any check runs on its own, a question asks
+  whether to check for updates, Always check or Never check
+  (`Dialog::UpdatePolicy`, settings `update_check_asked`). It waits for
+  any other start-up dialog to close. Until it is answered no request is
+  made, so a first start is silent on the network. Settings saved by
+  older versions have no answer, so the question is asked once after
+  updating. The answer sets the option below.
+- Options > Global > General, Check for updates at start (set by the
+  first-start answer): once a day, the same check runs in the background
+  at start; only a newer release that was not skipped is shown (by the update
+  card), nothing otherwise.
+- A failed check (no connection) says why and offers the releases page.
 
 ## Checks
 
 - `updates::tests::versions_compare_by_number`
-- `updates::tests::a_development_build_is_newer_than_the_release_it_follows`
-- `updates::tests::the_download_fits_the_system`
-- `updates::tests::a_phone_gets_the_apk_of_its_own_abi`
-- `updates::tests::the_host_manifest_names_the_file_of_this_phone`
-- `updates::tests::release_notes_are_read_as_plain_text`
-- `updates::tests::notes_with_nothing_in_them_are_nothing`
-- `updates::tests::a_strong_mark_closes_with_a_pair_and_names_keep_their_underscores`
-- `updates::tests::a_link_keeps_its_words_and_its_address`
-- `updates::tests::a_development_release_takes_its_version_from_its_files`
-- `updates::tests::a_release_with_no_file_for_this_system_is_passed_over`
-- `updates::tests::drafts_are_not_offered`
+- `updates::tests::the_download_fits_the_system` (the file names of the
+  v0.19.8 release, in GitHub's order and reversed)
 - `updates::tests::no_file_of_another_system_is_offered`
-- `updates::tests::the_x86_64_appimage_is_named_amd64_from_0_19_9`
+- `updates::tests::the_x86_64_appimage_is_named_amd64_from_0_19_9` (the new
+  name, the old one as fallback, the order an 0.19.8 updater sees, and the
+  name in `build-appimage.sh`)
 - `updates::tests::how_a_linux_copy_was_installed`
+- `updates::tests::the_same_or_older_drafts_and_pre_releases_are_not_offered`
+- `ui::dialogs::tests::every_dialog_draws_and_accepts_enter` (the dialog)
+- Checked against GitHub from the app: 0.4.0 reads as the latest version.
 - `updates::tests::the_appimage_comes_with_its_digest`
-- `updates::tests::only_downloads_go_through_the_proxy`
 - `updates::tests::installing_replaces_the_file_only_when_it_checks_out`
 - `ui::dialogs::tests::the_updates_dialog_draws_every_state`
+- `app::tests::no_update_check_before_the_first_start_question`
+- `app::tests::the_first_start_answer_sets_the_update_option`
+- `app::tests::older_settings_have_not_answered_the_update_question`
 - `updates::tests::live_install_from_the_latest_release` (run by hand,
-  needs the network: `cargo test -- --ignored`): the newest release parses
-  through the proxy, its file downloads and its digest checks out.
+  needs the network): the 0.4.0 AppImage downloaded through GitHub's
+  redirect, its digest checked and the file put in place.
+  Run again against v0.19.8: the x86_64 AppImage is picked, downloaded
+  and checked.
+- `updates::tests::the_setup_and_the_disk_image_come_with_their_digest`
+- `updates::tests::the_app_bundle_is_found_from_the_program`
+- `updates::tests::swapping_the_bundle_never_leaves_the_app_missing`
+- `updates::tests::a_downloaded_file_is_kept_only_when_it_checks_out`
+- `updates::tests::restart_starts_the_new_version` (the commands, and the
+  `/relaunch` entry in `tracedraw.iss`)
+- `updates::tests::the_new_version_starts_only_after_restart`
+- `ui::dialogs::tests::the_updates_dialog_draws_every_state` (Ready too)
+- `documents::tests::cancelling_the_exit_cancels_restart`
+- `updates::tests::every_kind_of_copy_with_a_file_updates_in_place`
+- `updates::tests::the_tar_gz_replaces_the_program_and_its_tool`
+- `updates::tests::a_bad_tar_gz_changes_nothing`
+- `updates::tests::the_portable_zip_keeps_the_settings_folder`
+- `updates::tests::a_running_program_is_set_aside_not_overwritten`
+- `updates::tests::archive_entries_are_installed_under_safe_names_only`
+- `updates::tests::the_deb_installs_as_the_administrator_then_starts_the_program`
+- Not run in CI: the Windows setup run, the macOS mount and copy and
+  `pkexec dpkg` (they need those systems); their commands are built by
+  tested functions.
+- `ui::update_card::tests::the_card_shows_only_for_a_release_to_update_to`
+- `ui::update_card::tests::update_now_installs_when_it_can`
+- `ui::update_card::tests::restart_needs_an_update_in_place`
+- `ui::update_card::tests::a_dismissed_card_comes_back_when_the_download_is_ready`
+- `app::tests::a_found_update_is_remembered_until_it_is_gone`
+- `ui::update_card::tests::the_card_draws_in_every_state`
+- `updates::tests::the_percentage_counts_whole_percent_done`
+- `updates::tests::the_speed_is_smoothed_and_the_time_left_waits_for_it`
+- `updates::tests::install_errors_are_told_in_plain_words`
+- `updates::tests::cancel_stops_the_download_and_removes_the_partial_file`
+- `updates::tests::an_install_goes_through_its_steps`
+- `ui::update_progress::tests::the_detail_line_grows_as_the_numbers_become_meaningful`
+- `ui::update_progress::tests::every_install_state_has_its_phase`
+- `ui::dialogs::tests::the_update_dialog_shows_the_progress_and_the_buttons_of_each_step`
+- `ui::chrome::tests::a_message_box_is_laid_out_in_its_own_size_from_its_first_frame`
+  (message boxes share one window, which egui sizes and places from the
+  frame before; a box that follows one of another size is laid out
+  again in the same frame)

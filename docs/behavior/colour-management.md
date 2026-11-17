@@ -12,7 +12,7 @@
 
 ## The Color Management Settings dialog
 
-Tools > Color Management (and the Launch list) opens a dialog with two
+Tools > Color Management opens a dialog with two
 tabs; nothing changes until OK. "?" opens the help.
 
 **Document**: Current Profiles (the drawing's RGB, CMYK and grayscale
@@ -134,6 +134,55 @@ profile of the settings. Switching tabs, opening or reverting a drawing
 installs the right one. `tracedraw-cli` renders and exports through the
 drawing's profile too (relative colorimetric, no black point
 compensation).
+
+## Convert Colors
+
+Tools > Convert Colors (#972) turns every colour of the selected objects,
+or of the whole drawing, into CMYK or into RGB, in one undo step
+("Convert Colors", `Command::ConvertColors`). The dialog: Convert to
+CMYK (default) or RGB; Colors of the selected objects (the default when
+something is selected) or the whole drawing (the pages' backgrounds and
+the symbols too); Convert spot colors too (off).
+
+- What converts: solid fills, gradient stops, mesh node colours,
+  pattern and texture colours, outlines, text, table cells, the colours
+  of effects (contour, blend, extrude, bevel, block shadow and the rest)
+  and drop shadows, in groups and clip frames at any depth
+  (`tracedraw_core::color_convert`: every colour of an object's saved
+  form is found by its model tag, so no part is missed).
+- How: `Color::convert_to`, so the conversion goes through the colour
+  engine with the profiles above (the drawing's own CMYK profile when it
+  carries one, else the settings' RGB and CMYK profiles, the rendering
+  intent and black point compensation; Map gray to black applies), and
+  through the built-in press model when no profile is loaded.
+- Registration colour never changes. Spot colours stay unless the box is
+  ticked; then each becomes its process stand-in at its tint in the model
+  asked for. A colour already in the model stays.
+- Bitmaps take the colour mode (`Shape::cmyk_bitmap`, #1254; a bitmap
+  whose mode changes counts one): to CMYK the picture's pixels are taken
+  to CMYK and back through the profiles (`bitmap_fx::through_cmyk`: the
+  engine sampled on a 17-point grid per channel, the pixels read by
+  trilinear interpolation), so it shows the colours the inks can make,
+  in the same undo step; to RGB the mode alone changes and the pixels
+  stay. Image > Mode > RGB Color and CMYK Color do the same for the
+  selected bitmaps and tick the mode they are in; the status line names
+  it ("Bitmap 600 x 400 px (CMYK)"). A `.cdr` CMYK picture (colour
+  model 3) opens in the CMYK mode; `.tdraw` files keep it. Saving `.cdr`
+  writes every picture's RGB pixels still (the 32-bit CMYK record is
+  read, but no file of ours confirms its header to write it).
+- The status line says how many colours changed; with none to change (or
+  Selected objects with nothing selected) nothing is done and no undo
+  step is made.
+
+Checks: `color_convert::tests` (stops, outline, background, spots kept
+and converted when asked, registration kept, a selection only, effects
+and shadows, bitmaps' mode in groups), `ui::convert_colors::tests::colours_convert_for_the_selection_or_the_drawing`
+(the dialog by Enter, one undo step each, nothing to change makes no
+step), `ui::convert_colors::tests::bitmaps_take_the_colour_mode_and_their_pixels_follow`
+(a bitmap's mode and pixels in one step, back to RGB the mode alone,
+undo), `ui::status::tests::object_information_names_the_object_and_its_layer`
+(the mode in the status line), `cdr::parse::tests::cmyk_bitmaps_are_read_as_ink`
+(a CMYK picture opens in the CMYK mode).
 
 ## Proof colours
 

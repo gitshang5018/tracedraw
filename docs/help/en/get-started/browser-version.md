@@ -1,6 +1,6 @@
 # The browser version
 
-You can [use TraceDraw in a web browser](https://igtoth.github.io/tracedraw/)
+You can [use TraceDraw in a web browser](https://tracedraw.github.io/tracedraw/)
 with nothing to install. It is the same program as the desktop version,
 built for the browser, so the menus, tools and files are the same.
 
@@ -11,7 +11,10 @@ built for the browser, so the menus, tools and files are the same.
 Each time the page opens, a message explains that the browser version is the
 same program as the desktop one, and what differs. [[dialog.ok]] (or
 <kbd>Enter</kbd>) closes it; a second button opens the downloads of the
-desktop version.
+desktop version. On Windows a third button opens TraceDraw in the Microsoft
+Store, and the message adds that the Store version may be one or more
+releases behind the latest download, because the Store certifies each
+version first.
 
 ## What differs from the desktop {#differences}
 
@@ -30,11 +33,25 @@ desktop version.
   <kbd>Ctrl+W</kbd> always stay with the browser, so use the [[menu.file]]
   menu to create and close drawings.
 - **Screens.** It suits a desktop browser with a mouse and keyboard. On a
-  tablet, use the Touch workspace (see
+  tablet, install it as an app and use the Touch workspace (see
+  [Tablets and the Android app](tablets-and-android.md) and
   [Workspaces](../customize/workspaces.md)); a phone screen is too small for
   editing.
 - **Macros.** Macro projects load and run in the desktop version only. In
   the browser, every macro command shows a message saying so, with a button to
   the desktop downloads.
-- **Updates.** The browser version is always the latest; there is nothing to
-  install. Auto-backup and session recovery are desktop features.
+- **Updates.** The page is always the latest version; there is nothing to
+  install. Installed as an app, it keeps the version you last used and
+  takes a new one the next time it starts after all its windows were
+  closed.
+- **Unsaved drawings.** Closing or reloading the tab, or leaving the
+  page, with unsaved changes asks first with the browser's own question.
+  Auto-backups are kept in the browser's storage for the site, and the next
+  visit offers what a closed, reloaded or crashed tab left, as the desktop
+  version does after a crash (see
+  [Auto-backup and recovery](open-and-save.md#recovery)). Clearing the
+  site's data removes them.
+- **Pen pressure.** A pen's pressure sets the width of Freehand and Brush
+  Strokes as on the desktop, where the browser passes it on (current
+  Chrome, Edge, Firefox and Safari do when the system reports it). See
+  [Drawing with a graphics tablet](../lines-shapes/pen-pressure.md).

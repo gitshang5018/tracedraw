@@ -20,23 +20,6 @@ pub fn quiet_panics(on: bool) {
 
 /// The log file of this run, in `dir`.
 pub fn log_path(dir: &Path) -> PathBuf {
-    // On a phone the app's own folder cannot be read from outside a release
-    // build: `run-as` refuses a package that is not debuggable, so a log
-    // written there is a log nobody can read. It goes to the shared
-    // storage's Download, where a file manager and `adb` both reach it.
-    //
-    // The path is written out rather than asked of the activity: this runs
-    // before the activity has been handed over, and asking then answered
-    // nothing, which put the log back in the folder nobody can read. The
-    // path is checked, so a phone that keeps its storage elsewhere falls
-    // through to the app's own folder.
-    #[cfg(target_os = "android")]
-    {
-        let shared = std::path::Path::new("/storage/emulated/0/Download");
-        if shared.is_dir() {
-            return shared.join("tracedraw.log");
-        }
-    }
     dir.join("tracedraw.log")
 }
 
@@ -86,15 +69,11 @@ pub fn init() {
     crate::frame_stats::mark_start();
     // wgpu's own lines on which backends started and which adapters it
     // left out come at debug; they are few and only at the start (#616).
-    // A start in a process that already has its logger, an activity made
-    // again after one was put away, finds it set: `init` panics there and
-    // the app stopped before its first frame. `try_init` leaves the first
-    // one in place.
-    let _ = env_logger::Builder::from_env(
+    env_logger::Builder::from_env(
         env_logger::Env::default().default_filter_or("info,wgpu_core::instance=debug"),
     )
     .target(env_logger::Target::Pipe(Box::new(Tee { file })))
-    .try_init();
+    .init();
     log::info!(
         "TraceDraw {} on {} {}",
         env!("CARGO_PKG_VERSION"),
@@ -159,7 +138,13 @@ fn windows_version() -> Option<String> {
         platform: u32,
         service_pack: [u16; 128],
     }
-    #[link(name = "ntdll", kind = "raw-dylib")]
+    // 32-bit Windows: the DLL exports the plain name, not the stdcall
+    // decorated one raw-dylib imports by default (#1975).
+    #[cfg_attr(
+        target_arch = "x86",
+        link(name = "ntdll", kind = "raw-dylib", import_name_type = "undecorated")
+    )]
+    #[cfg_attr(not(target_arch = "x86"), link(name = "ntdll", kind = "raw-dylib"))]
     unsafe extern "system" {
         fn RtlGetVersion(info: *mut OsVersionInfo) -> i32;
     }
@@ -210,21 +195,19 @@ pub fn no_window(reason: &str) {
         .map(|d| log_path(&d).display().to_string())
         .unwrap_or_default();
     let text = crate::i18n::trf("dialog.no_window", &[("reason", reason), ("log", &log)]);
-    message(&text);
+    message(text);
 }
 
-/// Tell the user in a dialog of the system's; a phone logs it instead,
-/// its screen being too small for a window that says nothing can open.
-fn message(text: &str) {
-    #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
-    {
-        let _ = rfd::MessageDialog::new()
-            .set_level(rfd::MessageLevel::Error)
-            .set_title("TraceDraw")
-            .set_description(text)
-            .set_buttons(rfd::MessageButtons::Ok)
-            .show();
-    }
+/// An error box, with the system's dialogs; Android has none, so the
+/// system log gets it (`adb logcat -s tracedraw`).
+fn message(text: String) {
+    #[cfg(not(target_os = "android"))]
+    let _ = rfd::MessageDialog::new()
+        .set_level(rfd::MessageLevel::Error)
+        .set_title("TraceDraw")
+        .set_description(text)
+        .set_buttons(rfd::MessageButtons::Ok)
+        .show();
     #[cfg(target_os = "android")]
     log::error!("{text}");
 }
@@ -240,11 +223,11 @@ fn show(report: &str, saved: Option<&Path>) {
     let mut text = format!("{first}\n\n");
     if let Some(p) = saved {
         text.push_str(&format!(
-            "The details are in {}. Please attach that file to an issue at https://github.com/igtoth/tracedraw/issues",
+            "The details are in {}. Please attach that file to an issue at https://github.com/tracedraw/tracedraw/issues",
             p.display()
         ));
     }
-    message(&text);
+    message(text);
 }
 
 #[cfg(test)]

@@ -124,10 +124,10 @@ pub fn dialog(ctx: &Context, id: &str, title: &str, size: Vec2, add: impl FnOnce
                 Pos2::new(bar.right(), bar.top() + shown.y),
             );
             body_backdrop(ui, body, &m3);
-            ui.scope_builder(egui::UiBuilder::new().max_rect(body), |ui| {
-                form_style(ui);
-                add(ui)
-            });
+            let mut child = ui.new_child(egui::UiBuilder::new().max_rect(body));
+            child.set_clip_rect(body.intersect(ui.clip_rect()));
+            form_style(&mut child);
+            add(&mut child);
         });
     if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
         closed = true;
@@ -228,13 +228,124 @@ fn placed<'a>(window: egui::Window<'a>, ctx: &Context, id: egui::Id) -> egui::Wi
 pub struct Window {
     title: String,
     id: egui::Id,
+    /// A window the user sizes: its first size and the smallest, with a
+    /// maximize button in the title bar.
+    resize: Option<(Vec2, Vec2)>,
 }
 
 /// The chrome window for a dialog titled `title`.
 pub fn window(title: impl Into<String>) -> Window {
     let title = title.into();
     let id = egui::Id::new(("chrome_dialog", title.clone()));
-    Window { title, id }
+    Window {
+        title,
+        id,
+        resize: None,
+    }
+}
+
+/// Frames after a Tab press in which a dialog takes the focus back
+/// (egui hands it on over a frame or two).
+const TAB_FRAMES: u8 = 3;
+
+/// Tab and Shift+Tab stay in the dialog drawn on `layer` (#1258).
+///
+/// egui moves the focus with Tab in the order the widgets were drawn,
+/// so from nothing focused (a dialog just opened) or from a dialog's
+/// last control it went to the menu bar, drawn first, and the File menu
+/// took the keys. For a few frames after Tab the focus is put back in
+/// the dialog whenever it is nowhere or in the main window: on its
+/// first input box for Tab (its first control when it has no box), on
+/// its last for Shift+Tab. Focus inside the dialog, or in a list or
+/// another window over it, is left to egui. Nothing runs between Tab
+/// presses.
+pub(crate) fn keep_tab_in(ctx: &Context, layer: egui::LayerId) {
+    let pending_id = layer.id.with("tab_pending");
+    let pressed = ctx.input(|i| {
+        // The raw events: a key handler may have taken the Tab already.
+        i.raw.events.iter().rev().find_map(|e| match e {
+            egui::Event::Key {
+                key: egui::Key::Tab,
+                pressed: true,
+                modifiers,
+                ..
+            } if !modifiers.any() => Some(false),
+            egui::Event::Key {
+                key: egui::Key::Tab,
+                pressed: true,
+                modifiers,
+                ..
+            } if modifiers.shift_only() => Some(true),
+            _ => None,
+        })
+    });
+    let mut pending: Option<(u8, bool)> = ctx.data(|d| d.get_temp(pending_id));
+    if let Some(back) = pressed {
+        pending = Some((TAB_FRAMES, back));
+    }
+    let Some((frames, back)) = pending else {
+        return;
+    };
+    let focused = ctx.memory(|m| m.focused());
+    let (mine, focus_layer) = ctx.viewport(|v| {
+        let mine: Vec<egui::Id> = v
+            .this_pass
+            .widgets
+            .get_layer(layer)
+            .filter(|w| w.enabled && w.sense.is_focusable())
+            .map(|w| w.id)
+            .collect();
+        // The layer of the focused widget, drawn this frame or the last.
+        let focus_layer = focused.and_then(|f| {
+            [&v.this_pass.widgets, &v.prev_pass.widgets]
+                .into_iter()
+                .find_map(|ws| ws.get(f).map(|w| w.layer_id))
+        });
+        (mine, focus_layer)
+    });
+    let outside = match (focused, focus_layer) {
+        (None, _) => true,
+        // The main window's panels: the menu bar, the toolbox, the canvas.
+        (Some(_), Some(l)) => l.order < egui::Order::Foreground,
+        (Some(_), None) => false,
+    };
+    if outside {
+        let inputs: Vec<egui::Id> = mine
+            .iter()
+            .copied()
+            .filter(|id| egui::TextEdit::load_state(ctx, *id).is_some())
+            .collect();
+        let target = if back {
+            inputs.last().or(mine.last())
+        } else {
+            inputs.first().or(mine.first())
+        };
+        if let Some(id) = target {
+            ctx.memory_mut(|m| m.request_focus(*id));
+        }
+    }
+    let left = frames.saturating_sub(1);
+    ctx.data_mut(|d| {
+        if left == 0 {
+            d.remove::<(u8, bool)>(pending_id);
+        } else {
+            d.insert_temp(pending_id, (left, back));
+        }
+    });
+    if left > 0 {
+        ctx.request_repaint();
+    }
+}
+
+/// Whether the resizable dialog `id` fills the main window.
+pub fn maximized(ctx: &Context, id: egui::Id) -> bool {
+    ctx.data(|d| d.get_temp::<bool>(id.with("chrome_maximized")))
+        .unwrap_or(false)
+}
+
+/// Maximize the resizable dialog `id`, or put it back to its size.
+pub fn set_maximized(ctx: &Context, id: egui::Id, on: bool) {
+    ctx.data_mut(|d| d.insert_temp(id.with("chrome_maximized"), on));
 }
 
 /// The widest a dialog's title bar must be for its title and close button.
@@ -248,6 +359,21 @@ fn title_width(ui: &Ui, title: &str) -> f32 {
 }
 
 impl Window {
+    /// Name the window by `salt` rather than by its title, for a title
+    /// that changes while it is open (a file name): it then stays where
+    /// it is instead of opening afresh.
+    pub fn id_salt(mut self, salt: &'static str) -> Self {
+        self.id = egui::Id::new(("chrome_dialog_salt", salt));
+        self
+    }
+
+    /// The window the user sizes, from `default` down to `min` (its body
+    /// gets the whole room, nothing scrolls), with a maximize button.
+    pub fn resizable(mut self, default: Vec2, min: Vec2) -> Self {
+        self.resize = Some((default, min));
+        self
+    }
+
     /// Draw the window with `add` as its body. Returns what `add` returned.
     pub fn show<R>(self, ctx: &Context, add: impl FnOnce(&mut Ui) -> R) -> Option<R> {
         self.show_with_footer(ctx, add, |_| {})
@@ -266,15 +392,15 @@ impl Window {
     where
         F: FnOnce(&mut Ui),
     {
-        match material(ctx) {
-            Some(m3) => self.show_material(ctx, &m3, add, footer),
-            None => self.show_desktop(ctx, add, footer),
+        if let Some(m3) = material(ctx) {
+            return self.show_material(ctx, &m3, add, footer);
         }
+        if self.resize.is_some() {
+            return self.show_resizable(ctx, add);
+        }
+        self.show_desktop(ctx, add, footer)
     }
 
-    /// The dialog of the phone: a rounded card in the middle of the
-    /// screen, its name as a Material headline, a round close button, and
-    /// the body under them — the shape every Android app's prompt has.
     fn show_material<R, F>(
         self,
         ctx: &Context,
@@ -307,7 +433,6 @@ impl Window {
             .show(ctx, |ui| {
                 ui.set_width(width);
                 ui.spacing_mut().item_spacing.y = 8.0;
-                // The headline, and the way out of the dialog.
                 let (head, _) = ui.allocate_exact_size(Vec2::new(width, HEAD_H), Sense::hover());
                 ui.painter().text(
                     Pos2::new(head.left() + 24.0, head.center().y),
@@ -319,13 +444,6 @@ impl Window {
                 if close_target(ui, head.right_center() - Vec2::new(36.0, 0.0), m3, &format!("{:?}", self.id)) {
                     closed = true;
                 }
-                // The body scrolls when the phone is short: a dialog that
-                // cannot be scrolled is a dialog with no way out.
-                // What the phone has left for the body: the headline above
-                // it, the buttons below it and the card's own edges are not
-                // its room. A dialog with three fields in it is three fields
-                // tall; one with more in it than the phone holds fills this
-                // and scrolls.
                 let max_h = (screen.height() - 40.0 - HEAD_H - 96.0).max(140.0);
                 let body = egui::ScrollArea::vertical()
                     .id_salt("dialog_body")
@@ -347,8 +465,6 @@ impl Window {
                             .inner
                     });
                 out = Some(body.inner);
-                // The actions stay at the bottom of the card while the
-                // body above them scrolls.
                 ui.add_space(8.0);
                 Frame::new()
                     .inner_margin(Margin {
@@ -389,6 +505,15 @@ impl Window {
             .frame(window_frame());
         // Dragged by the title bar; opens centred (or where it was left).
         let window = placed(window, ctx, self.id);
+        // egui sizes and places a window from the frame before. Message
+        // boxes share one window, so a box whose text or buttons changed
+        // (the next box, or a line that grows) was drawn for a frame in
+        // the old box's size and place: shifted against its frame, its
+        // text and buttons cut off. Such a frame is laid out again.
+        let size_before = ctx
+            .memory(|m| m.area_rect(self.id))
+            .filter(|r| r.is_finite())
+            .map(|r| r.size());
         window.show(ctx, |ui| {
             ui.spacing_mut().item_spacing.y = 6.0;
             let min_w = title_width(ui, &self.title).max(280.0);
@@ -433,6 +558,104 @@ impl Window {
                 closed = true;
             }
         });
+        let size_after = ctx.memory(|m| m.area_rect(self.id)).map(|r| r.size());
+        if let (Some(a), Some(b)) = (size_before, size_after) {
+            if (a - b).abs().max_elem() > 0.5 {
+                ctx.request_discard("dialog size changed");
+            }
+        }
+        keep_tab_in(ctx, egui::LayerId::new(egui::Order::Foreground, self.id));
+        if closed {
+            request_close(ctx);
+        }
+        out
+    }
+
+    /// [`Window::show`] for a window the user sizes: the body fills the
+    /// window under the title bar; maximized, the window fills the main
+    /// window.
+    fn show_resizable<R>(self, ctx: &Context, add: impl FnOnce(&mut Ui) -> R) -> Option<R> {
+        let (default, min) = self
+            .resize
+            .unwrap_or((Vec2::new(900.0, 600.0), Vec2::new(600.0, 400.0)));
+        let mut out = None;
+        let mut closed = false;
+        let mut toggle_max = false;
+        let screen = ctx.content_rect();
+        let max = maximized(ctx, self.id);
+        let room = (screen.size() - Vec2::splat(8.0)).max(Vec2::splat(200.0));
+        let min = min.min(room);
+        let mut window = egui::Window::new(&self.title)
+            .id(self.id)
+            .order(egui::Order::Foreground)
+            .title_bar(false)
+            .collapsible(false)
+            .frame(window_frame());
+        // The size and place it had before it was maximized, to put back.
+        let restore_key = self.id.with("chrome_restore");
+        if max {
+            if ctx.data(|d| d.get_temp::<Rect>(restore_key)).is_none() {
+                if let Some(r) = ctx
+                    .memory(|m| m.area_rect(self.id))
+                    .filter(|r| r.is_finite())
+                {
+                    ctx.data_mut(|d| d.insert_temp(restore_key, r));
+                }
+            }
+            window = window.resizable(false).movable(false).fixed_rect(screen);
+        } else if let Some(r) = ctx.data(|d| d.get_temp::<Rect>(restore_key)) {
+            // Restored: this frame puts it back, the next ones size it
+            // again as the user likes.
+            ctx.data_mut(|d| d.remove::<Rect>(restore_key));
+            window = window.resizable(false).fixed_rect(r);
+        } else {
+            window = placed(
+                window
+                    .resizable(true)
+                    .default_size(default.min(room))
+                    .min_size(min)
+                    .max_size(room),
+                ctx,
+                self.id,
+            );
+        }
+        window.show(ctx, |ui| {
+            ui.spacing_mut().item_spacing.y = 6.0;
+            let min_w = title_width(ui, &self.title).max(min.x);
+            ui.set_min_width(min_w);
+            // The window's own rect, as the resize handles size it: the
+            // body is drawn inside it and never grows it (content that
+            // reaches past it is clipped, not taken as the size wanted).
+            let full = ui.available_rect_before_wrap();
+            let bar = Rect::from_min_size(full.min, Vec2::new(full.width(), TITLE_BAR));
+            let panel = Rect::from_min_max(
+                Pos2::new(full.left() + EDGE, bar.bottom()),
+                Pos2::new(full.right() - EDGE, full.bottom() - EDGE),
+            );
+            ui.painter().rect_filled(panel, 0.0, Tokens::panel());
+            let body = Rect::from_min_max(
+                panel.min + Vec2::new(14.0, 12.0),
+                panel.max - Vec2::new(14.0, 12.0),
+            );
+            let mut child = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(body)
+                    .layout(egui::Layout::top_down(egui::Align::Min)),
+            );
+            child.set_clip_rect(panel);
+            child.spacing_mut().item_spacing.y = 6.0;
+            form_style(&mut child);
+            out = Some(add(&mut child));
+            ui.allocate_rect(full, Sense::hover());
+            let (close, maximize) =
+                title_bar_with(ui, bar, &self.title, &format!("{:?}", self.id), Some(max));
+            closed = close;
+            toggle_max = maximize;
+        });
+        if toggle_max {
+            set_maximized(ctx, self.id, !max);
+        }
+        keep_tab_in(ctx, egui::LayerId::new(egui::Order::Foreground, self.id));
         if closed {
             request_close(ctx);
         }
@@ -477,6 +700,14 @@ pub fn modal_blocker_except(ctx: &Context, holes: &[Rect]) {
             });
         ctx.move_to_top(egui::LayerId::new(egui::Order::Middle, id));
     }
+}
+
+/// The layer under `pos` is the modal blocker of an open dialog (not
+/// the dialog itself): what a dialog that lets the wheel through to the
+/// drawing checks (#1035).
+pub fn over_modal_blocker(ctx: &Context, pos: egui::Pos2) -> bool {
+    ctx.layer_id_at(pos)
+        .is_some_and(|l| l.id == egui::Id::new("modal_blocker"))
 }
 
 /// `screen` without `holes`, as rectangles: bands between the holes'
@@ -580,7 +811,7 @@ pub enum MessageIcon {
 
 /// Paint a 32 px message icon at `rect`: a blue disc with a white
 /// question mark or "i".
-fn paint_message_icon(ui: &Ui, rect: Rect, icon: MessageIcon) {
+pub(crate) fn paint_message_icon(ui: &Ui, rect: Rect, icon: MessageIcon) {
     let p = ui.painter();
     let c = rect.center();
     let r = rect.width().min(rect.height()) / 2.0;
@@ -656,14 +887,31 @@ fn access_label(text: &str) -> egui::WidgetText {
 /// is underlined and pressing it (with no field focused) picks it. Returns
 /// the index of the button picked this frame.
 pub fn button_row(ui: &mut Ui, labels: &[&str], access_keys: bool) -> Option<usize> {
+    let left = (ui.min_rect().width() - row_width(labels.len())).max(0.0);
+    button_row_after(ui, labels, access_keys, left)
+}
+
+/// The width of a row of `n` buttons of [`button_row`].
+pub fn row_width(n: usize) -> f32 {
+    n as f32 * 100.0 + (n.saturating_sub(1)) as f32 * ROW_SPACING
+}
+
+const ROW_SPACING: f32 = 8.0;
+
+/// [`button_row`] with the buttons `left` points past where the row
+/// starts.
+pub fn button_row_after(
+    ui: &mut Ui,
+    labels: &[&str],
+    access_keys: bool,
+    left: f32,
+) -> Option<usize> {
     let mut picked = None;
     let m3 = material(ui.ctx());
-    // A phone's dialog ends in text buttons: no frames, capitalised, a
-    // finger high, the confirming one first.
     let (w, h, spacing) = if m3.is_some() {
         (88.0, 40.0, 4.0)
     } else {
-        (100.0, 27.0, 8.0)
+        (100.0, 27.0, ROW_SPACING)
     };
     let total = labels.len() as f32 * w + (labels.len().saturating_sub(1)) as f32 * spacing;
     let left = (ui.min_rect().width() - total).max(0.0);
@@ -737,7 +985,27 @@ pub fn message_box(
     text: &str,
     buttons: &[&str],
 ) -> Option<usize> {
-    message_box_with(ctx, icon, text, buttons, None)
+    message_box_with(
+        ctx,
+        icon,
+        text,
+        buttons,
+        None,
+        buttons.len().saturating_sub(1),
+    )
+}
+
+/// A [`message_box`] whose close button (and Esc) answers with the button
+/// at `on_close` rather than the last one: for a message whose last
+/// button opens a page, so closing it never does.
+pub fn message_box_closing_with(
+    ctx: &Context,
+    icon: MessageIcon,
+    text: &str,
+    buttons: &[&str],
+    on_close: usize,
+) -> Option<usize> {
+    message_box_with(ctx, icon, text, buttons, None, on_close)
 }
 
 /// A [`message_box`] with a check box under the message ("Do not show
@@ -750,7 +1018,14 @@ pub fn message_box_check(
     check: &str,
     checked: &mut bool,
 ) -> Option<usize> {
-    message_box_with(ctx, icon, text, buttons, Some((check, checked)))
+    message_box_with(
+        ctx,
+        icon,
+        text,
+        buttons,
+        Some((check, checked)),
+        buttons.len().saturating_sub(1),
+    )
 }
 
 fn message_box_with(
@@ -759,6 +1034,7 @@ fn message_box_with(
     text: &str,
     buttons: &[&str],
     check: Option<(&str, &mut bool)>,
+    on_close: usize,
 ) -> Option<usize> {
     let mut picked = None;
     let before = take_close_request(ctx);
@@ -777,11 +1053,16 @@ fn message_box_with(
             ui.vertical(|ui| {
                 ui.add_space(6.0);
                 ui.set_max_width(if phone { 300.0 } else { 380.0 });
-                let mut rich = egui::RichText::new(text).size(13.5);
-                if icon == MessageIcon::Busy {
-                    rich = rich.strong();
+                if text.contains("**") {
+                    ui.add(egui::Label::new(message_job(ui, text)).wrap());
+                } else {
+                    let mut rich = egui::RichText::new(text).size(13.5);
+                    if icon == MessageIcon::Busy {
+                        rich = rich.strong();
+                    }
+                    ui.label(rich);
                 }
-                ui.add(egui::Label::new(rich).wrap());
+                }
             });
         });
         if let Some((label, checked)) = check {
@@ -795,7 +1076,7 @@ fn message_box_with(
         picked = button_row(ui, buttons, true);
     });
     if before || take_close_request(ctx) {
-        picked = Some(buttons.len().saturating_sub(1));
+        picked = Some(on_close);
     }
     picked
 }
@@ -853,6 +1134,19 @@ fn elide(text: &str, room: f32, size: f32) -> String {
 /// The white title bar: title at the left, the close button at the right.
 /// Returns true when the close button was clicked.
 fn title_bar(ui: &mut Ui, bar: Rect, title: &str, id: &str) -> bool {
+    title_bar_with(ui, bar, title, id, None).0
+}
+
+/// [`title_bar`] with a maximize button (showing `maximized`) before the
+/// close button when `maximized` is given. Returns (close clicked,
+/// maximize clicked).
+fn title_bar_with(
+    ui: &mut Ui,
+    bar: Rect,
+    title: &str,
+    id: &str,
+    maximized: Option<bool>,
+) -> (bool, bool) {
     let painter = ui.painter();
     painter.rect_filled(bar, 0.0, crate::theme::Tokens::title_bar());
     painter.text(
@@ -882,7 +1176,52 @@ fn title_bar(ui: &mut Ui, bar: Rect, title: &str, id: &str) -> bool {
         .line_segment([c + Vec2::new(-d, -d), c + Vec2::new(d, d)], s);
     ui.painter()
         .line_segment([c + Vec2::new(d, -d), c + Vec2::new(-d, d)], s);
-    resp.clicked()
+    let mut max_clicked = false;
+    if let Some(max) = maximized {
+        let rect = Rect::from_min_max(
+            Pos2::new(close.left() - CLOSE_W, bar.top()),
+            Pos2::new(close.left(), bar.bottom()),
+        );
+        let resp = ui.interact(rect, egui::Id::new((id, "maximize")), Sense::click());
+        let key = if max {
+            "dialog.restore_window"
+        } else {
+            "dialog.maximize_window"
+        };
+        let resp = crate::ui::tips::RichTip::rich_tip(resp, crate::ui::tips::keyed(key));
+        let color = if resp.hovered() {
+            ui.painter()
+                .rect_filled(rect, 0.0, crate::theme::Tokens::panel());
+            crate::theme::Tokens::text()
+        } else {
+            crate::theme::Tokens::text()
+        };
+        let s = Stroke::new(1.2, color);
+        let c = rect.center();
+        if max {
+            // Two squares, one behind the other.
+            let a = Rect::from_center_size(c + Vec2::new(-1.5, 1.5), Vec2::splat(8.0));
+            let b = Rect::from_center_size(c + Vec2::new(1.5, -1.5), Vec2::splat(8.0));
+            ui.painter()
+                .rect_stroke(a, 0.0, s, egui::StrokeKind::Middle);
+            ui.painter().line_segment([b.left_top(), b.right_top()], s);
+            ui.painter()
+                .line_segment([b.right_top(), b.right_bottom()], s);
+            ui.painter()
+                .line_segment([b.right_bottom(), Pos2::new(a.right(), b.bottom())], s);
+            ui.painter()
+                .line_segment([b.left_top(), Pos2::new(b.left(), a.top())], s);
+        } else {
+            ui.painter().rect_stroke(
+                Rect::from_center_size(c, Vec2::splat(10.0)),
+                0.0,
+                s,
+                egui::StrokeKind::Middle,
+            );
+        }
+        max_clicked = resp.clicked();
+    }
+    (resp.clicked(), max_clicked)
 }
 
 /// Controls inside a dialog body: square corners, grey borders, the blue
@@ -1038,7 +1377,7 @@ pub fn combo<R>(
     ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
         ui.spacing_mut().interact_size.y = rect.height();
         ui.spacing_mut().button_padding = Vec2::new(4.0, 0.0);
-        out = egui::ComboBox::from_id_salt(id)
+        out = crate::ui::keynav::ComboBox::from_id_salt(id)
             .width(rect.width())
             .height(400.0)
             .selected_text(selected)
@@ -1173,6 +1512,69 @@ pub fn parse_number(text: &str) -> Option<f64> {
 mod tests {
     use super::*;
 
+    /// A message's part marked `**` is laid out red and underlined, the
+    /// rest in the text colour.
+    #[test]
+    fn a_marked_warning_is_red_and_underlined() {
+        let ctx = crate::theme::ui_context();
+        let mut job = None;
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            job = Some(message_job(ui, "**Slow:** rest\n\nmore"));
+        });
+        out.textures_delta.clear();
+        let job = job.expect("job");
+        assert_eq!(job.text, "Slow: rest\n\nmore");
+        assert_eq!(job.sections.len(), 2);
+        let (warn, rest) = (&job.sections[0].format, &job.sections[1].format);
+        assert_eq!(warn.color, WARNING_RED);
+        assert_eq!(warn.underline.width, 1.0);
+        assert_ne!(rest.color, WARNING_RED);
+        assert_eq!(rest.underline.width, 0.0);
+    }
+
+    /// The browser notice opens with its warning, marked, in every
+    /// language, then the WebAssembly and the desktop paragraphs.
+    #[test]
+    fn the_browser_notice_leads_with_its_marked_warning_in_every_language() {
+        for (code, _) in crate::i18n::LANGUAGES {
+            crate::i18n::with_thread_language(code, || {
+                let text = crate::i18n::tr("web.notice_text");
+                assert!(text.starts_with("**"), "{code}: {text}");
+                assert_eq!(text.matches("**").count(), 2, "{code}: {text}");
+                assert_eq!(text.split("\n\n").count(), 3, "{code}: {text}");
+                assert!(
+                    text.split("\n\n")
+                        .nth(1)
+                        .unwrap_or("")
+                        .contains("WebAssembly"),
+                    "{code}"
+                );
+            });
+        }
+    }
+
+    /// The browser notice tells what the browser has of fonts: not the
+    /// computer's own, but the page's catalogue and the fonts added in
+    /// the Font Manager; it said only the bundled fonts were there
+    /// (#1417).
+    #[test]
+    fn the_browser_notice_tells_where_fonts_come_from() {
+        crate::i18n::with_thread_language("en", || {
+            let text = crate::i18n::tr("web.notice_text");
+            let first = text.split("\n\n").next().unwrap_or("");
+            assert!(!first.contains("bundled"), "{first}");
+            assert!(first.contains("installed on your computer"), "{first}");
+            assert!(first.contains("Font Manager"), "{first}");
+        });
+        let en = crate::i18n::with_thread_language("en", || crate::i18n::tr("web.notice_text"));
+        for (code, _) in crate::i18n::LANGUAGES {
+            let text =
+                crate::i18n::with_thread_language(code, || crate::i18n::tr("web.notice_text"));
+            // Each language says it in its own words.
+            assert!(code == "en" || text != en, "{code}");
+        }
+    }
+
     /// The screen less the holes is covered once, and no piece reaches
     /// into a hole (#563).
     #[test]
@@ -1260,6 +1662,58 @@ mod tests {
         );
     }
 
+    /// A resizable dialog keeps its size from frame to frame (its body
+    /// never grows it), fills the main window when maximized and comes
+    /// back to its size when restored.
+    #[test]
+    fn a_resizable_dialog_keeps_its_size_and_maximizes() {
+        let ctx = crate::theme::ui_context();
+        let screen = Rect::from_min_size(Pos2::ZERO, Vec2::new(1600.0, 1000.0));
+        let id = egui::Id::new(("chrome_dialog", "Sized".to_string()));
+        let run = |ctx: &Context| -> Option<Rect> {
+            let input = egui::RawInput {
+                screen_rect: Some(screen),
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| {
+                window("Sized")
+                    .resizable(Vec2::new(900.0, 600.0), Vec2::new(500.0, 400.0))
+                    .show(ui.ctx(), |ui| {
+                        // A body that takes all the room it is given.
+                        let size = ui.available_size();
+                        ui.allocate_exact_size(size, egui::Sense::hover());
+                        ui.label("more");
+                    });
+            });
+            out.textures_delta.clear();
+            ctx.memory(|m| m.area_rect(id))
+        };
+        let mut last = None;
+        for _ in 0..6 {
+            last = run(&ctx);
+        }
+        let r = last.expect("shown");
+        assert!(
+            (r.width() - 900.0).abs() < 1.0 && (r.height() - 600.0).abs() < 1.0,
+            "{r:?}"
+        );
+        assert!((r.center() - screen.center()).length() < 2.0, "{r:?}");
+        set_maximized(&ctx, id, true);
+        for _ in 0..3 {
+            last = run(&ctx);
+        }
+        let big = last.expect("shown");
+        assert!((big.size() - screen.size()).length() < 2.0, "{big:?}");
+        assert!(maximized(&ctx, id));
+        set_maximized(&ctx, id, false);
+        for _ in 0..4 {
+            last = run(&ctx);
+        }
+        let back = last.expect("shown");
+        assert!((back.size() - r.size()).length() < 2.0, "{back:?}");
+        assert!((back.min - r.min).length() < 2.0, "{back:?} vs {r:?}");
+    }
+
     /// A dialog nearly as tall as the window moves down and sideways
     /// when its title bar is dragged, out of the window as far as a part
     /// of it stays in (#908): kept wholly inside, it could not move.
@@ -1339,6 +1793,67 @@ mod tests {
         // A dialog narrower than what is kept stays inside sideways.
         let r = drag_reach(screen, Vec2::new(60.0, 20.0));
         assert_eq!((r.left(), r.right(), r.bottom()), (0.0, 1000.0, 700.0));
+    }
+
+    /// A message box that follows another one of a different size (the
+    /// boxes share one window) is drawn in its own size and place from
+    /// its first frame: the icon, the text and the buttons inside the
+    /// window, and the window centred. egui sizes a window from the frame
+    /// before; the frame is laid out again when the size changed (an
+    /// update's download line was cut off with its button).
+    #[test]
+    fn a_message_box_is_laid_out_in_its_own_size_from_its_first_frame() {
+        let ctx = crate::theme::ui_context();
+        let screen = Rect::from_min_size(Pos2::ZERO, Vec2::new(1366.0, 700.0));
+        let id = egui::Id::new(("chrome_dialog", "TraceDraw".to_string()));
+        let run = |text: &str, buttons: &[&str]| {
+            let input = egui::RawInput {
+                screen_rect: Some(screen),
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| {
+                message_box(ui.ctx(), MessageIcon::Info, text, buttons);
+            });
+            out.textures_delta.clear();
+            let area = ctx.memory(|m| m.area_rect(id)).expect("shown");
+            let mut texts = Vec::new();
+            for c in &out.shapes {
+                if let egui::Shape::Text(t) = &c.shape {
+                    texts.push((
+                        t.galley.text().to_string(),
+                        t.galley.rect.translate(t.pos.to_vec2()),
+                    ));
+                }
+            }
+            (area, texts)
+        };
+        let wide = [
+            "Install",
+            "Download",
+            "Release notes",
+            "Skip this version",
+            "Close",
+        ];
+        for _ in 0..3 {
+            run("TraceDraw 9.0.0 is available (this is 8.0.0).", &wide);
+        }
+        let long = "A longer message that wraps onto a second line in the narrower \
+                    box, with a single button under it.";
+        for frame in 0..3 {
+            let (area, texts) = run(long, &["Close"]);
+            assert!(
+                (area.center().x - screen.center().x).abs() < 2.0,
+                "frame {frame}: centred {area:?}"
+            );
+            for (text, r) in &texts {
+                assert!(
+                    area.expand(0.5).contains_rect(*r),
+                    "frame {frame}: {text:?} {r:?} outside {area:?}"
+                );
+            }
+            let close = texts.iter().find(|(t, _)| t == "Close").expect("button");
+            assert!(close.1.right() > area.center().x, "on the right");
+        }
     }
 
     #[test]

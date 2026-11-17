@@ -15,8 +15,10 @@ menghapus efek terakhir mengembalikan gambar aslinya.
 2. Pilih kelompok di menu [[menu.effects]] lalu sebuah efek.
 3. Efek tanpa pengaturan langsung diterapkan. Efek lainnya membuka kotak
    dialog dengan pratinjau **sebelum** dan **sesudah** dari objek pertama yang
-   dipilih: atur nilainya lalu klik [[dialog.ok]]. **Atur ulang**
-   mengembalikan setiap pengaturan ke bawaannya.
+   dipilih: atur nilainya lalu klik [[dialog.ok]]. Pengaturannya berada
+   di panel di sebelah kanan; di bawahnya **Atur ulang** mengembalikan setiap
+   pengaturan ke bawaannya, dan dua panah mengurungkan dan mengulangi
+   perubahan yang dibuat di kotak dialog.
 
 ![Kotak dialog efek bitmap](../../img/effects-bitmap-effects.png)
 
@@ -72,6 +74,17 @@ membuka kelompok-kelompok efek.
 
 [[menu.effects > menu.effects.flatten]] membuat efek menjadi permanen: bitmap
 mempertahankan apa yang ditampilkannya, dan objek vektor menjadi bitmap.
+
+### Di semua halaman
+
+Dalam gambar dengan beberapa halaman, kotak dialog efek menampilkan kotak
+[[dialog.fx_all_pages]] selama ada gambar yang dipilih. Jika dicentang, OK juga
+memberi efek itu ke setiap gambar di setiap halaman, dalam satu langkah urung.
+Gambar yang terkunci dan gambar di lapisan terkunci tetap seperti semula.
+
+[[menu.effects > menu.effects.all_pages]] melakukan hal yang sama dengan efek
+yang sudah dimiliki gambar yang dipilih, termasuk efek tanpa kotak dialog:
+setiap gambar lain mendapat daftar efek yang sama, dalam satu langkah urung.
 
 ## Pemilih Efek {#effect-picker}
 

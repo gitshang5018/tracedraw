@@ -1,5 +1,7 @@
 # Colocar objetos dentro de uma moldura
 
+> *Tradução automática: esta página pode estar atrasada em relação à versão em inglês.*
+
 Uma **moldura de recorte** é um objeto fechado que contém outros objetos e
 mostra só as partes deles que ficam dentro dela, como uma imagem vista por uma
 janela. A moldura mantém o próprio preenchimento e contorno; os objetos de
@@ -14,22 +16,43 @@ dentro ficam inteiros e podem ser retirados de novo. Os comandos ficam em
 
 Os objetos mantêm a posição. Você também pode arrastar os objetos até a
 moldura com o botão direito do mouse e escolher colocá-los dentro; veja
-[Arrastar com o botão direito](selecting.md#right-drag).
+[Arrastar com o botão direito](selecting.md#right-drag), ou arrastá-los até a
+moldura com a ferramenta [[tool.pick]] segurando <kbd>W</kbd> ou <kbd>Alt</kbd>
+antes de soltar.
 
 ## Editar o que está dentro {#edit-contents}
 
 - [[menu.object.clip_frame_edit]] entra na moldura: só os objetos de dentro
   podem ser editados, o resto da página fica esmaecido e a moldura aparece como
-  contorno. [[menu.object.clip_frame_finish]], ou o botão na barra de
-  propriedades, sai dela.
+  contorno. [[menu.object.clip_frame_finish]], o botão na barra de
+  propriedades, ou <kbd>Ctrl</kbd>+clique fora dos objetos de dentro sai dela.
 - [[menu.object.clip_frame_extract]] torna os objetos de dentro objetos comuns
   de novo; a moldura fica, vazia.
+- Clique com o botão direito numa moldura para [[menu.object.clip_frame_edit]]
+  e [[menu.object.clip_frame_extract]]; enquanto você edita, o menu do botão
+  direito (no conteúdo ou na página vazia) tem
+  [[menu.object.clip_frame_finish]]. <kbd>Ctrl+Shift+F3</kbd> entra na
+  moldura selecionada e sai dela de novo.
 - [[menu.object.clip_frame_lock]] (ativado de início): mover, escalonar ou
   girar a moldura leva o conteúdo junto. Desativado, a moldura se move sozinha
   e o conteúdo fica onde está na página.
+- [[menu.object.clip_frame_fit_center]], [[menu.object.clip_frame_fit_proportional]],
+  [[menu.object.clip_frame_fill_proportional]] e
+  [[menu.object.clip_frame_stretch]] levam o conteúdo de cada moldura
+  selecionada ao seu centro, o escalonam para caber nela ou cobri-la mantendo
+  as proporções, ou o esticam até a caixa dela. Também estão na barra mostrada
+  sobre uma moldura selecionada (Ajustar conteúdo) e podem receber atalhos em
+  [Personalização](../customize/customization.md).
 
-Clicar duas vezes em uma moldura com a ferramenta [[tool.pick]] também entra
-nela; veja [Modo de foco](focus-mode.md).
+Clicar duas vezes em uma moldura com a ferramenta [[tool.pick]], ou
+<kbd>Ctrl</kbd>+clique nela, também entra nela, com o objeto sob o ponteiro
+selecionado; veja [Modo de foco](focus-mode.md).
+
+Enquanto você edita o conteúdo, os objetos esmaecidos fora da moldura não
+podem ser escolhidos (por clique, quadro de seleção, Selecionar tudo ou
+<kbd>Tab</kbd>). Desfazer para no início da edição: desfazer além dele sai da
+edição com a moldura como estava; refazer entra de novo, e desfazer Concluir
+volta para dentro dela.
 
 ## Máscaras de opacidade {#opacity-mask}
 

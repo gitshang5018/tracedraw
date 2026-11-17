@@ -1,6 +1,6 @@
-# Print Merge
+# Data Merge
 
-File > Print Merge > Create/Load Print Merge opens the dialog; Edit Print
+File > Data Merge > Create/Load Data Merge opens the dialog; Edit Data
 Merge reopens the records kept with the session, Perform Merge runs them
 again. `print_merge.rs` holds the model and the merge.
 
@@ -38,6 +38,22 @@ Record); Save Data Source, Finish and Cancel.
   made. An end the counter never reaches makes none (#791,
   `print_merge::tests::a_number_column_with_an_end_value_makes_its_records`,
   `pick_drag_tests::add_column_offers_a_number_range`).
+- Add Column with the type Random number asks for From and To (both
+  included, either order), Digits (zeros in front), Text before, No
+  repeats (on at first) and Records (0 at first: as many records are made
+  when there are fewer, at most 100,000, so no data file is needed). The
+  field keeps a seed, drawn from the clock when it is made and again with
+  Draw Again in Configure Columns; the numbers come from it with the
+  SplitMix64 generator, the same on every system, so the grid, the merged
+  pages and the print show the same numbers. With No repeats the numbers
+  are a Fisher-Yates shuffle of the range taken as far as the records go
+  (any range, memory for the records only). When the range holds fewer
+  numbers than there are records the dialog says so in red, the cells past
+  the range stay empty, and Create and Print Merged Document and Perform
+  Merge stop with that message and change nothing
+  (`print_merge::tests::a_random_number_field_draws_in_range_without_repeats`,
+  `ui::dialogs::tests::the_merge_dialog_adds_a_random_number_field`). A
+  sequence (start, step, digits, text before) is the Number type.
 - Configure Columns shows each field's name (edited in place), type,
   counter settings and the x that removes it.
 - View Single Record shows the current record as a form; View All
@@ -84,19 +100,25 @@ Record); Save Data Source, Finish and Cancel.
   copy never changes the template.
 - The placeholder buttons insert `<Field>` into the text being edited.
 
-## The Print Merge docker
+## The Data Merge docker
 
-Finish keeps the records and opens the Print Merge docker (also Window >
-Panels > Print Merge), as in the reference program; it no longer merges
-at once (#437). From top to bottom:
+Finish keeps the records and opens the Data Merge docker (also Window >
+Panels > Data Merge); it no longer merges at once (#437). From top to bottom:
 
 - Create (greyed while records are loaded) opens the dialog on new
   records, Edit on the ones kept.
-- Text, Image or QR code: the kind of field Insert Field makes.
+- Text, Image, QR code or Barcode: the kind of field Insert Field makes.
+  Barcode (#1084) opens the Barcode Wizard (`ui::barcode_wizard`) on Code
+  128 with the column's `<Field>` as its data; Finish places the barcode
+  at the page centre and, with On every page, copies it to the same place
+  on every other page in the same undo step.
 - Data source columns: the field to insert.
 - For Image: Pictures folder (#460): the folder picture cells that are
   relative paths are looked for in first, before the data file's folder
-  (the folder button picks it, the cross forgets it); a cell naming a
+  (the folder button picks it, the cross forgets it; in the browser and
+  on Android, where no folder can be read, it picks several pictures at
+  once, which serve as the folder and show as their count, #1399,
+  `picked_pictures_serve_as_the_pictures_folder`); a cell naming a
   picture without an extension ("1024") finds it with .jpg, .jpeg, .png,
   .webp, .bmp, .gif, .tif or .tiff
   (`each_record_gets_its_photo_from_the_pictures_folder`). Then
@@ -165,7 +187,7 @@ at once (#437). From top to bottom:
   With it on, Create Merged Document and Print Merged Document fill the
   open drawing's own pages instead of making a new drawing: record 1 on
   the first page, record 2 on the second, and so on, as one undo step
-  "Print Merge"; pages past the last record keep their fields, records
+  "Data Merge"; pages past the last record keep their fields, records
   past the last page are left out, and a picture frame whose cell is
   empty or whose picture does not load keeps the picture it holds (#618,
   `print_merge_docker::tests::on_every_page_merges_onto_the_drawings_own_pages`).
@@ -191,7 +213,7 @@ they keep its name.
 
 ## Merge
 
-File > Print Merge > Perform Merge copies the current page once per
+File > Data Merge > Perform Merge copies the current page once per
 record, right after it, in the records' order, names the copies
 "<page> 1", "<page> 2", ... and fills them. It is two undo steps (the
 copies, then the fills).
@@ -207,6 +229,45 @@ pages (On every page) keeps the frame's current contents then (#618,
 picture is placed inside the object; inside a group the object becomes,
 in place, a clip frame of its own outline holding the picture (#460). An object named `<Field>` of a QR field becomes the code, as
 large as its box allows.
+
+### Barcodes (#1084)
+
+- A barcode object (Object > Insert > Barcode) keeps its wizard settings
+  as JSON in its object data under `barcode` (`BarcodeSpec`, every
+  setting with its default when missing). When its data names one of the
+  fields (`<Field>`, any kind, mixed with fixed text), the wizard checks
+  and shows the data with the symbology's sample in its place unless the
+  symbology can hold it as typed (Code 128 shows `<Field>`), and Next and
+  Finish accept it. In step 1 an Insert field list (with records loaded)
+  appends a field's `<Name>` to the data; changing the standard keeps
+  data that names fields.
+- Merging fills every field in the data with the record's values (a
+  Number field as formatted, so fixed digits before a counter stay and
+  only the counter's digits change: `590123<Serial>` with six digits from
+  15 gives 590123000015, 590123000016, ...) and makes the symbol again
+  with the same settings: the group's objects are replaced by the new
+  bars, text and quiet zone, centred where the old ones were in the
+  group's own space, so a barcode moved, scaled or turned keeps that;
+  the settings kept are updated to the merged data. Barcodes in groups
+  merge too. A record whose data the symbology cannot hold (letters in
+  an EAN-13, an empty result) loses the barcode on its page, like an
+  empty QR field.
+- Serial numbers (#2158): the wizard's Serial number list (Same on every
+  record, Continue from record to record) adds a number field for the
+  serial and its `<Serial>` at the end of the data, with Start, Step,
+  Digits and the records to make (see `barcode.md`, Print Merge). Same
+  is a counter with step 0, so every record shows the start; Continue
+  counts on by the step.
+- Place Inside Frame with the Barcode kind (#1084) opens the wizard for
+  the selected shapes; Finish puts a barcode inside each, scaled to fit,
+  and merging makes it again inside the frame (barcodes in clip frames
+  merge like those in groups). With On every page the frames, barcode
+  inside, are copied to the other pages.
+- Checks: `print_merge::tests::barcodes_take_their_data_from_merge_fields`,
+  `print_merge::tests::the_panel_inserts_a_barcode_field_through_the_wizard`,
+  `print_merge::tests::barcode_serial_numbers_stay_the_same_or_count_on`,
+  `print_merge::tests::choosing_a_serial_number_names_it_in_the_data`,
+  `print_merge::tests::a_barcode_field_goes_inside_the_selected_frame`.
 
 ## Checks
 

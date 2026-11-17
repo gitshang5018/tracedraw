@@ -5,17 +5,31 @@ TraceDraw 的每個版本都會加入功能和修正。本頁說明如何得知�
 
 ## 在程式中查看新內容 {#in-the-program}
 
-- 選擇 [[menu.help > menu.help.whats_new]] 開啟歡迎畫面的新功能頁面，其中有本
-  版本的新聞。
+- 選擇 [[menu.help > menu.help.whats_new]] 開啟歡迎畫面的新功能頁面。頁面由新到舊列出
+  最近十個版本，每個版本都有日期和簡短標題。按一下某個版本即可閱讀變更的
+  簡短說明；最新版本已經展開。說明下方的 **想了解更多？** 會開啟該版本在
+  GitHub 上的頁面，其中有完整的變更清單。
 - 開啟 [[menu.help > menu.help.highlight_whats_new]]，在功能表中標出本版本的新
   內容：每個新命令的結尾、通往新命令的子功能表箭頭旁，以及包含新命令的功能表
   標題上方都會出現一個小圓點。關閉該命令後標記消失，下次啟動 TraceDraw 時該
   命令又會關閉。
 - 每個版本的完整變更清單在專案的
-  [變更記錄](https://github.com/igtoth/tracedraw/blob/main/CHANGELOG.md) 中。
+  [變更記錄](https://github.com/tracedraw/tracedraw/blob/main/CHANGELOG.md) 中。
 
 ## 最近版本的重點 {#highlights}
 
+- **立體化、陰影與一系列修正。** [[menu.effects > menu.effects.extrude]] 讓在空間中旋轉的立體保持在原位，文字上的斜角不再摺疊；陰影保留圓環的孔，並連同立體一起從立體化物件投下；[[menu.edit > menu.edit.select_similar]] 會檢查群組內部；[[menu.bitmaps > menu.bitmaps.convert_to_bitmap]] 保留影像在堆疊中的位置；[[menu.view > menu.view.navigator]] 成為帶 N 鍵的選單命令；.cdr 檔案開啟時帶有表格，泰文檔名能正確顯示。
+- **CNC 刀具路徑、匯出與選取。** [[menu.tools > menu.tools.tracecut]] 可為 CNC 雕刻機產生 G 代碼，並繪製雞眼、指接盒和折彎盒；[[menu.file > menu.file.export]] 先詢問檔案，再顯示該格式的選項，[[menu.file > menu.file.export_with_options]] 則一律顯示選項；[[menu.edit > menu.edit.select_similar]] 和 [[menu.edit > menu.edit.invert_selection]] 可變更選取範圍；[[menu.object > menu.object.insert > menu.object.add_dimensions]] 為所選物件標註尺寸；新增程序化填色、OpenType 按鈕和寮文介面。
+- **對頁與連結文字。** [[menu.layout > menu.layout.facing_pages]] 將頁面並排顯示為跨頁；[[menu.text > menu.text.link_content]] 連結文字，在一個中輸入會變更其他文字；多頁 PDF 會詢問要匯入哪些頁面；[[menu.edit > menu.edit.step_and_repeat]] 可用副本填滿頁面。
+- **觸控和手機。** 標準工具列上的 Shift、Ctrl 和 Alt 按鈕為手指保持按下；在 Android 上介面會避開相機挖孔和圓角；Apple Pencil 可在 iPad 的 Safari 中使用。
+- **檔案。** .cdr 檔案保留重疊曲線的填色規則，開啟時保留定位點、多欄文字、所有頁面共用的參考線和主頁面物件。
+- **圖片、列印和工作區。** 裁切工具的裁切圖片像素和 [[menu.bitmaps > menu.bitmaps.crop_to_frame]] 可以裁掉圖片的像素；可以灰階列印和反向順序列印；[[menu.view > menu.view.scrollbars]] 可以隱藏捲軸。
+- **TraceCut。** [[menu.tools > menu.tools.tracecut]] 開啟適用於切割繪圖機的工具：繪圖機輸出、切割線、排料和測量。請參閱 [TraceCut](../objects/tracecut.md)。
+- **鍵盤、手機和觸控筆。** 選單和清單可以用鍵盤操作。在 Android 手機上介面完整顯示在螢幕上，使用觸控筆時放在螢幕上的手不再誤畫；繪圖板的筆可在使用 Wayland 的 Linux 上運作。
+- **檔案。** .cdr 檔案開啟時保留定位點、主版頁面、漸層和變形；PDF 中的圖片以完整解析度匯入；JPEG 和 TIFF 可匯出為 CMYK。
+- **物件縮圖。** [[docker.objects]] 面板在每個物件的名稱旁顯示其縮小的
+  圖形；在清單上按 Ctrl 捲動滾輪或拖曳底部的滑桿可調整大小。請參閱
+  [組織物件與圖層](../objects/objects-and-layers.md#objects-docker)。
 - **使用你的語言的說明。** 每個 **?** 按鈕和 <kbd>F1</kbd> 都會以 TraceDraw
   設定的語言開啟本說明中關於眼前對話方塊、面板或工具的頁面。
 - **文件屬性。** [[menu.file > menu.file.document_properties]] 保存繪圖的

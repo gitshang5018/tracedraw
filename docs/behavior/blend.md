@@ -9,9 +9,9 @@ Intermediate objects between a start and an end object.
 | Acceleration (objects, colours) | 0 (linear) | -1..1 (the bar: -100..100 %) |
 | Path | none | any curve (the panel's New path), "rotate all objects" |
 | Spacing (along a path) | off, 5 mm | the steps follow from the path's length: `floor(length / spacing) - 1`, 1 to 999 |
-| Loop | off | the rotation turns the steps about the middle between the two objects |
+| Loop | off | with a rotation, the steps' centres leave the straight way and curve from the start to the end (a half circle at 180 degrees, a curl through the middle at 360) |
 | Blend along full path | off | along a path, the first and last steps sit on the path's ends |
-| Apply to sizing | off | the object acceleration changes the steps' sizes too |
+| Apply to sizing | off | the object acceleration changes the steps' outlines and sizes too |
 | Color blend | Direct | Direct (straight through RGB), Clockwise (hue increasing), Counterclockwise (hue decreasing), through HSB |
 
 A blend asking for more than 999 steps (from a file or a script) draws
@@ -52,12 +52,13 @@ lets go. The selected blend shows a white square on the start object's
 centre, a crossed one on the end object's, the line between them, and
 two sliders on that line: the object acceleration (triangle above the
 line) and the colour acceleration (triangle below). Each sits where the
-middle step lands, `0.5 - 0.45 acc` of the way from the start, so at
-0 both are halfway, at +1 (100 %) 5 % from the start and at -1 5 % from
-the end: the slider goes as far one way as the other (#1261; the
-exponent `1 + acc` used before put the middle step 25 % from the start
-at +1 and 3 % from the end at -1, so the steps bunched fully at the end
-but only part of the way toward the start). Dragging a slider along the line sets its
+middle step lands (see Formulas), so at 0 both are halfway, at +1
+(100 %) 10.5 % from the start and at -1 10.5 % from the end: the slider
+goes as far one way as the other (#1261; the exponent `1 + acc` used
+before put the middle step 25 % from the start at +1 and 3 % from the
+end at -1, so the steps bunched fully at the end but only part of the
+way toward the start; then, until #1192, the power `t ^ e` with the
+middle step at `0.5 - 0.45 acc`, 5 % from either end at 100 %). Dragging a slider along the line sets its
 acceleration to the one that puts the middle step there (two decimals,
 -1..1): toward the start bunches the steps (or the colours) near the
 start, toward the end near the end. With Link acceleration both
@@ -72,7 +73,21 @@ the move is taken back and that object becomes the new start or end
 with the blend's settings, the old start staying a plain object and the
 selection moving to the new start (#965,
 `text_effect_tests::the_blend_tool_s_end_squares_move_and_pick_the_end_objects`).
-Not yet on the canvas: dropping colours on the squares.
+
+Dragging the line between the squares (within the pick distance of
+Options > Nodes and Handles, away from the squares and the sliders, which
+win where they overlap it) moves the start and the end objects together,
+so the whole blend moves with its length and angle kept; Ctrl keeps the
+move horizontal or vertical. One undo step for the drag, and the pointer
+is the move cursor over the line. A blend whose end lives only in the
+effect (no end object) has no line to drag
+(`effect_line_tests::the_blend_line_moves_the_whole_blend`).
+A colour dragged from a palette and dropped on the start or end square
+becomes the fill of that end's object, one undo step, the selection
+staying; the squares take it wherever they lie on the object, as the
+middle of a letter may be outside its outline (#965,
+`text_effect_tests::a_colour_dropped_on_a_blend_s_square_fills_that_end`).
+An end that lives only in the effect has no object to fill.
 
 The steps lie between the two objects in the stacking order: with the
 end object below the start one (a front object blended to one behind
@@ -80,6 +95,11 @@ it, the usual way to build depth), they are drawn below the start, the
 step nearest the end lowest; with the end above, above the start. The
 blend follows when either object is reordered
 (`blend_link::tests::the_steps_lie_between_the_two_objects`).
+The order is read inside groups and clip frames too, so the steps stay
+behind the front object after the blend is grouped, recoloured as a
+group or placed inside a frame
+(`blend_link::tests::a_grouped_blend_keeps_its_steps_behind_the_front_object`,
+#2023, #2120).
 
 ## Start and end objects
 
@@ -96,16 +116,47 @@ the same undo step:
   back).
 
 Selecting either object picks the blend for the bar and the Blend
-panel. Clear Blend removes the blend and leaves both objects; Break
+panel. Selected, each object shows its own box and handles: the start
+object's box is the object itself (its other live effects included),
+not the steps, as the end object's is the end; the bar's position and
+size, the handles, Repeat and the rotation centre all take that box,
+so a side handle resizes the start object from its own opposite side.
+A press on a step picks the start object, shown with the same box,
+except over the end object: the steps are drawn above the end when the
+start is in front, and a text step is picked anywhere in its box, so
+they covered nearly all of an end text and a click on it picked the
+start text, which then took the colour meant for the end. A press on
+the steps where the end object lies, away from the start object
+itself, picks the end object, with the Pick tool and the Text tool
+alike (#1739,
+`pick_drag_tests::a_click_on_a_blend_s_end_text_under_its_steps_picks_the_end`).
+The steps are part of no single object's box: a group holding the
+blend spans the whole blend, steps included, and a blend from an older
+file, whose end lives only in the effect, is one object whose box is
+the whole blend (#1540,
+`pick_drag_tests::a_blend_s_start_object_shows_its_own_box_and_handles`,
+`tracedraw_core::live::tests::a_blend_start_s_own_box_leaves_the_steps_out`).
+Object > Group (Ctrl+G, and the context menu's Group) groups a blend
+however it is selected: with its start or end object selected alone
+(the blend just made, or a click on a step or on either object) the
+group holds both objects and whatever else is selected; a selection
+box or Ctrl+A selects both already. The blend stays live in the group,
+and one undo takes the group back. Before, a blend selected by a click
+was one object, so Group stayed off and Ctrl+G did nothing (#1842,
+`pick_drag_tests::a_blend_groups_however_it_is_selected`).
+
+Clear Blend removes the blend and leaves both objects; Break
 Apart turns the steps into objects. Files from before this kept the end
 only inside the effect; such a blend draws its end with the steps.
 
 ## Formulas
 
-For step `k` of `n` (`t = k / (n + 1)` with acceleration `t' = t ^ e`,
-`e = ln(0.5 - 0.45 acc) / ln(0.5)`, so the middle step lands at
-`0.5 - 0.45 acc` of the way, `tracedraw_core::live::blend_exponent`,
-`live::tests::blend_acceleration_goes_as_far_either_way`):
+For step `k` of `n` (`t = k / (n + 1)` with acceleration `t' = ln(1 +
+(K - 1) t) / ln K`, `K = 705.641 ^ (-acc)` (`705.641 = 1.3 ^ 25`), the
+curve and the range the `.cdr` files' blends use, #1192;
+`tracedraw_core::live::blend_place`,
+`live::tests::blend_acceleration_goes_as_far_either_way`,
+`live::tests::blend_steps_follow_the_file_s_acceleration_curve`):
 - Geometry: the end outline is wound the way the start outline is and
   started where it best fits the start outline's first node (the two
   outlines compared as 120 points each, about their own centres and at
@@ -133,14 +184,81 @@ For step `k` of `n` (`t = k / (n + 1)` with acceleration `t' = t ^ e`,
   length.
 - Transform: interpolated as translation + rotation + scale (not matrix
   entries), so blends rotate the short way unless "rotation" adds turns.
-- Colour: mixed directly (each colour's values from start to end).
+  When both ends have the same outline (a copy turned, scaled or moved)
+  and no nodes are mapped, each step is that outline under the
+  transformation part way: its centre on the straight line between the
+  two centres, turned by an even share of the turn (the shorter way),
+  scale and slant in between, so no step shrinks or turns more than the
+  next (#1260,
+  `live::tests::a_blend_to_a_turned_copy_turns_its_steps_evenly`). Two
+  different outlines are mixed point by point as above.
+- Object acceleration: each step's centre goes `t'` of the way between
+  the two centres, while its outline is the even morph at `t` (moved
+  there). With Apply to sizing the step is the morph at `t'` itself,
+  outline and size: a square blended into a circle with the steps
+  packed toward the circle has round steps by the circle and square
+  ones far from it, as the previews of the `.cdr` files with that
+  setting show. Before, the even morph was only scaled to the size at
+  `t'`, so the steps by the circle stayed square (#1576,
+  `live::tests::apply_to_sizing_morphs_each_step_at_its_accelerated_place`).
+- Colour: mixed directly (each colour's values from start to end), or
+  through HSB around the hue circle (Clockwise: the hue rising from the
+  start; Counterclockwise: falling), `t'` of the colour acceleration of
+  the way.
+- Rotation: each step turns about its own centre by `rotation * t'`.
+  With Loop the whole blend turns instead about the middle `M` of the
+  two objects' centres: step `k` is the step of the straight blend from
+  the start to the end turned back by the whole rotation about `M`
+  (morphed `t` of the way, or `t'` with Apply to sizing), moved to `t'`
+  of that straight way and turned by `rotation * t'` about `M`. Its
+  centre runs on the curve `(1 - t') R(rotation t') (A - M) +
+  t' R(rotation (t' - 1)) (B - M) + M` from the start's centre `A` to the
+  end's `B`, to the right of the way for a positive rotation (a half
+  circle at 180 degrees, a curl through the middle at 360; #1192), and
+  the outlines between two different shapes twist and fold into the end
+  as the previews of the `.cdr` files do, the fan inside the start for a
+  positive object acceleration too. Each step turned about its own
+  centre and put on that curve gave smooth bands, and with an object
+  acceleration the steps packed by the start hardly turned (#1576,
+  `live::tests::a_looped_blend_turns_the_straight_blend_about_the_middle`).
+  Two copies of one outline stay copies: each step turns by
+  `rotation * (t' - t)`.
 - Along a path: step `k` is placed at arc length `t' * L` on the path,
   oriented to the tangent when "rotate all objects" is on.
+
+## Saving as `.cdr`
+
+From version 9 a blend goes out live (#1192): the start and end objects
+as objects of their own, the upper one first, with the empty linked
+group files hold between them (object type 7, the step count, the
+spacing and the two ends' centres; `docs/cdr-format.md`, Writing,
+Blend), so the program that reads the file shows the steps and edits
+the blend. From version 23 the record also holds the object and colour
+accelerations, the rotation, Loop, Apply to sizing and the colour
+direction, counted from the lower object (`docs/cdr-format.md`, Blend
+settings; #1192): a blend whose start is the upper object goes out with
+its accelerations and colour direction turned round, and its rotation,
+which the record turns from the lower object, as it is. Read back in
+TraceDraw the blend is on the start object with its settings from
+version 14 (the package names it in `tracedraw/blends.json`); from a
+RIFF file (9 to 13) it comes back the way any file's blend does: on the
+lower object, even acceleration, node-for-node pairing. Versions 7 and
+8 get one plain group of the start object and its steps as curves
+(#946). A path is not written (no file holding one was seen); the
+blend's own drop shadow is left out. A blend whose
+end is elsewhere (another layer, inside a group, an object with effects
+of its own) stays a drawn group.
 
 ## Checks
 
 - `ui::effect_bars::tests::the_blend_bar_edits_the_selected_blend`
 - `blend_link::tests::the_end_object_stays_and_the_steps_follow_it`
+- `write::tests::a_blend_goes_out_live_from_version_9`,
+  `a_blend_whose_end_is_its_own_goes_out_live_with_the_end_as_an_object`,
+  `a_text_blend_opens_live_again`,
+  `a_kept_blend_that_no_longer_matches_opens_as_drawn`,
+  `check::tests::a_blend_group_stands_between_its_ends` and the
+  conformance suite (`blends_contours_envelopes_and_extrusions`).
 
 - Given two 10 mm circles 100 mm apart, 9 steps, then the 5th step is
   centred at 50 mm and has a 10 mm diameter.

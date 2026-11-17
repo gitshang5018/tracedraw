@@ -6,7 +6,11 @@ cómo saber qué ha cambiado y enumera lo más destacado de las últimas version
 ## Ver las novedades en el programa {#in-the-program}
 
 - Elija [[menu.help > menu.help.whats_new]] para abrir la página de novedades
-  de la pantalla de bienvenida, con las noticias de esta versión.
+  de la pantalla de bienvenida. Muestra las diez últimas versiones, de la
+  más reciente a la más antigua, cada una con su fecha y un título corto.
+  Haga clic en una versión para leer un breve resumen de lo que cambió; la
+  más reciente ya está abierta. **¿Quieres saber más?** debajo de un resumen
+  abre la página de esa versión en GitHub, con la lista completa de cambios.
 - Active [[menu.help > menu.help.highlight_whats_new]] para marcar en los menús
   lo nuevo de esta versión: aparece un pequeño punto al final de cada comando
   nuevo, junto a la flecha de un submenú que lleva a uno, y sobre el título de
@@ -14,11 +18,41 @@ cómo saber qué ha cambiado y enumera lo más destacado de las últimas version
   el comando vuelve a estar desactivado la próxima vez que TraceDraw se
   inicia.
 - La lista completa de cambios de cada versión está en el
-  [registro de cambios](https://github.com/igtoth/tracedraw/blob/main/CHANGELOG.md)
+  [registro de cambios](https://github.com/tracedraw/tracedraw/blob/main/CHANGELOG.md)
   del proyecto.
 
 ## Lo más destacado de las últimas versiones {#highlights}
 
+- **Extrusión, sombras y una tanda de correcciones.** [[menu.effects > menu.effects.extrude]] mantiene en su sitio un cuerpo girado en el espacio, y los biseles sobre texto ya no se pliegan; las sombras conservan los huecos de los anillos y caen de un objeto extruido junto con su cuerpo; [[menu.edit > menu.edit.select_similar]] mira dentro de los grupos; [[menu.bitmaps > menu.bitmaps.convert_to_bitmap]] conserva el lugar de la imagen en la pila; [[menu.view > menu.view.navigator]] es un comando de menú con la tecla N; los archivos .cdr se abren con sus tablas y los nombres de archivo en tailandés muestran sus letras.
+- **Trayectorias CNC, exportación y selección.** [[menu.tools > menu.tools.tracecut]] genera G-code para una fresadora CNC y dibuja ojales, cajas con uniones de dedos y bandejas plegadas; [[menu.file > menu.file.export]] pide primero el archivo y luego muestra las opciones del formato, y [[menu.file > menu.file.export_with_options]] las muestra siempre; [[menu.edit > menu.edit.select_similar]] e [[menu.edit > menu.edit.invert_selection]] cambian la selección; [[menu.object > menu.object.insert > menu.object.add_dimensions]] acota la selección; los rellenos procedurales, los botones OpenType y la interfaz en lao son nuevos.
+- **Páginas enfrentadas y texto vinculado.** [[menu.layout > menu.layout.facing_pages]] muestra las páginas una junto a otra en pliegos; [[menu.text > menu.text.link_content]] vincula textos para que escribir en uno cambie los demás; un PDF de varias páginas pregunta qué páginas importar; [[menu.edit > menu.edit.step_and_repeat]] puede llenar una página de copias.
+- **Táctil y teléfonos.** Los botones Mayús, Ctrl y Alt de la barra estándar
+  quedan pulsados para un dedo; en Android la interfaz se aparta de la muesca
+  de la cámara y de las esquinas redondeadas; el Apple Pencil funciona en
+  Safari en el iPad.
+- **Archivos.** Los archivos .cdr conservan la regla de relleno de las curvas
+  superpuestas y se abren con sus tabulaciones, su texto en varias columnas,
+  las guías compartidas por todas las páginas y los objetos de la página
+  maestra.
+- **Imágenes, impresión y espacio de trabajo.** Recortar los píxeles de la
+  imagen en la herramienta Recortar y
+  [[menu.bitmaps > menu.bitmaps.crop_to_frame]] recortan los píxeles de una
+  imagen; impresión en escala de grises y en orden inverso;
+  [[menu.view > menu.view.scrollbars]] oculta las barras de desplazamiento.
+- **TraceCut.** [[menu.tools > menu.tools.tracecut]] abre las herramientas
+  para plóteres de corte: salida al plóter, líneas de corte, encaje y
+  medición. Vea [TraceCut](../objects/tracecut.md).
+- **Teclado, teléfonos y lápices.** Los menús y las listas funcionan con el
+  teclado. En los teléfonos Android la interfaz cabe en la pantalla y una mano
+  apoyada ya no dibuja mientras se usa un lápiz; el lápiz de una tableta
+  funciona en Linux con Wayland.
+- **Archivos.** Los archivos .cdr se abren con sus tabulaciones, páginas
+  maestras, degradados y distorsiones; las imágenes de los PDF llegan a
+  resolución completa; JPEG y TIFF se exportan en CMYK.
+- **Miniaturas de los objetos.** El panel [[docker.objects]] muestra cada
+  objeto dibujado en pequeño junto a su nombre; Ctrl+rueda sobre la lista o el
+  control deslizante de abajo fija el tamaño. Vea
+  [Organizar objetos y capas](../objects/objects-and-layers.md#objects-docker).
 - **Ayuda en su idioma.** Cada botón **?** y <kbd>F1</kbd> abren la página de
   esta Ayuda sobre el cuadro de diálogo, panel o herramienta que tiene
   delante, en el idioma configurado en TraceDraw.

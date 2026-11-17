@@ -1,5 +1,7 @@
 # Opsi alat
 
+> *Terjemahan mesin: halaman ini mungkin tertinggal dari versi bahasa Inggris.*
+
 [[menu.tools > menu.tools.options > menu.tools.options_tools]] mengatur
 perilaku alat dan objek baru yang digambarnya. Sebagian besar nilai ini juga
 ada di bilah properti masing-masing alat.
@@ -15,6 +17,18 @@ ada di bilah properti masing-masing alat.
   yang hanya disentuhnya; <kbd>Alt</kbd> lalu hanya memilih objek yang
   seluruhnya berada di dalam.
 
+- [[options.ctrl_shift_keys]] [[options.keys_traditional]]: [[options.keys_traditional_tip]]
+  [[options.keys_windows]]: [[options.keys_windows_tip]]
+
+## Penghapus {#eraser}
+
+![Opsi alat Penghapus](../../img/customize-tool-options-eraser.png)
+
+[[options.eraser_width]] (awalnya 6,35 mm), dan [[options.eraser_round]] atau
+[[options.eraser_square]].
+
+[[options.eraser_reduce_nodes]]: [[options.eraser_reduce_nodes_tip]]
+
 ## Zum dan Geser {#zoom-pan}
 
 ![Opsi Zum dan Geser](../../img/customize-tool-options-zoom-pan.png)
@@ -23,15 +37,45 @@ ada di bilah properti masing-masing alat.
   [[options.context_menu]].
 - [[options.wheel_action]]: [[options.wheel_zoom]] atau
   [[options.wheel_scroll]].
+- [[options.zoom_relative_1to1]] (aktif): zum 100% adalah ukuran nyata pada resolusi
+  layar yang dikalibrasi; nonaktif, 96 piksel per inci.
+- [[options.wheel_center_mouse]] (nonaktif): zum dengan roda membawa titik di bawah
+  penunjuk ke tengah tampilan, bersama penunjuknya.
+- [[options.smooth_zoom]] (aktif): satu takik roda melakukan zoom dalam luncuran
+  singkat, bukan lompatan; makin cepat roda diputar, makin singkat. Nonaktif,
+  tiap takik langsung melakukan zoom.
+- [[options.light_zoom]]: [[options.light_zoom_tip]]
+- [[options.wheel_zoom_step]] seberapa besar satu takik memperbesar atau
+  memperkecil, 1 sampai 100 persen (awalnya 15 %).
+- [[options.pan_right_button]] [[options.zoom_out]] atau [[options.context_menu]] (awalnya).
+- [[options.pan_inertia]] (nonaktif): geseran yang dilepas saat penunjuk masih
+  bergerak membuat tampilan terus meluncur ke arah yang sama lalu melambat.
+  Klik atau roda menghentikannya. Berlaku untuk alat Geser, tombol tengah dan
+  dua jari.
 
-## Kurva {#curves}
+## Tangan bebas/Bézier {#curves}
 
-![Opsi alat kurva](../../img/customize-tool-options-curves.png)
+![Opsi alat Tangan bebas/Bézier](../../img/customize-tool-options-curves.png)
 
 - [[options.freehand_smoothing]]: 0 sampai 100 (awalnya 50).
 - [[options.join_within]]: seberapa dekat ke simpul ujung sebuah garis harus
   dimulai untuk melanjutkan kurva (awalnya 5 piksel layar). Lihat
   [Melanjutkan kurva](../lines-shapes/lines.md#continue).
+
+- [[options.pen_preview]] dan [[options.pen_auto_add_delete]] (keduanya aktif)
+  untuk alat [[tool.pen]]; lihat [Pena](../lines-shapes/lines.md#pen).
+- [[options.pen_tablet]]: [[options.pen_pressure]] (aktif); lihat
+  [Menggambar dengan tablet grafis](../lines-shapes/pen-pressure.md).
+
+- [[options.corner_threshold]]: [[options.corner_threshold_tip]]
+- [[options.straight_threshold]]: [[options.straight_threshold_tip]]
+
+## Pengenalan Bentuk {#shape-recognition}
+
+![Opsi alat Pengenalan Bentuk](../../img/customize-tool-options-shape-recognition.png)
+
+[[recognize.recognition]] dan [[recognize.smoothing]] alat Pengenalan Bentuk,
+dari mati hingga tertinggi, seperti di bilah propertinya.
 
 ## Persegi Panjang {#rectangle}
 
@@ -49,11 +93,20 @@ sudut, dan [[toolbar.corners_together]]. [[options.scale_corners]]:
 [[options.ellipse]], [[options.pie]], atau [[options.arc]], dengan
 [[options.starting_angle]] dan [[options.ending_angle]].
 
+[[options.arc_direction]]: [[options.counterclockwise]] / [[options.clockwise]].
+[[options.arc_direction_desc]]
+
 ## Poligon {#polygon}
 
 ![Opsi alat Poligon](../../img/customize-tool-options-polygon.png)
 
 [[options.number_of_points]] dan [[options.sharpness]].
+
+## Kertas Grafik {#graph-paper}
+
+![Opsi alat Kertas Grafik](../../img/customize-tool-options-graph-paper.png)
+
+[[options.rows]] dan [[options.columns]] kisi.
 
 ## Spiral {#spiral}
 
@@ -62,11 +115,8 @@ sudut, dan [[toolbar.corners_together]]. [[options.scale_corners]]:
 [[options.revolutions]], dan [[options.symmetrical_spiral]] atau
 [[options.logarithmic_spiral]].
 
-## Kertas Grafik {#graph-paper}
-
-![Opsi alat Kertas Grafik](../../img/customize-tool-options-graph-paper.png)
-
-[[options.rows]] dan [[options.columns]] kisi.
+[[options.spiral_expansion]]: [[options.spiral_expansion_tip]]
+[[options.spiral_preview_tip]]
 
 ## Tabel {#table}
 
@@ -74,9 +124,37 @@ sudut, dan [[toolbar.corners_together]]. [[options.scale_corners]]:
 
 [[options.rows]] dan [[options.columns]] tabel baru.
 
-## Penghapus {#eraser}
+## Dimensi {#dimension}
 
-![Opsi alat Penghapus](../../img/customize-tool-options-eraser.png)
+![Opsi alat Dimensi](../../img/customize-tool-options-dimension.png)
 
-[[options.eraser_width]] (awalnya 6,35 mm), dan [[options.eraser_round]] atau
-[[options.eraser_square]].
+Cara label dimensi baru terbaca: [[dimension.precision]],
+[[dimension.units]], [[dimension.show_units]], [[dimension.prefix]] dan
+[[dimension.suffix]]. Dimensi yang sudah digambar mempertahankan labelnya;
+pilih satu dan gunakan bilah properti untuk mengubahnya.
+
+[[options.dimension_style]]: [[options.decimal]] / [[options.fractional]].
+[[options.dimension_style_tip]]
+
+## Dimensi Sudut {#angular-dimension}
+
+[[dimension.precision]], [[dimension.show_units]], [[dimension.prefix]] and
+[[dimension.suffix]] of new angular dimensions.
+[[options.angular_units_tip]]
+
+## Konektor {#connector}
+
+![Opsi alat Konektor](../../img/customize-tool-options-connector.png)
+
+[[connector.radius]] konektor bulat yang baru (awalnya 3 mm).
+
+[[options.connector_gap]]: [[options.connector_gap_tip]]
+
+[[options.connector_geometric_anchors]]: [[options.connector_geometric_anchors_tip]]
+
+## Isian Jala {#mesh-fill}
+
+![Opsi alat Isian Jala](../../img/customize-tool-options-mesh-fill.png)
+
+[[options.columns]] dan [[options.rows]] kisi yang mengawali isian jala baru
+(awalnya 2 kali 2).

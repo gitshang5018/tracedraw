@@ -6,7 +6,9 @@
 //!
 //! Dragging out of a ruler adds a guideline, dragging out of the corner
 //! moves the ruler origin, double-clicking a ruler or the corner opens the
-//! ruler settings (Document Options, Rulers).
+//! ruler settings (Document Setup, Rulers), and a right click on either
+//! opens their menu: Ruler, Grid and Guidelines Setup, and Rulers to hide
+//! them (#1831).
 
 use crate::app::{App, Drag};
 use crate::theme::Tokens;
@@ -164,7 +166,18 @@ pub fn rulers(app: &mut App, ui: &mut Ui, full: Rect) {
             Sense::click_and_drag(),
         )
         .rich_tip(crate::i18n::tr("rulers.origin_tip"));
-    if top_resp.drag_started() {
+    // The tab ruler of a paragraph frame being edited is the horizontal
+    // ruler over the frame (#1912): a click there adds a stop, a drag
+    // moves a stop or an indent, a right click picks a stop's kind; no
+    // guideline comes out of it.
+    let tab_took = app.tool == crate::tools::Tool::Text && app.tab_ruler_docked() && {
+        let at = top_resp
+            .interact_pointer_pos()
+            .or(top_resp.hover_pos())
+            .or(ui.input(|i| i.pointer.latest_pos()));
+        at.is_some_and(|p| app.tab_ruler_input(&top_resp, p))
+    };
+    if top_resp.drag_started() && !tab_took {
         app.drag = Drag::NewGuide {
             horizontal: true,
             pos: Point::ZERO,
@@ -179,9 +192,21 @@ pub fn rulers(app: &mut App, ui: &mut Ui, full: Rect) {
     if corner_resp.drag_started() {
         app.drag = Drag::RulerOrigin { pos: Point::ZERO };
     }
-    if top_resp.double_clicked() || left_resp.double_clicked() || corner_resp.double_clicked() {
+    if (top_resp.double_clicked() && !tab_took)
+        || left_resp.double_clicked()
+        || corner_resp.double_clicked()
+    {
         app.open_ruler_options();
     }
+    for (i, r) in [&top_resp, &left_resp, &corner_resp]
+        .into_iter()
+        .enumerate()
+    {
+        if r.secondary_clicked() && !(i == 0 && tab_took) {
+            app.ruler_menu = r.interact_pointer_pos();
+        }
+    }
+    ruler_menu(app, ui);
     if top_resp.hovered() || left_resp.hovered() || corner_resp.hovered() {
         ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::Default);
     }
@@ -192,6 +217,68 @@ pub fn rulers(app: &mut App, ui: &mut Ui, full: Rect) {
     }
 }
 
+/// The rulers' right-click menu, drawn like the canvas context menu at
+/// the place of the click while [`App::ruler_menu`] is set. Clicking an
+/// item or anywhere else closes it.
+fn ruler_menu(app: &mut App, ui: &mut Ui) {
+    let Some(pos) = app.ruler_menu else {
+        return;
+    };
+    let id = egui::Id::new("ruler_context_menu");
+    let ctx = ui.ctx().clone();
+    // A new right click (a new position) opens the menu afresh.
+    let pos_id = id.with("pos");
+    if ctx.data(|d| d.get_temp::<Pos2>(pos_id)) != Some(pos) {
+        ctx.data_mut(|d| d.insert_temp(pos_id, pos));
+        egui::Popup::open_id(&ctx, id);
+    }
+    let mut close = false;
+    let shown = egui::Popup::new(
+        id,
+        ctx.clone(),
+        egui::PopupAnchor::Position(pos),
+        ui.layer_id(),
+    )
+    .kind(egui::PopupKind::Menu)
+    .layout(egui::Layout::top_down_justified(egui::Align::Min))
+    .style(crate::ui::menus::menu_popup_style)
+    .open_memory(None)
+    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+    .show(|ui| {
+        ui.set_min_width(200.0);
+        crate::ui::menus::body(ui, |ui| close = ruler_menu_rows(app, ui))
+    });
+    if close || shown.is_none() {
+        egui::Popup::close_id(&ctx, id);
+        app.ruler_menu = None;
+        ctx.data_mut(|d| d.remove::<Pos2>(pos_id));
+    }
+}
+
+/// The rows of the rulers' menu; true when one was clicked.
+fn ruler_menu_rows(app: &mut App, ui: &mut Ui) -> bool {
+    use crate::ui::menus::{check, item, sep};
+    let mut clicked = false;
+    if item(ui, "rulers.ruler_setup", "", true) {
+        app.open_ruler_options();
+        clicked = true;
+    }
+    if item(ui, "rulers.grid_setup", "", true) {
+        app.open_grid_options();
+        clicked = true;
+    }
+    if item(ui, "rulers.guidelines_setup", "", true) {
+        app.open_guidelines_options();
+        clicked = true;
+    }
+    sep(ui);
+    if check(ui, "menu.view.rulers", "Alt+Shift+R", app.show_rulers) {
+        app.show_rulers = !app.show_rulers;
+        clicked = true;
+    }
+    clicked
+}
+
 /// Follow the pointer while a guideline or the ruler origin is dragged out
 /// of the rulers, and finish on release. Returns true while such a drag is
 /// active (the canvas then ignores the pointer).
@@ -200,8 +287,17 @@ pub fn ruler_drag(app: &mut App, ui: &Ui) -> bool {
     let released = ui.input(|i| i.pointer.primary_released());
     match app.drag {
         Drag::NewGuide { horizontal, .. } => {
+            // The canvas, which clears the snap mark each frame, sees no
+            // pointer meanwhile: the mark is the guideline's own.
+            app.snap_mark.set(None);
             if let Some(s) = pos {
-                let p = app.snap_point_without_guides(app.view.to_page(s));
+                // Only the guideline's own axis snaps (and is marked).
+                let q = app.view.to_page(s);
+                let p = if horizontal {
+                    tracedraw_core::geometry::Point::new(q.x, app.snap_y_without_guides(q.y))
+                } else {
+                    tracedraw_core::geometry::Point::new(app.snap_x_without_guides(q.x), q.y)
+                };
                 app.drag = Drag::NewGuide { horizontal, pos: p };
             }
             if released {
@@ -210,6 +306,7 @@ pub fn ruler_drag(app: &mut App, ui: &Ui) -> bool {
             true
         }
         Drag::RulerOrigin { .. } => {
+            app.snap_mark.set(None);
             if let Some(s) = pos {
                 let p = app.snap_point_without_guides(app.view.to_page(s));
                 app.drag = Drag::RulerOrigin { pos: p };
@@ -344,6 +441,7 @@ fn draw_horizontal(app: &App, painter: &Painter, top: Rect) {
         }
     }
     pixels.paint(painter);
+    crate::tab_ruler::draw_in_ruler(app, painter);
     painter.rect_filled(
         unit_rect.expand2(egui::vec2(2.0, 0.0)),
         0.0,
@@ -544,5 +642,109 @@ mod tests {
         assert_eq!(label(2.5, 0.5), "2.5");
         assert_eq!(label(0.05, 0.05), "0.05");
         assert_eq!(label(-0.001, 0.5), "0");
+    }
+
+    /// One frame of the whole window with `events`.
+    fn window(ctx: &egui::Context, app: &mut App, events: Vec<egui::Event>) {
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, egui::vec2(1600.0, 1000.0))),
+            events,
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input, |ui| crate::ui::root(app, ui));
+        out.textures_delta.clear();
+    }
+
+    fn right_click(at: Pos2) -> Vec<egui::Event> {
+        let button = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Secondary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        vec![egui::Event::PointerMoved(at), button(true), button(false)]
+    }
+
+    /// A right click on either ruler or on their corner opens the rulers'
+    /// menu where it was clicked (#1831); a right click elsewhere does
+    /// not.
+    #[test]
+    fn a_right_click_on_a_ruler_opens_its_menu() {
+        let start = || {
+            let ctx = crate::theme::ui_context();
+            let mut app = App::headless();
+            window(&ctx, &mut app, Vec::new());
+            window(&ctx, &mut app, Vec::new());
+            (ctx, app)
+        };
+        let (_, app) = start();
+        let c = app.canvas_rect;
+        let r = Tokens::RULER;
+        for at in [
+            Pos2::new(c.center().x, c.min.y - r / 2.0),
+            Pos2::new(c.min.x - r / 2.0, c.center().y),
+            Pos2::new(c.min.x - r / 2.0, c.min.y - r / 2.0),
+        ] {
+            let (ctx, mut app) = start();
+            window(&ctx, &mut app, right_click(at));
+            window(&ctx, &mut app, Vec::new());
+            assert_eq!(app.ruler_menu, Some(at), "{at:?}");
+            assert!(app.context_menu.is_none(), "not the canvas menu");
+        }
+        let (ctx, mut app) = start();
+        window(&ctx, &mut app, right_click(c.center()));
+        assert_eq!(app.ruler_menu, None);
+    }
+
+    /// The menu's rows, in order: Ruler Setup, Grid Setup and Guidelines
+    /// Setup open those pages of Options, and Rulers (checked) hides the
+    /// rulers (#1831).
+    #[test]
+    fn the_ruler_menu_opens_the_setup_pages_and_hides_the_rulers() {
+        use crate::ui::dialogs::{Dialog, OptionsPage};
+        use crate::ui::menus::replay;
+        let ctx = crate::theme::ui_context();
+        let mut seen = Vec::new();
+        for i in 0.. {
+            let mut app = App::headless();
+            replay::start(i);
+            let input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, egui::vec2(800.0, 600.0))),
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| {
+                ruler_menu_rows(&mut app, ui);
+            });
+            out.textures_delta.clear();
+            let (hit, rows) = replay::finish();
+            if let Some(key) = hit {
+                let page = matches!(app.dialog, Dialog::Options).then_some(app.options_page);
+                seen.push((key, page, app.show_rulers));
+            }
+            if i + 1 >= rows {
+                break;
+            }
+        }
+        assert_eq!(
+            seen,
+            vec![
+                (
+                    "rulers.ruler_setup".to_string(),
+                    Some(OptionsPage::Rulers),
+                    true
+                ),
+                (
+                    "rulers.grid_setup".to_string(),
+                    Some(OptionsPage::Grid),
+                    true
+                ),
+                (
+                    "rulers.guidelines_setup".to_string(),
+                    Some(OptionsPage::Guidelines),
+                    true
+                ),
+                ("menu.view.rulers".to_string(), None, false),
+            ]
+        );
     }
 }

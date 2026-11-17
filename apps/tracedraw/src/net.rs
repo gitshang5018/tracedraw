@@ -16,14 +16,30 @@ pub struct HttpRequest {
 }
 
 /// What the service answered.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct HttpResponse {
     pub status: u16,
     pub body: String,
+    /// The `Retry-After` header, when the service sent one (with 429
+    /// and 503: seconds, or a date).
+    pub retry_after: Option<String>,
 }
 
 /// A response, or why none came (network, address, certificate).
 pub type HttpResult = Result<HttpResponse, String>;
+
+/// The error of a request that got no answer in time.
+pub const TIMED_OUT: &str = "timed out";
+
+/// Why a request failed, with a timeout as [`TIMED_OUT`], so the callers
+/// can tell it from other failures.
+#[cfg(not(target_arch = "wasm32"))]
+fn failure(e: ureq::Error) -> String {
+    match e {
+        ureq::Error::Timeout(_) => TIMED_OUT.to_string(),
+        e => e.to_string(),
+    }
+}
 
 /// Send `req` and deliver the answer (at most `limit` bytes of body) on
 /// `tx`: on a thread on the desktop, as a fetch in a browser.
@@ -43,33 +59,94 @@ pub fn spawn(req: HttpRequest, limit: u64, tx: std::sync::mpsc::Sender<HttpResul
     });
 }
 
-/// The roots a certificate is checked against. A phone has no JVM context
-/// for the platform verifier to ask (`rustls-platform-verifier` wants the
-/// Android context, and panics without it, which left the update box
-/// saying "checking" for good), so a phone uses ureq's own default,
-/// Mozilla's roots; a desktop keeps the system's.
-pub fn roots() -> ureq::tls::RootCerts {
-    #[cfg(target_os = "android")]
-    let roots = ureq::tls::RootCerts::WebPki;
-    #[cfg(not(target_os = "android"))]
-    let roots = ureq::tls::RootCerts::PlatformVerifier;
-    roots
+/// The TLS set-up of every HTTPS request: certificates are checked
+/// against the system's trusted ones.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn tls_config() -> ureq::tls::TlsConfig {
+    ureq::tls::TlsConfig::builder()
+        .root_certs(root_certs())
+        .build()
+}
+
+/// The system's verifier (Windows, macOS, Linux).
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+fn root_certs() -> ureq::tls::RootCerts {
+    ureq::tls::RootCerts::PlatformVerifier
+}
+
+/// Android: the system's verifier needs a Java part the app does not
+/// carry (and set-up the app never did), so every HTTPS request failed
+/// its certificate check (#1396). The certificates the system trusts are
+/// read from its store instead, the files its own TLS reads; the bundled
+/// Mozilla roots stand in when the store cannot be read. Read once.
+#[cfg(target_os = "android")]
+fn root_certs() -> ureq::tls::RootCerts {
+    static ROOTS: std::sync::OnceLock<ureq::tls::RootCerts> = std::sync::OnceLock::new();
+    ROOTS
+        .get_or_init(|| {
+            let dirs: Vec<&std::path::Path> = ANDROID_CA_DIRS
+                .iter()
+                .map(std::path::Path::new)
+                .collect();
+            match system_store(&dirs) {
+                Some((dir, certs)) => {
+                    log::info!(
+                        "HTTPS: {} trusted certificates from {}",
+                        certs.len(),
+                        dir.display()
+                    );
+                    ureq::tls::RootCerts::Specific(std::sync::Arc::new(certs))
+                }
+                None => {
+                    log::warn!("HTTPS: the system's certificate store cannot be read, the bundled roots are used");
+                    ureq::tls::RootCerts::WebPki
+                }
+            }
+        })
+        .clone()
+}
+
+/// The folders of Android's certificate store, the one updated with the
+/// system's TLS module (Android 14 and later) first.
+#[cfg(any(target_os = "android", test))]
+const ANDROID_CA_DIRS: [&str; 2] = [
+    "/apex/com.android.conscrypt/cacerts",
+    "/system/etc/security/cacerts",
+];
+
+/// The certificates of the first of `dirs` that holds any, with that
+/// folder: each file there is one certificate in PEM form (with its
+/// description as text before it).
+#[cfg(any(target_os = "android", test))]
+fn system_store(
+    dirs: &[&std::path::Path],
+) -> Option<(std::path::PathBuf, Vec<ureq::tls::Certificate<'static>>)> {
+    use ureq::tls::PemItem;
+    dirs.iter().find_map(|dir| {
+        let mut certs = Vec::new();
+        for entry in std::fs::read_dir(dir).ok()?.flatten() {
+            let Ok(bytes) = std::fs::read(entry.path()) else {
+                continue;
+            };
+            certs.extend(ureq::tls::parse_pem(&bytes).filter_map(|item| match item {
+                Ok(PemItem::Certificate(c)) => Some(c),
+                _ => None,
+            }));
+        }
+        (!certs.is_empty()).then(|| (dir.to_path_buf(), certs))
+    })
 }
 
 /// One request over HTTPS (or HTTP for local servers), waiting up to
 /// five minutes. Certificates are checked against the system's trusted
-/// ones; proxies come from the usual environment variables.
+/// ones ([`tls_config`]); proxies come from the usual environment
+/// variables.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn send(req: &HttpRequest, limit: u64) -> HttpResult {
-    use ureq::tls::TlsConfig;
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_global(Some(std::time::Duration::from_secs(300)))
         .http_status_as_error(false)
-        .tls_config(
-            TlsConfig::builder()
-                .root_certs(crate::net::roots())
-                .build(),
-        )
+        .tls_config(tls_config())
         .build()
         .into();
     let mut resp = match req.method {
@@ -99,15 +176,25 @@ pub fn send(req: &HttpRequest, limit: u64) -> HttpResult {
             }
         }
     }
-    .map_err(|e| e.to_string())?;
+    .map_err(failure)?;
     let status = resp.status().as_u16();
+    let retry_after = resp
+        .headers()
+        .get("retry-after")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty());
     let body = resp
         .body_mut()
         .with_config()
         .limit(limit)
         .read_to_string()
-        .map_err(|e| e.to_string())?;
-    Ok(HttpResponse { status, body })
+        .map_err(failure)?;
+    Ok(HttpResponse {
+        status,
+        body,
+        retry_after,
+    })
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -144,11 +231,62 @@ pub async fn send(req: HttpRequest) -> HttpResult {
         .map_err(js)?;
     let resp: web_sys::Response = resp.dyn_into().map_err(js)?;
     let status = resp.status();
+    let retry_after = resp
+        .headers()
+        .get("retry-after")
+        .ok()
+        .flatten()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty());
     let text = wasm_bindgen_futures::JsFuture::from(resp.text().map_err(js)?)
         .await
         .map_err(js)?;
     Ok(HttpResponse {
         status,
         body: text.as_string().unwrap_or_default(),
+        retry_after,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Android's certificate store: the files of the first folder that
+    /// has certificates, each read with the text before its PEM block;
+    /// files that hold none are skipped (#1396).
+    #[test]
+    fn the_android_store_is_read_from_its_first_folder_with_certificates() {
+        let root = std::env::temp_dir().join(format!("tracedraw-cacerts-{}", std::process::id()));
+        let empty = root.join("apex");
+        let system = root.join("system");
+        std::fs::create_dir_all(&empty).expect("folder");
+        std::fs::create_dir_all(&system).expect("folder");
+        let pem = "Certificate:\n    Data: a description\n-----BEGIN CERTIFICATE-----\nMIIBszCCAVmgAwIBAgI=\n-----END CERTIFICATE-----\n";
+        std::fs::write(system.join("1a2b3c4d.0"), pem).expect("write");
+        std::fs::write(system.join("5e6f7a8b.0"), pem).expect("write");
+        std::fs::write(system.join("notes.txt"), "no certificate here").expect("write");
+        std::fs::write(empty.join("readme"), "nothing").expect("write");
+        let missing = root.join("missing");
+        let (dir, certs) =
+            system_store(&[missing.as_path(), empty.as_path(), system.as_path()]).expect("store");
+        assert_eq!(dir, system);
+        assert_eq!(certs.len(), 2);
+        assert_eq!(certs[0].der().len(), 14);
+        assert!(system_store(&[missing.as_path(), empty.as_path()]).is_none());
+        let _ = std::fs::remove_dir_all(&root);
+        // The store's places on the device, the updatable one first.
+        assert!(ANDROID_CA_DIRS[0].starts_with("/apex/"));
+        assert_eq!(ANDROID_CA_DIRS[1], "/system/etc/security/cacerts");
+    }
+
+    /// Every request is set up the same way, with the system's
+    /// certificates.
+    #[test]
+    fn requests_check_certificates_against_the_system() {
+        assert!(matches!(
+            tls_config().root_certs(),
+            ureq::tls::RootCerts::PlatformVerifier
+        ));
+    }
 }

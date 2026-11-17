@@ -8,8 +8,8 @@ use crate::app::App;
 use tracedraw_core::document::text_outline::{merge_stretch, TextRequest};
 use tracedraw_core::geometry::{Affine, Point, Rect};
 use tracedraw_core::{
-    spans_apply, spans_char_count, spans_delete, spans_insert, spans_text, Color, Command, Fill,
-    ShapeId, ShapeKind, Stroke, TextSpan,
+    merge_equal_spans, spans_apply, spans_char_count, spans_delete, spans_insert, spans_text,
+    split_spans_at, Color, Command, Fill, ShapeId, ShapeKind, Stroke, TextSpan,
 };
 use tracedraw_text::TextLayout;
 
@@ -28,6 +28,21 @@ pub struct TextEdit {
     /// step: typing on folds into that step only while it is still the
     /// last one (never into a step of another text, #373).
     pub step: Option<usize>,
+    /// The undo steps around this text's creation, when it was started
+    /// here (a click with the Text tool): what is done to it before its
+    /// first characters and those characters join the step that created
+    /// it, so one Undo takes the whole new text back; a text left with
+    /// no characters goes with that step (#1481).
+    pub created: Option<NewText>,
+}
+
+/// The step that created a text started here, and the step before it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NewText {
+    /// The last step before the text was created (`None`: none).
+    pub before: Option<u64>,
+    /// The step that created it (after a join: the joined step).
+    pub step: u64,
 }
 
 impl TextEdit {
@@ -38,6 +53,7 @@ impl TextEdit {
             anchor: len,
             goal_x: None,
             step: None,
+            created: None,
         }
     }
 
@@ -49,6 +65,111 @@ impl TextEdit {
     pub fn has_selection(&self) -> bool {
         self.caret != self.anchor
     }
+}
+
+/// Characters copied while editing a text: their spans, so that a paste
+/// into a text keeps their font, size and colours (#1378), and the plain
+/// text put on the system clipboard for other applications.
+#[derive(Debug, Clone, Default)]
+pub struct TextClip {
+    /// The text as put on the system clipboard, line ends as `\n`.
+    pub plain: String,
+    pub spans: Vec<TextSpan>,
+    /// The fill and outline of the text copied from, which characters
+    /// without their own show.
+    pub fill: Fill,
+    pub stroke: Option<Stroke>,
+}
+
+/// Text from a clipboard with its line ends as `\n`.
+pub(crate) fn unify_line_ends(t: &str) -> String {
+    t.replace("\r\n", "\n").replace('\r', "\n")
+}
+
+/// Spans as plain text for other applications: line breaks inside a
+/// paragraph end lines too, with the system's line end.
+fn plain_text_of(spans: &[TextSpan]) -> String {
+    let nl = if cfg!(windows) { "\r\n" } else { "\n" };
+    spans_text(spans).replace(['\n', '\u{2028}'], nl)
+}
+
+/// `spans` of a text filled with `fill` and outlined with `stroke` as they
+/// look in a text filled with `to_fill` and outlined with `to_stroke`:
+/// characters that show the object's colours get them as their own where
+/// the two differ.
+fn spans_looking_the_same(
+    spans: &[TextSpan],
+    fill: &Fill,
+    stroke: &Option<Stroke>,
+    to_fill: &Fill,
+    to_stroke: &Option<Stroke>,
+) -> Vec<TextSpan> {
+    spans
+        .iter()
+        .filter(|sp| !sp.text.is_empty())
+        .map(|sp| {
+            let mut sp = sp.clone();
+            if sp.fill.is_none() && fill != to_fill {
+                sp.fill = Some(fill.clone());
+            }
+            if sp.outline.is_none() && stroke != to_stroke {
+                sp.outline = Some(stroke.clone().unwrap_or(Stroke {
+                    width: 0.0,
+                    ..Stroke::default()
+                }));
+            }
+            sp
+        })
+        .collect()
+}
+
+/// `spans` with `ins` put in at character `at`.
+fn spans_insert_spans(spans: &[TextSpan], at: usize, ins: &[TextSpan]) -> Vec<TextSpan> {
+    let (head, tail) = split_spans_at(spans, at);
+    let mut out = head;
+    out.extend(ins.iter().filter(|sp| !sp.text.is_empty()).cloned());
+    out.extend(tail);
+    if out.is_empty() {
+        out.extend(spans.first().cloned());
+    }
+    merge_equal_spans(out)
+}
+
+/// The text objects among `shapes` (and in their groups), each as spans
+/// looking as they do in a text filled with `to_fill` and outlined with
+/// `to_stroke`, one paragraph each.
+fn text_of_objects(
+    shapes: &[tracedraw_core::Shape],
+    to_fill: &Fill,
+    to_stroke: &Option<Stroke>,
+) -> Vec<TextSpan> {
+    let mut out: Vec<TextSpan> = Vec::new();
+    fn walk(s: &tracedraw_core::Shape, to: (&Fill, &Option<Stroke>), out: &mut Vec<TextSpan>) {
+        match &s.kind {
+            ShapeKind::Text { spans, .. } => {
+                let spans = spans_looking_the_same(spans, &s.fill, &s.stroke, to.0, to.1);
+                if spans.is_empty() {
+                    return;
+                }
+                if let Some(last) = out.last() {
+                    let mut nl = last.clone();
+                    nl.text = "\n".into();
+                    out.push(nl);
+                }
+                out.extend(spans);
+            }
+            ShapeKind::Group { children, .. } => {
+                for c in children {
+                    walk(c, to, out);
+                }
+            }
+            _ => {}
+        }
+    }
+    for s in shapes {
+        walk(s, (to_fill, to_stroke), &mut out);
+    }
+    out
 }
 
 /// Caret and selection move requests from the keyboard.
@@ -142,6 +263,56 @@ impl App {
             .is_some_and(|s| matches!(&s.kind, ShapeKind::Text { para, .. } if para.vertical))
     }
 
+    /// The text being edited is vertical with its columns going left to
+    /// right.
+    pub fn editing_columns_left_to_right(&self) -> bool {
+        self.text_edit
+            .as_ref()
+            .and_then(|te| self.doc().find_shape(te.shape))
+            .is_some_and(
+                |s| matches!(&s.kind, ShapeKind::Text { para, .. } if para.columns_left_to_right()),
+            )
+    }
+
+    /// The column order of the vertical text acted on (the first one's):
+    /// for the property bar and the Text docker.
+    pub fn vertical_columns(&self) -> Option<tracedraw_core::VerticalColumns> {
+        self.vertical_text_targets()
+            .iter()
+            .find_map(|s| match &s.kind {
+                ShapeKind::Text { para, .. } if para.vertical => Some(para.vertical_columns),
+                _ => None,
+            })
+    }
+
+    /// Set the order of the columns of the vertical text acted on (the
+    /// selected texts and the one being edited): right to left or left to
+    /// right (#1986). One undo step; texts set in lines keep the setting
+    /// for when they turn vertical.
+    pub fn set_vertical_columns(&mut self, columns: tracedraw_core::VerticalColumns) {
+        let cmds: Vec<Command> = self
+            .vertical_text_targets()
+            .into_iter()
+            .filter_map(|s| {
+                let mut kind = s.kind.clone();
+                let ShapeKind::Text { para, .. } = &mut kind else {
+                    return None;
+                };
+                if para.vertical_columns == columns {
+                    return None;
+                }
+                para.vertical_columns = columns;
+                Some(Command::SetShapeKind { shape: s.id, kind })
+            })
+            .collect();
+        if cmds.is_empty() {
+            return;
+        }
+        if let Err(e) = self.engine.run_batch("Column Order", &cmds) {
+            self.status = e.to_string();
+        }
+    }
+
     /// Text > Vertical Text: set the selected text (and the one being
     /// edited) in columns, or back in lines. One undo step.
     pub fn set_vertical_text(&mut self, on: bool) {
@@ -168,6 +339,47 @@ impl App {
         }
     }
 
+    /// The text being edited was started here and the step that created
+    /// it is still the last one, with nothing done since: typing goes on
+    /// in that step (#1481).
+    pub(crate) fn fresh_text_step(&self) -> bool {
+        self.text_edit
+            .as_ref()
+            .and_then(|te| te.created)
+            .is_some_and(|c| {
+                self.engine.at_recorded_step() && self.engine.last_step_id() == Some(c.step)
+            })
+    }
+
+    /// Join the steps recorded since the text being edited was created
+    /// into its creation step, while that step is still in effect: the
+    /// styles given to a new text before its first characters, and those
+    /// characters, are part of making it (#1481). Returns the joined
+    /// step's id; `None` (and nothing joined) when the text was not
+    /// started here or its creation is no longer in the history.
+    pub(crate) fn join_new_text_steps(&mut self) -> Option<u64> {
+        let nt = self.text_edit.as_ref()?.created?;
+        if !self.engine.step_in_effect(nt.step) {
+            if let Some(te) = self.text_edit.as_mut() {
+                te.created = None;
+            }
+            return None;
+        }
+        let last = self.engine.last_step_id()?;
+        if last != nt.step {
+            self.engine.join_group(nt.before, "Create Object");
+            // Joined, the creation step takes the newest step's id; still
+            // there under its own, the join did not happen.
+            if self.engine.step_in_effect(nt.step) || self.engine.last_step_id() != Some(last) {
+                return None;
+            }
+        }
+        if let Some(c) = self.text_edit.as_mut().and_then(|te| te.created.as_mut()) {
+            c.step = last;
+        }
+        Some(last)
+    }
+
     /// Replace the spans of the text being edited. Keystrokes collapse
     /// into one undo step per text object.
     pub fn set_edit_spans(&mut self, spans: Vec<TextSpan>) {
@@ -177,17 +389,24 @@ impl App {
     /// Replace the spans of the text being edited as an undo step named
     /// `label`; with `merge` it takes the place of a step of that name
     /// just before it.
-    fn set_edit_spans_as(&mut self, spans: Vec<TextSpan>, label: &'static str, merge: bool) {
+    pub(crate) fn set_edit_spans_as(
+        &mut self,
+        spans: Vec<TextSpan>,
+        label: &'static str,
+        merge: bool,
+    ) {
         let Some(te) = self.text_edit.clone() else {
             return;
         };
         let Some(s) = self.doc().find_shape(te.shape).cloned() else {
             return;
         };
+        let was_empty = matches!(&s.kind, ShapeKind::Text { spans, .. }
+            if spans_char_count(spans) == 0);
         let ShapeKind::Text {
             origin,
             frame,
-            align,
+            mut align,
             para,
             on_path,
             ..
@@ -195,6 +414,22 @@ impl App {
         else {
             return;
         };
+        // A text begun in Hebrew or Arabic runs from right to left: its
+        // first letters typed into an empty text left aligned (the
+        // default) align it to the right, so artistic text grows to the
+        // left of where it was clicked and paragraph text starts at the
+        // frame's right edge. It started at the left and pushed the words
+        // to the right (discussion #2122).
+        if was_empty
+            && on_path.is_none()
+            && matches!(
+                align,
+                tracedraw_core::TextAlign::Left | tracedraw_core::TextAlign::None
+            )
+            && starts_right_to_left(&spans_text(&spans))
+        {
+            align = tracedraw_core::TextAlign::Right;
+        }
         // The text keeps its own hyphenation: typing took the setting for
         // new text, turning it on or off for the text edited (#470).
         let kind = ShapeKind::Text {
@@ -212,13 +447,21 @@ impl App {
         // Typing goes on in the step this session made, while that step
         // is still the last one; otherwise (the first keystroke, another
         // text edited since, any other change) it is a step of its own.
+        // A text just started takes its first characters into the step
+        // that created it, and the typing after them while nothing else
+        // happened: one Undo takes the whole new text back, never leaving
+        // an empty one behind (#1481).
         let depth = self.engine.history_labels().0.len();
-        let own_step = te.step == Some(depth) && self.engine.undo_label() == Some(label);
+        let own_step = te.step == Some(depth)
+            && (self.engine.undo_label() == Some(label) || self.fresh_text_step());
         let _ = if merge && own_step {
             self.engine.amend(&cmd)
         } else {
             self.engine.run_with_label(&cmd, label)
         };
+        if was_empty {
+            self.join_new_text_steps();
+        }
         let depth = self.engine.history_labels().0.len();
         if let Some(t) = self.text_edit.as_mut() {
             t.step = Some(depth);
@@ -246,12 +489,19 @@ impl App {
         // Ctrl+Space leaves the text for the Pick tool, as in the
         // reference program (Space alone types a space), before any space
         // the key would type (#478).
-        if ctx.input(|i| (i.modifiers.command || i.modifiers.ctrl) && i.key_pressed(Key::Space)) {
+        if ctx.input(|i| {
+            (i.modifiers.command || i.modifiers.ctrl)
+                && !altgr(&i.modifiers)
+                && i.key_pressed(Key::Space)
+        }) {
             self.finish_text();
             self.set_tool(crate::tools::Tool::Pick);
             return;
         }
         let events = ctx.input(|i| i.events.clone());
+        // AltGr held: the windowing layer turns its letters into copy,
+        // cut and paste (Polish ć, ź), but they are characters (#1271).
+        let altgr_held = ctx.input(|i| altgr(&i.modifiers));
         // Alt let go after digits: the character they number (0 first: code
         // page 1252, as the Glyphs docker shows; else the Unicode number).
         if !self.alt_code.is_empty() && !ctx.input(|i| i.modifiers.alt) {
@@ -287,20 +537,15 @@ impl App {
                     self.alt_composed = None;
                     self.text_insert(t);
                 }
-                Event::Paste(t) => self.text_insert(t),
+                Event::Paste(_) | Event::Copy | Event::Cut if altgr_held => {}
+                // The selected characters, with their formatting for a
+                // paste here and as plain text for other applications
+                // (#1377, #1378).
+                Event::Paste(t) => self.text_paste(Some(t.clone())),
                 Event::Copy => {
-                    let sel = self.text_selected();
-                    if !sel.is_empty() {
-                        ctx.copy_text(sel);
-                    }
+                    self.text_copy();
                 }
-                Event::Cut => {
-                    let sel = self.text_selected();
-                    if !sel.is_empty() {
-                        ctx.copy_text(sel);
-                        self.text_delete_backward();
-                    }
-                }
+                Event::Cut => self.text_cut(),
                 Event::Key {
                     key,
                     physical_key,
@@ -309,13 +554,25 @@ impl App {
                     ..
                 } => {
                     self.alt_composed = None;
+                    // In the macOS desktop app Command+Shift+H stands for
+                    // Force Justify's Command+H, which hides the
+                    // application there (#1409).
+                    let mac = crate::shortcuts::mac_key_for(*key, *modifiers);
+                    let (key, modifiers) = mac
+                        .as_ref()
+                        .map(|(m, k)| (k, m))
+                        .unwrap_or((key, modifiers));
                     let shift = modifiers.shift;
-                    let ctrl = modifiers.command;
+                    // AltGr types characters (Polish ą ę ł ś ż, German
+                    // @ € { }): its keys are neither Ctrl shortcuts (they
+                    // selected all, aligned or resized the text instead)
+                    // nor the digits of an Alt code (#1271).
+                    let ctrl = modifiers.command && !altgr(modifiers);
                     // Alt and digits: a character by its number, typed when
                     // Alt is let go. On Windows too: the windowing layer
                     // drops the character the system makes of them (#469).
                     // The physical key reads the keypad with Num Lock off.
-                    if modifiers.alt && !ctrl {
+                    if modifiers.alt && !modifiers.command && !modifiers.ctrl {
                         if let Some(d) = physical_key.and_then(digit_of).or_else(|| digit_of(*key))
                         {
                             self.alt_code.push(d);
@@ -323,11 +580,24 @@ impl App {
                         }
                     }
                     // In vertical text the caret goes down the column with
-                    // Down and across the columns with Left and Right.
+                    // Down and across the columns with Left and Right: to
+                    // the next column with Left, or with Right where the
+                    // columns go left to right (#1986).
                     let vertical = self.editing_vertical();
+                    let (next_col, prev_col) = if self.editing_columns_left_to_right() {
+                        (Key::ArrowRight, Key::ArrowLeft)
+                    } else {
+                        (Key::ArrowLeft, Key::ArrowRight)
+                    };
                     match key {
                         Key::Num8 if ctrl => self.step_text_size(true),
                         Key::Num2 if ctrl => self.step_text_size(false),
+                        Key::Period if ctrl && shift => {
+                            self.step_char_spacing(true);
+                        }
+                        Key::Comma if ctrl && shift => {
+                            self.step_char_spacing(false);
+                        }
                         Key::Backspace => self.text_delete_backward(),
                         Key::Delete => self.text_delete_forward(),
                         Key::Enter if !shift => self.text_insert("\n"),
@@ -337,10 +607,10 @@ impl App {
                         Key::ArrowDown if vertical && !ctrl => {
                             self.text_move(CaretMove::Right, shift)
                         }
-                        Key::ArrowLeft if vertical && !ctrl => {
+                        k if vertical && !ctrl && *k == next_col => {
                             self.text_move(CaretMove::Down, shift)
                         }
-                        Key::ArrowRight if vertical && !ctrl => {
+                        k if vertical && !ctrl && *k == prev_col => {
                             self.text_move(CaretMove::Up, shift)
                         }
                         Key::ArrowLeft if ctrl => self.text_move(CaretMove::WordLeft, shift),
@@ -388,7 +658,7 @@ impl App {
                         Key::U if ctrl => {
                             let on = !self.text_underline;
                             self.text_underline = on;
-                            self.text_apply_style(move |s| s.underline = on);
+                            self.text_apply_style(move |s| s.underline = on.into());
                         }
                         Key::Escape => {
                             self.finish_text();
@@ -400,6 +670,176 @@ impl App {
                 }
                 _ => {}
             }
+        }
+    }
+
+    /// A text is being edited: Cut, Copy and Paste act on its characters.
+    pub fn editing_text(&self) -> bool {
+        self.edit_spans().is_some()
+    }
+
+    /// Copy the selected characters: with their formatting for a paste
+    /// into a text here, as plain text on the system clipboard for other
+    /// applications (#1377, #1378). False (nothing copied) without a
+    /// selection.
+    pub fn text_copy(&mut self) -> bool {
+        let (Some(te), Some(spans)) = (self.text_edit.clone(), self.edit_spans()) else {
+            return false;
+        };
+        if !te.has_selection() {
+            return false;
+        }
+        let (a, b) = te.selection();
+        let (_, rest) = split_spans_at(&spans, a);
+        let (picked, _) = split_spans_at(&rest, b - a);
+        let Some((fill, stroke)) = self
+            .doc()
+            .find_shape(te.shape)
+            .map(|s| (s.fill.clone(), s.stroke.clone()))
+        else {
+            return false;
+        };
+        let plain = plain_text_of(&picked);
+        // One clipboard: the characters replace the objects copied
+        // before, also where the system clipboard cannot be read back.
+        self.clipboard = None;
+        self.text_clip = Some(TextClip {
+            plain: unify_line_ends(&plain),
+            spans: picked,
+            fill,
+            stroke,
+        });
+        crate::clipboard::write_text(&plain);
+        true
+    }
+
+    /// Cut the selected characters (see [`App::text_copy`]), one undo
+    /// step.
+    pub fn text_cut(&mut self) {
+        if !self.text_copy() {
+            return;
+        }
+        let (Some(te), Some(mut spans)) = (self.text_edit.clone(), self.edit_spans()) else {
+            return;
+        };
+        let (a, b) = te.selection();
+        spans_delete(&mut spans, a, b);
+        self.set_edit_spans_as(spans, "Cut", false);
+        self.set_caret(a, false);
+    }
+
+    /// Paste into the text at the caret, over the selection. `event_text`
+    /// is the text of the paste event, when there was one (a browser
+    /// gives the clipboard only that way); otherwise the system
+    /// clipboard is read where the system allows it. On Android the
+    /// windowing layer's paste event holds its own copy, not the
+    /// system's, so the system clipboard is read first.
+    pub fn text_paste(&mut self, event_text: Option<String>) {
+        let event_text = event_text.filter(|t| !t.is_empty());
+        let text = if cfg!(target_os = "android") {
+            crate::clipboard::system_text().or(event_text)
+        } else {
+            event_text.or_else(crate::clipboard::system_text)
+        };
+        self.text_paste_text(text);
+    }
+
+    /// [`App::text_paste`] with the clipboard holding `text` (`None`: no
+    /// text, or none the system lets be read). The characters copied
+    /// here keep their formatting while the clipboard holds them; objects
+    /// copied here give their text, never their SVG markup (#1377).
+    pub fn text_paste_text(&mut self, text: Option<String>) {
+        let Some(shape) = self
+            .text_edit
+            .as_ref()
+            .and_then(|te| self.doc().find_shape(te.shape))
+            .cloned()
+        else {
+            return;
+        };
+        let (to_fill, to_stroke) = (&shape.fill, &shape.stroke);
+        let from_clip = |clip: &TextClip| {
+            spans_looking_the_same(&clip.spans, &clip.fill, &clip.stroke, to_fill, to_stroke)
+        };
+        let ins: Vec<TextSpan> = match text.map(|t| unify_line_ends(&t)) {
+            None => match &self.text_clip {
+                Some(clip) => from_clip(clip),
+                None => return,
+            },
+            Some(t) => match &self.text_clip {
+                Some(clip) if clip.plain == t => from_clip(clip),
+                _ if crate::clipboard::ClipboardContent {
+                    text: Some(t.clone()),
+                    ..Default::default()
+                }
+                .is_svg() =>
+                {
+                    match self.objects_text_of_svg(&t, to_fill, to_stroke) {
+                        Some(spans) => spans,
+                        None => return self.text_insert_plain(&t),
+                    }
+                }
+                _ => return self.text_insert_plain(&t),
+            },
+        };
+        if ins.is_empty() {
+            return;
+        }
+        let (Some(te), Some(mut spans)) = (self.text_edit.clone(), self.edit_spans()) else {
+            return;
+        };
+        let (a, b) = te.selection();
+        spans_delete(&mut spans, a, b);
+        let spans = spans_insert_spans(&spans, a, &ins);
+        self.set_edit_spans_as(spans, "Paste", false);
+        self.set_caret(a + spans_char_count(&ins), false);
+        if let Some(te) = self.text_edit.as_mut() {
+            te.goal_x = None;
+        }
+    }
+
+    /// The text of the objects an SVG document on the clipboard holds:
+    /// those copied here while the clipboard still holds their copy,
+    /// else the text objects read from it. `None` when it cannot be
+    /// read as SVG (it is then pasted as it is).
+    fn objects_text_of_svg(
+        &self,
+        svg: &str,
+        to_fill: &Fill,
+        to_stroke: &Option<Stroke>,
+    ) -> Option<Vec<TextSpan>> {
+        let ours = self.clipboard.as_ref().filter(|cb| {
+            cb.system.still_holds(
+                crate::clipboard::change_count(),
+                &Some(svg.to_string()),
+                &[],
+                || None,
+            )
+        });
+        if let Some(cb) = ours {
+            return Some(text_of_objects(&cb.shapes, to_fill, to_stroke));
+        }
+        let mut ids = tracedraw_core::id::IdSource::default();
+        let doc = tracedraw_io::svg_import::parse(svg, &mut ids).ok()?;
+        Some(text_of_objects(&doc.shapes, to_fill, to_stroke))
+    }
+
+    /// Paste plain text at the caret, over the selection, in the style
+    /// of the character before it, as one undo step.
+    fn text_insert_plain(&mut self, s: &str) {
+        let (Some(te), Some(mut spans)) = (self.text_edit.clone(), self.edit_spans()) else {
+            return;
+        };
+        if s.is_empty() {
+            return;
+        }
+        let (a, b) = te.selection();
+        spans_delete(&mut spans, a, b);
+        spans_insert(&mut spans, a, s);
+        self.set_edit_spans_as(spans, "Paste", false);
+        self.set_caret(a + s.chars().count(), false);
+        if let Some(te) = self.text_edit.as_mut() {
+            te.goal_x = None;
         }
     }
 
@@ -443,7 +883,22 @@ impl App {
         spans_insert(&mut spans, a, s);
         let mut caret = a + s.chars().count();
         let mut web_link = None;
-        if self.settings.autocorrect.enabled {
+        // Letters typed in a font with another script at the places of
+        // Latin ones (older Tamil fonts) are that script's: capitals and
+        // quotes would change them into other letters (#1358).
+        let legacy_font = {
+            let mut seen = 0usize;
+            spans
+                .iter()
+                .find(|sp| {
+                    seen += sp.char_count();
+                    caret.saturating_sub(1) < seen
+                })
+                .is_some_and(|sp| {
+                    tracedraw_text::fonts().latin_places_hold_another_script(&sp.font_family)
+                })
+        };
+        if self.settings.autocorrect.enabled && !legacy_font {
             let typed: String = spans_text(&spans).chars().take(caret).collect();
             if self.settings.autocorrect.auto_hyperlinks {
                 web_link = crate::autocorrect::typed_web_address(&typed);
@@ -585,20 +1040,28 @@ impl App {
                     // around a wrap object share a baseline and count as
                     // one.
                     let here = layout.lines.get(li).map_or(0.0, |l| l.baseline);
+                    // How high a baseline is: the mirrored lines of
+                    // left to right columns go up (#1986).
+                    let up = if layout.columns_left_to_right {
+                        -1.0
+                    } else {
+                        1.0
+                    };
+                    let here = here * up;
                     let target = if m == CaretMove::Up {
                         layout
                             .lines
                             .get(..li)
                             .unwrap_or(&[])
                             .iter()
-                            .rposition(|l| l.baseline > here + 1e-6)
+                            .rposition(|l| l.baseline * up > here + 1e-6)
                     } else {
                         layout
                             .lines
                             .iter()
                             .enumerate()
                             .skip(li + 1)
-                            .find(|(_, l)| l.baseline < here - 1e-6)
+                            .find(|(_, l)| l.baseline * up < here - 1e-6)
                             .map(|(i, _)| i)
                     };
                     match target.and_then(|t| layout.lines.get(t)) {
@@ -654,6 +1117,12 @@ impl App {
         let te = self.text_edit.as_ref()?;
         let (layout, to_page) = self.text_layout_of(te.shape)?;
         let local = to_page.inverse() * p;
+        // On a path: the place along the line nearest the point (#2423).
+        let local = layout
+            .on_path
+            .as_ref()
+            .and_then(|pp| pp.unplace(local))
+            .unwrap_or(local);
         layout.hit_char(local)
     }
 
@@ -815,6 +1284,7 @@ impl App {
     }
 
     /// The selected text (empty without a selection).
+    #[cfg(test)]
     pub fn text_selected(&self) -> String {
         let Some(te) = self.text_edit.as_ref() else {
             return String::new();
@@ -865,7 +1335,7 @@ pub fn layout_of_text_shape(
         *origin,
         *frame,
         on_path.is_some(),
-        para.vertical,
+        para.columns_from_right(),
     );
     // The lines of vertical text are reported as written; their frame
     // turns them into the columns.
@@ -901,10 +1371,26 @@ fn caret_geometry_sized(
         let size_mm = size_pt * 25.4 / 72.0;
         (0.0, 0.0, size_mm * 0.8, size_mm * 0.2)
     });
-    let top = *to_page * Point::new(x, base + asc);
-    let bottom = *to_page * Point::new(x, base - desc);
+    // On a path the caret stands where the letters are laid (#2423); it
+    // stayed where the straight line would have been.
+    let top = *to_page * layout.placed(Point::new(x, base + asc));
+    let bottom = *to_page * layout.placed(Point::new(x, base - desc));
     let mut quads = Vec::new();
-    if a != b {
+    if a != b && layout.on_path.is_some() {
+        // One quad per selected letter, each standing on the path.
+        for line in &layout.lines {
+            for i in a.max(line.start_char)..b.min(line.end_char) {
+                let k = i - line.start_char;
+                if let (Some(&x0), Some(&x1)) = (line.starts.get(k), line.ends.get(k)) {
+                    let (y0, y1) = (line.baseline - line.descent, line.baseline + line.ascent);
+                    quads.push(
+                        [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
+                            .map(|(x, y)| *to_page * layout.placed(Point::new(x, y))),
+                    );
+                }
+            }
+        }
+    } else if a != b {
         // The stretches the selected characters cover on a line: one for
         // plain text, from the right for right-to-left text (#629),
         // several where the directions mix.
@@ -985,6 +1471,12 @@ fn digit_of(key: egui::Key) -> Option<char> {
     })
 }
 
+/// AltGr held: Windows reports the key as Ctrl and Alt together. Keys
+/// pressed with it type characters (#1271).
+pub(crate) fn altgr(m: &egui::Modifiers) -> bool {
+    m.ctrl && m.alt
+}
+
 /// The character an Alt code names: with a leading zero a code page 1252
 /// number (Alt+0169 is ©), else a Unicode number.
 pub fn alt_code_char(code: &str) -> Option<char> {
@@ -1000,6 +1492,367 @@ pub fn alt_code_char(code: &str) -> Option<char> {
 mod tests {
     use super::*;
 
+    /// Two texts blended, grouped and given a perspective on the group:
+    /// the Text tool reaches each text where it is drawn, through the
+    /// perspective, and edits it (#2169). Plain grouped texts too.
+    #[test]
+    fn the_text_tool_reaches_texts_in_a_warped_grouped_blend() {
+        use tracedraw_core::Command;
+        let mut app = App::headless();
+        let text = |app: &mut App, x: f64, t: &str| {
+            app.new_shape(ShapeKind::Text {
+                spans: vec![TextSpan::new(t, "Sans", 36.0)],
+                origin: Point::new(x, 100.0),
+                frame: None,
+                align: Default::default(),
+                para: Default::default(),
+                on_path: None,
+            })
+            .expect("text")
+        };
+        let a = text(&mut app, 0.0, "AB");
+        let b = text(&mut app, 150.0, "CD");
+        app.select(vec![a, b]);
+        app.blend_selection(3, 0.0, 0.0, 0.0);
+        app.refresh_blends();
+        app.select(vec![a, b]);
+        app.group_selection();
+        app.refresh_blends();
+        let g = app.selection[0];
+        // A point on the outline of `id` as the group draws it.
+        let on = |app: &App, id| {
+            let gs = app.doc().find_shape(g).expect("group").clone();
+            let drawn = tracedraw_core::live::evaluate(&gs).main;
+            let ShapeKind::Group { children } = &drawn.kind else {
+                panic!("a group");
+            };
+            let mut c = children.iter().find(|c| c.id == id).expect("part").clone();
+            c.transform_by(drawn.transform);
+            let path = c.page_path();
+            let Some(kurbo::PathEl::MoveTo(p)) = path.elements().first().copied() else {
+                panic!("a path");
+            };
+            p
+        };
+        // Grouped, no warp: each text, and the caret by the point.
+        let p = on(&app, b);
+        assert_eq!(app.hit_test(p), Some(g));
+        assert_eq!(app.text_inside_at(g, p), Some((b, false)));
+        let bb = app.doc().find_shape(g).expect("group").bounds();
+        let corners = [
+            Point::new(bb.x0, bb.y1 + 30.0),
+            Point::new(bb.x0 + 20.0, bb.y0),
+            Point::new(bb.x1 - 20.0, bb.y0),
+            Point::new(bb.x1, bb.y1 + 30.0),
+        ];
+        app.run(Command::SetEffects {
+            shape: g,
+            effects: vec![tracedraw_core::live::Effect::Perspective { corners }],
+        });
+        app.refresh_blends();
+        for id in [a, b] {
+            let p = on(&app, id);
+            assert_eq!(app.hit_test(p), Some(g));
+            assert_eq!(app.text_inside_at(g, p), Some((id, true)), "{id:?}");
+        }
+        // Away from the drawing: no text.
+        assert_eq!(app.text_inside_at(g, Point::new(-500.0, -500.0)), None);
+        app.begin_text_edit(b);
+        assert_eq!(app.text_edit.as_ref().map(|t| t.shape), Some(b));
+        app.text_insert("E");
+        let ShapeKind::Text { spans, .. } = &app.doc().find_shape(b).expect("b").kind else {
+            panic!("text");
+        };
+        assert_eq!(spans_text(spans), "CDE");
+    }
+
+    /// A text in a group given an envelope: a Text tool click on one of
+    /// its middle letters as the envelope draws it puts the caret there,
+    /// not at the end of the text (#3010).
+    #[test]
+    fn a_click_in_an_enveloped_grouped_text_puts_the_caret_by_the_letter() {
+        use tracedraw_core::geometry::{BezPath, Shape as _, Vec2};
+        use tracedraw_core::Command;
+        let mut app = App::headless();
+        let text = |app: &mut App, x: f64, t: &str| {
+            app.new_shape(ShapeKind::Text {
+                spans: vec![TextSpan::new(t, "Sans", 36.0)],
+                origin: Point::new(x, 100.0),
+                frame: None,
+                align: Default::default(),
+                para: Default::default(),
+                on_path: None,
+            })
+            .expect("text")
+        };
+        let a = text(&mut app, 0.0, "ABCDEFGHIJ");
+        let b = text(&mut app, 0.0, "KL");
+        let ab = app.doc().find_shape(a).expect("a").bounds();
+        app.run(Command::TransformShapes {
+            shapes: vec![b],
+            transform: Affine::translate((0.0, ab.height() * 3.0)),
+        });
+        app.select(vec![a, b]);
+        app.group_selection();
+        let g = app.selection[0];
+        let gb = app.doc().find_shape(g).expect("group").bounds();
+        let mut nodes = tracedraw_core::envelope::default_nodes(gb);
+        // An arch: the middles of the top and bottom sides pulled up.
+        let lift = gb.height() * 0.6;
+        nodes[1].y += lift;
+        nodes[5].y += lift;
+        app.run(Command::SetEffects {
+            shape: g,
+            effects: vec![tracedraw_core::live::Effect::Envelope {
+                nodes,
+                keep_lines: false,
+                handles: vec![],
+                corners: vec![],
+                mapping: Default::default(),
+            }],
+        });
+        // The place of the sixth letter as laid out, and where the
+        // envelope draws it (a small square there, beside the text).
+        app.begin_text_edit(a);
+        let laid = Point::new(ab.x0 + ab.width() * 0.55, ab.center().y);
+        let want = app.text_hit_char(laid).expect("a letter");
+        app.finish_text();
+        assert!(want > 2 && want < 8, "{want}");
+        let mut square = BezPath::new();
+        square.move_to(laid + Vec2::new(-0.5, -0.5));
+        square.line_to(laid + Vec2::new(0.5, -0.5));
+        square.line_to(laid + Vec2::new(0.5, 0.5));
+        square.close_path();
+        let mut gs = app.doc().find_shape(g).expect("group").clone();
+        let ShapeKind::Group { children } = &mut gs.kind else {
+            panic!("a group");
+        };
+        let mark = tracedraw_core::ShapeId(u64::MAX - 1);
+        children.insert(
+            1,
+            tracedraw_core::Shape::new(
+                mark,
+                ShapeKind::Path {
+                    path: square,
+                    closed: true,
+                },
+            ),
+        );
+        let drawn = tracedraw_core::live::evaluate(&gs).main;
+        let ShapeKind::Group { children } = &drawn.kind else {
+            panic!("a group");
+        };
+        let mut m = children
+            .iter()
+            .find(|c| c.id == mark)
+            .expect("square")
+            .clone();
+        m.transform_by(drawn.transform);
+        let p = m.page_path().bounding_box().center();
+        assert!(
+            (p.y - laid.y).abs() > ab.height() * 0.3,
+            "the envelope moves it"
+        );
+        assert_eq!(app.text_inside_at(g, p), Some((a, true)));
+        // A Text tool click there.
+        assert!(app.edit_text_inside(g, p));
+        let te = app.text_edit.as_ref().expect("editing");
+        assert_eq!(te.shape, a);
+        assert!(
+            te.caret.abs_diff(want) <= 1,
+            "caret {} wanted {want}",
+            te.caret
+        );
+    }
+
+    fn texts(app: &App) -> Vec<String> {
+        app.page_layers()
+            .iter()
+            .flat_map(|l| &l.shapes)
+            .filter_map(|s| match &s.kind {
+                ShapeKind::Text { spans, .. } => Some(spans_text(spans)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A text begun in Hebrew runs from right to left (discussion
+    /// #2122): typed after a click, it aligns to the right, so it grows
+    /// to the left of the click instead of pushing its words to the
+    /// right; a frame's Hebrew starts at its right edge. A text begun in
+    /// Latin letters stays left aligned, and so does Hebrew typed into a
+    /// text that already holds letters.
+    #[test]
+    fn a_text_begun_in_hebrew_runs_from_the_right() {
+        let mut app = App::headless();
+        app.settings.autocorrect.enabled = false;
+        let align_of = |app: &App| match app
+            .text_edit
+            .as_ref()
+            .and_then(|te| app.doc().find_shape(te.shape).map(|s| s.kind.clone()))
+        {
+            Some(ShapeKind::Text { align, .. }) => align,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(app.text_align, tracedraw_core::TextAlign::Left);
+        // A digit and a space first: the first letter decides.
+        app.start_text(Point::new(100.0, 10.0), None);
+        app.text_insert("1 ");
+        app.text_insert("\u{5E9}\u{5DC}\u{5D5}\u{5DD}");
+        assert_eq!(align_of(&app), tracedraw_core::TextAlign::Left);
+        app.finish_text();
+        app.start_text(Point::new(100.0, 30.0), None);
+        app.text_insert("\u{5E9}\u{5DC}\u{5D5}\u{5DD}");
+        assert_eq!(align_of(&app), tracedraw_core::TextAlign::Right);
+        assert_eq!(app.text_align, tracedraw_core::TextAlign::Right);
+        // The next word goes on to the left of the click.
+        app.text_insert(" \u{5E2}\u{5D5}\u{5DC}\u{5DD}");
+        let id = app.text_edit.as_ref().expect("editing").shape;
+        if let Some((layout, to_page)) = app.text_layout_of(id) {
+            if layout.glyphs > 0 {
+                let b = to_page * layout.path.clone();
+                let b = tracedraw_core::geometry::Shape::bounding_box(&b);
+                assert!(b.x1 <= 100.0 + 1.0 && b.x0 < 99.0, "{b:?}");
+            }
+        }
+        app.finish_text();
+        // Latin first: left aligned as before.
+        app.start_text(Point::new(10.0, 50.0), None);
+        app.text_insert("Shalom ");
+        app.text_insert("\u{5E9}\u{5DC}\u{5D5}\u{5DD}");
+        assert_eq!(align_of(&app), tracedraw_core::TextAlign::Left);
+        app.finish_text();
+        // Paragraph text: right aligned too.
+        app.start_text(
+            Point::new(10.0, 100.0),
+            Some(tracedraw_core::geometry::Size::new(80.0, 40.0)),
+        );
+        app.text_insert("\u{5E9}\u{5DC}\u{5D5}\u{5DD}");
+        assert_eq!(align_of(&app), tracedraw_core::TextAlign::Right);
+    }
+
+    /// A text typed after a click with the Text tool is one step: Undo
+    /// takes the whole text back, never leaving an empty text object
+    /// behind, and Redo brings it back whole (#1481).
+    #[test]
+    fn undoing_a_new_text_leaves_no_empty_text() {
+        let mut app = App::headless();
+        app.settings.autocorrect.enabled = false;
+        app.start_text(Point::new(10.0, 10.0), None);
+        for c in ["H", "e", "l", "l", "o"] {
+            app.text_insert(c);
+        }
+        app.finish_text();
+        assert_eq!(texts(&app), vec!["Hello".to_string()]);
+        assert_eq!(app.engine.history_labels().0, vec!["Create Object"]);
+        app.undo();
+        assert!(texts(&app).is_empty(), "{:?}", texts(&app));
+        app.redo();
+        assert_eq!(texts(&app), vec!["Hello".to_string()]);
+        // Undone while still being typed: the text goes too.
+        app.undo();
+        app.start_text(Point::new(10.0, 30.0), None);
+        app.text_insert("Hi");
+        app.undo();
+        assert!(texts(&app).is_empty(), "{:?}", texts(&app));
+        assert!(app.text_edit.is_none());
+    }
+
+    /// A size or font picked for a new text before its first character
+    /// is part of making it: one Undo takes text and style back (#1481).
+    #[test]
+    fn a_style_given_before_typing_joins_the_new_text() {
+        let mut app = App::headless();
+        app.settings.autocorrect.enabled = false;
+        app.start_text(Point::new(10.0, 10.0), None);
+        app.text_size_pt = 72.0;
+        app.apply_text_style();
+        app.text_insert("Big");
+        app.text_insert("ger");
+        let id = *app.selection.first().expect("text selected");
+        app.finish_text();
+        assert_eq!(texts(&app), vec!["Bigger".to_string()]);
+        assert_eq!(app.engine.history_labels().0, vec!["Create Object"]);
+        app.undo();
+        assert!(texts(&app).is_empty(), "{:?}", texts(&app));
+        // Typing in it later is a step of its own.
+        app.redo();
+        app.begin_text_edit(id);
+        app.text_insert("!");
+        app.finish_text();
+        assert_eq!(
+            app.engine.history_labels().0,
+            vec!["Create Object", "Edit Text"]
+        );
+        app.undo();
+        assert_eq!(texts(&app), vec!["Bigger".to_string()]);
+    }
+
+    /// A text started and left with no characters leaves nothing: no
+    /// object, no undo step, nothing for Undo or Redo to bring back,
+    /// even with a style picked for it (#1481).
+    #[test]
+    fn a_new_text_left_empty_leaves_no_step() {
+        let mut app = App::headless();
+        app.settings.autocorrect.enabled = false;
+        app.start_text(Point::new(10.0, 10.0), None);
+        app.text_size_pt = 48.0;
+        app.apply_text_style();
+        app.text_insert("x");
+        app.text_delete_backward();
+        app.finish_text();
+        assert!(texts(&app).is_empty());
+        assert!(app.engine.history_labels().0.is_empty());
+        app.start_text(Point::new(10.0, 10.0), None);
+        app.finish_text();
+        assert!(texts(&app).is_empty());
+        assert!(app.engine.history_labels().0.is_empty());
+        app.redo();
+        app.undo();
+        assert!(texts(&app).is_empty());
+    }
+
+    /// A paragraph text frame left empty stays, as a frame to type or
+    /// flow into later, in the one step that made it; only an artistic
+    /// text left empty goes (#1822).
+    #[test]
+    fn an_empty_text_frame_stays() {
+        let mut app = App::headless();
+        app.settings.autocorrect.enabled = false;
+        let size = tracedraw_core::geometry::Size::new(40.0, 60.0);
+        app.start_text(Point::new(10.0, 10.0), Some(size));
+        app.finish_text();
+        app.start_text(Point::new(60.0, 10.0), Some(size));
+        app.finish_text();
+        assert_eq!(texts(&app), vec![String::new(), String::new()]);
+        assert_eq!(app.engine.history_labels().0.len(), 2);
+        app.undo();
+        assert_eq!(texts(&app), vec![String::new()]);
+        // Esc on an empty artistic text still leaves nothing.
+        app.start_text(Point::new(10.0, 100.0), None);
+        app.finish_text();
+        assert_eq!(texts(&app), vec![String::new()]);
+    }
+
+    /// A text emptied by deleting its characters goes; Undo gives it
+    /// back with its characters, not as an empty object (#1481).
+    #[test]
+    fn a_text_emptied_comes_back_with_its_characters() {
+        let mut app = App::headless();
+        app.settings.autocorrect.enabled = false;
+        app.start_text(Point::new(10.0, 10.0), None);
+        app.text_insert("Hi");
+        app.finish_text();
+        let id = *app.selection.first().expect("text selected");
+        app.begin_text_edit(id);
+        app.text_delete_backward();
+        app.text_delete_backward();
+        app.finish_text();
+        assert!(texts(&app).is_empty());
+        app.undo();
+        assert_eq!(texts(&app), vec!["Hi".to_string()]);
+    }
+
     /// Alt codes as the Glyphs docker shows them: a leading zero reads
     /// code page 1252, else the Unicode number (#447).
     #[test]
@@ -1008,7 +1861,9 @@ mod tests {
         assert_eq!(alt_code_char("0128"), Some('€'));
         assert_eq!(alt_code_char("8364"), Some('€'));
         assert_eq!(alt_code_char("65"), Some('A'));
-        assert_eq!(alt_code_char("0129"), None, "no character there");
+        // A place the page leaves empty: the control character of that
+        // number, which older fonts with a script at Latin places draw.
+        assert_eq!(alt_code_char("0129"), Some('\u{81}'));
         assert_eq!(alt_code_char("7"), None, "a control character");
         assert_eq!(alt_code_char(""), None);
     }
@@ -1054,6 +1909,103 @@ mod tests {
         app.transform_selection(Affine::scale_non_uniform(3.0, 1.0));
         app.sync_text_defaults_from(id);
         assert!((app.text_size_pt - 36.0).abs() < 1e-9);
+    }
+
+    /// A new font for several text objects of different sizes, weights
+    /// and fonts changes only their font: each keeps its own size and
+    /// weight (#1304). A size picked from the list goes to all of them.
+    #[test]
+    fn a_font_for_several_texts_keeps_each_ones_size() {
+        let mut app = App::headless();
+        app.settings.autocorrect.enabled = false;
+        let mut ids = Vec::new();
+        for (x, size, bold, font) in [(10.0, 11.0, false, "Calibri"), (60.0, 9.0, true, "Arial")] {
+            app.text_size_pt = size;
+            app.text_default_bold = bold;
+            app.text_font = font.into();
+            app.start_text(Point::new(x, 10.0), None);
+            app.text_insert("Text");
+            app.finish_text();
+            ids.push(*app.selection.first().expect("text selected"));
+        }
+        let looks = |app: &App| -> Vec<(String, f64, bool)> {
+            ids.iter()
+                .flat_map(|id| match app.doc().find_shape(*id).map(|s| &s.kind) {
+                    Some(ShapeKind::Text { spans, .. }) => spans
+                        .iter()
+                        .map(|s| (s.font_family.clone(), s.size_pt, s.bold))
+                        .collect::<Vec<_>>(),
+                    other => panic!("not a text: {other:?}"),
+                })
+                .collect()
+        };
+        app.select(ids.clone());
+        // The bar reads the first text (Calibri, 11 pt), as the property
+        // bar does every frame, then a font is picked.
+        app.sync_text_defaults_from(ids[0]);
+        app.text_font = "Times New Roman".into();
+        app.apply_text_style();
+        let after = looks(&app);
+        assert!(
+            after.iter().all(|(f, _, _)| f == "Times New Roman"),
+            "{after:?}"
+        );
+        assert!(
+            after
+                .iter()
+                .any(|(_, s, b)| (*s - 11.0).abs() < 1e-9 && !*b),
+            "{after:?}"
+        );
+        assert!(
+            after.iter().any(|(_, s, b)| (*s - 9.0).abs() < 1e-9 && *b),
+            "{after:?}"
+        );
+        // The font the bar shows (the first text's) picked again from the
+        // list goes to all, also to the one with another font.
+        app.select(vec![ids[1]]);
+        app.sync_text_defaults_from(ids[1]);
+        app.text_font = "Arial".into();
+        app.apply_text_style();
+        app.select(ids.clone());
+        app.sync_text_defaults_from(ids[0]);
+        if let Some(t) = app.text_shown.as_mut() {
+            t.font = None;
+        }
+        app.apply_text_style();
+        assert!(looks(&app).iter().all(|(f, _, _)| f == "Times New Roman"));
+        // A size changed: every text takes it, the font stays.
+        app.sync_text_defaults_from(ids[0]);
+        app.text_size_pt = 14.0;
+        app.apply_text_style();
+        let after = looks(&app);
+        assert!(
+            after
+                .iter()
+                .all(|(f, s, _)| f == "Times New Roman" && (*s - 14.0).abs() < 1e-9),
+            "{after:?}"
+        );
+    }
+
+    /// Letters typed in a font with another script at the places of
+    /// Latin ones (a symbol font, older Tamil fonts) are not changed by
+    /// Autocorrect: a capital or a curly quote would be another letter
+    /// there (#1358). Other fonts are corrected as before.
+    #[test]
+    fn autocorrect_leaves_fonts_with_a_script_at_latin_places_alone() {
+        for (font, kept) in [("Symbol", true), ("Selawik", false)] {
+            let mut app = App::headless();
+            app.text_font = font.into();
+            app.start_text(Point::new(0.0, 0.0), None);
+            for c in "kd'f kd ".chars() {
+                app.text_insert(&c.to_string());
+            }
+            assert_eq!(
+                app.edit_text() == "kd'f kd ",
+                kept,
+                "{font}: {}",
+                app.edit_text()
+            );
+        }
     }
 
     /// Options > Text > Autocorrect > Automatically create hyperlinks: a
@@ -1124,9 +2076,10 @@ mod tests {
         // Typing at the caret inserts in the middle.
         app.text_insert("X");
         assert_eq!(app.edit_text(), "ello Xther");
-        // One undo step undoes the whole typing session.
+        // One undo step undoes the whole typing session; a new text's
+        // typing is part of making it (#1481).
         app.finish_text();
-        assert_eq!(app.engine.undo_label(), Some("Edit Text"));
+        assert_eq!(app.engine.undo_label(), Some("Create Object"));
     }
 
     /// Editing a second text keeps the edit of the first: each text's
@@ -1293,11 +2246,12 @@ mod tests {
         app.apply_outline_color(None);
         let spans = app.edit_spans().expect("spans");
         assert!(spans[1].outline.as_ref().is_some_and(|o| o.width <= 0.0));
-        // Each colour is one undo step; undoing them leaves the typing.
+        // Each colour is one undo step; undoing them leaves the typing,
+        // part of making the text (#1481).
         for _ in 0..3 {
             let _ = app.engine.undo();
         }
-        assert_eq!(app.engine.undo_label(), Some("Edit Text"));
+        assert_eq!(app.engine.undo_label(), Some("Create Object"));
         let spans = app.edit_spans().expect("spans");
         assert!(spans
             .iter()
@@ -1345,6 +2299,42 @@ mod tests {
         assert_ne!(by_text("c").font_family, "Other");
         assert!((by_text("ab").size_pt - 40.0).abs() > 1e-9);
         assert!((by_text("ef").size_pt - 40.0).abs() > 1e-9);
+    }
+
+    /// The column order of vertical text (#1986): set for the selection
+    /// in one undo step, only where it changes, and kept by a text set
+    /// back in lines.
+    #[test]
+    fn vertical_columns_are_set_in_one_undo_step() {
+        use tracedraw_core::VerticalColumns as C;
+        let mut app = App::headless();
+        let id = app
+            .new_shape(ShapeKind::Text {
+                spans: vec![TextSpan::new("\u{65E5}\u{672C}", "Selawik", 24.0)],
+                origin: Point::new(50.0, 100.0),
+                frame: None,
+                align: Default::default(),
+                para: Default::default(),
+                on_path: None,
+            })
+            .expect("a layer");
+        app.select(vec![id]);
+        assert_eq!(app.vertical_columns(), None, "not vertical");
+        app.set_vertical_text(true);
+        assert_eq!(app.vertical_columns(), Some(C::RightToLeft));
+        let depth = app.engine.history_labels().0.len();
+        app.set_vertical_columns(C::LeftToRight);
+        assert_eq!(app.vertical_columns(), Some(C::LeftToRight));
+        assert_eq!(app.engine.history_labels().0.len(), depth + 1);
+        app.set_vertical_columns(C::LeftToRight);
+        assert_eq!(app.engine.history_labels().0.len(), depth + 1, "no change");
+        app.undo();
+        assert_eq!(app.vertical_columns(), Some(C::RightToLeft));
+        app.redo();
+        app.set_vertical_text(false);
+        assert_eq!(app.vertical_columns(), None);
+        app.set_vertical_text(true);
+        assert_eq!(app.vertical_columns(), Some(C::LeftToRight));
     }
 
     /// Vertical text (#257): the caret is a bar across the column, the
@@ -1461,4 +2451,254 @@ mod tests {
         let (_, _, quads) = app.text_caret_geometry().unwrap();
         assert_eq!(quads.len(), 2);
     }
+
+    /// The fill each character of the edited text shows (`None`: the
+    /// object's).
+    fn char_fills(app: &App) -> Vec<(char, Option<Fill>)> {
+        let ShapeKind::Text { spans, .. } = edited_shape(app).kind else {
+            panic!("text");
+        };
+        spans
+            .iter()
+            .flat_map(|sp| sp.text.chars().map(|c| (c, sp.fill.clone())))
+            .collect()
+    }
+
+    /// "abcdef" with "cd" red and "bcde" selected.
+    fn text_with_red_cd_and_bcde_selected() -> App {
+        let mut app = text_with_cd_selected();
+        assert!(app.text_apply_fill(Fill::Solid(Color::rgb8(255, 0, 0))));
+        app.text_move(CaretMove::LineStart, false);
+        app.text_move(CaretMove::Right, false);
+        for _ in 0..4 {
+            app.text_move(CaretMove::Right, true);
+        }
+        assert_eq!(app.text_selected(), "bcde");
+        app
+    }
+
+    /// Characters of several colours copied while editing and pasted
+    /// into the text keep their colours (#1378), whether the paste comes
+    /// from the shortcut, the Edit menu or the context menu; the system
+    /// clipboard gets their plain text.
+    #[test]
+    fn copied_characters_keep_their_colours_when_pasted() {
+        let red = Some(Fill::Solid(Color::rgb8(255, 0, 0)));
+        let mut app = text_with_red_cd_and_bcde_selected();
+        // Edit > Copy while editing copies the characters, not the
+        // object (#1377).
+        app.copy_with_system();
+        assert!(app.clipboard.is_none(), "no object copied");
+        assert_eq!(
+            app.text_clip.as_ref().map(|c| c.plain.as_str()),
+            Some("bcde")
+        );
+        app.text_move(CaretMove::TextEnd, false);
+        // Ctrl+V: the paste event holds the system clipboard's text.
+        app.paste_with_event_text(Some("bcde".into()));
+        assert_eq!(app.edit_text(), "abcdefbcde");
+        let fills = char_fills(&app);
+        let pasted: Vec<_> = fills.iter().skip(6).cloned().collect();
+        assert_eq!(
+            pasted,
+            vec![
+                ('b', None),
+                ('c', red.clone()),
+                ('d', red.clone()),
+                ('e', None)
+            ]
+        );
+        assert_eq!(app.text_edit.as_ref().map(|t| t.caret), Some(10));
+        assert_eq!(app.engine.undo_label(), Some("Paste"));
+        // The browser's Edit > Paste has no text to read: the characters
+        // copied here.
+        app.text_paste_text(None);
+        assert_eq!(app.edit_text(), "abcdefbcdebcde");
+        assert_eq!(char_fills(&app).get(12).cloned(), Some(('d', red)));
+    }
+
+    /// Text copied in another application is pasted as it is, in the
+    /// style at the caret, with its line ends made the text's.
+    #[test]
+    fn text_from_elsewhere_is_pasted_plain() {
+        let mut app = text_with_red_cd_and_bcde_selected();
+        assert!(app.text_copy());
+        app.text_move(CaretMove::TextEnd, false);
+        app.paste_with_event_text(Some("x\r\ny".into()));
+        assert_eq!(app.edit_text(), "abcdefx\ny");
+        assert!(char_fills(&app).iter().skip(6).all(|(_, f)| f.is_none()));
+    }
+
+    /// Cut takes the selected characters out as one step and keeps them
+    /// for a paste with their colours; the menu's Cut does the same.
+    #[test]
+    fn cut_characters_go_and_come_back_with_their_colours() {
+        let mut app = text_with_red_cd_and_bcde_selected();
+        app.cut();
+        assert!(app.clipboard.is_none(), "no object cut");
+        assert_eq!(app.edit_text(), "af");
+        assert_eq!(app.engine.undo_label(), Some("Cut"));
+        assert_eq!(app.text_edit.as_ref().map(|t| t.caret), Some(1));
+        app.paste_with_event_text(Some("bcde".into()));
+        assert_eq!(app.edit_text(), "abcdef");
+        assert_eq!(
+            char_fills(&app).get(2).cloned(),
+            Some(('c', Some(Fill::Solid(Color::rgb8(255, 0, 0)))))
+        );
+    }
+
+    /// Objects copied with Edit > Copy go on the system clipboard as SVG:
+    /// pasted into a text being edited they give their text with its
+    /// formatting, never the SVG markup (#1377). The same markup from
+    /// elsewhere has its text outlined: nothing is typed.
+    #[test]
+    fn copied_objects_paste_their_text_not_their_markup() {
+        let mut app = App::headless();
+        app.settings.autocorrect.enabled = false;
+        let mut red = TextSpan::new("lo", "Arial", 24.0);
+        red.fill = Some(Fill::Solid(Color::rgb8(255, 0, 0)));
+        let id = app
+            .new_shape(ShapeKind::Text {
+                spans: vec![TextSpan::new("Hel", "Arial", 24.0), red.clone()],
+                origin: Point::new(10.0, 10.0),
+                frame: None,
+                align: Default::default(),
+                para: Default::default(),
+                on_path: None,
+            })
+            .expect("text");
+        app.select(vec![id]);
+        let svg = app.selection_svg().expect("svg");
+        // What Edit > Copy does, the system clipboard holding the SVG.
+        app.copy();
+        app.mark_system_clipboard(Some(&svg));
+        app.start_text(Point::new(0.0, 80.0), None);
+        app.text_insert("x");
+        app.paste_with_event_text(Some(svg.clone()));
+        assert_eq!(app.edit_text(), "xHello");
+        assert_eq!(char_fills(&app).get(4).cloned(), Some(('l', red.fill)));
+        // The same markup once something else was copied here.
+        app.clipboard = None;
+        app.text_paste_text(Some(svg));
+        assert_eq!(app.edit_text(), "xHello");
+        // Text that only looks like markup is text.
+        app.text_paste_text(Some("<b>".into()));
+        assert_eq!(app.edit_text(), "xHello<b>");
+    }
+
+    /// Ctrl+C and Ctrl+V as the windowing layer gives them while editing:
+    /// copy and paste events.
+    #[test]
+    fn copy_and_paste_events_keep_the_colours() {
+        let mut app = text_with_red_cd_and_bcde_selected();
+        let ctx = crate::theme::ui_context();
+        let send = |app: &mut App, events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(800.0, 600.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| app.text_keyboard(ui.ctx()));
+            out.textures_delta.clear();
+        };
+        send(&mut app, vec![egui::Event::Copy]);
+        app.text_move(CaretMove::LineStart, false);
+        send(&mut app, vec![egui::Event::Paste("bcde".into())]);
+        assert_eq!(app.edit_text(), "bcdeabcdef");
+        assert_eq!(
+            char_fills(&app).get(1).cloned(),
+            Some(('c', Some(Fill::Solid(Color::rgb8(255, 0, 0)))))
+        );
+    }
+
+    /// Characters copied while editing and pasted with the Pick tool
+    /// make a text of them with their colours (#1378); they replace the
+    /// objects copied before, also where the clipboard cannot be read
+    /// back (a browser's menu Paste).
+    #[test]
+    fn copied_characters_pasted_outside_a_text_keep_their_colours() {
+        let red = Some(Fill::Solid(Color::rgb8(255, 0, 0)));
+        let mut app = text_with_red_cd_and_bcde_selected();
+        let first = edited_shape(&app);
+        app.select(vec![first.id]);
+        app.copy();
+        assert!(app.clipboard.is_some());
+        app.text_copy();
+        assert!(app.clipboard.is_none(), "the characters are the last copy");
+        app.finish_text();
+        let spans_of_selection = |app: &App| -> (String, Vec<Option<Fill>>, Fill) {
+            let s = app.selected_shapes().first().cloned().expect("pasted");
+            let ShapeKind::Text { spans, .. } = &s.kind else {
+                panic!("not a text");
+            };
+            (
+                spans_text(spans),
+                spans.iter().map(|sp| sp.fill.clone()).collect(),
+                s.fill.clone(),
+            )
+        };
+        app.paste_from(crate::clipboard::ClipboardContent {
+            text: Some("bcde".into()),
+            ..Default::default()
+        });
+        let (text, fills, fill) = spans_of_selection(&app);
+        assert_eq!(text, "bcde");
+        assert!(fills.contains(&red), "{fills:?}");
+        assert_eq!(fill, first.fill);
+        // Nothing to read: the characters copied here.
+        app.paste_from(Default::default());
+        let (text, fills, _) = spans_of_selection(&app);
+        assert_eq!(text, "bcde");
+        assert!(fills.contains(&red), "{fills:?}");
+        // Other text on the clipboard: as it is.
+        app.paste_from(crate::clipboard::ClipboardContent {
+            text: Some("other".into()),
+            ..Default::default()
+        });
+        let (text, fills, _) = spans_of_selection(&app);
+        assert_eq!(text, "other");
+        assert!(!fills.contains(&red), "{fills:?}");
+    }
+
+    /// Characters copied from one text into another keep the colour they
+    /// showed, also where it was their text's own.
+    #[test]
+    fn characters_keep_their_look_in_another_text() {
+        let mut app = text_with_red_cd_and_bcde_selected();
+        let green = Fill::Solid(Color::rgb8(0, 160, 0));
+        let first = edited_shape(&app);
+        assert!(app.text_copy());
+        app.finish_text();
+        app.start_text(Point::new(0.0, 80.0), None);
+        app.text_insert("z");
+        let id = app.text_edit.as_ref().map(|t| t.shape).expect("editing");
+        app.run(Command::SetFill {
+            shapes: vec![id],
+            fill: green.clone(),
+        });
+        app.text_paste_text(Some("bcde".into()));
+        assert_eq!(app.edit_text(), "zbcde");
+        let fills = char_fills(&app);
+        assert_eq!(fills.get(0).cloned(), Some(('z', None)));
+        assert_eq!(fills.get(1).cloned(), Some(('b', Some(first.fill.clone()))));
+        assert_eq!(
+            fills.get(2).cloned(),
+            Some(('c', Some(Fill::Solid(Color::rgb8(255, 0, 0)))))
+        );
+    }
+}
+
+/// The first letter of `text` is of a script written from right to left
+/// (Hebrew, Arabic, Syriac, Thaana, N'Ko and their presentation forms):
+/// the direction the text's paragraph takes.
+pub fn starts_right_to_left(text: &str) -> bool {
+    text.chars().find(|c| c.is_alphabetic()).is_some_and(|c| {
+        matches!(
+            c as u32,
+            0x0590..=0x08FF | 0xFB1D..=0xFDFF | 0xFE70..=0xFEFF | 0x10800..=0x10FFF | 0x1E800..=0x1EFFF
+        )
+    })
 }

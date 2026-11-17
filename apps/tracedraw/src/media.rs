@@ -132,6 +132,16 @@ impl App {
     /// Geometry for a stroke in the current media mode. Returns shapes to
     /// add (several for the sprayer).
     pub fn media_shapes(&mut self, points: &[Point]) -> Vec<Shape> {
+        self.media_shapes_pen(points, None)
+    }
+
+    /// `media_shapes` for a stroke drawn with a pen: `pen` is its
+    /// pressure along `points`, which sets the width (#850).
+    pub fn media_shapes_pen(
+        &mut self,
+        points: &[Point],
+        pen: Option<&crate::pen::PressureProfile>,
+    ) -> Vec<Shape> {
         let pts =
             tracedraw_core::geometry::simplify(points, 0.1 + self.media_smoothing / 100.0 * 1.5);
         if pts.len() < 2 {
@@ -145,7 +155,7 @@ impl App {
         // A stroke stays the path drawn, with the brush as its live
         // outline: its nodes edit like any curve's and the brush follows
         // (#829). Only the sprayer makes objects of their own.
-        if let Some(stroke) = self.media_stroke(&pts, color) {
+        if let Some(stroke) = self.media_stroke_pen(&pts, color, pen) {
             let id = self.engine.new_shape_id();
             let path = tracedraw_core::geometry::smooth_path(&pts, false);
             let mut s = Shape::new(
@@ -207,11 +217,30 @@ impl App {
     /// profile (with a jittered edge for Brush, the drawing speed for
     /// Expression). `None` for the sprayer.
     pub fn media_stroke(&self, pts: &[Point], color: Color) -> Option<Stroke> {
+        self.media_stroke_pen(pts, color, None)
+    }
+
+    /// `media_stroke` for a stroke drawn with a pen (#850): its pressure
+    /// along the drag scales the width of the Preset, Brush and
+    /// Expression modes, from `1 - pressure setting` of it at no pressure
+    /// (half, by default) to the full width at full pressure; in
+    /// Expression mode it takes the place of the drawing speed. The
+    /// calligraphic nib and the sprayer keep their size.
+    pub fn media_stroke_pen(
+        &self,
+        pts: &[Point],
+        color: Color,
+        pen: Option<&crate::pen::PressureProfile>,
+    ) -> Option<Stroke> {
         let width = self.media_width;
         let mut st = Stroke::new(color, width);
         st.cap = tracedraw_core::style::LineCap::Butt;
         let preset = self.media_preset;
+        let pen_floor = 1.0 - self.media_pressure.clamp(0.0, 1.0);
         let widths = |n: usize, w_at: &dyn Fn(f64) -> f64| -> Vec<WidthNode> {
+            if let Some(pen) = pen {
+                return pen.width_nodes(n, width, pen_floor, w_at);
+            }
             (0..=n)
                 .map(|i| {
                     let t = i as f64 / n as f64;
@@ -225,10 +254,19 @@ impl App {
                 st.nib_angle = self.media_angle;
             }
             MediaMode::Preset => st.widths = widths(PROFILE_NODES, &|t| profile(preset, t)),
+            MediaMode::Expression if pen.is_some() => {
+                // A real pen: its pressure is the width.
+                st.widths = widths(EXPRESSION_NODES, &|_| 1.0);
+            }
             MediaMode::Brush => {
                 // Nodes at the crests and troughs of the jittered edge: the
                 // width eases between them, so they draw the whole wave.
-                let jitter = |t: f64| profile(preset, t) * (0.85 + 0.15 * (t * 40.0).sin());
+                let pen_scale = |t: f64| match pen {
+                    Some(pen) => pen_floor + (1.0 - pen_floor) * pen.at(t, 0.5 / 40.0),
+                    None => 1.0,
+                };
+                let jitter =
+                    |t: f64| profile(preset, t) * (0.85 + 0.15 * (t * 40.0).sin()) * pen_scale(t);
                 let mut at = vec![0.0];
                 at.extend(
                     (0..)
@@ -322,6 +360,61 @@ impl App {
 mod tests {
     use super::*;
     use tracedraw_core::geometry::Shape as _;
+
+    /// The texts the property bar draws.
+    fn bar_texts(app: &mut App) -> Vec<String> {
+        let ctx = crate::theme::ui_context();
+        let mut texts = Vec::new();
+        // Twice: the first frame only lays out the bar.
+        for _ in 0..2 {
+            let mut out = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(6000.0, 60.0),
+                    )),
+                    ..Default::default()
+                },
+                |ui| crate::ui::toolbar::property_bar(app, ui),
+            );
+            out.textures_delta.clear();
+            texts = out
+                .shapes
+                .iter()
+                .filter_map(|c| match &c.shape {
+                    egui::epaint::Shape::Text(t) => Some(t.galley.text().to_string()),
+                    _ => None,
+                })
+                .collect();
+        }
+        texts
+    }
+
+    /// The Brush Strokes property bar has the mode list the hint speaks
+    /// of, showing the mode in use, and the mode's own fields: the nib
+    /// angle for Calligraphic, the shape and spacing for Sprayer, the
+    /// shape for Preset. It held the calligraphic fields only (#1681).
+    #[test]
+    fn the_property_bar_lists_the_brush_modes() {
+        use crate::i18n::tr;
+        let mut app = App::headless();
+        app.tool = crate::tools::Tool::BrushStrokes;
+        let texts = bar_texts(&mut app);
+        assert!(texts.contains(&tr("toolbar.brush_mode")), "{texts:?}");
+        assert!(texts.contains(&tr("media.calligraphic")), "{texts:?}");
+        assert!(texts.contains(&tr("docker.nib_angle")), "{texts:?}");
+        app.media_mode = MediaMode::Sprayer;
+        let texts = bar_texts(&mut app);
+        assert!(texts.contains(&tr("media.sprayer")), "{texts:?}");
+        assert!(texts.contains(&tr(SPRAY_KEYS[0])), "{texts:?}");
+        assert!(texts.contains(&tr("docker.spacing")), "{texts:?}");
+        assert!(!texts.contains(&tr("docker.nib_angle")), "{texts:?}");
+        app.media_mode = MediaMode::Preset;
+        app.media_preset = 2;
+        let texts = bar_texts(&mut app);
+        assert!(texts.contains(&tr(BRUSH_KEYS[2])), "{texts:?}");
+        assert!(!texts.contains(&tr("docker.spacing")), "{texts:?}");
+    }
 
     /// A brush stroke stays the path drawn, open and editable, with the
     /// brush as its live outline (#829): its nodes are few curves, and it
@@ -440,6 +533,7 @@ fn frame_times_of_brush_strokes() {
                 zoom: 4.0,
                 origin_x: 0.0,
                 origin_y: 1188.0,
+                stretch_y: 1.0,
             },
             ..Default::default()
         };

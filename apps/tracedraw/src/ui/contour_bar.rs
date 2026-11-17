@@ -27,9 +27,7 @@ fn dim(ui: &mut Ui, text: String) {
 fn accel(ui: &mut Ui, key: &str, v: &mut f64) -> bool {
     let mut p = (*v * 100.0).round() as i32;
     let r = crate::ui::toolbar::dim_labelled(ui, key, |ui| {
-        ui.add(crate::ui::Rail(
-            egui::Slider::new(&mut p, -100..=100).suffix(" %"),
-        ))
+        ui.add(crate::ui::Slider::new(&mut p, -100..=100).suffix(" %"))
     });
     if r.changed() {
         *v = p as f64 / 100.0;
@@ -40,6 +38,9 @@ fn accel(ui: &mut Ui, key: &str, v: &mut f64) -> bool {
 /// The controls, a group to a row.
 pub fn contour_controls(app: &mut App, ui: &mut Ui) {
     app.sync_contour_settings();
+    // A box of these controls typed into and left with Enter: the focus
+    // it held before them is gone after them.
+    let focus_before = ui.memory(|m| m.focused());
     let palette = app.palette.clone();
     let mut s = app.contour;
     let mut changed = false;
@@ -58,9 +59,15 @@ pub fn contour_controls(app: &mut App, ui: &mut Ui) {
     });
     ui.horizontal(|ui| {
         crate::ui::toolbar::dim_labelled_as(ui, "docker.steps", "contour.steps_desc", |ui| {
+            // A slider (with its number box), stepped on a logarithmic
+            // scale so the first steps are easy to pick (#1265).
             ui.add_enabled_ui(s.direction != ContourDirection::ToCenter, |ui| {
                 changed |= ui
-                    .add(NumField::new(&mut s.steps).range(1..=999).width(44.0))
+                    .add(
+                        crate::ui::Slider::new(&mut s.steps, 1..=999)
+                            .logarithmic(true)
+                            .width(120.0),
+                    )
                     .changed();
             });
         });
@@ -69,7 +76,7 @@ pub fn contour_controls(app: &mut App, ui: &mut Ui) {
             ui.add(
                 NumField::new(&mut o)
                     .range(0.0..=app.units.world_from_mm(1000.0))
-                    .fixed_decimals(app.settings.precision.min(10) as usize)
+                    .length_decimals(app.settings.precision.min(10) as usize)
                     .unit_mm(app.units.world_to_mm(1.0))
                     .suffix(format!(" {}", app.units.short()))
                     .width(76.0),
@@ -80,7 +87,7 @@ pub fn contour_controls(app: &mut App, ui: &mut Ui) {
             s.offset = app.units.world_to_mm(o);
             changed = true;
         }
-        egui::ComboBox::from_id_salt("contour_corners")
+        crate::ui::keynav::ComboBox::from_id_salt("contour_corners")
             .selected_text(tr(join_key(s.corners)))
             .width(80.0)
             .show_ui(ui, |ui| {
@@ -99,7 +106,7 @@ pub fn contour_controls(app: &mut App, ui: &mut Ui) {
             .rich_tip(tr("contour.corners"));
     });
     ui.horizontal(|ui| {
-        egui::ComboBox::from_id_salt("contour_blend")
+        crate::ui::keynav::ComboBox::from_id_salt("contour_blend")
             .selected_text(tr(blend_key(s.color_blend)))
             .width(110.0)
             .show_ui(ui, |ui| {
@@ -132,6 +139,20 @@ pub fn contour_controls(app: &mut App, ui: &mut Ui) {
             &tr("docker.outline_color"),
             true,
         );
+        // The end of a fountain fill (#1265): only fountain-filled
+        // objects use it, their steps keeping the fountain.
+        changed |= color_pick(
+            ui,
+            &palette,
+            "contour_fill_end_to",
+            &mut s.fill_end_to,
+            &format!(
+                "{}\n{}",
+                tr("contour.last_fill_color"),
+                tr("contour.last_fill_color_desc")
+            ),
+            true,
+        );
     });
     ui.horizontal(|ui| {
         changed |= accel(ui, "docker.object_acceleration", &mut s.accel_objects);
@@ -141,13 +162,26 @@ pub fn contour_controls(app: &mut App, ui: &mut Ui) {
         app.contour = s;
         app.apply_contour_settings();
     }
+    let entered = focus_before.is_some()
+        && ui.memory(|m| m.focused()).is_none()
+        && ui.input(|i| i.key_pressed(egui::Key::Enter));
+    if entered {
+        apply_on_enter(app);
+    }
 }
 
-/// Apply (for selected objects with no contour), Clear Contour and Break
-/// Apart.
-pub fn contour_actions(app: &mut App, ui: &mut Ui) {
-    let has = app.selected_contour().is_some();
-    let bare = app.selected_shapes().iter().any(|s| {
+/// Enter in a box of the controls applies them as the Apply button does:
+/// objects with no contour get one (d#2945; a contour already there
+/// follows every change).
+fn apply_on_enter(app: &mut App) {
+    if app.selected_contour().is_none() && has_bare(app) {
+        app.add_contour();
+    }
+}
+
+/// Selected objects that can take a contour and have none.
+fn has_bare(app: &App) -> bool {
+    app.selected_shapes().iter().any(|s| {
         !s.effects
             .iter()
             .any(|e| matches!(e, tracedraw_core::live::Effect::Contour { .. }))
@@ -155,7 +189,14 @@ pub fn contour_actions(app: &mut App, ui: &mut Ui) {
                 s.kind,
                 tracedraw_core::ShapeKind::Bitmap { .. } | tracedraw_core::ShapeKind::Group { .. }
             )
-    });
+    })
+}
+
+/// Apply (for selected objects with no contour), Clear Contour and Break
+/// Apart.
+pub fn contour_actions(app: &mut App, ui: &mut Ui) {
+    let has = app.selected_contour().is_some();
+    let bare = has_bare(app);
     ui.horizontal(|ui| {
         if bare
             && ui
@@ -243,5 +284,68 @@ mod tests {
         app.contour.direction = ContourDirection::Outside;
         frame(&mut app, true);
         assert_eq!(app.contour.direction, ContourDirection::Inside);
+    }
+
+    #[test]
+    fn enter_in_a_box_of_the_panel_applies_the_contour() {
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        app.tool = crate::tools::Tool::Contour;
+        let id = app
+            .new_shape(ShapeKind::Rect {
+                rect: Rect::new(0.0, 0.0, 20.0, 20.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("square");
+        app.select(vec![id]);
+        let key = |key: egui::Key| egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Default::default(),
+        };
+        let frame = |app: &mut App, events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(400.0, 800.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| {
+                ui.vertical(|ui| {
+                    contour_controls(app, ui);
+                    contour_actions(app, ui);
+                });
+            });
+            out.textures_delta.clear();
+        };
+        frame(&mut app, Vec::new());
+        // Tab to the first number box (a text field) of the panel.
+        let mut in_box = false;
+        for _ in 0..40 {
+            frame(&mut app, vec![key(egui::Key::Tab)]);
+            frame(&mut app, Vec::new());
+            let focused = ctx.memory(|m| m.focused());
+            if focused.is_some_and(|f| egui::TextEdit::load_state(&ctx, f).is_some()) {
+                in_box = true;
+                break;
+            }
+        }
+        assert!(in_box, "a number box takes the focus");
+        assert!(app.selected_contour().is_none());
+        frame(&mut app, vec![key(egui::Key::Enter)]);
+        assert!(
+            app.selected_contour().is_some(),
+            "Enter applied the contour as Apply does"
+        );
+        // Enter again does not stack a second contour.
+        let effects = |app: &App| app.selected_shapes()[0].effects.len();
+        let n = effects(&app);
+        apply_on_enter(&mut app);
+        assert_eq!(effects(&app), n);
     }
 }

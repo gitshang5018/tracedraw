@@ -42,6 +42,31 @@ The angle is measured counterclockwise from the first side.
 The [[tool.segment_dimension]] tool measures a segment of an object: click
 the segment to take its two ends, then click where the dimension line goes.
 
+## Add dimensions to objects {#add-dimensions}
+
+Select objects and choose **Object > Insert > [[menu.object.add_dimensions]]**
+(it is also in the right-click menu): a dimension along the bottom measures
+the width of the selection's box, and one along the right its height, each
+5 mm away from it, in the dimension style and units below. With
+[[menu.object.add_dimensions_each]], each selected object gets its own pair.
+Dimensions in the selection are not measured, and an object with no height
+(or width) gets no dimension for it. The new dimensions are selected and one
+undo takes them all away.
+
+## Sizes and areas {#sizes-areas}
+
+**Tools > [[menu.tools.sizes_areas]]** lists the sizes of the selected
+objects, each object's box width by height, with the objects of the same
+size counted together (`[3x] 50.00 x 30.00 mm`), how many objects and
+sizes there are, the total area of their boxes and the area the closed
+objects really cover (holes taken out), in square metres (and square feet
+with imperial units). Its **[[sizes.pages]]** tab lists every page's size
+and the pages' total area. Sizes are in the document's unit, through the
+drawing scale for objects; pages are as printed. **[[sizes.copy]]** puts
+the list on the clipboard as text, for a quote or an order, and
+**[[menu.object.add_dimensions_each]]** labels each selected object with
+its width and height (see above).
+
 ## Dimension style {#dimension-style}
 
 The property bar shows these settings with the dimension tools and when the
@@ -55,9 +80,45 @@ the next ones you make.
 - **Show units**: the unit after the number (the degree sign for angles).
 - **Prefix** and **Suffix**: text before and after the number.
 - **Text**: above the line (at first), in the line, or below the line.
+- **Place**: where a linear dimension's label sits along its line: in the
+  middle (at first), toward the start or the end, or outside the extension
+  lines at either end, for a short dimension with no room for its label.
 - **Label size**: 1 to 500 points (10 at first).
+- **Font** of the label (the font of new text at first) and the **label
+  color** (black).
+- **Line color** (black) and **line width** (a hairline at first, up to
+  50 mm), for the lines and arrowheads.
+- **Arrowheads**: arrow (at first), open arrow, dot, tick or none.
+- **Round ends**: round caps and joins on the lines (off).
+- The **Options** menu: the **extension line gap** between the measured
+  points and the extension lines (0), how far the extension lines run
+  **past the line** (2 mm), **horizontal text** for linear dimensions (off),
+  **join lines at corners** (off), which makes the extension lines and the
+  dimension line (or an angle's arc) one line that turns a corner instead of
+  running past it, and a **corner radius** (0 to 100 mm) that rounds those
+  corners. The menu stays open while you type in it.
 
-The label always reads left to right and stays upright.
+The label always reads left to right and stays upright. Double-click it with
+the [[tool.pick]] tool to edit it in place: text that still holds the
+measured value keeps it live (the text before and after it become the prefix
+and suffix); text without it shows as typed until you delete it.
+
+## Dimensions that follow objects {#follow}
+
+A dimension whose ends you placed on an object holds to it: on its nodes
+(its corners, say), or on its edges (the sides of a rectangle, not only its
+corners). When you move, resize, turn or reshape the object, the dimension
+goes along, each end keeping its place on its node or along its edge, and
+the value changes with it. Moving the dimension by itself lets it go, as does
+deleting the object or the node it held to.
+
+When you move, scale or turn a dimension, it is measured and drawn again: a
+dimension scaled by 2 reads twice the length, and its label stays upright.
+
+[[menu.object.break_apart]] (<kbd>Ctrl+K</kbd>) frees the lines, arrowheads
+and label as objects of their own, and
+[[menu.object.convert_to_curves]] (<kbd>Ctrl+Q</kbd>) makes the dimension a
+group of plain curves. Either way it is no longer a dimension.
 
 ## Callout {#callout}
 

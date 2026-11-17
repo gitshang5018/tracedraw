@@ -123,6 +123,51 @@ pub(crate) fn decode_charset(b: &[u8], charset: u8) -> String {
     }
 }
 
+/// The Unicode block of the letters a character set adds to the Latin
+/// ones, for the sets whose script is not written with Latin letters.
+fn charset_script(charset: u8) -> Option<std::ops::RangeInclusive<char>> {
+    Some(match charset {
+        161 => '\u{370}'..='\u{3ff}',
+        177 => '\u{590}'..='\u{5ff}',
+        178 => '\u{600}'..='\u{6ff}',
+        204 => '\u{400}'..='\u{4ff}',
+        222 => '\u{e00}'..='\u{e7f}',
+        _ => return None,
+    })
+}
+
+/// The text of a run in the code page of its character set, or in
+/// Windows-1252 when that reading shows the run is Latin text set in a
+/// font of another script (#2047: Spanish text in a font recorded with
+/// the Arabic set opened with an Arabic letter for each a, i, o and u
+/// acute, inside words of Latin letters). The run is Latin when more of
+/// its words mix Latin letters with the set's own than are written in
+/// the set's letters alone; a lone letter decides nothing.
+pub(crate) fn decode_run(b: &[u8], charset: u8) -> String {
+    let text = decode_charset(b, charset);
+    let Some(script) = charset_script(charset) else {
+        return text;
+    };
+    let latin = |c: char| c < '\u{250}' && c.is_alphabetic();
+    let (mut mixed, mut own) = (0usize, 0usize);
+    for word in text.split(|c: char| !(latin(c) || script.contains(&c))) {
+        let letters = word.chars().filter(|c| script.contains(c)).count();
+        if letters == 0 {
+            continue;
+        }
+        if word.chars().any(latin) {
+            mixed += 1;
+        } else if letters > 1 {
+            own += 1;
+        }
+    }
+    if mixed > own {
+        decode_charset(b, 0)
+    } else {
+        text
+    }
+}
+
 /// The character set is one whose text differs from Windows-1252.
 pub(crate) fn is_non_latin_charset(charset: u8) -> bool {
     charset == 2 || charset_encoding(charset).is_some()
@@ -214,15 +259,23 @@ pub(crate) struct RunStyle {
     /// Line spacing as a distance between baselines, mm (set instead of
     /// `line_spacing`).
     pub line_spacing_mm: Option<f64>,
-    /// Extra character spacing as a fraction of the em (0 = none).
+    /// Character spacing as a fraction of the width of the space
+    /// character (0 = none).
     pub char_spacing: Option<f64>,
+    /// Word spacing as a fraction of the width of the space character
+    /// (1 = the space as the font has it).
+    pub word_spacing: Option<f64>,
     /// Paragraph indents in points: (left, first line, right).
     pub indent_pt: Option<(f64, f64, f64)>,
+    /// The paragraph's tab stops (the style table's tab entries before
+    /// version 16, the `tabs` member of a style string's paragraph from
+    /// 16), mm from the frame's left edge.
+    pub tabs: Option<Vec<tracedraw_core::TabStop>>,
     /// Version 16+ style strings: the space before and after a paragraph
     /// as factors of the character height (`beforeParaSpacing` 1.0 is no
     /// extra space, `afterParaSpacing` 0.0 none), and the unit they and
-    /// the line spacing are given in (`spacingMethod`; only 0, the
-    /// character height, is read).
+    /// the line spacing are given in (`spacingMethod`: 0 the character
+    /// height, 1 points, 2 the point size; read in `paragraph_spacing`).
     pub para_before: Option<f64>,
     pub para_after: Option<f64>,
     pub spacing_method: Option<u32>,
@@ -241,6 +294,12 @@ pub(crate) struct RunStyle {
     /// slot of a style table font entry, the `farEast` section of a
     /// version 16+ style string), when it is not the Latin one.
     pub asian: Option<ScriptFont>,
+    /// The font the style gives right-to-left letters (Arabic, Persian,
+    /// Hebrew...): the `RTL` section of a version 16+ style string, when
+    /// it is not the Latin one. A version 27 file sets its Persian title
+    /// at 154 pt there with the Latin slot at 24 pt on some letters, and
+    /// CorelDRAW draws them all at 154 pt (#2886).
+    pub rtl: Option<ScriptFont>,
 }
 
 /// The font settings of one script in a style: the style table's font
@@ -310,15 +369,39 @@ pub(crate) fn is_east_asian(c: char) -> bool {
     )
 }
 
-/// `text` cut into runs of East Asian letters and of the rest, each with
-/// whether it is East Asian. Characters of neither kind (spaces, line
-/// breaks, common punctuation) go with the run before them, or with the
-/// run after them at the start.
-pub(crate) fn split_scripts(text: &str) -> Vec<(String, bool)> {
-    let mut out: Vec<(String, bool)> = Vec::new();
+/// Whether a character is set in the right-to-left font of a style:
+/// Hebrew, Arabic (with its supplements and presentation forms), Syriac,
+/// Thaana and N'Ko letters, and the Arabic digits and punctuation.
+pub(crate) fn is_rtl_script(c: char) -> bool {
+    matches!(
+        c as u32,
+        0x0590..=0x08FF | 0xFB1D..=0xFDFF | 0xFE70..=0xFEFF | 0x10800..=0x10FFF | 0x1E800..=0x1EFFF
+    )
+}
+
+/// Which of a style's fonts a character is set in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Script {
+    Latin,
+    EastAsian,
+    Rtl,
+}
+
+/// `text` cut into runs by the font of the style they are set in, East
+/// Asian, right-to-left or the Latin one for the rest, with the script
+/// of each. Only the scripts asked for (`asian`, `rtl`) are cut off; the
+/// others count as Latin. Characters of no script (spaces, line breaks,
+/// common punctuation, the joiners and direction marks) go with the run
+/// before them, or with the run after them at the start, so that a
+/// word's letters stay one run and join.
+pub(crate) fn split_scripts(text: &str, asian: bool, rtl: bool) -> Vec<(String, Script)> {
+    let mut out: Vec<(String, Script)> = Vec::new();
     let mut pending = String::new();
     for c in text.chars() {
-        let neutral = c.is_whitespace() || c.is_ascii_punctuation() || c.is_control();
+        let neutral = c.is_whitespace()
+            || c.is_ascii_punctuation()
+            || c.is_control()
+            || matches!(c as u32, 0x200B..=0x200F | 0x2028..=0x202E | 0x2066..=0x2069);
         if neutral {
             match out.last_mut() {
                 Some(last) => last.0.push(c),
@@ -326,18 +409,24 @@ pub(crate) fn split_scripts(text: &str) -> Vec<(String, bool)> {
             }
             continue;
         }
-        let asian = is_east_asian(c);
+        let script = if asian && is_east_asian(c) {
+            Script::EastAsian
+        } else if rtl && is_rtl_script(c) {
+            Script::Rtl
+        } else {
+            Script::Latin
+        };
         match out.last_mut() {
-            Some(last) if last.1 == asian => last.0.push(c),
+            Some(last) if last.1 == script => last.0.push(c),
             _ => {
                 let mut s = std::mem::take(&mut pending);
                 s.push(c);
-                out.push((s, asian));
+                out.push((s, script));
             }
         }
     }
     if !pending.is_empty() {
-        out.push((pending, false));
+        out.push((pending, Script::Latin));
     }
     out
 }
@@ -386,7 +475,9 @@ impl RunStyle {
                 base.line_spacing_mm
             },
             char_spacing: self.char_spacing.or(base.char_spacing),
+            word_spacing: self.word_spacing.or(base.word_spacing),
             indent_pt: self.indent_pt.or(base.indent_pt),
+            tabs: self.tabs.clone().or_else(|| base.tabs.clone()),
             para_before: self.para_before.or(base.para_before),
             para_after: self.para_after.or(base.para_after),
             spacing_method: self.spacing_method.or(base.spacing_method),
@@ -397,29 +488,42 @@ impl RunStyle {
             // A style naming its own font sets it for every script; one
             // that only changes the size or the face keeps the base's
             // East Asian font at that size and face.
-            asian: if self.font_id.is_some() || self.family.is_some() {
-                self.asian.clone()
-            } else {
-                self.asian.clone().or_else(|| {
-                    base.asian.clone().map(|mut a| {
-                        if self.size_pt.is_some() {
-                            a.size_pt = self.size_pt;
-                        }
-                        if self.flags.is_some() {
-                            a.flags = self.flags;
-                        }
-                        if self.bold.is_some() {
-                            a.bold = self.bold;
-                            a.weight = self.weight;
-                        }
-                        if self.italic.is_some() {
-                            a.italic = self.italic;
-                        }
-                        a
-                    })
-                })
-            },
+            asian: self.script_over(&self.asian, &base.asian),
+            // The same for the right-to-left font (#2886).
+            rtl: self.script_over(&self.rtl, &base.rtl),
         }
+    }
+
+    /// A script's font of `self` (`own`) on top of the base's (`base`):
+    /// a style naming its own font sets it for every script; one that
+    /// only changes the size or the face keeps the base's font of the
+    /// script at that size and face.
+    fn script_over(
+        &self,
+        own: &Option<ScriptFont>,
+        base: &Option<ScriptFont>,
+    ) -> Option<ScriptFont> {
+        if self.font_id.is_some() || self.family.is_some() {
+            return own.clone();
+        }
+        own.clone().or_else(|| {
+            base.clone().map(|mut a| {
+                if self.size_pt.is_some() {
+                    a.size_pt = self.size_pt;
+                }
+                if self.flags.is_some() {
+                    a.flags = self.flags;
+                }
+                if self.bold.is_some() {
+                    a.bold = self.bold;
+                    a.weight = self.weight;
+                }
+                if self.italic.is_some() {
+                    a.italic = self.italic;
+                }
+                a
+            })
+        })
     }
 
     /// The style with its East Asian font in place of the Latin one, for
@@ -428,6 +532,20 @@ impl RunStyle {
         let Some(a) = &self.asian else {
             return self.clone();
         };
+        self.with_script_font(a)
+    }
+
+    /// The style with its right-to-left font in place of the Latin one,
+    /// for the Arabic, Persian or Hebrew letters set in it (#2886).
+    pub fn for_rtl(&self) -> RunStyle {
+        let Some(a) = &self.rtl else {
+            return self.clone();
+        };
+        self.with_script_font(a)
+    }
+
+    /// The style with the script font `a` in place of the Latin one.
+    fn with_script_font(&self, a: &ScriptFont) -> RunStyle {
         let mut s = self.clone();
         if a.font_id.is_some() || a.family.is_some() {
             s.font_id = a.font_id;
@@ -442,6 +560,7 @@ impl RunStyle {
         }
         s.italic = a.italic.or(s.italic);
         s.asian = None;
+        s.rtl = None;
         s
     }
 }
@@ -471,20 +590,32 @@ enum LineSpacing {
 /// intervals, set5, tabs, bullets, indents, hyphens, drop caps, set11),
 /// then the style records. Returns (style id, record).
 pub(crate) fn read_stlt(d: &[u8], v: u16, warn: &mut dyn FnMut(String)) -> Vec<(u32, StyleRec)> {
+    let mut exact = false;
     if v != 8 {
-        return read_stlt_set11(d, v, v >= 9, warn);
+        return read_stlt_set11(d, v, v >= 9, warn, &mut exact);
     }
     // Version 8 has two layouts (800 and the bidirectional 801, which has
-    // the set11 table) that the major version cannot tell apart: without
-    // it first, and with it when that reads with complaints.
+    // the set11 table) that the major version cannot tell apart, and
+    // files saved for 800 by newer releases hold the table too (both
+    // version 8 saves of issue #1139, 2026-10-29). Both readings are
+    // tried: the one that ends where the table ends without complaint
+    // wins, else the one without complaint, else the one without the
+    // table, with its complaints.
     let mut notes = Vec::new();
-    let without = read_stlt_set11(d, v, false, &mut |m| notes.push(m));
-    if notes.is_empty() && !without.is_empty() {
-        return without;
-    }
+    let mut exact_without = false;
+    let without = read_stlt_set11(d, v, false, &mut |m| notes.push(m), &mut exact_without);
     let mut notes_with = Vec::new();
-    let with = read_stlt_set11(d, v, true, &mut |m| notes_with.push(m));
-    let use_with = notes_with.is_empty() && !with.is_empty();
+    let mut exact_with = false;
+    let with = read_stlt_set11(d, v, true, &mut |m| notes_with.push(m), &mut exact_with);
+    let score = |styles: &[(u32, StyleRec)], notes: &[String], exact: bool| -> u8 {
+        match (styles.is_empty(), notes.is_empty(), exact) {
+            (true, _, _) => 0,
+            (false, true, true) => 3,
+            (false, true, false) => 2,
+            (false, false, _) => 1,
+        }
+    };
+    let use_with = score(&with, &notes_with, exact_with) > score(&without, &notes, exact_without);
     for m in if use_with { notes_with } else { notes } {
         warn(m);
     }
@@ -495,12 +626,15 @@ pub(crate) fn read_stlt(d: &[u8], v: u16, warn: &mut dyn FnMut(String)) -> Vec<(
     }
 }
 
-/// [`read_stlt`] with the set11 table present or not.
+/// [`read_stlt`] with the set11 table present or not. `exact` tells
+/// whether every record was read and the last one ended where the table
+/// ends.
 fn read_stlt_set11(
     d: &[u8],
     v: u16,
     has_set11: bool,
     warn: &mut dyn FnMut(String),
+    exact: &mut bool,
 ) -> Vec<(u32, StyleRec)> {
     let v16 = v < 6;
     let coord_size = if v16 { 2 } else { 4 };
@@ -534,11 +668,15 @@ fn read_stlt_set11(
     };
     // Fonts: id, unknown 12 (before 10) / 20, then three scripts (Latin,
     // East Asian, other): font id u16 and encoding u16 each, a size
-    // coord each, and style flags u32 each (one for all before 10). A
+    // coord each (one for all before 10) and style flags u32 each. A
     // version 14 file (#955) sets Chinese titles in the East Asian slot
-    // (a script font at 54 pt) with Arial at 12 pt in the Latin one.
+    // (a script font at 54 pt) with Arial at 12 pt in the Latin one; a
+    // real version 9 file and the version 7 to 9 saves of the program
+    // that reads them hold one size and three flags (read as three sizes
+    // and one flags word before 2026-10-29).
     let font_gap = if v < 10 { 12 } else { 20 };
-    let font_size = 4 + font_gap + 3 * 4 + 3 * coord_size + if v >= 10 { 12 } else { 4 };
+    let size_slots = if v >= 10 { 3 } else { 1 };
+    let font_size = 4 + font_gap + 3 * 4 + size_slots * coord_size + 12;
     let Some(nf) = r.u32() else {
         return Vec::new();
     };
@@ -559,25 +697,21 @@ fn read_stlt_set11(
             *slot = (font_id, enc);
         }
         let mut sizes = [0.0f64; 3];
-        for s in &mut sizes {
+        for s in sizes.iter_mut().take(size_slots) {
             let Some(size) = r.sint() else {
                 return Vec::new();
             };
             *s = size as f64 * pt_per_unit;
         }
+        if size_slots == 1 {
+            sizes = [sizes[0]; 3];
+        }
         let mut flags = [0u32; 3];
-        if v >= 10 {
-            for f in &mut flags {
-                let Some(x) = r.u32() else {
-                    return Vec::new();
-                };
-                *f = x;
-            }
-        } else {
+        for f in &mut flags {
             let Some(x) = r.u32() else {
                 return Vec::new();
             };
-            flags = [x; 3];
+            *f = x;
         }
         let latin = (
             ids[0].0,
@@ -603,8 +737,10 @@ fn read_stlt_set11(
         r.skip(n * size);
         Some(())
     };
-    // Intervals: id, 8 unknown, character spacing i32 (millionths), 8
-    // unknown, line spacing, 20 unknown, the line spacing's unit u32: 0
+    // Intervals: id, 8 unknown, character spacing i32 (millionths), 4
+    // unknown, word spacing i32 (millionths, 1 000 000 the space as it
+    // is; #2586: 1 107 391 beside a character spacing of 107 391 in a
+    // version 18 file), line spacing, 20 unknown, the line spacing's unit u32: 0
     // (and 2) millionths of the character height, 1 a distance in
     // coordinate units (7 pt stored as 24 694 in a version 12 file whose
     // multi-line text otherwise collapses onto one line).
@@ -613,14 +749,15 @@ fn read_stlt_set11(
         return Vec::new();
     };
     let ni = (ni as usize).min(r.remaining() / 52);
-    let mut intervals: std::collections::HashMap<u32, (f64, LineSpacing)> =
+    let mut intervals: std::collections::HashMap<u32, (f64, Option<f64>, LineSpacing)> =
         std::collections::HashMap::with_capacity(ni);
     for _ in 0..ni {
-        let (Some(id), _, Some(ch), _, Some(ln), _, Some(unit)) = (
+        let (Some(id), _, Some(ch), _, Some(word), Some(ln), _, Some(unit)) = (
             r.u32(),
             r.skip(8),
             r.u32(),
-            r.skip(8),
+            r.skip(4),
+            r.u32(),
             r.u32(),
             r.skip(20),
             r.u32(),
@@ -632,11 +769,17 @@ fn read_stlt_set11(
         } else {
             LineSpacing::Factor(ln as i32 as f64 / 1_000_000.0)
         };
-        intervals.insert(id, (ch as i32 as f64 / 1_000_000.0, line));
+        // Zero is taken as not given (files that leave the field empty).
+        let word = word as i32 as f64 / 1_000_000.0;
+        let word = (word > 0.0 && word <= 20.0).then_some(word);
+        intervals.insert(id, (ch as i32 as f64 / 1_000_000.0, word, line));
     }
-    if skip_table(&mut r, 152).is_none() || skip_table(&mut r, 784).is_none() {
+    if skip_table(&mut r, 152).is_none() {
         return Vec::new();
     }
+    let Some(tab_entries) = read_tab_table(&mut r, v) else {
+        return Vec::new();
+    };
     // Bullets have a variable size.
     let Some(nb) = r.u32() else {
         return Vec::new();
@@ -728,7 +871,7 @@ fn read_stlt_set11(
             else {
                 break;
             };
-            if let Some((ch, ln)) = intervals.get(&interval_ref) {
+            if let Some((ch, word, ln)) = intervals.get(&interval_ref) {
                 match *ln {
                     LineSpacing::Factor(f) if f > 0.0 && f.is_finite() => {
                         style.line_spacing = Some(f);
@@ -741,6 +884,7 @@ fn read_stlt_set11(
                 if ch.is_finite() && ch.abs() <= 20.0 {
                     style.char_spacing = Some(*ch);
                 }
+                style.word_spacing = *word;
             }
             if has_set11 {
                 r.skip(4);
@@ -770,11 +914,14 @@ fn read_stlt_set11(
         }
         if num > 2 {
             // tab, bullet, indent, hyphen and drop cap ids.
-            let (Some(_tab), Some(_bullet), Some(indent_ref), Some(_hyphen), Some(_drop)) =
+            let (Some(tab_ref), Some(_bullet), Some(indent_ref), Some(_hyphen), Some(_drop)) =
                 (r.u32(), r.u32(), r.u32(), r.u32(), r.u32())
             else {
                 break;
             };
+            if let Some(t) = tab_entries.get(&tab_ref) {
+                style.tabs = Some(t.clone());
+            }
             if let Some(ind) = indents.get(&indent_ref) {
                 if ind.0.is_finite() && ind.1.is_finite() && ind.2.is_finite() {
                     style.indent_pt = Some(*ind);
@@ -783,7 +930,115 @@ fn read_stlt_set11(
         }
         out.push((style_id, StyleRec { parent, style }));
     }
+    *exact = out.len() == num_records as usize && r.remaining() == 0;
     out
+}
+
+/// The most columns a text frame is read with (versions 7 to 15).
+const MAX_COLUMNS: u32 = 64;
+
+/// The size of a style table tab entry (versions 7 to 15).
+pub(crate) const TAB_ENTRY_SIZE: usize = 784;
+/// The stops a style table tab entry holds at most.
+pub(crate) const TAB_ENTRY_STOPS: usize = 64;
+
+/// A tab stop kind as files give it: 0 left, 1 right (the right stops of
+/// the first #1852 samples confirmed by the previews they carry), 2
+/// centre and 3 decimal (the #1852 combination files, versions 7 to 21:
+/// a frame each of left, centre and right stops, from top to bottom 0, 2
+/// and 1, and menus with decimal stops, 3). Codes no file has shown read
+/// as left.
+pub(crate) fn tab_kind_of(code: u32) -> tracedraw_core::TabKind {
+    match code {
+        1 => tracedraw_core::TabKind::Right,
+        2 => tracedraw_core::TabKind::Center,
+        3 => tracedraw_core::TabKind::Decimal,
+        _ => tracedraw_core::TabKind::Left,
+    }
+}
+
+/// The code a file holds for a tab stop kind ([`tab_kind_of`]).
+pub(crate) fn tab_code(kind: tracedraw_core::TabKind) -> u32 {
+    match kind {
+        tracedraw_core::TabKind::Left => 0,
+        tracedraw_core::TabKind::Right => 1,
+        tracedraw_core::TabKind::Center => 2,
+        tracedraw_core::TabKind::Decimal => 3,
+    }
+}
+
+/// The tab entries of a style table (versions 7 to 15; earlier ones are
+/// skipped by their size): each is 784 bytes, an id, 4 bytes, the number
+/// of stops (u16), the leader spacing (u16), the leader character (u32),
+/// then 64 slots of 12 bytes, of which the first `count` are stops: a
+/// word that is 0 in every sample, the kind ([`tab_kind_of`]) and the
+/// position (i32, coordinate units from the frame's left edge). Files
+/// of the #1852 samples, versions 7 to 15, all hold this layout; their
+/// root style lists the program's defaults (a left stop every 12.7 mm).
+fn read_tab_table(
+    r: &mut Reader,
+    v: u16,
+) -> Option<std::collections::HashMap<u32, Vec<tracedraw_core::TabStop>>> {
+    let n = r.u32()? as usize;
+    let n = n.min(r.remaining() / TAB_ENTRY_SIZE);
+    let mut out = std::collections::HashMap::with_capacity(n);
+    for _ in 0..n {
+        let rec = r.b.get(r.pos..r.pos.checked_add(TAB_ENTRY_SIZE)?)?;
+        r.skip(TAB_ENTRY_SIZE);
+        if v < 7 {
+            continue;
+        }
+        let word = |at: usize| -> Option<u32> {
+            rec.get(at..at + 4)
+                .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+        };
+        let Some(id) = word(0) else { continue };
+        let count = rec
+            .get(8..10)
+            .map_or(0, |b| u16::from_le_bytes([b[0], b[1]]) as usize)
+            .min(TAB_ENTRY_STOPS);
+        let mut stops = Vec::with_capacity(count);
+        for k in 0..count {
+            let at = 16 + k * 12;
+            let (Some(kind), Some(pos)) = (word(at + 4), word(at + 8)) else {
+                break;
+            };
+            let mm = pos as i32 as f64 * PT_PER_UNIT * 25.4 / 72.0;
+            if mm.is_finite() && (0.0..=10_000.0).contains(&mm) {
+                stops.push(tracedraw_core::TabStop::new(mm, tab_kind_of(kind)));
+            }
+        }
+        out.insert(id, stops);
+    }
+    Some(out)
+}
+
+/// The `tabs` member of a version 16+ style string's paragraph: stops
+/// separated by `|`, each three numbers: a word that is 0 in every
+/// sample, the kind ([`tab_kind_of`]) and the position in coordinate
+/// units ("0,1,1681755" is a right stop 168.18 mm from the frame's left
+/// edge). An empty string is no stops.
+pub(crate) fn parse_tabs_member(s: &str) -> Option<Vec<tracedraw_core::TabStop>> {
+    let mut out = Vec::new();
+    for stop in s.split('|').map(str::trim).filter(|t| !t.is_empty()) {
+        let nums: Vec<f64> = stop
+            .split(',')
+            .map(|n| n.trim().parse::<f64>())
+            .collect::<Result<_, _>>()
+            .ok()?;
+        let (Some(kind), Some(pos)) = (nums.get(1), nums.get(2)) else {
+            return None;
+        };
+        let mm = pos * PT_PER_UNIT * 25.4 / 72.0;
+        if !mm.is_finite() || !(0.0..=10_000.0).contains(&mm) || *kind < 0.0 {
+            return None;
+        }
+        out.push(tracedraw_core::TabStop::new(mm, tab_kind_of(*kind as u32)));
+        if out.len() >= TAB_ENTRY_STOPS * 4 {
+            break;
+        }
+    }
+    Some(out)
 }
 
 /// One styled run of text.
@@ -813,6 +1068,20 @@ pub(crate) struct Txsm {
     /// How the first frame fitted to a path sits on it (version 16+).
     pub path_settings: Option<PathSettings>,
     pub paragraphs: Vec<TextParagraph>,
+    /// Version 16+ run records holding a style of their own while marked
+    /// as applying none of its members (see `read_txsm_16`).
+    pub inert_styles: usize,
+    /// The settings of the first paragraph frame (version 16+: the style
+    /// string of its frame record, holding its columns).
+    pub frame_style: Option<String>,
+    /// Version 16+: the record's layout version (1700, 1800 ...).
+    pub layout: Option<u16>,
+    /// Version 16+ paragraph text (the frame flag clear): each
+    /// paragraph's default style string as stored, for the checker.
+    pub frame_text_styles: Vec<String>,
+    /// Versions 7 to 15: the first frame's columns when it has several
+    /// (their number and the gutter after the first, in file units).
+    pub columns: Option<(u32, f64)>,
 }
 
 /// How a text fitted to a path sits on it: the 40 bytes after the
@@ -850,7 +1119,12 @@ impl PathSettings {
 
 /// `txsm`: two layouts, versions 7 to version 15 and version 16+. Versions before 7 are
 /// not described and yield `None`.
-pub(crate) fn read_txsm(d: &[u8], v: u16, warn: &mut dyn FnMut(String)) -> Option<Txsm> {
+pub(crate) fn read_txsm(
+    d: &[u8],
+    v: u16,
+    charset: u8,
+    warn: &mut dyn FnMut(String),
+) -> Option<Txsm> {
     if v == 6 {
         return read_txsm_6(d);
     }
@@ -858,7 +1132,7 @@ pub(crate) fn read_txsm(d: &[u8], v: u16, warn: &mut dyn FnMut(String)) -> Optio
         return read_txsm_5(d, v, warn);
     }
     if v >= 16 {
-        read_txsm_16(d, v, warn)
+        read_txsm_16(d, v, charset, warn)
     } else if v == 8 {
         // Version 8 has two layouts (800 and the bidirectional 801) that
         // the major version cannot tell apart: frames of 32 or 34 bytes.
@@ -906,6 +1180,11 @@ fn early_paragraphs(chars: &[u8], size_pt: Option<f64>) -> Txsm {
         on_path: false,
         path_settings: None,
         paragraphs,
+        inert_styles: 0,
+        frame_style: None,
+        layout: None,
+        frame_text_styles: Vec::new(),
+        columns: None,
     }
 }
 
@@ -997,6 +1276,9 @@ fn read_txsm_7_frames(
     if nf > MAX_FRAMES {
         return None;
     }
+    // The first frame's columns (count, gutter in file units) when it has
+    // several.
+    let mut out_columns: Option<(u32, f64)> = None;
     for _ in 0..nf {
         let _frame_id = r.u32()?;
         r.skip(48);
@@ -1018,18 +1300,43 @@ fn read_txsm_7_frames(
         }
         if !frame {
             // Version 8: 32 bytes (800) or 34 (the bidirectional 801),
-            // chosen by the caller.
-            r.skip(if v >= 15 {
-                40
-            } else if v >= 14 {
-                36
-            } else if v > 8 {
-                34
-            } else if v == 8 {
-                frame_v8
+            // chosen by the caller. The block holds the frame's column
+            // count (at byte 4, at byte 8 from version 15) and then a
+            // width and a gutter (two i32) for each column, so a frame of
+            // more than one column has 8 more bytes a column (#1852: the
+            // two-column frames of the combination files, versions 7 to
+            // 15).
+            let at = r.pos + if v >= 15 { 8 } else { 4 };
+            let word = |i: usize| {
+                d.get(i..i + 4)
+                    .map(|b| i32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+            };
+            let columns = word(at).map_or(1, |n| n as u32);
+            let extra = if (2..=MAX_COLUMNS).contains(&columns) {
+                // The first column's gutter: after the count, 2 bytes
+                // from version 8, and the column's width.
+                let gutter = word(at + 4 + if v >= 8 { 2 } else { 0 } + 4);
+                if out_columns.is_none() {
+                    out_columns = gutter.filter(|g| *g >= 0).map(|g| (columns, f64::from(g)));
+                }
+                (columns as usize - 1) * 8
             } else {
-                36
-            });
+                0
+            };
+            r.skip(
+                extra
+                    + if v >= 15 {
+                        40
+                    } else if v >= 14 {
+                        36
+                    } else if v > 8 {
+                        34
+                    } else if v == 8 {
+                        frame_v8
+                    } else {
+                        36
+                    },
+            );
         } else if v >= 15 {
             r.skip(4);
         }
@@ -1042,6 +1349,11 @@ fn read_txsm_7_frames(
         on_path: any_on_path,
         path_settings: None,
         paragraphs: Vec::new(),
+        inert_styles: 0,
+        frame_style: None,
+        layout: None,
+        frame_text_styles: Vec::new(),
+        columns: out_columns,
     };
     for _ in 0..np {
         let style_id = r.u32()?;
@@ -1319,7 +1631,7 @@ fn split_byte_runs(text: &[u8], styles: &[(usize, RunStyle)]) -> Vec<TextRun> {
         .collect()
 }
 
-fn read_style_string(r: &mut Reader, d: &[u8], v: u16) -> Option<String> {
+fn read_style_string(r: &mut Reader, d: &[u8], v: u16, charset: u8) -> Option<String> {
     let len = r.u32()? as usize;
     let bytes = if v < 17 { len.saturating_mul(2) } else { len };
     let s = d.get(r.pos..r.pos.checked_add(bytes)?)?;
@@ -1327,23 +1639,46 @@ fn read_style_string(r: &mut Reader, d: &[u8], v: u16) -> Option<String> {
     Some(if v < 17 {
         decode_utf16le(s)
     } else {
-        decode_style_bytes(s)
+        decode_style_bytes(s, charset)
     })
 }
 
 /// A style string of version 17 on, held as bytes: UTF-8, as the object
 /// style strings and the strings TraceDraw writes are, so a font named
 /// in Chinese ("方正黑体_GBK") reads as named (#898); bytes that are not
-/// UTF-8 read as Windows-1252, stopping at the first NUL either way.
-pub(crate) fn decode_style_bytes(b: &[u8]) -> String {
+/// UTF-8 read in the code page of the file's fonts (`charset`, the
+/// character set most `font` records name: a file written on a Chinese
+/// system holds the name in GBK, 134), else as Windows-1252, stopping at
+/// the first NUL either way.
+pub(crate) fn decode_style_bytes(b: &[u8], charset: u8) -> String {
     let b = &b[..b.iter().position(|c| *c == 0).unwrap_or(b.len())];
     match std::str::from_utf8(b) {
         Ok(s) => s.to_string(),
+        Err(_) if charset != 2 && is_non_latin_charset(charset) => decode_charset(b, charset),
         Err(_) => decode_cp1252(b),
     }
 }
 
-fn read_txsm_16(d: &[u8], v: u16, warn: &mut dyn FnMut(String)) -> Option<Txsm> {
+/// Whether a style string starts at `at`: its length, then (after any
+/// white space) the `{` that opens it, in UTF-16 before version 17.
+fn style_string_at(d: &[u8], at: usize, v: u16) -> bool {
+    let Some(len) = d
+        .get(at..at + 4)
+        .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as usize)
+    else {
+        return false;
+    };
+    let unit = if v < 17 { 2 } else { 1 };
+    let Some(body) = len
+        .checked_mul(unit)
+        .and_then(|n| d.get(at + 4..at + 4 + n))
+    else {
+        return false;
+    };
+    body.iter().step_by(unit).find(|c| !c.is_ascii_whitespace()) == Some(&b'{')
+}
+
+fn read_txsm_16(d: &[u8], v: u16, charset: u8, warn: &mut dyn FnMut(String)) -> Option<Txsm> {
     let mut r = Reader::new(d, false);
     // Not zero: the frame layout of the records below (artistic text has
     // it too in version 21, with all bits set).
@@ -1357,6 +1692,7 @@ fn read_txsm_16(d: &[u8], v: u16, warn: &mut dyn FnMut(String)) -> Option<Txsm> 
     }
     let mut any_on_path = false;
     let mut path_settings = None;
+    let mut frame_style = None;
     for _ in 0..nf {
         let _frame_id = r.u32()?;
         r.skip(48);
@@ -1370,9 +1706,13 @@ fn read_txsm_16(d: &[u8], v: u16, warn: &mut dyn FnMut(String)) -> Option<Txsm> 
         }
         r.skip(8);
         if !frame {
+            // 0, the frame's height (negative), 0, its width, then its
+            // settings (files of versions 19, 22 and 27).
             r.skip(16);
-            let len = r.u32()? as usize;
-            r.skip(if v >= 17 { len } else { len.saturating_mul(2) });
+            let style = read_style_string(&mut r, d, v, charset)?;
+            if frame_style.is_none() {
+                frame_style = Some(style);
+            }
         }
     }
     let np = r.u32()? as usize;
@@ -1383,6 +1723,11 @@ fn read_txsm_16(d: &[u8], v: u16, warn: &mut dyn FnMut(String)) -> Option<Txsm> 
         on_path: any_on_path,
         path_settings,
         paragraphs: Vec::new(),
+        inert_styles: 0,
+        frame_style,
+        layout: Some(layout),
+        frame_text_styles: Vec::new(),
+        columns: None,
     };
     for _ in 0..np {
         let style_id = r.u32()?;
@@ -1391,12 +1736,21 @@ fn read_txsm_16(d: &[u8], v: u16, warn: &mut dyn FnMut(String)) -> Option<Txsm> 
         if flag == 1 {
             r.skip(64);
         }
+        // Paragraph text of a layout before 1700 may hold the paragraph's
+        // base style before its default (public notes), or only the
+        // default, as the 84 paragraph texts of layout 1500 in a version
+        // 21 file do (#1833: the record count follows it). A second string
+        // is taken only when one starts there.
         let mut base = RunStyle::default();
-        if layout < 1700 && !frame {
-            let s = read_style_string(&mut r, d, v)?;
-            base = parse_style_string(&s);
+        let mut first = read_style_string(&mut r, d, v, charset)?;
+        if layout < 1700 && !frame && style_string_at(d, r.pos, v) {
+            base = parse_style_string(&first);
+            first = read_style_string(&mut r, d, v, charset)?;
         }
-        let default = parse_style_string(&read_style_string(&mut r, d, v)?).over(&base);
+        if !frame {
+            out.frame_text_styles.push(first.clone());
+        }
+        let default = parse_style_string(&first).over(&base);
         let nr = r.u32()? as usize;
         if nr > MAX_RUNS || nr > r.remaining() / 6 {
             return finish(out, warn, "style record count");
@@ -1414,11 +1768,28 @@ fn read_txsm_16(d: &[u8], v: u16, warn: &mut dyn FnMut(String)) -> Option<Txsm> 
                 let len = r.u32()? as usize;
                 r.skip(len.saturating_mul(2));
             }
-            let style = if st2 != 0 || st3 & 0x04 != 0 {
-                parse_style_string(&read_style_string(&mut r, d, v)?)
-            } else {
-                RunStyle::default()
-            };
+            // Bit 3: the run is a print merge field. A word (0 in the
+            // samples), the field name's length and its UTF-16 letters
+            // follow the language (a version 24 file's twelve texts of
+            // fields such as "EVTI", stored as the text "<EVTI>", #2969).
+            if st3 & 0x08 != 0 {
+                r.skip(2);
+                let len = r.u16()? as usize;
+                r.skip(len.saturating_mul(2));
+            }
+            // Every record ends with a style string, also one marked
+            // with neither members nor a locale (0, 0): the files of
+            // versions 16 to 27 that hold such records (the saves of
+            // #1139 and #1297 of a text the program that wrote them had
+            // made one record of) carry `{"character":{}}` there.
+            let text = read_style_string(&mut r, d, v, charset)?;
+            let style = parse_style_string(&text);
+            // A style marked with no member applying is ignored by the
+            // program that wrote the samples (TraceDraw wrote its runs so
+            // until 0.28, #1297); it is read all the same.
+            if st2 == 0 && style != RunStyle::default() {
+                out.inert_styles += 1;
+            }
             records.push(style);
         }
         let nc = r.u32()? as usize;
@@ -1837,16 +2208,21 @@ fn apply_style_object(s: &mut RunStyle, obj: &Json, depth: usize) {
                         s.fill_color = Some(c);
                     }
                 }
-                // An inline outline, the frame and the settings for
-                // right-to-left scripts are not read; the Latin font
-                // settings apply to the text, the East Asian ones to its
-                // East Asian letters.
-                ("outline" | "frame" | "RTL", Json::Obj(_)) => {}
-                ("farEast", Json::Obj(_)) => {
+                // An inline outline and the frame are not read; the Latin
+                // font settings apply to the text, the East Asian ones to
+                // its East Asian letters, the right-to-left ones to its
+                // Arabic, Persian or Hebrew letters (#2886).
+                ("outline" | "frame", Json::Obj(_)) => {}
+                ("farEast" | "RTL", Json::Obj(_)) => {
                     let mut f = RunStyle::default();
                     apply_style_object(&mut f, v, depth + 1);
                     if f.font_id.is_some() || f.family.is_some() || f.size_pt.is_some() {
-                        s.asian = Some(ScriptFont::of(&f));
+                        let font = Some(ScriptFont::of(&f));
+                        if k == "RTL" {
+                            s.rtl = font;
+                        } else {
+                            s.asian = font;
+                        }
                     }
                 }
                 ("paragraph", Json::Obj(p)) => apply_paragraph_object(s, p),
@@ -1868,6 +2244,17 @@ fn apply_paragraph_object(s: &mut RunStyle, items: &[(String, Json)]) {
     for (k, v) in items {
         let lk = k.to_ascii_lowercase();
         if matches!(v, Json::Obj(_) | Json::Arr(_)) {
+            continue;
+        }
+        if lk == "tabs" {
+            if let Json::Str(t) = v {
+                if let Some(tabs) = parse_tabs_member(t) {
+                    s.tabs = Some(tabs);
+                }
+            }
+            continue;
+        }
+        if lk.starts_with("tableader") {
             continue;
         }
         if lk == "beforeparaspacing" || lk == "afterparaspacing" {
@@ -1915,12 +2302,6 @@ fn apply_paragraph_object(s: &mut RunStyle, items: &[(String, Json)]) {
     }
 }
 
-/// The opacity an object's version 16+ style string gives it: its
-/// `transparency` section's `uniformTransparency` is the share of the
-/// object that lets the background through (0.3 draws it at 70 %: the
-/// colours of a version 19 file's preview match that). Without it, the
-/// mean of `startTransparency` and `endTransparency` (a graded
-/// transparency drawn uniform, assumed). `None` for an empty section.
 /// The mitre limit (degrees) in an object's version 16+ style string:
 /// `outline.miterLimit` (a file of version 27 holds "28.955024..." for an
 /// outline its program shows with a limit of 29 degrees, #384).
@@ -1945,6 +2326,35 @@ pub(crate) fn object_miter_limit(style: &str) -> Option<f64> {
         })
 }
 
+/// Whether an object's version 16+ style string fills it with the
+/// nonzero rule: `fill.winding` "1" (#1919: a version 27 file whose traced
+/// lettering is made of overlapping parts, drawn filled where they overlap
+/// in the program that wrote it and in the page preview it carries) or
+/// "0" (even-odd). `None` without it.
+pub(crate) fn object_fill_winding(style: &str) -> Option<bool> {
+    let t = style.trim_matches(|c: char| c == '\0' || c.is_whitespace());
+    let Json::Obj(items) = parse_json(t)? else {
+        return None;
+    };
+    let Json::Obj(fill) = &items.iter().find(|(k, _)| k == "fill")?.1 else {
+        return None;
+    };
+    let w = fill.iter().find(|(k, _)| k == "winding")?.1.num()?;
+    if w == 1.0 {
+        Some(true)
+    } else if w == 0.0 {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+/// The opacity an object's version 16+ style string gives it: its
+/// `transparency` section's `uniformTransparency` is the share of the
+/// object that lets the background through (0.3 draws it at 70 %: the
+/// colours of a version 19 file's preview match that). Without it, the
+/// mean of `startTransparency` and `endTransparency` (a graded
+/// transparency drawn uniform, assumed). `None` for an empty section.
 pub(crate) fn object_opacity(style: &str) -> Option<f64> {
     let t = style.trim_matches(|c: char| c == '\0' || c.is_whitespace());
     let Json::Obj(items) = parse_json(t)? else {
@@ -1966,6 +2376,77 @@ pub(crate) fn object_opacity(style: &str) -> Option<f64> {
     Some((1.0 - amount).clamp(0.0, 1.0))
 }
 
+/// Whether an object's version 16+ style string gives its `transparency`
+/// section a `fill` of `type` 1 (uniform, as in fill sections): a version
+/// 24 file keeps the amount of such a transparency in argument 8000, not in
+/// the style string (#1706).
+pub(crate) fn object_transparency_is_uniform_fill(style: &str) -> bool {
+    let t = style.trim_matches(|c: char| c == '\0' || c.is_whitespace());
+    let Some(Json::Obj(items)) = parse_json(t) else {
+        return false;
+    };
+    let Some((_, Json::Obj(tr))) = items.iter().find(|(k, _)| k == "transparency") else {
+        return false;
+    };
+    let Some((_, Json::Obj(fill))) = tr.iter().find(|(k, _)| k == "fill") else {
+        return false;
+    };
+    fill.iter()
+        .find(|(k, _)| k == "type")
+        .and_then(|(_, v)| v.num())
+        .is_some_and(|n| n == 1.0)
+}
+
+/// The `type` of the `fill` of an object's version 16+ style string
+/// `transparency` section: 0 or 1 uniform, 2 fountain, others patterns
+/// and textures, as in fill sections (#2960).
+pub(crate) fn object_transparency_fill_type(style: &str) -> Option<i64> {
+    let t = style.trim_matches(|c: char| c == '\0' || c.is_whitespace());
+    let Json::Obj(items) = parse_json(t)? else {
+        return None;
+    };
+    let (_, Json::Obj(tr)) = items.iter().find(|(k, _)| k == "transparency")? else {
+        return None;
+    };
+    let (_, Json::Obj(fill)) = tr.iter().find(|(k, _)| k == "fill")? else {
+        return None;
+    };
+    let n = fill.iter().find(|(k, _)| k == "type")?.1.num()?;
+    n.is_finite().then_some(n as i64)
+}
+
+/// Whether an object's version 16+ style string holds an empty
+/// `transparency` section (`{}`): no transparency, whatever argument 8000
+/// holds (#1706, #2960).
+pub(crate) fn object_transparency_is_empty(style: &str) -> bool {
+    let t = style.trim_matches(|c: char| c == '\0' || c.is_whitespace());
+    let Some(Json::Obj(items)) = parse_json(t) else {
+        return false;
+    };
+    matches!(
+        items.iter().find(|(k, _)| k == "transparency"),
+        Some((_, Json::Obj(tr))) if tr.is_empty()
+    )
+}
+
+/// The merge mode code of an object's version 16+ style string
+/// transparency (`transparency` > `mode`), when it is not 0. Every
+/// file seen so far holds 0 there (#1666: 126 files attached to issues,
+/// versions 16 to 27, all with Normal merging), so the other codes are
+/// not known yet; the reader names the code in a warning and draws the
+/// object as Normal.
+pub(crate) fn object_transparency_merge_code(style: &str) -> Option<i64> {
+    let t = style.trim_matches(|c: char| c == '\0' || c.is_whitespace());
+    let Some(Json::Obj(items)) = parse_json(t) else {
+        return None;
+    };
+    let (_, Json::Obj(tr)) = items.iter().find(|(k, _)| k == "transparency")? else {
+        return None;
+    };
+    let n = tr.iter().find(|(k, _)| k == "mode")?.1.num()?;
+    (n.is_finite() && n != 0.0).then_some(n as i64)
+}
+
 /// A graded transparency from an object's version 16+ style string: its
 /// `transparency` section with a fountain `fill` (`type` 2) becomes a
 /// mask whose lightness is the opacity, with the target it applies to
@@ -1977,7 +2458,9 @@ pub(crate) fn object_opacity(style: &str) -> Option<f64> {
 /// linear, radial, conical and square as in fill records; `angle` is in
 /// degrees, the centre offsets in percent of the object and a `xScale` or
 /// `yScale` under 1 a padded edge, as the doubles of version 16+ fill
-/// records. `None` for other transparencies.
+/// records; a radial run instead reaches `xScale` and `yScale` times half
+/// the object's width and height from its centre. `None` for other
+/// transparencies.
 pub(crate) fn object_transparency_mask(style: &str) -> Option<(tracedraw_core::Fill, u8)> {
     use tracedraw_core::{Color, Fill, Fountain, FountainKind, Stop};
     let t = style.trim_matches(|c: char| c == '\0' || c.is_whitespace());
@@ -2012,7 +2495,24 @@ pub(crate) fn object_transparency_mask(style: &str) -> Option<(tracedraw_core::F
         let v: f32 = parts.nth(1)?.trim().parse().ok()?;
         Some((v / 255.0).clamp(0.0, 1.0))
     };
-    let (first, last) = (grey("primaryColor")?, grey("secondaryColor")?);
+    let (mut first, mut last) = (grey("primaryColor")?, grey("secondaryColor")?);
+    // The section's start and end amounts run the nodes' transparency
+    // from the one to the other: 0 and 1 in every file seen, whichever
+    // grey comes first. A run from 1 down to 0 is taken as the reversed
+    // transparency (#2736: Reverse Fill on a radial transparency drew as
+    // the plain one; manual node edits swap the greys instead). Assumed:
+    // no file with a reversed transparency has been seen.
+    let amount = |key: &str| num(&tr, key).filter(|v| (0.0..=1.0).contains(v));
+    if let (Some(s), Some(e)) = (amount("startTransparency"), amount("endTransparency")) {
+        if e < s {
+            let run = |g: f32| {
+                let t = f64::from(1.0 - g);
+                (1.0 - (s + (e - s) * t)).clamp(0.0, 1.0) as f32
+            };
+            first = run(first);
+            last = run(last);
+        }
+    }
     let kind = match num(&fill, "fountainType").unwrap_or(1.0) as i64 {
         2 => FountainKind::Radial,
         3 => FountainKind::Conical,
@@ -2039,9 +2539,57 @@ pub(crate) fn object_transparency_mask(style: &str) -> Option<(tracedraw_core::F
         edge_pad,
         ..Default::default()
     };
+    // A radial run whose scales are 1 ends at the object's edge, half
+    // its width from the centre (#2735: circles whose transparency is
+    // solid at the rim in the reporter's screenshots; read as an edge pad
+    // the run reached the box's corners, half the diagonal, and the rim
+    // stayed part way). The run is placed by nodes in half sizes, the
+    // scales the radius across and down.
+    if kind == FountainKind::Radial {
+        let sx = num(&fill, "xScale").unwrap_or(1.0).abs();
+        let sy = num(&fill, "yScale").unwrap_or(sx).abs();
+        if (1e-3..=1e3).contains(&sx) && (1e-3..=1e3).contains(&sy) {
+            let c = fountain.offset;
+            fountain.edge_pad = 0.0;
+            fountain.handles = Some(tracedraw_core::style::FountainHandles {
+                start: c,
+                end: tracedraw_core::geometry::Point::new(c.x + sx, c.y),
+                skew: tracedraw_core::geometry::Point::new(c.x, c.y + sy),
+            });
+        }
+    }
     crate::mirror_centred_stops(&mut fountain);
     let target = num(&tr, "appliesTo").unwrap_or(2.0).clamp(0.0, 2.0) as u8;
     Some((Fill::Fountain(fountain), target))
+}
+
+/// The columns of a paragraph frame from its version 16+ settings (the
+/// style string of its `txsm` frame record, or the object's): their
+/// number and the gap between the first two, in file units, when there
+/// are several. `columns` lists each column's width and the gap after it
+/// (`"197607,0"`: one column, in files of versions 19 to 27; several
+/// columns assumed listed alike, as TraceDraw writes them).
+pub(crate) fn frame_columns(style: &str) -> Option<(u32, f64)> {
+    let t = style.trim_matches(|c: char| c == '\0' || c.is_whitespace());
+    let Json::Obj(items) = parse_json(t)? else {
+        return None;
+    };
+    let Json::Obj(frame) = &items.iter().find(|(k, _)| k == "frame")?.1 else {
+        return None;
+    };
+    let Json::Str(cols) = &frame.iter().find(|(k, _)| k == "columns")?.1 else {
+        return None;
+    };
+    let v: Vec<f64> = cols
+        .split(',')
+        .map(|p| p.trim().parse::<f64>().ok())
+        .collect::<Option<Vec<f64>>>()?;
+    let n = v.len().div_ceil(2);
+    if !(2..=64).contains(&n) {
+        return None;
+    }
+    let gap = v.get(1).copied().filter(|g| g.is_finite() && *g >= 0.0)?;
+    Some((n as u32, gap))
 }
 
 /// The width of a paragraph frame from an object's version 16+ style
@@ -2193,21 +2741,145 @@ mod tests {
     use super::*;
 
     /// Style strings of version 17 on are UTF-8: a font named in Chinese
-    /// keeps its name; bytes that are not UTF-8 still read as
-    /// Windows-1252 (#898).
+    /// keeps its name; bytes that are not UTF-8 read in the code page of
+    /// the file's fonts (GBK on a Chinese system), else as Windows-1252
+    /// (#898).
     #[test]
-    fn byte_style_strings_read_as_utf8() {
+    fn byte_style_strings_read_as_utf8_or_the_fonts_code_page() {
         let json = r#"{"character":{"latin":{"font":"方正黑体_GBK","size":"128819"}}}"#;
-        let s = parse_style_string(&decode_style_bytes(json.as_bytes()));
+        let s = parse_style_string(&decode_style_bytes(json.as_bytes(), 0));
         assert_eq!(s.family.as_deref(), Some("方正黑体_GBK"));
-        assert_eq!(decode_style_bytes(b"Caf\xe9\0x"), "Caf\u{e9}");
-        assert_eq!(decode_style_bytes(b"ab\0cd"), "ab");
+        assert_eq!(decode_style_bytes(b"Caf\xe9\0x", 0), "Caf\u{e9}");
+        assert_eq!(decode_style_bytes(b"ab\0cd", 0), "ab");
         // The record as read from a text chunk: length, then the bytes.
         let mut d = (json.len() as u32).to_le_bytes().to_vec();
         d.extend_from_slice(json.as_bytes());
         let mut r = Reader::new(&d, false);
-        let read = read_style_string(&mut r, &d, 19).expect("string");
+        let read = read_style_string(&mut r, &d, 19, 0).expect("string");
         assert!(read.contains("方正黑体_GBK"), "{read}");
+        // The same string in GBK, as a file written on a Chinese system
+        // holds it: read in the fonts' code page (134), garbled in
+        // Windows-1252 without it.
+        let gbk = encoding_rs::GBK.encode(json).0.into_owned();
+        assert!(std::str::from_utf8(&gbk).is_err());
+        let s = parse_style_string(&decode_style_bytes(&gbk, 134));
+        assert_eq!(s.family.as_deref(), Some("方正黑体_GBK"));
+        assert_ne!(
+            parse_style_string(&decode_style_bytes(&gbk, 0))
+                .family
+                .as_deref(),
+            Some("方正黑体_GBK")
+        );
+        // Big5 and Shift JIS the same way; a Latin or symbol set falls
+        // back to Windows-1252.
+        let big5 = encoding_rs::BIG5
+            .encode("{\"character\":{\"latin\":{\"font\":\"華康黑體\"}}}")
+            .0
+            .into_owned();
+        assert_eq!(
+            parse_style_string(&decode_style_bytes(&big5, 136))
+                .family
+                .as_deref(),
+            Some("華康黑體")
+        );
+        assert_eq!(decode_style_bytes(b"Caf\xe9", 2), "Caf\u{e9}");
+        let mut d = (gbk.len() as u32).to_le_bytes().to_vec();
+        d.extend_from_slice(&gbk);
+        let mut r = Reader::new(&d, false);
+        let read = read_style_string(&mut r, &d, 19, 134).expect("string");
+        assert!(read.contains("方正黑体_GBK"), "{read}");
+    }
+
+    /// A style table tab entry (versions 7 to 15, #1852): id, 4 bytes,
+    /// the stop count, the leader spacing and character, then 64 slots of
+    /// (0, kind, position); built here from that layout, the values those
+    /// of the samples' right stop at 168.1755 mm and the default grid's
+    /// first left stop at 12.7 mm.
+    #[test]
+    fn style_table_tab_entries_give_kinds_and_positions() {
+        let entry = |id: u32, stops: &[(u32, i32)]| {
+            let mut b = Vec::new();
+            b.extend_from_slice(&id.to_le_bytes());
+            b.extend_from_slice(&0u32.to_le_bytes());
+            b.extend_from_slice(&(stops.len() as u16).to_le_bytes());
+            b.extend_from_slice(&1u16.to_le_bytes());
+            b.extend_from_slice(&u32::from(b'.').to_le_bytes());
+            for (kind, pos) in stops {
+                b.extend_from_slice(&0u32.to_le_bytes());
+                b.extend_from_slice(&kind.to_le_bytes());
+                b.extend_from_slice(&pos.to_le_bytes());
+            }
+            b.resize(TAB_ENTRY_SIZE, 0);
+            b
+        };
+        let mut d = 2u32.to_le_bytes().to_vec();
+        d.extend(entry(7, &[(0, 127_000), (0, 254_000)]));
+        d.extend(entry(9, &[(1, 1_681_755)]));
+        d.extend_from_slice(&[0xaa; 4]);
+        let mut r = Reader::new(&d, false);
+        let t = read_tab_table(&mut r, 12).expect("table");
+        assert_eq!(r.remaining(), 4, "the table ends after its entries");
+        let close = |a: f64, b: f64| (a - b).abs() < 1e-9;
+        let grid = &t[&7];
+        assert_eq!(grid.len(), 2);
+        assert!(close(grid[0].pos, 12.7) && grid[0].kind == tracedraw_core::TabKind::Left);
+        assert!(close(grid[1].pos, 25.4));
+        let right = &t[&9];
+        assert!(close(right[0].pos, 168.1755), "{right:?}");
+        assert_eq!(right[0].kind, tracedraw_core::TabKind::Right);
+        // A count past the 64 slots reads the slots; a short table stops.
+        let mut d = 1u32.to_le_bytes().to_vec();
+        let mut e = entry(3, &[]);
+        e[8..10].copy_from_slice(&500u16.to_le_bytes());
+        d.extend(e);
+        let mut r = Reader::new(&d, false);
+        assert_eq!(read_tab_table(&mut r, 12).expect("table")[&3].len(), 64);
+        let mut r = Reader::new(&d[..100], false);
+        assert!(read_tab_table(&mut r, 12).expect("table").is_empty());
+    }
+
+    /// The `tabs` member of a version 16+ paragraph style string: stops
+    /// of (0, kind, position) separated by `|` (#1852).
+    #[test]
+    fn style_string_tabs_give_kinds_and_positions() {
+        let s = parse_style_string(
+            r#"{"paragraph":{"tabs":"0,1,1681755","tabLeaderSpacing":"1","tabLeaderChar":"2e000000"}}"#,
+        );
+        let t = s.tabs.expect("stops");
+        assert_eq!(t.len(), 1);
+        assert!((t[0].pos - 168.1755).abs() < 1e-9);
+        assert_eq!(t[0].kind, tracedraw_core::TabKind::Right);
+        let t = parse_tabs_member("0,0,127000|0,0,254000").expect("stops");
+        assert_eq!(t.len(), 2);
+        assert!((t[1].pos - 25.4).abs() < 1e-9);
+        assert_eq!(parse_tabs_member("").expect("none"), Vec::new());
+        assert!(parse_tabs_member("0,x,5").is_none());
+        assert!(parse_tabs_member("0,1").is_none());
+        // A code no file has shown reads as a left stop.
+        assert_eq!(tab_kind_of(7), tracedraw_core::TabKind::Left);
+        assert_eq!(tab_code(tracedraw_core::TabKind::Right), 1);
+        assert_eq!(tab_code(tracedraw_core::TabKind::Left), 0);
+    }
+
+    /// The four tab stop kinds of the #1852 combination files (versions 7
+    /// to 21, one frame each of left, centre and right stops and menus
+    /// with decimal stops): 0 left, 1 right, 2 centre, 3 decimal, read
+    /// and written alike.
+    #[test]
+    fn tab_kinds_centre_and_decimal_have_their_codes() {
+        use tracedraw_core::TabKind;
+        for (code, kind) in [
+            (0, TabKind::Left),
+            (1, TabKind::Right),
+            (2, TabKind::Center),
+            (3, TabKind::Decimal),
+        ] {
+            assert_eq!(tab_kind_of(code), kind);
+            assert_eq!(tab_code(kind), code);
+        }
+        let t = parse_tabs_member("0,2,799758|0,3,1788584").expect("stops");
+        assert_eq!(t[0].kind, TabKind::Center);
+        assert_eq!(t[1].kind, TabKind::Decimal);
     }
 
     #[test]
@@ -2236,7 +2908,7 @@ mod tests {
         for c in [b'H', b'i'] {
             v5.extend_from_slice(&[0x10, 0x01, 0, 0, c, 0, 9, 0]);
         }
-        let t = read_txsm(&v5, 5, &mut |_| {}).expect("text");
+        let t = read_txsm(&v5, 5, 0, &mut |_| {}).expect("text");
         assert_eq!(texts(&t), ["Hi"]);
         let size = t.paragraphs[0].runs[0].style.size_pt.unwrap();
         assert!((size - 36.0).abs() < 1e-9);
@@ -2251,16 +2923,16 @@ mod tests {
             v6.extend_from_slice(&(c as u32).to_le_bytes());
             v6.extend_from_slice(&0x1000_0000u32.to_le_bytes());
         }
-        let t = read_txsm(&v6, 6, &mut |_| {}).expect("text");
+        let t = read_txsm(&v6, 6, 0, &mut |_| {}).expect("text");
         assert_eq!(texts(&t), ["A", "B"]);
         let size = t.paragraphs[0].runs[0].style.size_pt.unwrap();
         assert!((size - 100_000.0 * 72.0 / 254000.0).abs() < 1e-9);
         // Cut anywhere: nothing panics.
         for cut in 0..v6.len() {
-            let _ = read_txsm(&v6[..cut], 6, &mut |_| {});
+            let _ = read_txsm(&v6[..cut], 6, 0, &mut |_| {});
         }
         for cut in 0..v5.len() {
-            let _ = read_txsm(&v5[..cut], 5, &mut |_| {});
+            let _ = read_txsm(&v5[..cut], 5, 0, &mut |_| {});
         }
     }
 
@@ -2270,6 +2942,46 @@ mod tests {
             decode_cp1252(&[0x41, 0x80, 0x93, 0xe9, 0x00, 0x42]),
             "A\u{20ac}\u{201c}é"
         );
+    }
+
+    #[test]
+    fn latin_runs_in_a_font_of_another_script_read_as_latin() {
+        // "Economia" with i acute, "manana" with n tilde, "mas" with a
+        // acute: Windows-1256 has an Arabic letter or mark at each.
+        let es = [b'E', b'c', b'o', b'n', b'o', b'm', 0xed, b'a'];
+        assert_eq!(decode_charset(&es, 178), "Econom\u{64a}a");
+        assert_eq!(decode_run(&es, 178), "Econom\u{ed}a");
+        assert_eq!(
+            decode_run(&[b'm', b'a', 0xf1, b'a', b'n', b'a'], 178),
+            "ma\u{f1}ana"
+        );
+        // The same in a font of the Cyrillic, Greek or Hebrew set.
+        assert_eq!(decode_run(&[b'c', b'a', b'f', 0xe9], 204), "caf\u{e9}");
+        assert_eq!(decode_run(&[b'm', 0xe1, b's'], 161), "m\u{e1}s");
+        assert_eq!(decode_run(&[b'm', 0xe1, b's'], 177), "m\u{e1}s");
+        // Text of the set's own script stays, with Latin words beside it
+        // and even one joined to a word.
+        let ar = [0xe3, 0xd1, 0xcd, 0xc8, 0xc7];
+        assert_eq!(decode_run(&ar, 178), "\u{645}\u{631}\u{62d}\u{628}\u{627}");
+        let mut both = ar.to_vec();
+        both.extend_from_slice(b" PDF ");
+        both.extend_from_slice(&ar);
+        both.extend_from_slice(b"PDF");
+        assert_eq!(decode_run(&both, 178), decode_charset(&both, 178));
+        assert_eq!(
+            decode_run(
+                &[0xcf, 0xf0, 0xe8, 0xe2, 0xe5, 0xf2, b' ', b'c', b'a', b'f'],
+                204
+            ),
+            "\u{41f}\u{440}\u{438}\u{432}\u{435}\u{442} caf"
+        );
+        // Scripts written with Latin letters are read in their code page.
+        assert_eq!(
+            decode_run(&[0xa3, 0xf3, 0x64, 0x9f], 238),
+            decode_charset(&[0xa3, 0xf3, 0x64, 0x9f], 238)
+        );
+        // A lone letter decides nothing.
+        assert_eq!(decode_run(&[0xe1], 178), "\u{644}");
     }
 
     #[test]
@@ -2385,6 +3097,56 @@ mod tests {
     }
 
     #[test]
+    fn a_merge_mode_other_than_normal_is_named() {
+        // Normal (0), as every file seen holds it, or no mode: nothing.
+        for normal in [
+            r#"{"transparency":{"mode":"0","uniformTransparency":"0.3"}}"#,
+            r#"{"transparency":{}}"#,
+            r#"{"fill":{"mode":"3"}}"#,
+            "not json",
+        ] {
+            assert_eq!(object_transparency_merge_code(normal), None, "{normal}");
+        }
+        let s = r#"{"transparency":{"fill":{"type":"1"},"mode":"4","uniformTransparency":"0"}}"#;
+        assert_eq!(object_transparency_merge_code(s), Some(4));
+    }
+
+    #[test]
+    fn radial_transparency_reaches_the_object_edge() {
+        // #2735: a radial transparency of scale 1 ends at the object's
+        // edge, half its width from the centre, not at its box's corners.
+        use tracedraw_core::geometry::{Point, Rect};
+        use tracedraw_core::{Fill, FountainKind};
+        let style = |scale: &str| {
+            format!(
+                r#"{{"transparency":{{"fill":{{"type":"2","fountainType":"2","angle":"0","xCenterOffset":"0","yCenterOffset":"0","xScale":"{scale}","yScale":"{scale}","primaryColor":"GRAY255,USER,0,100,0","secondaryColor":"GRAY255,USER,255,100,0"}},"appliesTo":"2"}}}}"#
+            )
+        };
+        let b = Rect::new(0.0, 0.0, 40.0, 40.0);
+        for (scale, radius) in [("1", 20.0), ("0.5", 10.0)] {
+            let (mask, _) = object_transparency_mask(&style(scale)).expect("mask");
+            let Fill::Fountain(f) = mask else {
+                panic!("{mask:?}")
+            };
+            assert_eq!(f.kind, FountainKind::Radial);
+            assert_eq!(f.edge_pad, 0.0);
+            // The run's end, at the rim, and its centre.
+            let at = |x: f64| f.param_at(b, Point::new(x, 20.0)).expect("placed");
+            assert!(
+                (at(20.0 + radius) - 1.0).abs() < 1e-9,
+                "{scale}: {}",
+                at(20.0 + radius)
+            );
+            assert!(at(20.0).abs() < 1e-9);
+            // Centre first: the file's first colour, the rim's, is last.
+            assert_eq!(
+                f.stops.last().map(|s| s.color),
+                Some(tracedraw_core::Color::Gray { v: 0.0 })
+            );
+        }
+    }
+
+    #[test]
     fn graded_transparency_becomes_a_mask() {
         use tracedraw_core::{Color, Fill, FountainKind};
         let style = r#"{"fill":{},"transparency":{"mode":"0","fill":{"type":"2","fountainType":"1","angle":"-90","xCenterOffset":"10","yCenterOffset":"-5","xScale":"0.8","yScale":"1","primaryColor":"GRAY255,USER,255,100,0","secondaryColor":"GRAY255,USER,0,100,0"},"appliesTo":"0","startTransparency":"0","endTransparency":"1"}}"#;
@@ -2486,19 +3248,26 @@ mod tests {
     fn split_scripts_cuts_east_asian_runs() {
         assert!(is_east_asian('荣') && is_east_asian('〇') && is_east_asian('ア'));
         assert!(!is_east_asian('A') && !is_east_asian('é') && !is_east_asian('5'));
+        let (l, a) = (Script::Latin, Script::EastAsian);
         assert_eq!(
-            split_scripts("Ab 荣誉, 250g铜版纸\n"),
+            split_scripts("Ab 荣誉, 250g铜版纸\n", true, false),
             vec![
-                ("Ab ".to_string(), false),
-                ("荣誉, ".to_string(), true),
-                ("250g".to_string(), false),
-                ("铜版纸\n".to_string(), true),
+                ("Ab ".to_string(), l),
+                ("荣誉, ".to_string(), a),
+                ("250g".to_string(), l),
+                ("铜版纸\n".to_string(), a),
             ]
         );
         // Neutral characters at the start go with the first run.
-        assert_eq!(split_scripts(" 在"), vec![(" 在".to_string(), true)]);
-        assert_eq!(split_scripts(" \n"), vec![(" \n".to_string(), false)]);
-        assert!(split_scripts("").is_empty());
+        assert_eq!(
+            split_scripts(" 在", true, false),
+            vec![(" 在".to_string(), a)]
+        );
+        assert_eq!(
+            split_scripts(" \n", true, false),
+            vec![(" \n".to_string(), l)]
+        );
+        assert!(split_scripts("", true, false).is_empty());
     }
 
     #[test]
@@ -2537,6 +3306,50 @@ mod tests {
             r#"{"character":{"latin":{"font":"Arial","size":"42333"},"farEast":{"font":"Arial","size":"42333"}}}"#,
         );
         assert!(!same.asian.as_ref().unwrap().differs_from(&same));
+    }
+
+    /// #2886: the `RTL` section of a style string is the font of the
+    /// Arabic, Persian and Hebrew letters; a run changing only the size
+    /// keeps it at that size; the joiners and direction marks between
+    /// letters stay in their word's run.
+    #[test]
+    fn style_string_rtl_section_is_the_right_to_left_font() {
+        let s = parse_style_string(
+            r#"{"character":{"RTL":{"font":"IRNazanin","size":"543325"},"latin":{"font":"Arial","size":"84667"}}}"#,
+        );
+        assert_eq!(s.family.as_deref(), Some("Arial"));
+        let r = s.rtl.as_ref().expect("right-to-left font");
+        assert_eq!(r.family.as_deref(), Some("IRNazanin"));
+        assert!(r.differs_from(&s));
+        let rs = s.for_rtl();
+        assert_eq!(rs.family.as_deref(), Some("IRNazanin"));
+        assert!(
+            (rs.size_pt.unwrap() - 154.0).abs() < 0.1,
+            "{:?}",
+            rs.size_pt
+        );
+        assert!(rs.rtl.is_none());
+        let sized = RunStyle {
+            size_pt: Some(20.0),
+            ..RunStyle::default()
+        };
+        assert_eq!(sized.over(&s).rtl.and_then(|r| r.size_pt), Some(20.0));
+        assert!(is_rtl_script('ب') && is_rtl_script('ש') && is_rtl_script('ﻻ'));
+        assert!(!is_rtl_script('A') && !is_rtl_script('5') && !is_rtl_script('荣'));
+        let (l, r) = (Script::Latin, Script::Rtl);
+        assert_eq!(
+            split_scripts("Ab می\u{200c}بینید 12", false, true),
+            vec![
+                ("Ab ".to_string(), l),
+                ("می\u{200c}بینید ".to_string(), r),
+                ("12".to_string(), l),
+            ]
+        );
+        // East Asian letters are cut off only when asked for.
+        assert_eq!(
+            split_scripts("荣ب", false, true),
+            vec![("荣".to_string(), l), ("ب".to_string(), r)]
+        );
     }
 
     #[test]
@@ -2604,7 +3417,7 @@ mod tests {
         let index = [0, 0, 0, 0, 2, 2, 2, 1, 1, 1];
         for block in [false, true] {
             let mut warnings = Vec::new();
-            let t = read_txsm(&txsm15("MASS 941kg", &index, block), 15, &mut |w| {
+            let t = read_txsm(&txsm15("MASS 941kg", &index, block), 15, 0, &mut |w| {
                 warnings.push(w)
             })
             .expect("txsm");
@@ -2626,7 +3439,8 @@ mod tests {
             );
         }
         // With every record naming style 0 the lengths still cut the runs.
-        let t = read_txsm(&txsm15("MASS 941kg", &[0; 10], false), 15, &mut |_| {}).expect("txsm");
+        let t =
+            read_txsm(&txsm15("MASS 941kg", &[0; 10], false), 15, 0, &mut |_| {}).expect("txsm");
         assert_eq!(t.paragraphs[0].runs[0].text.len(), 10);
     }
 
@@ -2685,8 +3499,8 @@ mod tests {
     fn version_8_frames_of_either_layout() {
         for bytes in [32, 34] {
             let mut notes = Vec::new();
-            let t =
-                read_txsm(&txsm8_frames(b"Lorem", bytes), 8, &mut |w| notes.push(w)).expect("txsm");
+            let t = read_txsm(&txsm8_frames(b"Lorem", bytes), 8, 0, &mut |w| notes.push(w))
+                .expect("txsm");
             assert!(notes.is_empty(), "{bytes}: {notes:?}");
             assert_eq!(t.paragraphs[0].runs[0].text, "Lorem", "{bytes}");
         }
@@ -2694,7 +3508,8 @@ mod tests {
 
     #[test]
     fn version_8_letters_take_the_style_their_records_number() {
-        let t = read_txsm(&txsm8(b"x\xc4y", &[0, 1, 0]), 8, &mut |w| panic!("{w}")).expect("txsm");
+        let t =
+            read_txsm(&txsm8(b"x\xc4y", &[0, 1, 0]), 8, 0, &mut |w| panic!("{w}")).expect("txsm");
         let runs: Vec<(&str, Option<u16>)> = t.paragraphs[0]
             .runs
             .iter()
@@ -2702,7 +3517,82 @@ mod tests {
             .collect();
         assert_eq!(runs, [("x", None), ("\u{c4}", Some(7)), ("y", None)]);
         // Records that all name style 0 leave the lengths to cut the runs.
-        let t = read_txsm(&txsm8(b"x\xc4y", &[0, 0, 0]), 8, &mut |_| {}).expect("txsm");
+        let t = read_txsm(&txsm8(b"x\xc4y", &[0, 0, 0]), 8, 0, &mut |_| {}).expect("txsm");
         assert_eq!(t.paragraphs[0].runs[0].text, "x\u{c4}y");
+    }
+
+    /// A version 24 artistic text whose second style record is a print
+    /// merge field (bit 3 of its third word), as in the file of #2969.
+    fn txsm24_merge_field(field: &str, text: &[u8]) -> Vec<u8> {
+        fn style(b: &mut Vec<u8>, s: &str) {
+            b.extend_from_slice(&(s.len() as u32).to_le_bytes());
+            b.extend_from_slice(s.as_bytes());
+        }
+        fn utf16(b: &mut Vec<u8>, s: &str) {
+            for u in s.encode_utf16() {
+                b.extend_from_slice(&u.to_le_bytes());
+            }
+        }
+        let mut b = Vec::new();
+        b.extend_from_slice(&u32::MAX.to_le_bytes()); // frame layout
+        b.extend_from_slice(&[0; 32]);
+        b.extend_from_slice(&1800u16.to_le_bytes());
+        b.extend_from_slice(&[0; 3]);
+        b.extend_from_slice(&1u32.to_le_bytes()); // one frame
+        b.extend_from_slice(&32u32.to_le_bytes());
+        b.extend_from_slice(&[0; 48]);
+        b.extend_from_slice(&0u32.to_le_bytes()); // not on a path
+        b.extend_from_slice(&[0; 8]);
+        b.extend_from_slice(&1u32.to_le_bytes()); // one paragraph
+        b.extend_from_slice(&13u32.to_le_bytes());
+        b.extend_from_slice(&[0, 0]);
+        style(
+            &mut b,
+            r#"{"character":{"latin":{"font":"Arial","size":"12700"}}}"#,
+        );
+        b.extend_from_slice(&2u32.to_le_bytes()); // two records
+        for (st, merge) in [([7u16, 0, 0x04], false), ([1, 0x3fff, 0x1c], true)] {
+            for w in st {
+                b.extend_from_slice(&w.to_le_bytes());
+            }
+            b.extend_from_slice(&3u32.to_le_bytes());
+            utf16(&mut b, "PTB");
+            if merge {
+                b.extend_from_slice(&0u16.to_le_bytes());
+                b.extend_from_slice(&(field.len() as u16).to_le_bytes());
+                utf16(&mut b, field);
+                style(&mut b, r#"{"character":{"latin":{"font":"Gabriola"}}}"#);
+            } else {
+                style(&mut b, r#"{"character":{}}"#);
+            }
+        }
+        b.extend_from_slice(&(text.len() as u32).to_le_bytes());
+        for _ in text {
+            b.extend_from_slice(&[0, 0, 1 << 1, 0, 0, 0, 0, 0]);
+        }
+        b.extend_from_slice(&(text.len() as u32).to_le_bytes());
+        b.extend_from_slice(text);
+        b.push(0); // no letter positions
+        b
+    }
+
+    #[test]
+    fn version_24_text_of_a_print_merge_field_is_read() {
+        let d = txsm24_merge_field("EVTI", b"\xa0<EVTI>");
+        let t = read_txsm(&d, 24, 0, &mut |w| panic!("{w}")).expect("txsm");
+        let runs: Vec<(&str, Option<&str>)> = t.paragraphs[0]
+            .runs
+            .iter()
+            .map(|r| (r.text.as_str(), r.style.family.as_deref()))
+            .collect();
+        assert_eq!(runs, [("\u{a0}<EVTI>", Some("Gabriola"))]);
+        // Field names of other lengths keep the records after them in step.
+        let d = txsm24_merge_field("DS", b"\xa0<DS>");
+        let t = read_txsm(&d, 24, 0, &mut |w| panic!("{w}")).expect("txsm");
+        assert_eq!(t.paragraphs[0].runs[0].text, "\u{a0}<DS>");
+        // A record cut inside the field name is not read past the end.
+        for cut in 0..d.len() {
+            let _ = read_txsm(&d[..cut], 24, 0, &mut |_| {});
+        }
     }
 }

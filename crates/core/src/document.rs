@@ -236,7 +236,12 @@ pub fn text_glyph_layout(kind: &ShapeKind) -> Option<text_outline::GlyphLayout> 
         para,
         on_path: on_path.as_ref(),
     })?;
-    let shift = text_layout_shift(*origin, *frame, on_path.is_some(), para.vertical);
+    let shift = text_layout_shift(
+        *origin,
+        *frame,
+        on_path.is_some(),
+        para.columns_from_right(),
+    );
     for g in &mut layout.glyphs {
         g.transform = shift * g.transform;
         g.path.apply_affine(shift);
@@ -246,19 +251,20 @@ pub fn text_glyph_layout(kind: &ShapeKind) -> Option<text_outline::GlyphLayout> 
 }
 
 /// From the text engine's layout space to a text's local space: paragraph
-/// text hangs from the top left of its frame (vertical text from the top
-/// right), artistic text sits on its first baseline at its origin
-/// (vertical text starts at the top of its first column there); text on
-/// a path is placed at the origin.
+/// text hangs from the top left of its frame (vertical text whose columns
+/// go right to left, `from_right`, from the top right), artistic text
+/// sits on its first baseline at its origin (vertical text starts at the
+/// top of its first column there); text on a path is placed at the
+/// origin. Callers pass [`ParagraphStyle::columns_from_right`].
 pub fn text_layout_shift(
     origin: Point,
     frame: Option<geometry::Size>,
     on_path: bool,
-    vertical: bool,
+    from_right: bool,
 ) -> Affine {
     match frame {
         Some(f) if !on_path => {
-            let dx = if vertical { f.width } else { 0.0 };
+            let dx = if from_right { f.width } else { 0.0 };
             Affine::translate((origin.x + dx, origin.y + f.height))
         }
         _ => Affine::translate(origin.to_vec2()),
@@ -310,7 +316,7 @@ pub fn text_backgrounds(kind: &ShapeKind) -> Vec<(Rect, Fill)> {
     };
     // The written lines to local space, as the outline is placed (the
     // columns of vertical text are the lines turned).
-    let to_local = text_layout_shift(*origin, *frame, false, para.vertical)
+    let to_local = text_layout_shift(*origin, *frame, false, para.columns_from_right())
         * if para.vertical {
             vertical_line_frame()
         } else {
@@ -351,8 +357,11 @@ pub fn text_backgrounds(kind: &ShapeKind) -> Vec<(Rect, Fill)> {
 
 /// Paragraph text as one artistic text a laid-out line, each placed where
 /// its frame put it (alignment and justification spacing aside), the lines
-/// that overflow the frame left out. `None` for other shapes or without a
-/// text engine. Formats that hold no frames use it to keep the look.
+/// that overflow the frame left out. A line with tabs is cut at them, each
+/// part an artistic text of its own placed where the tab stops put it,
+/// so a reader with other tab stops (or none) shows the same (#1852).
+/// `None` for other shapes or without a text engine. Formats that hold no
+/// frames use it to keep the look.
 pub fn paragraph_lines(kind: &ShapeKind) -> Option<Vec<ShapeKind>> {
     let ShapeKind::Text {
         spans,
@@ -374,7 +383,7 @@ pub fn paragraph_lines(kind: &ShapeKind) -> Option<Vec<ShapeKind>> {
     })?;
     // The written lines to local space (vertical text: the columns run
     // down the frame's height, so the lines go across its width).
-    let to_local = text_layout_shift(*origin, Some(*frame), false, para.vertical)
+    let to_local = text_layout_shift(*origin, Some(*frame), false, para.columns_from_right())
         * if para.vertical {
             vertical_line_frame()
         } else {
@@ -386,10 +395,18 @@ pub fn paragraph_lines(kind: &ShapeKind) -> Option<Vec<ShapeKind>> {
         frame.height
     };
     let mut out = Vec::new();
+    // Each line's parts between tabs, with where each starts (#1852).
+    let mut pieces = Vec::new();
     for line in &lines {
         // Below the frame: overflow, shown in the next linked frame or not
-        // at all.
-        if line.baseline < -depth - 1e-6 {
+        // at all. The columns of left to right vertical text are placed
+        // mirrored, their baselines going up from the frame's left edge.
+        let past = if para.columns_left_to_right() {
+            line.baseline + line.ascent - line.descent > depth + 1e-6
+        } else {
+            line.baseline < -depth - 1e-6
+        };
+        if past {
             break;
         }
         let (_, tail) = split_spans_at(spans, line.start_char);
@@ -400,12 +417,36 @@ pub fn paragraph_lines(kind: &ShapeKind) -> Option<Vec<ShapeKind>> {
             sp.paragraph = None;
         }
         piece.retain(|sp| !sp.text.is_empty());
+        // The parts between tabs, with where each starts.
+        let line_chars: Vec<char> = piece.iter().flat_map(|sp| sp.text.chars()).collect();
+        let mut parts = Vec::new();
+        let mut from = 0usize;
+        for (i, c) in line_chars.iter().enumerate() {
+            if *c == '\t' {
+                parts.push((from, i));
+                from = i + 1;
+            }
+        }
+        parts.push((from, line_chars.len()));
+        for (a, b) in parts {
+            let (_, tail) = split_spans_at(&piece, a);
+            let (mut part, _) = split_spans_at(&tail, b - a);
+            part.retain(|sp| !sp.text.is_empty());
+            let x = if a == 0 {
+                line.x
+            } else {
+                line.edges.get(a).copied().unwrap_or(line.x)
+            };
+            pieces.push((part, x, line.baseline));
+        }
+    }
+    for (piece, x, baseline) in pieces {
         if piece.iter().all(|sp| sp.text.trim().is_empty()) {
             continue;
         }
         out.push(ShapeKind::Text {
             spans: piece,
-            origin: to_local * Point::new(line.x, line.baseline),
+            origin: to_local * Point::new(x, baseline),
             frame: None,
             align: TextAlign::Left,
             para: ParagraphStyle {
@@ -458,6 +499,101 @@ pub struct Corners {
     /// space and scale, or stretch, with it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub fixed: bool,
+    /// How far each edge bows outward (#2188): top, right, bottom, left
+    /// (top is +y in the local space), 0 a straight edge and 1 an edge
+    /// bent into a quarter circle through its two corner points, so a
+    /// square bulged all round is a circle. The bow is a share of the
+    /// edge's length, so it keeps its look when the rectangle is
+    /// stretched; the corners round, scallop or cut along the bowed
+    /// edges.
+    #[serde(default, skip_serializing_if = "no_bulge")]
+    pub bulge: [f64; 4],
+}
+
+fn no_bulge(b: &[f64; 4]) -> bool {
+    b.iter().all(|v| *v == 0.0)
+}
+
+/// The tangent half-length of a cubic that draws a circular arc of
+/// `sweep` radians, as a share of the radius.
+fn arc_handle(sweep: f64) -> f64 {
+    4.0 / 3.0 * (sweep / 4.0).tan()
+}
+
+/// One bowed edge of a rectangle (see [`Corners::bulge`]): the circle
+/// it follows from its start corner to its end corner, counter-clockwise.
+#[derive(Debug, Clone, Copy)]
+struct EdgeArc {
+    centre: Point,
+    radius: f64,
+    /// Angle of the start corner, radians.
+    start: f64,
+    /// Radians from the start corner to the end corner (positive).
+    sweep: f64,
+}
+
+impl EdgeArc {
+    /// The arc from `a` to `b` (counter-clockwise round the rectangle)
+    /// bowed out by `bulge`; `None` for a straight edge.
+    fn new(a: Point, b: Point, bulge: f64) -> Option<EdgeArc> {
+        let d = b - a;
+        let len = d.hypot();
+        if bulge.is_nan() || bulge <= 1e-9 || len < 1e-12 {
+            return None;
+        }
+        let half = len / 2.0;
+        let sag = bulge.min(1.0) * (std::f64::consts::SQRT_2 - 1.0) * half;
+        // Outward: to the right of the way round.
+        let n = Vec2::new(d.y, -d.x) / len;
+        let radius = (half * half + sag * sag) / (2.0 * sag);
+        let centre = a.midpoint(b) - n * (radius - sag);
+        let start = (a - centre).atan2();
+        let sweep = 2.0 * (half / radius).clamp(-1.0, 1.0).asin();
+        Some(EdgeArc {
+            centre,
+            radius,
+            start,
+            sweep,
+        })
+    }
+
+    fn at_angle(&self, a: f64) -> Point {
+        self.centre + Vec2::new(a.cos(), a.sin()) * self.radius
+    }
+
+    /// The point `len` along the arc from its start and the unit tangent
+    /// there, the way round.
+    fn along(&self, len: f64) -> (Point, Vec2) {
+        let a = self.start + (len / self.radius).clamp(0.0, self.sweep);
+        (self.at_angle(a), Vec2::new(-a.sin(), a.cos()))
+    }
+
+    /// Append the arc between the lengths `from` and `to` from its start
+    /// to `path`, in pieces of at most a quarter turn.
+    fn append(&self, path: &mut BezPath, from: f64, to: f64) {
+        let (a0, a1) = (
+            self.start + from / self.radius,
+            self.start + to / self.radius,
+        );
+        let total = a1 - a0;
+        if total <= 1e-12 {
+            return;
+        }
+        let pieces = (total / std::f64::consts::FRAC_PI_2).ceil().max(1.0) as usize;
+        let step = total / pieces as f64;
+        let k = arc_handle(step) * self.radius;
+        for i in 0..pieces {
+            let (s, e) = (a0 + step * i as f64, a0 + step * (i + 1) as f64);
+            let (p0, p1) = (self.at_angle(s), self.at_angle(e));
+            let t0 = Vec2::new(-s.sin(), s.cos());
+            let t1 = Vec2::new(-e.sin(), e.cos());
+            path.curve_to(p0 + t0 * k, p1 - t1 * k, p1);
+        }
+    }
+
+    fn length(&self) -> f64 {
+        self.radius * self.sweep
+    }
 }
 
 impl Corners {
@@ -465,12 +601,98 @@ impl Corners {
     pub const TOP_RIGHT: usize = 1;
     pub const BOTTOM_LEFT: usize = 2;
     pub const BOTTOM_RIGHT: usize = 3;
+    /// The edges in [`Corners::bulge`].
+    pub const EDGE_TOP: usize = 0;
+    pub const EDGE_RIGHT: usize = 1;
+    pub const EDGE_BOTTOM: usize = 2;
+    pub const EDGE_LEFT: usize = 3;
+
+    /// Edge `i`'s bow, from 0 (straight) to 1 (a quarter circle); a
+    /// non-finite one counts as straight.
+    pub fn edge_bulge(&self, i: usize) -> f64 {
+        match self.bulge.get(i) {
+            Some(b) if b.is_finite() => b.clamp(0.0, 1.0),
+            _ => 0.0,
+        }
+    }
+
+    /// Some edge bows outward.
+    pub fn has_bulge(&self) -> bool {
+        (0..4).any(|i| self.edge_bulge(i) > 1e-9)
+    }
+
+    /// The edge that runs into each corner of `layout`'s order (bottom
+    /// right, top right, top left, bottom left): bottom, right, top, left.
+    const EDGE_INTO: [usize; 4] = [
+        Self::EDGE_BOTTOM,
+        Self::EDGE_RIGHT,
+        Self::EDGE_TOP,
+        Self::EDGE_LEFT,
+    ];
+
+    /// The arcs of the bowed edges, by `layout` order (the edge running
+    /// into each corner), from the corner points of `rect`.
+    fn edge_arcs(&self, order: &[CornerAt; 4]) -> [Option<EdgeArc>; 4] {
+        [0, 1, 2, 3].map(|i| {
+            let from = order[(i + 3) % 4].p;
+            EdgeArc::new(from, order[i].p, self.edge_bulge(Self::EDGE_INTO[i]))
+        })
+    }
+
+    /// The middle of edge `edge` (see [`Corners::bulge`]) as it is drawn
+    /// in `rect`, bowed or straight, in the rectangle's own space, and
+    /// its outward direction.
+    pub fn edge_middle(&self, edge: usize, rect: Rect) -> (Point, Vec2) {
+        let r = rect.abs();
+        let (a, b, n) = match edge {
+            Self::EDGE_TOP => (
+                Point::new(r.x1, r.y1),
+                Point::new(r.x0, r.y1),
+                Vec2::new(0.0, 1.0),
+            ),
+            Self::EDGE_RIGHT => (
+                Point::new(r.x1, r.y0),
+                Point::new(r.x1, r.y1),
+                Vec2::new(1.0, 0.0),
+            ),
+            Self::EDGE_BOTTOM => (
+                Point::new(r.x0, r.y0),
+                Point::new(r.x1, r.y0),
+                Vec2::new(0.0, -1.0),
+            ),
+            _ => (
+                Point::new(r.x0, r.y1),
+                Point::new(r.x0, r.y0),
+                Vec2::new(-1.0, 0.0),
+            ),
+        };
+        let len = (b - a).hypot();
+        let sag = self.edge_bulge(edge) * (std::f64::consts::SQRT_2 - 1.0) * len / 2.0;
+        (a.midpoint(b) + n * sag, n)
+    }
+
+    /// The bow that puts the middle of edge `edge` of `rect` `out` units
+    /// past the straight edge (see [`Corners::bulge`]), from 0 to 1.
+    pub fn bulge_for(edge: usize, rect: Rect, out: f64) -> f64 {
+        let r = rect.abs();
+        let len = if edge == Self::EDGE_TOP || edge == Self::EDGE_BOTTOM {
+            r.width()
+        } else {
+            r.height()
+        };
+        let full = (std::f64::consts::SQRT_2 - 1.0) * len / 2.0;
+        if full.is_nan() || full <= 1e-12 || !out.is_finite() {
+            return 0.0;
+        }
+        (out / full).clamp(0.0, 1.0)
+    }
 
     pub fn uniform(radius: f64, kind: CornerKind) -> Corners {
         Corners {
             radii: [radius; 4],
             kind,
             fixed: false,
+            bulge: [0.0; 4],
         }
     }
 
@@ -493,7 +715,7 @@ impl Corners {
     /// Same size on every corner, round and scaling with the object: a
     /// plain radius says as much.
     pub fn is_plain(&self) -> bool {
-        self.kind == CornerKind::Round && !self.fixed && self.is_uniform()
+        self.kind == CornerKind::Round && !self.fixed && self.is_uniform() && !self.has_bulge()
     }
 
     /// The largest corner.
@@ -506,6 +728,144 @@ impl Corners {
         self.max() <= 1e-9
     }
 
+    /// Which corner lies where once the rectangle is drawn through `t`:
+    /// the local corner seen at the top left, top right, bottom left and
+    /// bottom right of the page (the radii's order). The local x axis
+    /// counts as horizontal when it leans that way more than it rises,
+    /// else as vertical, and the y axis as the other one; the sign of
+    /// each says which way it runs. So a rectangle turned by 180 degrees
+    /// or flipped shows its corners swapped, one turned by less than 45
+    /// degrees shows them where they were, and a skewed or stretched one
+    /// still has one corner at each position (#1670).
+    pub fn seen_through(t: Affine) -> [usize; 4] {
+        let [a, b, c, d, _, _] = t.as_coeffs();
+        let sign = |v: f64| if v < 0.0 { -1 } else { 1 };
+        let mut out = [0; 4];
+        for local in 0..4 {
+            // The corner's side along the local x (right: +) and y (top: +).
+            let (lx, ly) = match local {
+                Self::TOP_LEFT => (-1, 1),
+                Self::TOP_RIGHT => (1, 1),
+                Self::BOTTOM_LEFT => (-1, -1),
+                _ => (1, -1),
+            };
+            let (px, py) = if a.abs() >= b.abs() {
+                (lx * sign(a), ly * sign(d))
+            } else {
+                (ly * sign(c), lx * sign(b))
+            };
+            let seen = match (px, py) {
+                (-1, 1) => Self::TOP_LEFT,
+                (1, 1) => Self::TOP_RIGHT,
+                (-1, -1) => Self::BOTTOM_LEFT,
+                _ => Self::BOTTOM_RIGHT,
+            };
+            out[seen] = local;
+        }
+        out
+    }
+
+    /// These corners with the radii in the order they are seen through
+    /// `t` (see `seen_through`): the size at each position on the page.
+    pub fn as_seen(&self, t: Affine) -> Corners {
+        let order = Self::seen_through(t);
+        Corners {
+            radii: order.map(|local| self.radii[local]),
+            ..*self
+        }
+    }
+
+    /// The corners `seen` in page positions (as `as_seen` gives them) back
+    /// in the rectangle's own order.
+    pub fn from_seen(seen: Corners, t: Affine) -> Corners {
+        let order = Self::seen_through(t);
+        let mut radii = seen.radii;
+        for (position, local) in order.into_iter().enumerate() {
+            radii[local] = seen.radii[position];
+        }
+        Corners { radii, ..seen }
+    }
+
+    /// Corner `i`'s size, a negative or non-finite one counting as 0.
+    fn radius(&self, i: usize) -> f64 {
+        match self.radii.get(i) {
+            Some(r) if r.is_finite() => r.max(0.0),
+            _ => 0.0,
+        }
+    }
+
+    /// The radii with negative and non-finite sizes made 0 (square).
+    pub fn sanitized(&self) -> Corners {
+        Corners {
+            radii: [0, 1, 2, 3].map(|i| self.radius(i)),
+            ..*self
+        }
+    }
+
+    /// Page length of one unit of the rectangle along x and y as the
+    /// radii count it: `scale` for fixed corners, 1 for scaling ones.
+    fn units(&self, scale: (f64, f64)) -> (f64, f64) {
+        if self.fixed {
+            (scale.0.abs().max(1e-9), scale.1.abs().max(1e-9))
+        } else {
+            (1.0, 1.0)
+        }
+    }
+
+    /// The factor every corner is drawn at in `rect` (see `layout` for
+    /// `scale`): 1 while the two corners on each side together are at
+    /// most as long as the side, else the side's length over their sum
+    /// for the tightest side. So one corner can take a whole side when
+    /// its neighbours leave it room, and only corners too big together
+    /// are shrunk (#1757).
+    pub fn fit_factor(&self, rect: Rect, scale: (f64, f64)) -> f64 {
+        let rect = rect.abs();
+        let (sx, sy) = self.units(scale);
+        // Sizes in the units the radii are in.
+        let (w, h) = (rect.width() * sx, rect.height() * sy);
+        let fit = |side: f64, a: usize, b: usize| {
+            let side = if side.is_finite() { side.max(0.0) } else { 0.0 };
+            let sum = self.radius(a) + self.radius(b);
+            if sum > side && sum > 0.0 {
+                side / sum
+            } else {
+                1.0
+            }
+        };
+        fit(w, Self::TOP_LEFT, Self::TOP_RIGHT)
+            .min(fit(w, Self::BOTTOM_LEFT, Self::BOTTOM_RIGHT))
+            .min(fit(h, Self::TOP_LEFT, Self::BOTTOM_LEFT))
+            .min(fit(h, Self::TOP_RIGHT, Self::BOTTOM_RIGHT))
+    }
+
+    /// The largest size corner `i` can have in `rect` (see `layout` for
+    /// `scale`) with the other corners as they are and nothing shrunk:
+    /// what its neighbour leaves of each of the two sides it is on, in
+    /// the units the radii are in. The horizontal neighbour of a corner
+    /// is `i ^ 1`, the vertical one `i ^ 2`.
+    pub fn room(&self, i: usize, rect: Rect, scale: (f64, f64)) -> f64 {
+        let rect = rect.abs();
+        let (sx, sy) = self.units(scale);
+        let (w, h) = (rect.width() * sx, rect.height() * sy);
+        let room = (w - self.radius(i ^ 1)).min(h - self.radius(i ^ 2));
+        if room.is_finite() {
+            room.max(0.0)
+        } else {
+            0.0
+        }
+    }
+
+    /// These corners at the size they are drawn in `rect` (see
+    /// `fit_factor`), in the units the radii are in.
+    pub fn fitted(&self, rect: Rect, scale: (f64, f64)) -> Corners {
+        let k = self.fit_factor(rect, scale);
+        let c = self.sanitized();
+        Corners {
+            radii: c.radii.map(|r| r * k),
+            ..c
+        }
+    }
+
     /// Each corner in drawing order (counter-clockwise from the bottom
     /// right): its index, the corner point, the edge directions into and
     /// out of it, and how far the cut runs along each edge, all in the
@@ -513,42 +873,16 @@ impl Corners {
     /// the rectangle's x and y axes; fixed corners are divided by it so
     /// that they keep their size on the page. The two corners on a side
     /// together are at most as long as the side: when they would be
-    /// longer, every corner shrinks by the same factor, so equal corners
-    /// are at most half the shorter side and a single corner can take a
-    /// whole side.
+    /// longer, every corner shrinks by the same factor (`fit_factor`), so
+    /// equal corners are at most half the shorter side and a single
+    /// corner can take a whole side.
     fn layout(&self, rect: Rect, scale: (f64, f64)) -> [CornerAt; 4] {
         let rect = rect.abs();
-        let (sx, sy) = if self.fixed {
-            (scale.0.abs().max(1e-9), scale.1.abs().max(1e-9))
-        } else {
-            (1.0, 1.0)
-        };
-        // Sizes in the units the radii are in, then each corner as an
-        // ellipse in local space.
-        let (w, h) = (rect.width() * sx, rect.height() * sy);
-        let radius = |i: usize| {
-            let r = self.radii[i];
-            if r.is_finite() {
-                r.max(0.0)
-            } else {
-                0.0
-            }
-        };
-        let fit = |side: f64, a: usize, b: usize| {
-            let sum = radius(a) + radius(b);
-            if sum > side.max(0.0) && sum > 0.0 {
-                side.max(0.0) / sum
-            } else {
-                1.0
-            }
-        };
-        let shrink = fit(w, Self::TOP_LEFT, Self::TOP_RIGHT)
-            .min(fit(w, Self::BOTTOM_LEFT, Self::BOTTOM_RIGHT))
-            .min(fit(h, Self::TOP_LEFT, Self::BOTTOM_LEFT))
-            .min(fit(h, Self::TOP_RIGHT, Self::BOTTOM_RIGHT));
+        let (sx, sy) = self.units(scale);
+        let shrink = self.fit_factor(rect, scale);
         let (x0, y0, x1, y1) = (rect.x0, rect.y0, rect.x1, rect.y1);
         let at = |index: usize, p: Point, d_in: Vec2, d_out: Vec2| {
-            let r = radius(index) * shrink;
+            let r = self.radius(index) * shrink;
             // The part of the corner's size along a direction.
             let along = |d: Vec2| if d.x != 0.0 { r / sx } else { r / sy };
             CornerAt {
@@ -594,9 +928,11 @@ impl Corners {
     /// the horizontal edge. A square corner has both ends on its point.
     pub fn ends(&self, rect: Rect, scale: (f64, f64)) -> [(Point, Point, Point); 4] {
         let mut out = [(Point::ZERO, Point::ZERO, Point::ZERO); 4];
-        for c in self.layout(rect, scale) {
-            let a = c.p - c.d_in * c.a_in;
-            let b = c.p + c.d_out * c.a_out;
+        let order = self.layout(rect, scale);
+        let arcs = self.edge_arcs(&order);
+        for (i, c) in order.iter().enumerate() {
+            let (a, _) = Self::cut_in(c, &arcs[i]);
+            let (b, _) = Self::cut_out(c, &arcs[(i + 1) % 4]);
             out[c.index] = if c.d_in.x == 0.0 {
                 (c.p, a, b)
             } else {
@@ -606,11 +942,88 @@ impl Corners {
         out
     }
 
+    /// Where corner `c`'s cut starts on the edge running into it (bowed
+    /// along `arc`, else straight) and the way the edge runs there.
+    fn cut_in(c: &CornerAt, arc: &Option<EdgeArc>) -> (Point, Vec2) {
+        match arc {
+            Some(a) => a.along(a.length() - c.a_in.min(a.length())),
+            None => (c.p - c.d_in * c.a_in, c.d_in),
+        }
+    }
+
+    /// Where corner `c`'s cut ends on the edge leaving it (bowed along
+    /// `arc`, else straight) and the way the edge runs there.
+    fn cut_out(c: &CornerAt, arc: &Option<EdgeArc>) -> (Point, Vec2) {
+        match arc {
+            Some(a) => a.along(c.a_out.min(a.length())),
+            None => (c.p + c.d_out * c.a_out, c.d_out),
+        }
+    }
+
+    /// The outline when some edge bows (see [`Corners::bulge`]): each
+    /// edge an arc through its corner points (or straight), each cut
+    /// corner a curve between the two edges, tangent to them when round.
+    fn bulged_path(&self, order: &[CornerAt; 4]) -> BezPath {
+        let arcs = self.edge_arcs(order);
+        let mut path = BezPath::new();
+        // Start where the last corner's cut ends on the first edge.
+        let (start, _) = Self::cut_out(&order[3], &arcs[0]);
+        path.move_to(start);
+        let mut at = start;
+        for (i, c) in order.iter().enumerate() {
+            let arc_in = &arcs[i];
+            let (a, t_in) = Self::cut_in(c, arc_in);
+            // The edge up to the corner's cut.
+            match arc_in {
+                Some(arc) => {
+                    let from = order[(i + 3) % 4].a_out.min(arc.length());
+                    let to = arc.length() - c.a_in.min(arc.length());
+                    arc.append(&mut path, from, to);
+                }
+                None => {
+                    if (a - at).hypot() > 1e-12 {
+                        path.line_to(a);
+                    }
+                }
+            }
+            let (b, t_out) = Self::cut_out(c, &arcs[(i + 1) % 4]);
+            if c.a_in > 1e-12 && c.a_out > 1e-12 {
+                // How far the way round turns at the corner.
+                let turn = t_in.cross(t_out).atan2(t_in.dot(t_out)).abs();
+                match self.kind {
+                    CornerKind::Round => {
+                        // An arc tangent to both edges, its handles as
+                        // long as the turn asks.
+                        let k = if turn > 1e-6 {
+                            arc_handle(turn) / (turn / 2.0).tan()
+                        } else {
+                            2.0 / 3.0
+                        };
+                        path.curve_to(a + t_in * (k * c.a_in), b - t_out * (k * c.a_out), b);
+                    }
+                    CornerKind::Scallop => {
+                        const K: f64 = 0.552_284_749_830_793_4;
+                        path.curve_to(a + t_out * (K * c.a_out), b - t_in * (K * c.a_in), b);
+                    }
+                    CornerKind::Chamfer => path.line_to(b),
+                }
+            } else if (b - a).hypot() > 1e-12 {
+                path.line_to(b);
+            }
+            at = b;
+        }
+        path.close_path();
+        path
+    }
+
     /// Outline of `rect` with these corners; see `layout` for `scale`.
     pub fn path(&self, rect: Rect, scale: (f64, f64)) -> BezPath {
         // Quarter-ellipse handle length.
         const K: f64 = 0.552_284_749_830_793_4;
         let order = self.layout(rect, scale);
+        if self.has_bulge() {
+            return self.bulged_path(&order);
+        }
         let mut path = BezPath::new();
         let last = &order[3];
         let start = last.p + last.d_out * last.a_out;
@@ -681,7 +1094,10 @@ pub enum ShapeKind {
     /// star: each vertex joined to the one `complex + 1` further on, so the
     /// sides cross (`sharpness` and `twist` are then unused). `twist`
     /// turns the points between the vertices about the centre (radians,
-    /// counter-clockwise): a twisted star.
+    /// counter-clockwise): a twisted star. `sharpness` 0 is a polygon,
+    /// 0 to 1 a star whose inner points come in toward the centre, 0 to
+    /// -1 an inverted star whose inner points lie past it
+    /// (`geometry::star_inner_ratio`).
     Polygon {
         rect: Rect,
         points: u32,
@@ -761,6 +1177,18 @@ pub struct BitmapFxStack {
 }
 
 impl ShapeKind {
+    /// An open curve: a curve left open, or an ellipse made an arc (not a
+    /// pie). Its fill shows only while the document fills open curves
+    /// (`Metadata::fill_open_curves`), on screen, in exports and
+    /// for picking alike.
+    pub fn is_open_curve(&self) -> bool {
+        match self {
+            ShapeKind::Path { closed, .. } => !closed,
+            ShapeKind::Ellipse { arc: Some(a), .. } => !a.pie,
+            _ => false,
+        }
+    }
+
     /// A rectangle with these corners. Plain ones (one round radius that
     /// scales with the object) keep the short form; otherwise `radius`
     /// holds the largest corner for readers that know only one.
@@ -912,6 +1340,197 @@ pub struct FontVariation {
     pub value: f64,
 }
 
+/// Where characters sit on the line (#1201): on the baseline, raised as
+/// superscript or lowered as subscript. A font with the `sups` or `subs`
+/// feature draws its own forms; otherwise the characters are drawn at
+/// [`TextPosition::SYNTHETIC_SCALE`] of their size, shifted by
+/// [`TextPosition::synthetic_shift`] of the size.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TextPosition {
+    #[default]
+    Normal,
+    Superscript,
+    Subscript,
+}
+
+impl TextPosition {
+    /// The size of synthetic superscripts and subscripts, as a fraction
+    /// of the characters' size.
+    pub const SYNTHETIC_SCALE: f64 = 0.58;
+
+    /// Serde: a normal position is left out of the file.
+    pub fn is_normal(&self) -> bool {
+        *self == TextPosition::Normal
+    }
+
+    /// The OpenType feature that draws this position, if any.
+    pub fn feature(self) -> Option<&'static str> {
+        match self {
+            TextPosition::Normal => None,
+            TextPosition::Superscript => Some("sups"),
+            TextPosition::Subscript => Some("subs"),
+        }
+    }
+
+    /// The baseline shift of the synthetic form as a fraction of the
+    /// characters' size, positive up: superscripts rise by a third of
+    /// the size, subscripts drop by 15 % of it.
+    pub fn synthetic_shift(self) -> f64 {
+        match self {
+            TextPosition::Normal => 0.0,
+            TextPosition::Superscript => 0.33,
+            TextPosition::Subscript => -0.15,
+        }
+    }
+}
+
+/// The look of an underline or a strike line (#1209). A thin line is a
+/// fourteenth of the font size thick, a thick one a seventh; a double
+/// line is two thin lines a thin line apart; a word-only line skips the
+/// spaces between the words.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LineStyle {
+    #[default]
+    None,
+    SingleThin,
+    SingleThick,
+    DoubleThin,
+    SingleThinWord,
+    SingleThickWord,
+    DoubleThinWord,
+}
+
+impl LineStyle {
+    /// Every style, in the order the lists show them.
+    pub const ALL: [LineStyle; 7] = [
+        LineStyle::None,
+        LineStyle::SingleThin,
+        LineStyle::SingleThick,
+        LineStyle::DoubleThin,
+        LineStyle::SingleThinWord,
+        LineStyle::SingleThickWord,
+        LineStyle::DoubleThinWord,
+    ];
+
+    /// A line is drawn.
+    pub fn is_on(self) -> bool {
+        self != LineStyle::None
+    }
+
+    /// No line (serde and the lists).
+    pub fn is_none(&self) -> bool {
+        *self == LineStyle::None
+    }
+
+    /// The spaces between words are left out.
+    pub fn word_only(self) -> bool {
+        matches!(
+            self,
+            LineStyle::SingleThinWord | LineStyle::SingleThickWord | LineStyle::DoubleThinWord
+        )
+    }
+
+    /// Two thin lines, a thin line apart.
+    pub fn double(self) -> bool {
+        matches!(self, LineStyle::DoubleThin | LineStyle::DoubleThinWord)
+    }
+
+    /// The thickness of each line drawn, as a share of the font size: a
+    /// fourteenth for a thin line, a seventh for a thick one, nothing for
+    /// no line.
+    pub fn thickness_share(self) -> f64 {
+        match self {
+            LineStyle::None => 0.0,
+            LineStyle::SingleThick | LineStyle::SingleThickWord => 1.0 / 7.0,
+            _ => 1.0 / 14.0,
+        }
+    }
+
+    /// The style with the same line, drawn over the spaces too or only
+    /// under the words.
+    pub fn with_word_only(self, word_only: bool) -> LineStyle {
+        match (self, word_only) {
+            (LineStyle::SingleThin, true) => LineStyle::SingleThinWord,
+            (LineStyle::SingleThick, true) => LineStyle::SingleThickWord,
+            (LineStyle::DoubleThin, true) => LineStyle::DoubleThinWord,
+            (LineStyle::SingleThinWord, false) => LineStyle::SingleThin,
+            (LineStyle::SingleThickWord, false) => LineStyle::SingleThick,
+            (LineStyle::DoubleThinWord, false) => LineStyle::DoubleThin,
+            (s, _) => s,
+        }
+    }
+}
+
+/// The OpenType features a shaper applies without being asked, so a
+/// span that lists none of them still gets them: a span switches one off
+/// with a `-` before its tag ("-liga", see [`TextSpan::set_feature`]).
+pub const DEFAULT_ON_FEATURES: [&str; 10] = [
+    "liga", "clig", "calt", "kern", "rlig", "ccmp", "locl", "mark", "mkmk", "curs",
+];
+
+/// A feature entry of [`TextSpan::features`] as its tag and whether it
+/// is on: "liga", "+liga" and "liga=1" turn it on, "-liga" and "liga=0"
+/// off. `None` for an entry that is not a feature.
+pub fn parse_feature(entry: &str) -> Option<(&str, bool)> {
+    let entry = entry.trim();
+    let (body, on) = if let Some(rest) = entry.strip_prefix('-') {
+        (rest, false)
+    } else if let Some(rest) = entry.strip_prefix('+') {
+        (rest, true)
+    } else {
+        (entry, true)
+    };
+    let (tag, on) = match body.split_once('=') {
+        Some((tag, value)) => (tag.trim(), value.trim() != "0"),
+        None => (body, on),
+    };
+    (!tag.is_empty() && tag.len() <= 4).then_some((tag, on))
+}
+
+/// The underline button and older files: on is a single thin line.
+impl From<bool> for LineStyle {
+    fn from(on: bool) -> Self {
+        if on {
+            LineStyle::SingleThin
+        } else {
+            LineStyle::None
+        }
+    }
+}
+
+/// Serde for [`LineStyle`] fields: files written before the styles hold
+/// `true` or `false`, which read as a single thin line and no line, and
+/// those two are still written that way, so a file with only them stays
+/// as it was; the other styles are written by name.
+pub mod line_style_serde {
+    use super::LineStyle;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Repr {
+        Flag(bool),
+        Style(LineStyle),
+    }
+
+    pub fn serialize<S: Serializer>(v: &LineStyle, s: S) -> Result<S::Ok, S::Error> {
+        match v {
+            LineStyle::None => false.serialize(s),
+            LineStyle::SingleThin => true.serialize(s),
+            other => other.serialize(s),
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<LineStyle, D::Error> {
+        Ok(match Repr::deserialize(d)? {
+            Repr::Flag(on) => LineStyle::from(on),
+            Repr::Style(s) => s,
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TextSpan {
     pub text: String,
@@ -931,14 +1550,41 @@ pub struct TextSpan {
     /// positive = right; the characters after it keep their place.
     #[serde(default)]
     pub offset_x_pct: f64,
+    /// Character width (#2190): the letters' width as a percentage of
+    /// their own, 100 = as the font draws them; their advances follow,
+    /// their height stays with the size. Not in older files.
+    #[serde(default = "full_width", skip_serializing_if = "is_full_width")]
+    pub width_pct: f64,
     /// Character angle in degrees, counter-clockwise, about the
     /// character's origin on its (shifted) baseline.
     #[serde(default)]
     pub angle_deg: f64,
-    #[serde(default)]
-    pub underline: bool,
-    #[serde(default)]
-    pub strikethrough: bool,
+    /// The underline (#1209): drawn by the text layout from the face's
+    /// underline position down.
+    #[serde(default, with = "line_style_serde")]
+    pub underline: LineStyle,
+    /// The strike line (#1209), centred on the face's strikeout position.
+    #[serde(default, with = "line_style_serde")]
+    pub strikethrough: LineStyle,
+    /// Drawn as capitals (#1209): the shaper gets the Unicode uppercase
+    /// of each letter; the text keeps the case typed. A letter whose
+    /// capital is more than one letter stays as typed.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub all_caps: bool,
+    /// Enclosed characters (#1209): the font's `nalt` forms when the face
+    /// has them, else a circle drawn round each glyph (a stroke of a
+    /// fourteenth of the size, radius 0.6 of the size, centred on the
+    /// glyph's advance).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub enclosed: bool,
+    /// These characters' fill overprints what lies beneath (#1209);
+    /// `None` = as the object's `overprint_fill`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overprint_fill: Option<bool>,
+    /// These characters' outline overprints (#1209); `None` = as the
+    /// object's `overprint_outline`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overprint_outline: Option<bool>,
     /// Per-span fill override (character colour); `None` = object fill.
     #[serde(default)]
     pub fill: Option<Fill>,
@@ -956,9 +1602,15 @@ pub struct TextSpan {
     /// saved.
     #[serde(skip)]
     pub layout_only: bool,
-    /// OpenType features to enable, e.g. "liga", "smcp", "frac".
+    /// OpenType features set on these characters: a tag turns the
+    /// feature on ("smcp", "frac"), a tag after a `-` turns one the
+    /// shaper applies by default off ("-liga"); see
+    /// [`TextSpan::feature_on`] and [`TextSpan::set_feature`].
     #[serde(default)]
     pub features: Vec<String>,
+    /// Superscript or subscript (#1201).
+    #[serde(default, skip_serializing_if = "TextPosition::is_normal")]
+    pub position: TextPosition,
     /// Axis values of a variable font set for these characters (#870);
     /// an axis not listed takes the value the text's weight and slant
     /// give, else the font's default.
@@ -971,9 +1623,34 @@ pub struct TextSpan {
     pub paragraph: Option<Box<crate::paragraphs::ParagraphFormat>>,
 }
 
+/// Serde: the character width of a span written before it was kept.
+fn full_width() -> f64 {
+    100.0
+}
+
+/// Serde: leave the full character width out of the file.
+fn is_full_width(v: &f64) -> bool {
+    *v == 100.0
+}
+
 /// Serde: leave a zero out of the file.
 fn is_zero(v: &f64) -> bool {
     *v == 0.0
+}
+
+/// Serde: leave a flag that is off out of the file.
+fn is_false(v: &bool) -> bool {
+    !*v
+}
+
+/// One look of a text's characters (see [`Shape::text_parts`]): the fill,
+/// outline and overprints they are drawn with.
+#[derive(Clone, PartialEq)]
+struct TextLook {
+    fill: Fill,
+    stroke: Option<Stroke>,
+    overprint_fill: bool,
+    overprint_outline: bool,
 }
 
 impl TextSpan {
@@ -987,16 +1664,59 @@ impl TextSpan {
             tracking_pct: 0.0,
             baseline_shift_pt: 0.0,
             offset_x_pct: 0.0,
+            width_pct: 100.0,
             angle_deg: 0.0,
-            underline: false,
-            strikethrough: false,
+            underline: LineStyle::None,
+            strikethrough: LineStyle::None,
+            all_caps: false,
+            enclosed: false,
+            overprint_fill: None,
+            overprint_outline: None,
             fill: None,
             background: None,
             outline: None,
             layout_only: false,
             features: Vec::new(),
+            position: TextPosition::Normal,
             variations: Vec::new(),
             paragraph: None,
+        }
+    }
+
+    /// What these characters say about feature `tag`: `Some(true)` when
+    /// they turn it on, `Some(false)` when they turn it off, `None` when
+    /// they leave it to the shaper. The last entry for the tag wins.
+    pub fn feature_setting(&self, tag: &str) -> Option<bool> {
+        self.features
+            .iter()
+            .rev()
+            .filter_map(|f| parse_feature(f))
+            .find(|(t, _)| *t == tag)
+            .map(|(_, on)| on)
+    }
+
+    /// Feature `tag` is applied to these characters: as they say, else
+    /// when the shaper applies it by default ([`DEFAULT_ON_FEATURES`]).
+    /// Whether the font has the feature is another matter.
+    pub fn feature_on(&self, tag: &str) -> bool {
+        self.feature_setting(tag)
+            .unwrap_or_else(|| DEFAULT_ON_FEATURES.contains(&tag))
+    }
+
+    /// Set feature `tag` on (`Some(true)`), off (`Some(false)`) or leave
+    /// it to the shaper (`None`); the earlier entries for the tag go.
+    /// A setting that is what the shaper does anyway is not stored.
+    pub fn set_feature(&mut self, tag: &str, on: Option<bool>) {
+        self.features
+            .retain(|f| parse_feature(f).is_none_or(|(t, _)| t != tag));
+        match on {
+            Some(true) if !DEFAULT_ON_FEATURES.contains(&tag) => {
+                self.features.push(tag.to_string());
+            }
+            Some(false) if DEFAULT_ON_FEATURES.contains(&tag) => {
+                self.features.push(format!("-{tag}"));
+            }
+            _ => {}
         }
     }
 
@@ -1226,18 +1946,48 @@ pub struct ParagraphStyle {
     /// Space before and after each paragraph, mm.
     pub space_before: f64,
     pub space_after: f64,
+    /// The space before and after each paragraph in percent of the
+    /// character height (the font's line height), as the reference
+    /// program gives them with "% of Char. height": before 100 % is no
+    /// room beyond the line spacing, after 0 % none. Set, they take the
+    /// place of `space_before` and `space_after` and follow the text's
+    /// size (#2613). Not in older files.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub space_before_pct: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub space_after_pct: Option<f64>,
     pub first_line_indent: f64,
     pub left_indent: f64,
     pub right_indent: f64,
     pub columns: u32,
     pub gutter: f64,
+    /// Columns of different widths (Text > Columns, Equal column width
+    /// off, #2192): each column's width, then each gap after a column but
+    /// the last, in mm as typed. They share the frame's width in these
+    /// proportions, so a frame resized keeps them. Empty, or not one
+    /// width a column, = equal columns `gutter` apart.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub column_widths: Vec<f64>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub column_gutters: Vec<f64>,
+    /// The text flows from the right-hand column to the left (horizontal
+    /// text; vertical text has [`Self::vertical_columns`]). Not in older
+    /// files.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub columns_right_to_left: bool,
     pub bullets: bool,
     pub bullet_char: String,
     pub bullet_indent: f64,
+    /// Numbers in place of the symbol, the bullet's font, size and
+    /// baseline shift, its distance from the frame and the hanging indent
+    /// (Text > Bullets, #1443). Not in older files.
+    #[serde(skip_serializing_if = "BulletStyle::is_plain")]
+    pub bullet: BulletStyle,
     /// Drop cap height in lines; 0 = none.
     pub drop_cap_lines: u32,
-    /// Tab stops in mm from the left edge; empty = default every 12.7 mm.
-    pub tabs: Vec<f64>,
+    /// Tab stops, in order from the frame's left edge; empty = a left
+    /// stop every [`default_tab_step`] mm (12.7 unless set otherwise).
+    pub tabs: Vec<TabStop>,
     pub hyphenate: bool,
     /// Fit text to frame: scale the font so the text fills the frame height.
     pub fit_to_frame: bool,
@@ -1256,6 +2006,20 @@ pub struct ParagraphStyle {
     /// a path ignores it. See docs/behavior/text.md, Vertical text.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub vertical: bool,
+    /// The order of vertical text's columns across the frame: right to
+    /// left (the default, from the top right) or left to right (from the
+    /// top left, #1986). Files from before it read as right to left.
+    #[serde(skip_serializing_if = "VerticalColumns::is_right_to_left")]
+    pub vertical_columns: VerticalColumns,
+    /// The direction the paragraph's text runs in (the Text docker's
+    /// Paragraph section): left to right, or right to left for Arabic,
+    /// Hebrew and the other right-to-left scripts. Right to left starts
+    /// each line at the right (letters and numbers keep their own order
+    /// inside a word), puts the neutral characters such as the full stop
+    /// on the right-to-left side, and swaps the left and right indents,
+    /// the first line's indent going to the right. Not in older files.
+    #[serde(default, skip_serializing_if = "TextDirection::is_left_to_right")]
+    pub direction: TextDirection,
     /// The paragraph frame's background; `None` = transparent.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub frame_fill: Option<Fill>,
@@ -1264,6 +2028,140 @@ pub struct ParagraphStyle {
     /// [`crate::text_flow`]); not saved.
     #[serde(skip)]
     pub flow: crate::text_flow::FrameFlow,
+}
+
+/// The distance between the default tab stops of a paragraph with no
+/// stops of its own, mm, unless Options > Text > Paragraph Text sets
+/// another ([`set_default_tab_step`]): half an inch, as the other
+/// program and `.cdr` files without stops have it.
+pub const DEFAULT_TAB_STEP: f64 = 12.7;
+
+/// The default tab spacing in use, as `f64` bits; 0 = [`DEFAULT_TAB_STEP`].
+static TAB_STEP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The distance between the default tab stops in use, mm (the setting
+/// "Default tab spacing", [`DEFAULT_TAB_STEP`] until it is set).
+pub fn default_tab_step() -> f64 {
+    let bits = TAB_STEP.load(std::sync::atomic::Ordering::Relaxed);
+    if bits == 0 {
+        DEFAULT_TAB_STEP
+    } else {
+        f64::from_bits(bits)
+    }
+}
+
+/// Use `mm` between the default tab stops from now on, kept within 1 to
+/// 100 mm; a value that is not a number restores [`DEFAULT_TAB_STEP`].
+/// Text laid out before keeps its layout until it is laid out again
+/// (the text engine's caches count the step in their keys).
+pub fn set_default_tab_step(mm: f64) {
+    let v = if mm.is_finite() {
+        mm.clamp(1.0, 100.0)
+    } else {
+        DEFAULT_TAB_STEP
+    };
+    TAB_STEP.store(v.to_bits(), std::sync::atomic::Ordering::Relaxed);
+}
+
+/// How the text after a tab sits against its stop (Text > Tabs and the
+/// tab ruler).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TabKind {
+    /// The text starts at the stop.
+    #[default]
+    Left,
+    /// The text is centred on the stop.
+    Center,
+    /// The text ends at the stop.
+    Right,
+    /// The text's decimal separator (its first `.` or `,`) sits on the
+    /// stop; text without one ends at the stop.
+    Decimal,
+}
+
+impl TabKind {
+    pub const ALL: [TabKind; 4] = [
+        TabKind::Left,
+        TabKind::Center,
+        TabKind::Right,
+        TabKind::Decimal,
+    ];
+}
+
+/// One tab stop of a paragraph.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct TabStop {
+    /// Distance from the frame's left edge, mm.
+    pub pos: f64,
+    pub kind: TabKind,
+    /// The character repeated over the gap the tab leaves (a dot leader
+    /// in a menu or a table of contents); `None` = blank.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub leader: Option<char>,
+}
+
+impl TabStop {
+    /// A left stop at `pos` mm with no leader.
+    pub fn left(pos: f64) -> Self {
+        TabStop {
+            pos,
+            kind: TabKind::Left,
+            leader: None,
+        }
+    }
+
+    pub fn new(pos: f64, kind: TabKind) -> Self {
+        TabStop {
+            pos,
+            kind,
+            leader: None,
+        }
+    }
+}
+
+/// Files from before tab kinds hold each stop as a bare number (a left
+/// stop at that many mm).
+impl<'de> Deserialize<'de> for TabStop {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct Full {
+            #[serde(default)]
+            pos: f64,
+            #[serde(default)]
+            kind: TabKind,
+            #[serde(default)]
+            leader: Option<char>,
+        }
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Either {
+            Pos(f64),
+            Full(Full),
+        }
+        Ok(match Either::deserialize(d)? {
+            Either::Pos(pos) => TabStop::left(pos),
+            Either::Full(f) => TabStop {
+                pos: f.pos,
+                kind: f.kind,
+                leader: f.leader,
+            },
+        })
+    }
+}
+
+/// The stops of `tabs` in order of position, with stops closer than
+/// 0.01 mm to one before them dropped and positions that are not finite
+/// left out (what an edit hands the paragraph).
+pub fn normalized_tabs(tabs: &[TabStop]) -> Vec<TabStop> {
+    let mut out: Vec<TabStop> = tabs
+        .iter()
+        .copied()
+        .filter(|t| t.pos.is_finite() && t.pos >= 0.0)
+        .collect();
+    out.sort_by(|a, b| a.pos.total_cmp(&b.pos));
+    out.dedup_by(|b, a| (b.pos - a.pos).abs() < 0.01);
+    out
 }
 
 /// The unit of a paragraph's line spacing (the Text docker's list next to
@@ -1299,6 +2197,68 @@ impl ParagraphStyle {
             LeadingUnit::PercentPointSize => size_mm * self.leading_pct / 100.0,
         }
     }
+
+    /// The room before a paragraph beyond the line spacing, mm, for a
+    /// first line whose font has `line_height_mm` (see `line_step`).
+    pub fn space_before_mm(&self, line_height_mm: f64) -> f64 {
+        space_mm(
+            self.space_before,
+            self.space_before_pct,
+            100.0,
+            line_height_mm,
+        )
+    }
+
+    /// The room after a paragraph, mm (see `space_before_mm`).
+    pub fn space_after_mm(&self, line_height_mm: f64) -> f64 {
+        space_mm(self.space_after, self.space_after_pct, 0.0, line_height_mm)
+    }
+}
+
+/// A paragraph's space in mm: `mm`, or, given in percent of the
+/// character height (`pct`, `none` percent meaning no room), that share
+/// of `line_height_mm` (#2613).
+pub fn space_mm(mm: f64, pct: Option<f64>, none: f64, line_height_mm: f64) -> f64 {
+    match pct.filter(|p| p.is_finite()) {
+        Some(p) => ((p - none) / 100.0 * line_height_mm).max(0.0),
+        None => mm,
+    }
+}
+
+/// Which way the columns of vertical text follow one another across the
+/// frame (Text > Vertical Text, the Text docker's Frame section): right to
+/// left, as CJK typesetting has them, or left to right (#1986).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VerticalColumns {
+    #[default]
+    RightToLeft,
+    LeftToRight,
+}
+
+impl VerticalColumns {
+    pub fn is_right_to_left(&self) -> bool {
+        *self == VerticalColumns::RightToLeft
+    }
+}
+
+/// Which way a paragraph's text runs (see [`ParagraphStyle::direction`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TextDirection {
+    #[default]
+    LeftToRight,
+    RightToLeft,
+}
+
+impl TextDirection {
+    pub fn is_left_to_right(&self) -> bool {
+        *self == TextDirection::LeftToRight
+    }
+
+    pub fn is_right_to_left(&self) -> bool {
+        *self == TextDirection::RightToLeft
+    }
 }
 
 /// Where paragraph text sits in its frame (the Text docker's Frame
@@ -1322,14 +2282,20 @@ impl Default for ParagraphStyle {
             word_spacing_pct: 100.0,
             space_before: 0.0,
             space_after: 0.0,
+            space_before_pct: None,
+            space_after_pct: None,
             first_line_indent: 0.0,
             left_indent: 0.0,
             right_indent: 0.0,
             columns: 1,
             gutter: 5.0,
+            column_widths: Vec::new(),
+            column_gutters: Vec::new(),
+            columns_right_to_left: false,
             bullets: false,
             bullet_char: "\u{2022}".into(),
             bullet_indent: 5.0,
+            bullet: BulletStyle::default(),
             drop_cap_lines: 0,
             tabs: Vec::new(),
             hyphenate: false,
@@ -1337,10 +2303,238 @@ impl Default for ParagraphStyle {
             baseline_grid_mm: 0.0,
             vertical_align: VerticalAlign::Top,
             vertical: false,
+            vertical_columns: VerticalColumns::RightToLeft,
+            direction: TextDirection::LeftToRight,
             frame_fill: None,
             flow: crate::text_flow::FrameFlow::default(),
         }
     }
+}
+
+impl ParagraphStyle {
+    /// Vertical text whose columns go left to right: its lines are
+    /// placed mirrored across the frame (see [`text_layout_shift`]).
+    pub fn columns_left_to_right(&self) -> bool {
+        self.vertical && self.vertical_columns == VerticalColumns::LeftToRight
+    }
+
+    /// Vertical text whose columns start at the frame's right edge.
+    pub fn columns_from_right(&self) -> bool {
+        self.vertical && self.vertical_columns == VerticalColumns::RightToLeft
+    }
+
+    /// Whether the columns have widths of their own (#2192).
+    pub fn uneven_columns(&self) -> bool {
+        let n = self.columns.max(1) as usize;
+        n > 1 && self.column_widths.len() == n
+    }
+
+    /// Each column of a frame `width` wide: (left edge from the frame's
+    /// left, width), in the order the text flows. Equal columns `gutter`
+    /// apart, or the widths and gaps of uneven columns, scaled to share
+    /// the frame's width. Right to left, the first column is at the
+    /// right (#2192).
+    pub fn column_boxes(&self, width: f64) -> Vec<(f64, f64)> {
+        let n = self.columns.max(1) as usize;
+        let mut boxes = Vec::with_capacity(n);
+        if self.uneven_columns() {
+            let w: Vec<f64> = self.column_widths.iter().map(|v| v.max(0.0)).collect();
+            let g: Vec<f64> = (0..n - 1)
+                .map(|i| {
+                    self.column_gutters
+                        .get(i)
+                        .copied()
+                        .unwrap_or(self.gutter)
+                        .max(0.0)
+                })
+                .collect();
+            let total: f64 = w.iter().sum::<f64>() + g.iter().sum::<f64>();
+            let k = if total > 1e-9 { width / total } else { 0.0 };
+            let mut x = 0.0;
+            for (i, wi) in w.iter().enumerate() {
+                boxes.push((x, (wi * k).max(1.0)));
+                x += wi * k + g.get(i).copied().unwrap_or(0.0) * k;
+            }
+        } else {
+            let gutter = self.gutter;
+            let cw = ((width - gutter * (n as f64 - 1.0)) / n as f64).max(1.0);
+            for i in 0..n {
+                boxes.push((i as f64 * (cw + gutter), cw));
+            }
+        }
+        if self.columns_right_to_left && !self.vertical {
+            for b in &mut boxes {
+                b.0 = width - b.0 - b.1;
+            }
+        }
+        boxes
+    }
+}
+
+/// How a paragraph's bullet is numbered (Text > Bullets, #1443).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum Numbering {
+    /// The bullet symbol ([`ParagraphStyle::bullet_char`]).
+    #[default]
+    Symbol,
+    /// 1, 2, 3
+    Arabic,
+    /// a, b, c
+    LowerAlpha,
+    /// A, B, C
+    UpperAlpha,
+    /// i, ii, iii
+    LowerRoman,
+    /// I, II, III
+    UpperRoman,
+}
+
+impl Numbering {
+    pub const ALL: [Numbering; 6] = [
+        Numbering::Symbol,
+        Numbering::Arabic,
+        Numbering::LowerAlpha,
+        Numbering::UpperAlpha,
+        Numbering::LowerRoman,
+        Numbering::UpperRoman,
+    ];
+
+    /// The number `n` (from 1) written this way; empty for the symbol.
+    pub fn format(self, n: u32) -> String {
+        let n = n.max(1);
+        let alpha = |upper: bool| {
+            // a..z, then aa, ab ... as spreadsheets count.
+            let mut v = n;
+            let mut out = Vec::new();
+            while v > 0 {
+                v -= 1;
+                let c = b'a' + (v % 26) as u8;
+                out.push(if upper { c.to_ascii_uppercase() } else { c } as char);
+                v /= 26;
+            }
+            out.iter().rev().collect::<String>()
+        };
+        let roman = |upper: bool| {
+            const R: [(u32, &str); 13] = [
+                (1000, "m"),
+                (900, "cm"),
+                (500, "d"),
+                (400, "cd"),
+                (100, "c"),
+                (90, "xc"),
+                (50, "l"),
+                (40, "xl"),
+                (10, "x"),
+                (9, "ix"),
+                (5, "v"),
+                (4, "iv"),
+                (1, "i"),
+            ];
+            let mut v = n.min(3999);
+            let mut out = String::new();
+            for (k, s) in R {
+                while v >= k {
+                    out.push_str(s);
+                    v -= k;
+                }
+            }
+            if upper {
+                out.to_uppercase()
+            } else {
+                out
+            }
+        };
+        match self {
+            Numbering::Symbol => String::new(),
+            Numbering::Arabic => n.to_string(),
+            Numbering::LowerAlpha => alpha(false),
+            Numbering::UpperAlpha => alpha(true),
+            Numbering::LowerRoman => roman(false),
+            Numbering::UpperRoman => roman(true),
+        }
+    }
+}
+
+/// A paragraph's bullet beyond its symbol and indent (Text > Bullets,
+/// #1443): numbers in its place, its own font, size and baseline shift,
+/// how far it sits from the frame and whether the lines after the first
+/// hang under the text or go back under the bullet.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BulletStyle {
+    pub numbering: Numbering,
+    /// Written before and after the number ("(" and ")", or "" and ".").
+    pub prefix: String,
+    pub suffix: String,
+    /// The first paragraph's number; the next numbered paragraphs count
+    /// on from it until a paragraph without bullets.
+    pub start: u32,
+    /// The bullet's font family; `None` = the paragraph's first letter's.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub font: Option<String>,
+    /// The bullet's size in percent of the first letter's.
+    pub size_pct: f64,
+    /// How far the bullet is raised (negative: lowered), mm.
+    pub baseline_shift: f64,
+    /// The bullet's distance from the frame's edge (past the left
+    /// indent), mm; the text starts `bullet_indent` past the bullet.
+    pub offset: f64,
+    /// Off (the default): the lines after the first hang under the text,
+    /// the bullet standing out on its own. On: they go back to the left
+    /// indent, under the bullet.
+    pub no_hanging: bool,
+}
+
+impl Default for BulletStyle {
+    fn default() -> Self {
+        BulletStyle {
+            numbering: Numbering::Symbol,
+            prefix: String::new(),
+            suffix: ".".into(),
+            start: 1,
+            font: None,
+            size_pct: 100.0,
+            baseline_shift: 0.0,
+            offset: 0.0,
+            no_hanging: false,
+        }
+    }
+}
+
+impl BulletStyle {
+    /// Nothing beyond the plain symbol bullet: not written to files.
+    pub fn is_plain(&self) -> bool {
+        *self == BulletStyle::default()
+    }
+
+    /// What the bullet of a paragraph numbered `n` shows: `symbol` or
+    /// the number with its prefix and suffix.
+    pub fn label(&self, symbol: &str, n: u32) -> String {
+        match self.numbering {
+            Numbering::Symbol => symbol.to_string(),
+            k => format!("{}{}{}", self.prefix, k.format(n), self.suffix),
+        }
+    }
+}
+
+/// The number of each paragraph's bullet, given whether each has bullets
+/// and how it is set: the first of a run of numbered paragraphs takes its
+/// start, the next ones count on; a paragraph without bullets, or with a
+/// symbol, ends the run (#1443).
+pub fn bullet_numbers<'a>(paras: impl IntoIterator<Item = (bool, &'a BulletStyle)>) -> Vec<u32> {
+    let mut out = Vec::new();
+    let mut next: Option<u32> = None;
+    for (on, b) in paras {
+        if !on || b.numbering == Numbering::Symbol {
+            next = None;
+            out.push(0);
+            continue;
+        }
+        let n = next.unwrap_or(b.start.max(1));
+        out.push(n);
+        next = Some(n + 1);
+    }
+    out
 }
 
 /// Table object (Table tool). Cell text is laid out as paragraph text
@@ -1598,6 +2792,9 @@ impl Baseline {
     /// Longest corner extension when moving a polyline sideways, as a
     /// multiple of the distance.
     const MITER_LIMIT: f64 = 4.0;
+    /// The most two chords may turn, degrees, for the direction to turn
+    /// smoothly between them; more is a corner.
+    const SMOOTH_TURN: f64 = 20.0;
 
     /// The first subpath of `path` as a polyline, reversed when asked,
     /// then moved `distance` to its left (corners mitred).
@@ -1762,7 +2959,53 @@ impl Baseline {
             return None;
         }
         let t = ((s - start) / len).clamp(0.0, 1.0);
-        Some((a + v * t, v / len))
+        let dir = v / len;
+        // Along a curve the direction turns smoothly: from the mean of
+        // this chord's and the one before's at its start to the mean
+        // with the one after at its end, so letters on a flattened curve
+        // turn with it instead of in steps of a chord's angle (#2715:
+        // round a circle letters stood visibly tilted). At a corner (the
+        // chords turn more than `SMOOTH_TURN`) the chord's own direction
+        // holds.
+        let segs = self.points.len() - 1;
+        let chord = |k: usize| -> Option<Vec2> {
+            let (p, q) = (*self.points.get(k)?, *self.points.get(k + 1)?);
+            let w = q - p;
+            let l = w.hypot();
+            (l > 0.0).then(|| w / l)
+        };
+        let before = match i {
+            0 if self.closed => chord(segs - 1),
+            0 => None,
+            _ => chord(i - 1),
+        };
+        let after = if i + 1 < segs {
+            chord(i + 1)
+        } else if self.closed {
+            chord(0)
+        } else {
+            None
+        };
+        let cos_limit = Self::SMOOTH_TURN.to_radians().cos();
+        let joint = |other: Option<Vec2>| -> Vec2 {
+            match other {
+                Some(o) if o.dot(dir) >= cos_limit => {
+                    let m = o + dir;
+                    let l = m.hypot();
+                    if l > 1e-12 {
+                        m / l
+                    } else {
+                        dir
+                    }
+                }
+                _ => dir,
+            }
+        };
+        let (d0, d1) = (joint(before), joint(after));
+        let d = d0 * (1.0 - t) + d1 * t;
+        let l = d.hypot();
+        let d = if l > 1e-12 { d / l } else { dir };
+        Some((a + v * t, d))
     }
 
     /// The shortest distance from `p` to the baseline.
@@ -1849,6 +3092,12 @@ pub struct Shape {
     /// drops them and leaves an ordinary curve.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spline: Option<Vec<Point>>,
+    /// Which of the B-spline's control points are fixed: the curve passes
+    /// through a fixed point (with a corner there), and only comes near
+    /// a floating one. Empty (every point floating), or one flag a point
+    /// of [`Shape::spline`] (#1758).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub spline_fixed: Vec<bool>,
     /// The object's identity across saves, undo and moves between
     /// drawings (see [`Uid`]); the engine gives one to every object.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1863,6 +3112,18 @@ pub struct Shape {
     /// holds in the stack; they are kept but not drawn.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub parked_effects: Vec<ParkedEffect>,
+    /// A bitmap whose colour mode is CMYK (a print picture: read from a
+    /// `.cdr` CMYK image, or converted by Convert Colors or Bitmaps >
+    /// Mode, #1254). Its pixels stay RGB for the screen; the mode is what
+    /// Convert Colors switches and the status line shows. Other kinds of
+    /// object never set it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub cmyk_bitmap: bool,
+    /// A bitmap's ink channels as it prints (a `.cdr` CMYK image's C,
+    /// M, Y and K bytes), which colour separations print from while they
+    /// fit the pixels (#1659, [`crate::picture_inks`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub picture_inks: Option<Box<crate::picture_inks::PictureInks>>,
     /// Further fills, painted over `fill` in order (see [`Shape::layers`]).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extra_fills: Vec<Fill>,
@@ -1879,6 +3140,28 @@ pub struct Shape {
     /// again from it whenever it changes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub qr: Option<Box<QrCode>>,
+    /// How the fill covers the places where the outline's contours
+    /// overlap (#1211, #1919): even-odd (the default: an overlap of two
+    /// contours is a hole, as in a combined ring) or nonzero (an overlap
+    /// of contours turning the same way stays filled, as in traced
+    /// lettering made of overlapping parts). Text always fills nonzero.
+    #[serde(default, skip_serializing_if = "crate::shaping::FillRule::is_even_odd")]
+    pub fill_rule: crate::shaping::FillRule,
+    /// Linked text content (#1568): the texts carrying the same key keep
+    /// the same characters, each in its own font, colours and effects
+    /// (see [`crate::linked_text`]). Not the flow of linked paragraph
+    /// frames, which is another feature.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_link: Option<u64>,
+    /// A heading of the table of contents (#1660): the text is listed
+    /// in the drawing's tables of contents at this level, 1 to 3.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub toc_level: Option<u8>,
+    /// A table of contents (#1660): the text lists the headings of the
+    /// drawing with their page numbers, worked out anew whenever it is
+    /// drawn, printed or exported (see [`crate::toc`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub toc: Option<crate::toc::TocField>,
 }
 
 /// What a QR code holds: the kind of content, which decides the fields
@@ -1965,7 +3248,7 @@ impl Default for QrCode {
     fn default() -> Self {
         QrCode {
             kind: QrKind::Url,
-            fields: vec!["https://github.com/igtoth/tracedraw".into()],
+            fields: vec!["https://github.com/tracedraw/tracedraw".into()],
             pixel_mm: 2.5,
             dark: Fill::Solid(crate::Color::BLACK),
             light: Fill::Solid(crate::Color::WHITE),
@@ -2168,13 +3451,20 @@ impl Shape {
             style: None,
             node_types: std::collections::BTreeMap::new(),
             spline: None,
+            spline_fixed: Vec::new(),
             uid: None,
             opacity_mask: None,
             parked_effects: Vec::new(),
+            cmyk_bitmap: false,
+            picture_inks: None,
             extra_fills: Vec::new(),
             extra_strokes: Vec::new(),
             raster_fx: None,
             qr: None,
+            fill_rule: crate::shaping::FillRule::EvenOdd,
+            content_link: None,
+            toc_level: None,
+            toc: None,
         }
     }
 
@@ -2231,35 +3521,45 @@ impl Shape {
         Some(s)
     }
 
-    /// A text whose characters have their own fill or outline, as the
-    /// texts it is drawn in: one per look (fill and outline), in the order
-    /// the looks first appear, each laid out as the whole text with the
-    /// other characters left undrawn (`TextSpan::layout_only`). The
-    /// character backgrounds and the frame background are left out of the
-    /// parts (they are drawn once under the text) and only the first part
-    /// keeps the shadow. `None` for other shapes and for text whose
-    /// characters all take the object's fill and outline.
+    /// A text whose characters have their own fill, outline or overprint,
+    /// as the texts it is drawn in: one per look (fill, outline and the
+    /// two overprints), in the order the looks first appear, each laid
+    /// out as the whole text with the other characters left undrawn
+    /// (`TextSpan::layout_only`). The character backgrounds and the frame
+    /// background are left out of the parts (they are drawn once under
+    /// the text) and only the first part keeps the shadow. `None` for
+    /// other shapes and for text whose characters all take the object's
+    /// fill, outline and overprint.
     pub fn text_parts(&self) -> Option<Vec<Shape>> {
         let ShapeKind::Text { spans, .. } = &self.kind else {
             return None;
         };
         if spans.iter().any(|s| s.layout_only)
-            || spans
-                .iter()
-                .all(|s| s.fill.is_none() && s.outline.is_none())
+            || spans.iter().all(|s| {
+                s.fill.is_none()
+                    && s.outline.is_none()
+                    && s.overprint_fill.is_none_or(|o| o == self.overprint_fill)
+                    && s.overprint_outline
+                        .is_none_or(|o| o == self.overprint_outline)
+            })
         {
             return None;
         }
-        let look = |s: &TextSpan| -> (Fill, Option<Stroke>) {
+        let look = |s: &TextSpan| -> TextLook {
             let fill = s.fill.clone().unwrap_or_else(|| self.fill.clone());
             let stroke = match &s.outline {
                 Some(o) if o.width > 0.0 => Some(o.clone()),
                 Some(_) => None,
                 None => self.stroke.clone(),
             };
-            (fill, stroke)
+            TextLook {
+                fill,
+                stroke,
+                overprint_fill: s.overprint_fill.unwrap_or(self.overprint_fill),
+                overprint_outline: s.overprint_outline.unwrap_or(self.overprint_outline),
+            }
         };
-        let mut looks: Vec<(Fill, Option<Stroke>)> = Vec::new();
+        let mut looks: Vec<TextLook> = Vec::new();
         for s in spans.iter().filter(|s| s.char_count() > 0) {
             let l = look(s);
             if !looks.contains(&l) {
@@ -2269,19 +3569,23 @@ impl Shape {
         let parts = looks
             .into_iter()
             .enumerate()
-            .map(|(i, (fill, stroke))| {
+            .map(|(i, l)| {
                 let mut part = self.clone();
                 if let ShapeKind::Text { spans, para, .. } = &mut part.kind {
                     for s in spans.iter_mut() {
-                        s.layout_only = look(s) != (fill.clone(), stroke.clone());
+                        s.layout_only = look(s) != l;
                         s.background = None;
                         s.fill = None;
                         s.outline = None;
+                        s.overprint_fill = None;
+                        s.overprint_outline = None;
                     }
                     para.frame_fill = None;
                 }
-                part.fill = fill;
-                part.stroke = stroke;
+                part.fill = l.fill;
+                part.stroke = l.stroke;
+                part.overprint_fill = l.overprint_fill;
+                part.overprint_outline = l.overprint_outline;
                 if i > 0 {
                     part.shadow = None;
                 }
@@ -2471,29 +3775,169 @@ impl Shape {
         );
     }
 
+    /// A rectangle's corners as they are drawn, measured on the page:
+    /// `page_corners` with every corner shrunk by the factor that fits
+    /// the two corners on each side into it (`Corners::fit_factor`), the
+    /// sizes the property bar shows. `None` for other kinds.
+    pub fn drawn_page_corners(&self) -> Option<Corners> {
+        let (rect, c) = self.kind.rect_corners()?;
+        let k = c.fit_factor(rect, axis_scale(self.transform));
+        let page = self.page_corners()?.sanitized();
+        Some(Corners {
+            radii: page.radii.map(|r| r * k),
+            ..page
+        })
+    }
+
     /// This rectangle with corners measured on the page (as
-    /// `page_corners` gives them), each at most half the shorter side.
-    /// `None` for other kinds.
+    /// `page_corners` gives them). A corner is not cut to half the
+    /// shorter side: the sizes are kept as given, and the drawing shrinks
+    /// every corner by the same factor only when the two on a side
+    /// together are longer than it (`Corners::fit_factor`, #1757).
+    /// Negative and non-finite sizes become square corners. `None` for
+    /// other kinds.
     pub fn with_page_corners(&self, page: Corners) -> Option<ShapeKind> {
         let (rect, _) = self.kind.rect_corners()?;
         let rect = rect.abs();
-        let (sx, sy) = axis_scale(self.transform);
-        let limit = (rect.width() * sx).min(rect.height() * sy) / 2.0;
-        let mut c = page;
-        let fit = |r: f64, limit: f64| {
-            if r.is_finite() {
-                r.clamp(0.0, limit.max(0.0))
-            } else {
-                0.0
+        let mut c = page.sanitized();
+        if !c.fixed {
+            let (sx, sy) = axis_scale(self.transform);
+            let k = sx.min(sy).max(1e-9);
+            c.radii = c.radii.map(|r| r / k);
+        }
+        Some(ShapeKind::rect_with_corners(rect, c.sanitized()))
+    }
+
+    /// Lay a parent's uniform transparency over the shape's own, as when a
+    /// group is ungrouped or flattened for a file: `parent` is the group's
+    /// opacity, 1 being opaque.
+    pub fn absorb_opacity(&mut self, parent: f64) {
+        self.opacity = (self.opacity * parent).clamp(0.0, 1.0);
+    }
+
+    /// A clip frame whose frame is a group: Ungroup takes it apart into
+    /// the group's objects, each a clip frame holding the contents (#1605).
+    pub fn is_clip_frame_of_group(&self) -> bool {
+        matches!(&self.kind, ShapeKind::ClipFrame { frame, .. }
+            if matches!(frame.kind, ShapeKind::Group { .. }))
+    }
+
+    /// Whether Break Apart has parts to give: a curve of several
+    /// subpaths, a brush stroke (its band and its path, see
+    /// [`Self::is_brush_stroke`]), or a clip frame whose frame is a curve
+    /// of several subpaths (each part then a clip frame holding the
+    /// contents, #1607).
+    pub fn breaks_into_parts(&self) -> bool {
+        if self.is_brush_stroke() {
+            return true;
+        }
+        let path = match &self.kind {
+            ShapeKind::Path { path, .. } => path,
+            ShapeKind::ClipFrame { frame, .. } => match &frame.kind {
+                ShapeKind::Path { path, .. } => path,
+                _ => return false,
+            },
+            _ => return false,
+        };
+        path.elements()
+            .iter()
+            .filter(|e| matches!(e, geometry::PathEl::MoveTo(_)))
+            .count()
+            > 1
+    }
+
+    /// A curve drawn with a brush: its outline is a band of its own
+    /// shape along it (a brush stroke, a variable or calligraphic
+    /// outline). Break Apart sets the band apart from the path.
+    pub fn is_brush_stroke(&self) -> bool {
+        matches!(self.kind, ShapeKind::Path { .. })
+            && self.stroke.as_ref().is_some_and(|s| s.is_brush())
+    }
+
+    /// The band a brush stroke draws (see [`Self::is_brush_stroke`]), in
+    /// page space as its object stands in its layer, fitted to curves:
+    /// one path per separate part, each an outer contour with its holes.
+    /// `None` for any other object, or a band that comes out empty.
+    pub fn brush_band_parts(&self) -> Option<Vec<BezPath>> {
+        if !self.is_brush_stroke() {
+            return None;
+        }
+        let st = self.stroke.as_ref()?;
+        let page = self.page_path();
+        let scale = if st.scale_with_object {
+            let c = self.transform.as_coeffs();
+            ((c[0] * c[3] - c[1] * c[2]).abs()).sqrt().max(1e-6)
+        } else {
+            1.0
+        };
+        // A variable width from a finer flattening, as it is fitted to
+        // curves (as Convert Outline to Object does, #627).
+        let band = if st.widths.is_empty() {
+            crate::shaping::outline_band(&page, st, scale)?
+        } else {
+            let nodes: Vec<crate::style::WidthNode> = st
+                .widths
+                .iter()
+                .map(|n| crate::style::WidthNode {
+                    at: n.at,
+                    left: n.left * scale,
+                    right: n.right * scale,
+                })
+                .collect();
+            crate::shaping::variable_band_within(&page, st.width * scale, &nodes, 0.005, st.cap)
+        };
+        let band = crate::fit::fit_path(&band, 0.01);
+        // The contours come outer first, then its holes, which wind the
+        // other way.
+        let mut parts: Vec<BezPath> = Vec::new();
+        let mut outer_sign = 0.0;
+        let mut contour = BezPath::new();
+        let mut flush = |contour: &mut BezPath, parts: &mut Vec<BezPath>| {
+            let c = std::mem::take(contour);
+            let area = c.area();
+            if c.elements().is_empty() || !area.is_finite() || area.abs() <= 1e-12 {
+                return;
+            }
+            if outer_sign == 0.0 {
+                outer_sign = area.signum();
+            }
+            match parts.last_mut() {
+                Some(part) if area.signum() != outer_sign => part.extend(c),
+                _ => parts.push(c),
             }
         };
-        c.radii = c.radii.map(|r| fit(r, limit));
-        if !c.fixed {
-            let k = sx.min(sy).max(1e-9);
-            let local_limit = rect.width().min(rect.height()) / 2.0;
-            c.radii = c.radii.map(|r| fit(r / k, local_limit));
+        for el in band.elements() {
+            if matches!(el, geometry::PathEl::MoveTo(_)) {
+                flush(&mut contour, &mut parts);
+            }
+            contour.push(*el);
         }
-        Some(ShapeKind::rect_with_corners(rect, c))
+        flush(&mut contour, &mut parts);
+        (!parts.is_empty()).then_some(parts)
+    }
+
+    /// A copy with ids from `next` for the object and everything inside
+    /// it (a group's objects, a clip frame's frame and contents), and no
+    /// uid, so the copy gets one of its own.
+    pub fn with_fresh_ids(&self, next: &mut dyn FnMut() -> ShapeId) -> Shape {
+        let mut c = self.clone();
+        c.id = next();
+        c.uid = None;
+        match &mut c.kind {
+            ShapeKind::Group { children } => {
+                let copies: Vec<Shape> =
+                    children.iter().map(|ch| ch.with_fresh_ids(next)).collect();
+                *children = copies;
+            }
+            ShapeKind::ClipFrame { frame, contents } => {
+                **frame = frame.with_fresh_ids(next);
+                let copies: Vec<Shape> =
+                    contents.iter().map(|ch| ch.with_fresh_ids(next)).collect();
+                *contents = copies;
+            }
+            _ => {}
+        }
+        c
     }
 
     /// Put `parent` in front of the shape's own transform (ungrouping,
@@ -2550,8 +3994,9 @@ impl Shape {
     }
 
     /// A rectangle that one round radius describes (what formats with a
-    /// single radius store): the rectangle, the radius in its space and the
-    /// transform that places it, usually the shape's own. A stretched
+    /// single radius store): the rectangle, the radius drawn in its space
+    /// (at most half the shorter side) and the transform that places it,
+    /// usually the shape's own. A stretched
     /// rectangle whose corners keep their size has the stretch moved into
     /// the rectangle's size, so that its corners stay circles of their page
     /// radius; not when the stretch also widens a scaling outline or the
@@ -2567,9 +4012,24 @@ impl Shape {
             return None;
         };
         let t = self.transform;
-        let Some(c) = corners else {
-            return Some((*rect, *radius, t));
+        // The radius drawn: equal corners stop at half the shorter side,
+        // and files get that size rather than one they might draw
+        // differently.
+        let half = rect.width().abs().min(rect.height().abs()) / 2.0;
+        let local = |r: f64| {
+            if r.is_finite() {
+                r.clamp(0.0, half)
+            } else {
+                0.0
+            }
         };
+        let Some(c) = corners else {
+            return Some((*rect, local(*radius), t));
+        };
+        // Bowed edges (#2188) go out as the curve they draw.
+        if c.has_bulge() {
+            return None;
+        }
         if c.is_square() {
             return Some((*rect, 0.0, t));
         }
@@ -2577,7 +4037,7 @@ impl Shape {
             return None;
         }
         if !c.fixed {
-            return Some((*rect, c.radii[0], t));
+            return Some((*rect, local(c.radii[0]), t));
         }
         let (sx, sy) = axis_scale(t);
         if sx < 1e-9 || sy < 1e-9 {
@@ -2651,7 +4111,8 @@ impl Shape {
                     }
                     // Paragraph text hangs from the top of its frame;
                     // artistic text sits on its baseline.
-                    return text_layout_shift(*origin, *frame, false, para.vertical) * p;
+                    return text_layout_shift(*origin, *frame, false, para.columns_from_right())
+                        * p;
                 }
                 // No text engine registered: rough box, 0.5 em per character.
                 let size_mm: f64 =
@@ -2751,14 +4212,20 @@ impl Shape {
         }
     }
 
-    /// Whether Convert to Curves changes this object: curves and groups
-    /// already are curves, and a bitmap has no outline to become one.
+    /// Whether Convert to Curves changes this object: curves already are
+    /// curves, a bitmap has no outline to become one, and a group changes
+    /// when something it holds does (as in CorelDRAW, a group converts
+    /// whole and stays a group, #1324).
     pub fn converts_to_curves(&self) -> bool {
         match &self.kind {
             // A B-spline becomes an ordinary curve: its nodes instead of
             // its control points.
             ShapeKind::Path { .. } => self.spline.is_some(),
-            ShapeKind::Group { .. } | ShapeKind::Bitmap { .. } => false,
+            ShapeKind::Bitmap { .. } => false,
+            ShapeKind::Group { children } => {
+                let warps = !self.outline_stays_live();
+                children.iter().any(|c| c.converts_to_curves_deep(1, warps))
+            }
             // A clip frame changes only when its frame or something it
             // holds (inside groups too) is not a curve yet, or something it
             // holds has a warp to bake. The frame's own warp stays: the
@@ -2783,6 +4250,7 @@ impl Shape {
                     .iter()
                     .any(|c| c.converts_to_curves_deep(depth + 1, inner))
             }
+            ShapeKind::Group { .. } => warp,
             _ => warp || self.converts_to_curves(),
         }
     }
@@ -2814,6 +4282,7 @@ impl Shape {
             out.kind = kind;
             out.node_types.clear();
             out.spline = None;
+            out.spline_fixed.clear();
             changed = true;
         }
         if !container {
@@ -2879,6 +4348,17 @@ impl Shape {
                 let kind = ShapeKind::ClipFrame { frame, contents };
                 (kind != self.kind).then_some(kind)
             }
+            // A group stays a group: what it holds becomes curves,
+            // keeping the ids (#1324).
+            ShapeKind::Group { children } => {
+                let mut children = children.clone();
+                let inner = bake && !self.outline_stays_live();
+                for c in &mut children {
+                    c.curves_in_place(symbols, next_id, depth + 1, inner);
+                }
+                let kind = ShapeKind::Group { children };
+                (kind != self.kind).then_some(kind)
+            }
             // A B-spline keeps its outline; the control points go.
             ShapeKind::Path { .. } => Some(self.kind.clone()),
             // Text fills with the nonzero rule, curves with even-odd: the
@@ -2921,6 +4401,7 @@ impl Shape {
                     self.kind = kind;
                     self.node_types.clear();
                     self.spline = None;
+                    self.spline_fixed.clear();
                 }
                 if bake && !container {
                     if let Some(b) = crate::live::bake_outline_warps(self) {
@@ -2979,6 +4460,7 @@ impl Shape {
                     self.kind = kind;
                     self.node_types.clear();
                     self.spline = None;
+                    self.spline_fixed.clear();
                 }
                 if bake && !container {
                     if let Some(b) = crate::live::bake_outline_warps(self) {
@@ -3054,6 +4536,23 @@ impl Shape {
         }
     }
 
+    /// Keep the object's fountain fill and gradient transparency where
+    /// they lie on the page while its outline changes and its page box
+    /// goes from `before` to `after` (#1491): moving nodes or cropping cuts
+    /// them instead of squeezing them into the new box.
+    pub fn keep_paint_in_place(&mut self, before: Rect, after: Rect) {
+        self.fill.keep_in_place(before, after);
+        for e in self
+            .effects
+            .iter_mut()
+            .chain(self.parked_effects.iter_mut().map(|p| &mut p.effect))
+        {
+            if let crate::live::Effect::Transparency { mask, .. } = e {
+                mask.keep_in_place(before, after);
+            }
+        }
+    }
+
     /// The places the object's live effects hold, those switched off too,
     /// moved by `t` (see [`crate::live::carry_effects`]).
     pub fn carry_effects(&mut self, t: Affine) {
@@ -3115,7 +4614,7 @@ impl Shape {
         let local = if on_path.is_some() {
             Affine::translate(origin.to_vec2())
         } else {
-            text_layout_shift(*origin, *frame, false, para.vertical)
+            text_layout_shift(*origin, *frame, false, para.columns_from_right())
         };
         let m = self.transform * local;
         let [a, b, c, d, _, _] = m.as_coeffs();
@@ -3216,6 +4715,16 @@ pub struct Layer {
     /// For master layers: which pages show this layer.
     #[serde(default)]
     pub scope: MasterScope,
+    /// For master layers: drawn in front of the page's own layers
+    /// instead of behind them (#1132).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub in_front: bool,
+    /// For master layers: the master page's desktop layer, which every
+    /// new drawing has: objects on it, beside the pages or on them, show
+    /// and are picked from every page (#1161, #1775). Always behind the
+    /// pages, not counted among the numbered master layers.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub desktop: bool,
 }
 
 /// Which pages a master layer appears on.
@@ -3330,6 +4839,70 @@ pub struct ObjectDefaults {
 pub struct DefaultProperties {
     pub fill: Fill,
     pub stroke: Option<Stroke>,
+    /// Which of the fill and outline colours are the untouched default
+    /// black, the one that follows the drawing's colour mode (see
+    /// [`ObjectDefaults::in_mode`]); a colour the user picked is never
+    /// marked. `None` in files and settings from before the mark: see
+    /// [`DefaultProperties::follows`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub follow: Option<FollowBlack>,
+}
+
+/// The parts of one kind's defaults that are the default black and
+/// follow the drawing's colour mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FollowBlack {
+    pub fill: bool,
+    pub outline: bool,
+}
+
+/// The blacks of the two colour modes.
+fn mode_blacks() -> [crate::Color; 2] {
+    [
+        PrimaryColorMode::Cmyk.black(),
+        PrimaryColorMode::Rgb.black(),
+    ]
+}
+
+impl DefaultProperties {
+    /// Which parts follow the drawing's black. Defaults saved before the
+    /// mark existed carry none; for them a black (CMYK 100 % K or RGB
+    /// black) where the built-in defaults put one counts as the
+    /// untouched default and follows: the outline of graphics and the
+    /// fill of text. Any other colour, and a black anywhere else, counts
+    /// as chosen.
+    pub fn follows(&self, kind: DefaultKind) -> FollowBlack {
+        if let Some(f) = self.follow {
+            return f;
+        }
+        let black = |c: &crate::Color| mode_blacks().contains(c);
+        match kind {
+            DefaultKind::Graphic => FollowBlack {
+                fill: false,
+                outline: self.stroke.as_ref().is_some_and(|s| black(&s.color)),
+            },
+            DefaultKind::ArtisticText | DefaultKind::ParagraphText => FollowBlack {
+                fill: matches!(&self.fill, Fill::Solid(c) if black(c)),
+                outline: false,
+            },
+        }
+    }
+
+    /// The fill is the user's own from now on (picked, even when it is
+    /// the same black).
+    pub fn choose_fill(&mut self, kind: DefaultKind) {
+        let mut f = self.follows(kind);
+        f.fill = false;
+        self.follow = Some(f);
+    }
+
+    /// The outline colour is the user's own from now on.
+    pub fn choose_outline(&mut self, kind: DefaultKind) {
+        let mut f = self.follows(kind);
+        f.outline = false;
+        self.follow = Some(f);
+    }
 }
 
 /// The kinds of new objects with their own defaults.
@@ -3366,27 +4939,91 @@ impl Default for ObjectDefaults {
 }
 
 impl ObjectDefaults {
-    /// Graphics: no fill and a 0.2 mm CMYK black outline; text: a black
-    /// fill in the drawing's primary colour mode (CMYK or RGB black) and
-    /// no outline.
+    /// Graphics: no fill and a 0.2 mm black outline; text: a black fill
+    /// and no outline. The black is the one of the drawing's primary
+    /// colour mode (100 % K in CMYK, RGB black in RGB).
     pub fn for_mode(mode: PrimaryColorMode) -> Self {
         let text = DefaultProperties {
             fill: Fill::Solid(mode.black()),
             stroke: None,
+            follow: Some(FollowBlack {
+                fill: true,
+                outline: false,
+            }),
         };
         ObjectDefaults {
             graphic: DefaultProperties {
                 fill: Fill::None,
                 stroke: Some(Stroke {
-                    color: crate::Color::cmyk_pct(0.0, 0.0, 0.0, 100.0),
+                    color: mode.black(),
                     width: 0.2,
                     ..Stroke::default()
+                }),
+                follow: Some(FollowBlack {
+                    fill: false,
+                    outline: true,
                 }),
             },
             artistic_text: text.clone(),
             paragraph_text: text,
             paragraph: ParagraphStyle::default(),
         }
+    }
+
+    /// These defaults as a drawing in `mode` takes them: a fill or
+    /// outline that is still the untouched default black (see
+    /// [`DefaultProperties::follows`]) becomes the mode's black, so new
+    /// objects are black in the drawing's own colour mode; a colour the
+    /// user picked, black or not, and everything else, stays exactly as
+    /// saved. The marks come out filled in.
+    pub fn in_mode(&self, mode: PrimaryColorMode) -> Self {
+        let mut out = self.clone();
+        for kind in DefaultKind::ALL {
+            let props = out.get_mut(kind);
+            let follow = props.follows(kind);
+            props.follow = Some(follow);
+            let to_mode = |c: &mut crate::Color| {
+                if mode_blacks().contains(c) {
+                    *c = mode.black();
+                }
+            };
+            if follow.fill {
+                if let Fill::Solid(c) = &mut props.fill {
+                    to_mode(c);
+                }
+            }
+            if follow.outline {
+                if let Some(stroke) = &mut props.stroke {
+                    to_mode(&mut stroke.color);
+                }
+            }
+        }
+        out
+    }
+
+    /// `self`, about to replace `before`, with the marks kept honest: a
+    /// part still marked as following the default black only because the
+    /// mark was copied along with the rest loses it when its colour
+    /// changed (the user picked another colour); a mark set afresh (a
+    /// reset to the defaults of the mode) stays. A width or anything
+    /// else changing leaves the mark.
+    pub fn settled(&self, before: &ObjectDefaults) -> Self {
+        let mut out = self.clone();
+        for kind in DefaultKind::ALL {
+            let old = before.get(kind);
+            let props = out.get_mut(kind);
+            let was = old.follows(kind);
+            let mut now = props.follows(kind);
+            if was.fill && now.fill && props.fill != old.fill {
+                now.fill = false;
+            }
+            let color = |s: &Option<Stroke>| s.as_ref().map(|s| s.color);
+            if was.outline && now.outline && color(&props.stroke) != color(&old.stroke) {
+                now.outline = false;
+            }
+            props.follow = Some(now);
+        }
+        out
     }
 }
 
@@ -3430,9 +5067,13 @@ impl ParagraphStyle {
         to.tabs = self.tabs.clone();
         to.columns = self.columns;
         to.gutter = self.gutter;
+        to.column_widths = self.column_widths.clone();
+        to.column_gutters = self.column_gutters.clone();
+        to.columns_right_to_left = self.columns_right_to_left;
         to.bullets = self.bullets;
         to.bullet_char = self.bullet_char.clone();
         to.bullet_indent = self.bullet_indent;
+        to.bullet = self.bullet.clone();
         to.drop_cap_lines = self.drop_cap_lines;
     }
 }
@@ -3452,6 +5093,37 @@ pub struct ColorStyle {
 pub struct Symbol {
     pub name: String,
     pub shape: Shape,
+}
+
+/// Whether `shape` draws an instance of symbol `index`, directly or
+/// through the definitions of the symbols it draws (Edit Symbol refuses
+/// such a definition: it would draw itself without end). Symbols met
+/// once are not walked again, so a cycle already in a file ends.
+pub fn draws_symbol(shape: &Shape, index: usize, symbols: &[Symbol]) -> bool {
+    fn walk(s: &Shape, index: usize, symbols: &[Symbol], seen: &mut Vec<bool>) -> bool {
+        match &s.kind {
+            ShapeKind::SymbolInstance { index: i } => {
+                if *i == index {
+                    return true;
+                }
+                match (symbols.get(*i), seen.get_mut(*i)) {
+                    (Some(sym), Some(flag)) if !*flag => {
+                        *flag = true;
+                        walk(&sym.shape, index, symbols, seen)
+                    }
+                    _ => false,
+                }
+            }
+            ShapeKind::Group { children } => children.iter().any(|c| walk(c, index, symbols, seen)),
+            ShapeKind::ClipFrame { frame, contents } => {
+                walk(frame, index, symbols, seen)
+                    || contents.iter().any(|c| walk(c, index, symbols, seen))
+            }
+            _ => false,
+        }
+    }
+    let mut seen = vec![false; symbols.len()];
+    walk(shape, index, symbols, &mut seen)
 }
 
 /// Document properties (File > Document Properties).
@@ -3488,9 +5160,162 @@ pub struct Metadata {
     /// Document Options > General: Auto inflate bitmaps for effects is on
     /// unless this is set.
     pub no_auto_inflate: bool,
+    /// Space between the pages of the Multipage View, mm (Page > Page
+    /// Spacing, Document Setup > Layout); `None`: the default
+    /// [`DEFAULT_PAGE_SPACING`]. Left out of the file while unset, so
+    /// older drawings read and write as before.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub page_spacing: Option<f64>,
+    /// Facing pages (Layout > Facing Pages, Document Options > Layout,
+    /// #1972, #1660): the pages show side by side in spreads, see
+    /// [`crate::spreads`]. Left out of the file while off.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub facing_pages: bool,
+    /// The side the first page of facing pages sits on: alone on the
+    /// right (the default) or starting a spread on the left.
+    #[serde(skip_serializing_if = "crate::spreads::PageSide::is_right")]
+    pub facing_start: crate::spreads::PageSide,
+    /// The pages the Multipage View shows, as a range of page numbers
+    /// such as "1-3, 7" (#1440); empty: every page. Left out of the file
+    /// while empty.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub multipage_pages: String,
+    /// The page margins for book layouts (Document Setup > Layout,
+    /// #1660): the box the text and pictures of every page keep inside,
+    /// shown on the pages as a dashed frame. `None`: no margins. Left out
+    /// of the file while unset.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub margins: Option<PageMargins>,
 }
 
+/// Page margins, mm (#1660). With facing pages the inside margin lies at
+/// the spine and the outside one at the page's free edge, so they swap
+/// sides between the left and the right pages of a spread; a page shown
+/// alone takes the inside margin on its left, as a right-hand page.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct PageMargins {
+    pub top: f64,
+    pub bottom: f64,
+    pub inside: f64,
+    pub outside: f64,
+}
+
+/// The widest page margin taken, mm.
+pub const MAX_PAGE_MARGIN: f64 = 1000.0;
+
+impl PageMargins {
+    /// The same margin all round.
+    pub fn uniform(mm: f64) -> Self {
+        PageMargins {
+            top: mm,
+            bottom: mm,
+            inside: mm,
+            outside: mm,
+        }
+    }
+
+    /// Each margin kept between 0 and [`MAX_PAGE_MARGIN`] (0 for a value
+    /// that is not a number).
+    pub fn clamped(self) -> Self {
+        let c = |v: f64| {
+            if v.is_finite() {
+                v.clamp(0.0, MAX_PAGE_MARGIN)
+            } else {
+                0.0
+            }
+        };
+        PageMargins {
+            top: c(self.top),
+            bottom: c(self.bottom),
+            inside: c(self.inside),
+            outside: c(self.outside),
+        }
+    }
+
+    /// No margin is set.
+    pub fn is_zero(&self) -> bool {
+        let m = self.clamped();
+        m.top == 0.0 && m.bottom == 0.0 && m.inside == 0.0 && m.outside == 0.0
+    }
+
+    /// The box inside the margins of a page whose box is `page` (y up),
+    /// sitting on `side` of a spread: the inside margin at the spine,
+    /// on the right of a left page and on the left of a right page.
+    /// Margins wider than the page leave a box of no width there.
+    pub fn inner(&self, page: Rect, side: crate::spreads::PageSide) -> Rect {
+        let m = self.clamped();
+        let (left, right) = match side {
+            crate::spreads::PageSide::Left => (m.outside, m.inside),
+            crate::spreads::PageSide::Right => (m.inside, m.outside),
+        };
+        let x0 = (page.x0 + left).min(page.x1);
+        let y0 = (page.y0 + m.bottom).min(page.y1);
+        Rect::new(x0, y0, (page.x1 - right).max(x0), (page.y1 - m.top).max(y0))
+    }
+}
+
+/// The pages of `range` ("1-3, 5"; page numbers from 1, ranges either
+/// way round, commas or semicolons between) that exist among `count`,
+/// 0-based, in page order, each once. A part that is not a page number
+/// or a range of them makes the whole range read as none.
+pub fn parse_page_range(range: &str, count: usize) -> Vec<usize> {
+    let mut seen = vec![false; count];
+    for part in range.split([',', ';']) {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+        let (a, b) = match part.split_once('-') {
+            Some((a, b)) => (a.trim().parse::<usize>(), b.trim().parse::<usize>()),
+            None => (part.parse::<usize>(), part.parse::<usize>()),
+        };
+        let (Ok(a), Ok(b)) = (a, b) else {
+            return Vec::new();
+        };
+        if a == 0 || b == 0 {
+            return Vec::new();
+        }
+        let (lo, hi) = (a.min(b), a.max(b).min(count));
+        for n in lo..=hi {
+            if let Some(f) = seen.get_mut(n - 1) {
+                *f = true;
+            }
+        }
+    }
+    seen.iter()
+        .enumerate()
+        .filter_map(|(i, f)| f.then_some(i))
+        .collect()
+}
+
+/// The space between pages in the Multipage View when a drawing sets
+/// none, mm.
+pub const DEFAULT_PAGE_SPACING: f64 = 30.0;
+
+/// The largest space between pages the Multipage View takes, mm.
+pub const MAX_PAGE_SPACING: f64 = 1000.0;
+
 impl Metadata {
+    /// The space between the pages of the Multipage View, mm: the
+    /// drawing's own, kept between 0 and [`MAX_PAGE_SPACING`], else the
+    /// default (also for a value that is not a number).
+    pub fn page_spacing(&self) -> f64 {
+        match self.page_spacing {
+            Some(v) if v.is_finite() => v.clamp(0.0, MAX_PAGE_SPACING),
+            _ => DEFAULT_PAGE_SPACING,
+        }
+    }
+
+    /// The pages (0-based, in order) the Multipage View shows of a
+    /// drawing of `count` pages: those of [`Metadata::multipage_pages`],
+    /// or `None` for every page (no range, or one that names no page of
+    /// the drawing).
+    pub fn multipage_page_indices(&self, count: usize) -> Option<Vec<usize>> {
+        let pages = parse_page_range(&self.multipage_pages, count);
+        (!pages.is_empty()).then_some(pages)
+    }
+
     /// Bitmap effects that spread past the edges grow the bitmap first.
     pub fn auto_inflate_bitmaps(&self) -> bool {
         !self.no_auto_inflate
@@ -3513,6 +5338,18 @@ impl PrimaryColorMode {
             PrimaryColorMode::Rgb => crate::Color::BLACK,
         }
     }
+
+    /// A grey of `k` % black in this mode: `k` % K in CMYK, the RGB grey
+    /// that light in RGB (#3006).
+    pub fn gray(self, k: f32) -> crate::Color {
+        match self {
+            PrimaryColorMode::Cmyk => crate::Color::cmyk_pct(0.0, 0.0, 0.0, k),
+            PrimaryColorMode::Rgb => {
+                let v = (1.0 - k / 100.0).clamp(0.0, 1.0);
+                crate::Color::Rgb { r: v, g: v, b: v }
+            }
+        }
+    }
 }
 
 /// How a page number field shows the number (Layout > Insert Page
@@ -3521,6 +5358,10 @@ impl PrimaryColorMode {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PageNumberField {
     pub start_at: i64,
+    /// The page (1-based) that shows `start_at`; the pages before it,
+    /// such as covers, show no number (#2127).
+    #[serde(default = "first_numbered_page")]
+    pub first_page: usize,
     /// 0 arabic, 1 upper roman, 2 lower roman, 3 upper alpha, 4 lower alpha.
     pub style: u8,
     #[serde(default)]
@@ -3529,10 +5370,24 @@ pub struct PageNumberField {
     pub suffix: String,
 }
 
+fn first_numbered_page() -> usize {
+    1
+}
+
 impl PageNumberField {
-    /// The text for the page at `index` (0-based).
+    /// The page at `index` (0-based) shows a number: it is not one of
+    /// the pages before the first numbered page (#2127).
+    pub fn numbers(&self, index: usize) -> bool {
+        index + 1 >= self.first_page.max(1)
+    }
+
+    /// The text for the page at `index` (0-based): empty on the pages
+    /// before the first numbered page (#2127).
     pub fn label(&self, index: usize) -> String {
-        let n = self.start_at + index as i64;
+        if !self.numbers(index) {
+            return String::new();
+        }
+        let n = self.start_at + index as i64 - (self.first_page.max(1) as i64 - 1);
         let body = match self.style {
             1 => roman(n),
             2 => roman(n).to_lowercase(),
@@ -3635,6 +5490,8 @@ impl Layer {
             locked: false,
             shapes: Vec::new(),
             scope: MasterScope::All,
+            in_front: false,
+            desktop: false,
         }
     }
 }
@@ -3768,6 +5625,10 @@ pub struct Guide {
     /// Locked guidelines can be selected but not moved or deleted.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub locked: bool,
+    /// Hidden by its own eye in the Objects docker: not drawn, picked
+    /// or snapped to, while the others of its set show (#1775).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub hidden: bool,
 }
 
 impl From<GuideLine> for Guide {
@@ -3777,6 +5638,7 @@ impl From<GuideLine> for Guide {
             color: None,
             style: GuideStyle::default(),
             locked: false,
+            hidden: false,
         }
     }
 }
@@ -3959,6 +5821,17 @@ pub struct Document {
     /// Master layers, drawn beneath every page's own layers.
     #[serde(default)]
     pub master: Vec<Layer>,
+    /// The master page's guidelines (#1928): shown on every page, set
+    /// once for all of them, beside each page's own guidelines.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub master_guides: Vec<Guide>,
+    /// The master page's guidelines are hidden by their own eye in the
+    /// Objects docker, the pages' own still shown (#1775).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub master_guides_hidden: bool,
+    /// The pages whose own guidelines are hidden by their eye (#1775).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub page_guides_hidden: Vec<PageId>,
     #[serde(default)]
     pub object_styles: Vec<ObjectStyle>,
     /// The fill and outline new objects get.
@@ -3973,10 +5846,20 @@ pub struct Document {
     /// Document-level palette (the bottom "document palette").
     #[serde(default)]
     pub palette: Vec<crate::Color>,
+    /// Names given to the document palette's colours in the Palette
+    /// Editor (#2187): a spot colour goes by its ink's name instead, and
+    /// a colour without one by the name a palette gives it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub palette_names: Vec<PaletteName>,
     /// Time Tracker records. Like the id counter they stay as they are
     /// when the drawing's changes are undone.
     #[serde(default, skip_serializing_if = "TimeTracker::is_empty")]
     pub time_tracker: TimeTracker,
+    /// The view the drawing was last saved with, for Options > Display >
+    /// View when a drawing opens: As saved (#1134). Like the Time
+    /// Tracker it stays out of the undo history.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub saved_view: Option<SavedView>,
     /// Selection groups 0 to 9: objects stored under a number to be
     /// selected again with it, saved with the drawing.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
@@ -4050,6 +5933,23 @@ pub struct Comment {
     pub replies: Vec<CommentReply>,
     #[serde(default)]
     pub resolved: bool,
+}
+
+/// A name the document palette gives one of its colours.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PaletteName {
+    pub color: crate::Color,
+    pub name: String,
+}
+
+impl Document {
+    /// The name the document palette gives colour `c`, if any.
+    pub fn palette_name_of(&self, c: crate::Color) -> Option<&str> {
+        self.palette_names
+            .iter()
+            .find(|n| n.color == c)
+            .map(|n| n.name.as_str())
+    }
 }
 
 /// A spot ink: its number (what `Color::Spot` refers to), its name and
@@ -4136,15 +6036,50 @@ impl std::fmt::Debug for DocumentFont {
     }
 }
 
-/// Shared binary data as base64 text, like bitmaps.
+/// Shared binary data as base64 text, like bitmaps (a reference to the
+/// table of a packed file, as pictures are).
 mod shared_bytes {
-    use serde::{Deserializer, Serializer};
+    use serde::{Deserialize, Deserializer, Serializer};
     use std::sync::Arc;
     pub fn serialize<S: Serializer>(v: &Arc<Vec<u8>>, s: S) -> Result<S::Ok, S::Error> {
-        super::png_bytes::serialize(v.as_slice(), s)
+        match crate::bytes::blob_reference(crate::bytes::Blob::Font(v.clone())) {
+            Some(r) => s.serialize_str(&r),
+            None => super::png_bytes::serialize(v.as_slice(), s),
+        }
     }
     pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Arc<Vec<u8>>, D::Error> {
-        super::png_bytes::deserialize(d).map(Arc::new)
+        let text = String::deserialize(d)?;
+        if let Some(found) = crate::bytes::blob_read(&text) {
+            return found
+                .map(|b| Arc::new(b.to_vec()))
+                .map_err(serde::de::Error::custom);
+        }
+        crate::bytes::decode_base64(&text)
+            .map(Arc::new)
+            .map_err(serde::de::Error::custom)
+    }
+}
+
+/// Where a drawing was viewed when it was saved: the page shown (its
+/// index), the page point in the middle of the window (mm) and the zoom
+/// in percent of real size (#1134).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct SavedView {
+    pub page: usize,
+    pub x: f64,
+    pub y: f64,
+    pub zoom_percent: f64,
+}
+
+impl SavedView {
+    /// Usable for a drawing of `pages` pages: the page is there and the
+    /// numbers are finite, the zoom above zero.
+    pub fn is_valid(&self, pages: usize) -> bool {
+        self.page < pages
+            && self.x.is_finite()
+            && self.y.is_finite()
+            && self.zoom_percent.is_finite()
+            && self.zoom_percent > 0.0
     }
 }
 
@@ -4233,6 +6168,9 @@ impl Document {
             pages: vec![page],
             ids,
             master: Vec::new(),
+            master_guides: Vec::new(),
+            master_guides_hidden: false,
+            page_guides_hidden: Vec::new(),
             object_styles: Vec::new(),
             defaults: ObjectDefaults::default(),
             color_styles: Vec::new(),
@@ -4242,7 +6180,9 @@ impl Document {
                 ..Default::default()
             },
             palette: Vec::new(),
+            palette_names: Vec::new(),
             time_tracker: TimeTracker::default(),
+            saved_view: None,
             selection_groups: std::collections::BTreeMap::new(),
             fonts: Vec::new(),
             cmyk_profile: None,
@@ -4292,6 +6232,54 @@ impl Document {
             .chain(self.pages.iter_mut().flat_map(|p| &mut p.layers))
     }
 
+    /// Set the spans in family `from` in family `to`: text and table cells
+    /// on every layer, in groups, clip frames and symbols. The number of
+    /// spans changed.
+    pub fn replace_font_family(&mut self, from: &str, to: &str) -> usize {
+        fn spans(spans: &mut [TextSpan], from: &str, to: &str) -> usize {
+            let mut n = 0;
+            for sp in spans.iter_mut().filter(|sp| sp.font_family == from) {
+                sp.font_family = to.to_string();
+                n += 1;
+            }
+            n
+        }
+        fn walk(s: &mut Shape, from: &str, to: &str) -> usize {
+            match &mut s.kind {
+                ShapeKind::Text { spans: sp, .. } => spans(sp, from, to),
+                ShapeKind::Table(t) => t
+                    .cells
+                    .iter_mut()
+                    .map(|c| spans(&mut c.text, from, to))
+                    .sum(),
+                ShapeKind::Group { children } => {
+                    children.iter_mut().map(|c| walk(c, from, to)).sum()
+                }
+                ShapeKind::ClipFrame { frame, contents } => {
+                    walk(frame, from, to)
+                        + contents
+                            .iter_mut()
+                            .map(|c| walk(c, from, to))
+                            .sum::<usize>()
+                }
+                _ => 0,
+            }
+        }
+        if from == to || to.is_empty() {
+            return 0;
+        }
+        let mut n = 0;
+        for l in self.all_layers_mut() {
+            for s in l.shapes.iter_mut() {
+                n += walk(s, from, to);
+            }
+        }
+        for sym in self.symbols.iter_mut() {
+            n += walk(&mut sym.shape, from, to);
+        }
+        n
+    }
+
     /// The font families the drawing's text uses, sorted: text on layers,
     /// inside groups and clip frames, in table cells and in symbols.
     pub fn font_families_used(&self) -> Vec<String> {
@@ -4334,33 +6322,90 @@ impl Document {
         out.into_iter().collect()
     }
 
-    /// Layers drawn for a page, bottom to top: applicable master layers,
-    /// then the page's own layers, as they are stored (what clicks and
-    /// selections take objects from).
+    /// Layers drawn for a page, bottom to top: applicable master layers
+    /// behind the page, the page's own layers as they are stored, then
+    /// applicable master layers in front of the page (#1132); what clicks
+    /// and selections take objects from.
+    /// The guidelines shown on `page`: the master page's (every page
+    /// has them, #1928), then the page's own, each set only while its eye
+    /// shows it (#1775).
+    pub fn guides_on_page(&self, page: PageId) -> Result<Vec<Guide>> {
+        let p = self.page(page)?;
+        let master: &[Guide] = if self.guides_shown(None) {
+            &self.master_guides
+        } else {
+            &[]
+        };
+        let own: &[Guide] = if self.guides_shown(Some(page)) {
+            &p.guides
+        } else {
+            &[]
+        };
+        // A guideline hidden by its own eye is left out (#1775).
+        Ok(master
+            .iter()
+            .chain(own.iter())
+            .filter(|g| !g.hidden)
+            .copied()
+            .collect())
+    }
+
+    /// Whether the guidelines of the master page (`page` `None`) or of
+    /// `page` are shown, as their eye in the Objects docker says (#1775).
+    pub fn guides_shown(&self, page: Option<PageId>) -> bool {
+        match page {
+            None => !self.master_guides_hidden,
+            Some(p) => !self.page_guides_hidden.contains(&p),
+        }
+    }
+
     pub fn layers_for_page(&self, page: PageId) -> Result<Vec<&Layer>> {
         let idx = self.page_index(page)?;
-        let mut out: Vec<&Layer> = self
-            .master
-            .iter()
-            .filter(|l| l.scope.applies(idx))
-            .collect();
+        let masters = |front: bool| {
+            self.master
+                .iter()
+                .filter(move |l| l.scope.applies(idx) && l.in_front == front)
+        };
+        let mut out: Vec<&Layer> = masters(false).collect();
         out.extend(self.pages[idx].layers.iter());
+        out.extend(masters(true));
         Ok(out)
     }
 
     /// [`Document::layers_for_page`] as drawn, printed and exported: a
     /// master layer holding a page number field comes as a copy showing
-    /// this page's number (#807).
+    /// this page's number (#807), and a layer holding a table of contents
+    /// as a copy listing the headings as they stand (#1660).
     pub fn layers_drawn_for_page(&self, page: PageId) -> Result<Vec<std::borrow::Cow<'_, Layer>>> {
         use std::borrow::Cow;
         let idx = self.page_index(page)?;
+        // The headings, found once for the tables of contents (#1660).
+        let entries = std::cell::OnceCell::new();
         Ok(self
             .layers_for_page(page)?
             .into_iter()
             .map(|l| {
                 let master = self.master.iter().any(|m| m.id == l.id);
-                if master && l.shapes.iter().any(Shape::holds_page_number) {
+                if l.shapes.iter().any(Shape::holds_toc) {
+                    let entries = entries.get_or_init(|| crate::toc::entries(self));
                     let mut l = l.clone();
+                    if master {
+                        l.shapes
+                            .retain(|s| s.page_number.as_ref().is_none_or(|f| f.numbers(idx)));
+                    }
+                    for s in &mut l.shapes {
+                        if master {
+                            s.show_page_number(idx);
+                        }
+                        s.show_toc(entries);
+                    }
+                    Cow::Owned(l)
+                } else if master && l.shapes.iter().any(Shape::holds_page_number) {
+                    let mut l = l.clone();
+                    // A field on a page before the first numbered page
+                    // is left out (#2127).
+                    l.shapes
+                        .retain(|s| s.page_number.as_ref().is_none_or(|f| f.numbers(idx)));
                     for s in &mut l.shapes {
                         s.show_page_number(idx);
                     }
@@ -4675,8 +6720,21 @@ impl Document {
     /// Write the `.tdraw` JSON of format `version` to `w` as it is made.
     /// The current format goes straight to the writer; only an older one
     /// builds the whole tree in memory first (many times the drawing's
-    /// size), to take it down.
+    /// size), to take it down. Every number written is a number: a value
+    /// that is not one (a division by zero somewhere, or an import with
+    /// a number too large to hold, can leave one in a coordinate, an
+    /// outline width, a transparency, a colour component or a font size)
+    /// is written as 0, not as `null`, which no reader before 0.35 took
+    /// for a number, so one such value made the whole file refuse to
+    /// open in those versions and the drawing was lost.
+    ///
+    /// The JSON is compact, with no line breaks or indents (#2345): the
+    /// indented layout gave every coordinate its own line, indented
+    /// further at each group inside a group, so a curve node took 0.5 to
+    /// 1.3 KB and a drawing with many nodes in nested groups ran to
+    /// hundreds of megabytes. Every reader takes either layout.
     pub fn write_json_version<W: std::io::Write>(&self, w: W, version: u32) -> Result<()> {
+        use crate::finite::{Finite, FiniteSerializer};
         if (version as usize) >= DOWN_STEPS.len() {
             #[derive(Serialize)]
             struct Versioned<'a> {
@@ -4684,16 +6742,15 @@ impl Document {
                 doc: &'a Document,
                 format_version: u32,
             }
-            serde_json::to_writer_pretty(
-                w,
-                &Versioned {
-                    doc: self,
-                    format_version: TDRAW_FORMAT_VERSION,
-                },
-            )?;
+            let mut ser = serde_json::Serializer::new(w);
+            Versioned {
+                doc: self,
+                format_version: TDRAW_FORMAT_VERSION,
+            }
+            .serialize(FiniteSerializer(&mut ser))?;
             return Ok(());
         }
-        let mut v = serde_json::to_value(self)?;
+        let mut v = serde_json::to_value(Finite(self))?;
         if let serde_json::Value::Object(m) = &mut v {
             m.insert(
                 FORMAT_VERSION_KEY.into(),
@@ -4703,26 +6760,255 @@ impl Document {
         for step in DOWN_STEPS.iter().skip(version as usize).rev() {
             step(&mut v);
         }
-        serde_json::to_writer_pretty(w, &v)?;
+        if let serde_json::Value::Object(m) = &mut v {
+            m.insert(FORMAT_VERSION_KEY.into(), serde_json::Value::from(version));
+        }
+        serde_json::to_writer(w, &v)?;
         Ok(())
+    }
+
+    /// Write a `.tdraw` file of format `version` to `w`, as Save does.
+    /// From [`PACKED_VERSION`] on the file is packed (#2849): each
+    /// distinct picture and font once, in a table at the end that the
+    /// objects refer to, and the whole JSON gzip-compressed (the file
+    /// starts with gzip's `1f 8b`; [`tdraw_text`] reads both kinds). An
+    /// older version is written as plain JSON, as that TraceDraw reads it.
+    pub fn write_tdraw_version<W: std::io::Write>(&self, w: W, version: u32) -> Result<()> {
+        if version < PACKED_VERSION {
+            return self.write_json_version(w, version);
+        }
+        let mut gz = flate2::write::GzEncoder::new(w, flate2::Compression::new(TDRAW_GZIP_LEVEL));
+        self.write_packed(&mut gz)?;
+        gz.finish().map_err(serde_json::Error::io)?;
+        Ok(())
+    }
+
+    /// The packed JSON of the current format, uncompressed: the drawing
+    /// with references for its pictures and fonts, then their table.
+    pub fn write_packed<W: std::io::Write>(&self, w: W) -> Result<()> {
+        use crate::finite::FiniteSerializer;
+        #[derive(Serialize)]
+        struct Packed<'a> {
+            #[serde(flatten)]
+            doc: &'a Document,
+            format_version: u32,
+            // Last, so that the drawing has filled it.
+            blobs: crate::bytes::BlobsOut,
+        }
+        let _table = crate::bytes::WritingTable::start();
+        let mut ser = serde_json::Serializer::new(std::io::BufWriter::new(w));
+        Packed {
+            doc: self,
+            format_version: TDRAW_FORMAT_VERSION,
+            blobs: crate::bytes::BlobsOut,
+        }
+        .serialize(FiniteSerializer(&mut ser))?;
+        use std::io::Write as _;
+        ser.into_inner().flush().map_err(serde_json::Error::io)?;
+        Ok(())
+    }
+
+    /// Read a `.tdraw` file's bytes, packed or plain JSON of any version.
+    pub fn from_tdraw_bytes(bytes: &[u8]) -> Result<Self> {
+        let text = tdraw_text(bytes).map_err(serde_json::Error::io)?;
+        Self::from_json(&text)
     }
 
     /// Read a `.tdraw` file of any version: older ones are brought up to
     /// date by [`migrate`]; newer ones are read as far as this version
     /// knows them (fields it does not know are left out).
     pub fn from_json(s: &str) -> Result<Self> {
-        let mut v: serde_json::Value = serde_json::from_str(s)?;
+        let mut v: serde_json::Value = json_value(s)?;
         let from = tdraw_version(&v);
         migrate(&mut v, from);
+        // A packed file's pictures and fonts (#2849): the objects refer
+        // to this table while they are read.
+        let mut blobs = Vec::new();
         if let serde_json::Value::Object(m) = &mut v {
             m.remove(FORMAT_VERSION_KEY);
+            if let Some(serde_json::Value::Array(list)) = m.remove(BLOBS_KEY) {
+                blobs = list
+                    .into_iter()
+                    .map(|b| match b {
+                        serde_json::Value::String(t) => t,
+                        _ => String::new(),
+                    })
+                    .collect();
+            }
         }
-        let mut doc: Document = serde_json::from_value(v)?;
+        let _table = crate::bytes::ReadingTable::start(blobs);
+        let mut doc: Document = match Document::deserialize(&v) {
+            Ok(doc) => doc,
+            Err(e) => numbers_lost_as_zero(v, e)?,
+        };
         // What text wraps around is not saved: work it out again.
         doc.refresh_text_flow();
+        doc.refit_text_meshes();
         Ok(doc)
     }
+
+    /// Stretch the mesh fill of every text whose grid lies inside the
+    /// text's box but no longer covers it back over the whole box. Before
+    /// 0.47 a text typed over (a T made a C, more letters) kept the grid
+    /// made over its old box; the part past it had no fill, and a block
+    /// or inner shadow showed through it (#2892, #2894). A file saved
+    /// that way opens with the text filled again. A grid reaching past
+    /// the text's box, or already over it, is left as it is.
+    pub fn refit_text_meshes(&mut self) {
+        fn walk(s: &mut Shape) {
+            if let (ShapeKind::Text { .. }, Fill::Mesh(m)) = (&s.kind, &s.fill) {
+                let b = crate::geometry::Shape::bounding_box(&s.local_path());
+                if let Some(m) = m.refit_inside(b) {
+                    s.fill = Fill::Mesh(m);
+                }
+            }
+            match &mut s.kind {
+                ShapeKind::Group { children } => children.iter_mut().for_each(walk),
+                ShapeKind::ClipFrame { frame, contents } => {
+                    walk(frame);
+                    contents.iter_mut().for_each(walk);
+                }
+                _ => {}
+            }
+        }
+        for page in &mut self.pages {
+            for l in &mut page.layers {
+                l.shapes.iter_mut().for_each(walk);
+            }
+        }
+        for l in &mut self.master {
+            l.shapes.iter_mut().for_each(walk);
+        }
+    }
 }
+
+/// How many brackets (`{` and `[`) of a `.tdraw` file may be open at
+/// once. A group inside a group nests four levels, so this is some 250
+/// groups inside groups, far beyond what a drawing holds (the `.cdr`
+/// reader stops at 64) and read, migrated and drawn well within the
+/// stack of every platform. The JSON reader's own limit is 128 levels,
+/// about 30 groups inside groups, which drawings do reach: such a
+/// drawing saved and then refused to open, and was lost.
+pub const MAX_JSON_DEPTH: usize = 1024;
+
+/// The JSON of a `.tdraw` text as a value, with the reader's nesting
+/// limit lifted and [`MAX_JSON_DEPTH`] in its place.
+fn json_value(s: &str) -> Result<serde_json::Value> {
+    let depth = json_depth(s);
+    if depth > MAX_JSON_DEPTH {
+        return Err(<serde_json::Error as serde::de::Error>::custom(format!(
+            "the file nests {depth} levels deep; at most {MAX_JSON_DEPTH} are read"
+        ))
+        .into());
+    }
+    let mut de = serde_json::Deserializer::from_str(s);
+    de.disable_recursion_limit();
+    let v = serde_json::Value::deserialize(&mut de)?;
+    de.end()?;
+    Ok(v)
+}
+
+/// How deep the brackets of JSON text nest: the most `{` and `[` open at
+/// once, brackets inside strings not counted. Text that is not JSON
+/// gives some number; the reader then says what is wrong with it.
+fn json_depth(s: &str) -> usize {
+    let (mut depth, mut deepest) = (0usize, 0usize);
+    let mut in_string = false;
+    let mut escaped = false;
+    for b in s.bytes() {
+        if in_string {
+            match b {
+                _ if escaped => escaped = false,
+                b'\\' => escaped = true,
+                b'"' => in_string = false,
+                _ => {}
+            }
+            continue;
+        }
+        match b {
+            b'"' => in_string = true,
+            b'{' | b'[' => {
+                depth += 1;
+                deepest = deepest.max(depth);
+            }
+            b'}' | b']' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+    deepest
+}
+
+/// A `.tdraw` file whose numbers are not all numbers, read with each
+/// such number as 0. A value that is not a number (the result of a
+/// division by zero somewhere, or of an import with a number too large
+/// to hold) is written as `null`, which the reader does not take for a
+/// number, so one such value anywhere in a drawing made the whole file
+/// refuse to open and the drawing was lost. Every `null` but those the
+/// format writes for a setting that is not there ([`NULL_SETTINGS`]) is
+/// read as 0; a file that still does not open gives the error `first`
+/// (the one reading `v` as it was gave), as does one with no such
+/// `null`.
+fn numbers_lost_as_zero(mut v: serde_json::Value, first: serde_json::Error) -> Result<Document> {
+    fn zeros(v: &mut serde_json::Value, key: Option<&str>, n: &mut usize) {
+        match v {
+            serde_json::Value::Null => {
+                if !key.is_some_and(|k| NULL_SETTINGS.contains(&k)) {
+                    *v = serde_json::Value::from(0.0);
+                    *n += 1;
+                }
+            }
+            serde_json::Value::Array(items) => {
+                items.iter_mut().for_each(|x| zeros(x, None, n));
+            }
+            serde_json::Value::Object(m) => {
+                m.iter_mut().for_each(|(k, x)| zeros(x, Some(k), n));
+            }
+            _ => {}
+        }
+    }
+    let mut n = 0;
+    zeros(&mut v, None, &mut n);
+    if n == 0 {
+        return Err(first.into());
+    }
+    serde_json::from_value(v).map_err(|_| first.into())
+}
+
+/// The keys the format writes as `null` for a setting that is not there
+/// (optional fields written without `skip_serializing_if`), which
+/// [`numbers_lost_as_zero`] leaves alone. A key that holds a number
+/// elsewhere is not among them, so a number lost under it is read as 0.
+const NULL_SETTINGS: [&str; 29] = [
+    "active",
+    "arc",
+    "background",
+    "border",
+    "by_length",
+    "ctrl_in",
+    "ctrl_out",
+    "fill",
+    "finish",
+    "forward",
+    "frame",
+    "grid",
+    "harmony",
+    "link",
+    "main",
+    "name",
+    "nodes",
+    "on_path",
+    "outline",
+    "outline_to",
+    "path",
+    "range",
+    "shade_from",
+    "shade_to",
+    "shadow",
+    "spacing",
+    "start",
+    "stroke",
+    "vanishing",
+];
 
 /// The `.tdraw` format's version, written into every file. A change that
 /// an older TraceDraw would read wrongly (a field renamed, moved or given
@@ -4730,7 +7016,46 @@ impl Document {
 /// with a default does not. The next version is 2: 1 was written by
 /// TraceDraw 0.5 to 0.9 for the layout of 0 and is read as 0. See
 /// `docs/tdraw-format.md`.
-pub const TDRAW_FORMAT_VERSION: u32 = 0;
+pub const TDRAW_FORMAT_VERSION: u32 = 2;
+
+/// The first format written packed and compressed (#2849): Save writes
+/// it, also for a plain file opened; TraceDraw 0.46 and older open only
+/// plain files (TraceDraw is an alpha, people know files move forward).
+pub const PACKED_VERSION: u32 = 2;
+
+/// gzip's level for `.tdraw` files: most of the gain of the highest at a
+/// fraction of the time (pictures are already compressed PNG).
+const TDRAW_GZIP_LEVEL: u32 = 4;
+
+/// The key of a packed file's table of pictures and fonts.
+const BLOBS_KEY: &str = "blobs";
+
+/// The JSON text of a `.tdraw` file's bytes: gzip (`1f 8b`, the packed
+/// files of 0.47 on) is decompressed, anything else is read as UTF-8
+/// text (the plain files of every version). Readers of `.tdraw` (the
+/// app, the thumbnailer, the command line, templates) read through it
+/// ([`read_tdraw_text`] for a stream).
+pub fn tdraw_text(bytes: &[u8]) -> std::io::Result<String> {
+    read_tdraw_text(bytes)
+}
+
+/// [`tdraw_text`] from a reader, as it reads (the window of a large
+/// file counts the bytes as they go).
+pub fn read_tdraw_text<R: std::io::BufRead>(mut r: R) -> std::io::Result<String> {
+    use std::io::Read;
+    let mut text = String::new();
+    if is_gzip(r.fill_buf()?) {
+        flate2::read::MultiGzDecoder::new(r).read_to_string(&mut text)?;
+    } else {
+        r.read_to_string(&mut text)?;
+    }
+    Ok(text)
+}
+
+/// Whether bytes start as gzip does (a packed `.tdraw`).
+pub fn is_gzip(bytes: &[u8]) -> bool {
+    bytes.starts_with(&[0x1f, 0x8b])
+}
 
 /// The number TraceDraw 0.5 to 0.9 wrote for the layout of version 0.
 const SAME_AS_ZERO: u64 = 1;
@@ -4750,24 +7075,27 @@ pub fn tdraw_version(v: &serde_json::Value) -> u32 {
 
 /// The version a `.tdraw` text says it has (0 for unreadable text).
 pub fn tdraw_text_version(s: &str) -> u32 {
-    serde_json::from_str::<serde_json::Value>(s)
-        .map(|v| tdraw_version(&v))
-        .unwrap_or(0)
+    json_value(s).map(|v| tdraw_version(&v)).unwrap_or(0)
 }
 
 /// One step of [`migrate`]: the JSON of version `i` to version `i + 1`.
 type Step = fn(&mut serde_json::Value);
 
-/// `STEPS[i]` takes a file from version `i` to `i + 1` (none yet).
-const STEPS: [Step; TDRAW_FORMAT_VERSION as usize] = [];
+/// `STEPS[i]` takes a file from version `i` to `i + 1`. 0 to 1 and 1 to
+/// 2 change no field: 1 has the layout of 0, and 2 only packs the file,
+/// which [`Document::from_json`] reads in any version.
+const STEPS: [Step; TDRAW_FORMAT_VERSION as usize] = [same_layout, same_layout];
 
 /// `DOWN_STEPS[i]` takes a file from version `i + 1` back to `i`, for
-/// saving in an older version (none yet).
-const DOWN_STEPS: [Step; TDRAW_FORMAT_VERSION as usize] = [];
+/// saving in an older version (a plain file, written unpacked).
+const DOWN_STEPS: [Step; TDRAW_FORMAT_VERSION as usize] = [same_layout, same_layout];
+
+fn same_layout(_: &mut serde_json::Value) {}
 
 /// The TraceDraw release that first wrote each `.tdraw` format version
-/// (`TDRAW_RELEASES[v]`), for Save As.
-pub const TDRAW_RELEASES: [&str; TDRAW_FORMAT_VERSION as usize + 1] = ["0.4"];
+/// (`TDRAW_RELEASES[v]`), for Save As. Version 1 is not offered: it has
+/// the layout of 0.
+pub const TDRAW_RELEASES: [&str; TDRAW_FORMAT_VERSION as usize + 1] = ["0.4", "0.5", "0.47"];
 
 /// Bring a `.tdraw` file's JSON from version `from` up to
 /// [`TDRAW_FORMAT_VERSION`], one step at a time.
@@ -4836,6 +7164,76 @@ mod index_keys {
 
 #[cfg(test)]
 mod tests {
+    /// Bullet numbers (#1443): written as numbers, letters or Roman
+    /// numerals; a run of numbered paragraphs counts on from its start
+    /// and a paragraph without bullets ends it.
+    #[test]
+    fn bullet_numbers_count_runs_of_paragraphs() {
+        use super::{bullet_numbers, BulletStyle, Numbering};
+        assert_eq!(Numbering::LowerAlpha.format(1), "a");
+        assert_eq!(Numbering::UpperAlpha.format(27), "AA");
+        assert_eq!(Numbering::LowerRoman.format(4), "iv");
+        assert_eq!(Numbering::UpperRoman.format(1994), "MCMXCIV");
+        assert_eq!(Numbering::Arabic.format(12), "12");
+        let num = BulletStyle {
+            numbering: Numbering::Arabic,
+            prefix: "(".into(),
+            suffix: ")".into(),
+            start: 3,
+            ..Default::default()
+        };
+        assert_eq!(num.label("\u{2022}", 5), "(5)");
+        let sym = BulletStyle::default();
+        assert!(sym.is_plain());
+        assert_eq!(sym.label("\u{2022}", 5), "\u{2022}");
+        let n = bullet_numbers([
+            (true, &num),
+            (true, &num),
+            (false, &num),
+            (true, &num),
+            (true, &sym),
+            (true, &num),
+        ]);
+        assert_eq!(n, vec![3, 4, 0, 3, 0, 3]);
+    }
+
+    /// Columns of their own widths share the frame in proportion and
+    /// turn round right to left (#2192); equal columns stay as they were.
+    #[test]
+    fn column_boxes_share_the_frame() {
+        use super::ParagraphStyle;
+        let equal = ParagraphStyle {
+            columns: 2,
+            gutter: 10.0,
+            ..Default::default()
+        };
+        assert_eq!(equal.column_boxes(110.0), vec![(0.0, 50.0), (60.0, 50.0)]);
+        let uneven = ParagraphStyle {
+            columns: 3,
+            column_widths: vec![20.0, 40.0, 20.0],
+            column_gutters: vec![10.0, 10.0],
+            ..Default::default()
+        };
+        assert!(uneven.uneven_columns());
+        // Typed for 100 mm, laid out in 200 mm: twice as wide.
+        let b = uneven.column_boxes(200.0);
+        assert_eq!(b, vec![(0.0, 40.0), (60.0, 80.0), (160.0, 40.0)]);
+        let rtl = ParagraphStyle {
+            columns_right_to_left: true,
+            ..uneven.clone()
+        };
+        assert_eq!(
+            rtl.column_boxes(100.0),
+            vec![(80.0, 20.0), (30.0, 40.0), (0.0, 20.0)]
+        );
+        // A width missing for a column: equal columns.
+        let short = ParagraphStyle {
+            column_widths: vec![20.0, 40.0],
+            ..uneven
+        };
+        assert!(!short.uneven_columns());
+    }
+
     /// An empty curve in a group takes no room in the group's box: the
     /// box of a dimension without arrowheads reached the origin (#996).
     #[test]
@@ -4904,7 +7302,313 @@ mod tests {
         );
     }
 
+    /// A text saved with a mesh grid left over its old, smaller box (typed
+    /// over before 0.47: a T made a C) opens with the grid over its whole
+    /// box again, inside a group too, so no part of it is left without
+    /// fill for the shadows to show through (#2892, #2894). A grid
+    /// reaching past the text's box is left as it is.
+    #[test]
+    fn a_texts_mesh_left_over_its_old_box_covers_it_when_the_file_opens() {
+        use crate::geometry::{Point, Rect};
+        let text = |s: &str| {
+            Shape::new(
+                ShapeId(1),
+                ShapeKind::Text {
+                    spans: vec![TextSpan::new(s, "Any", 72.0)],
+                    origin: Point::ZERO,
+                    frame: None,
+                    align: Default::default(),
+                    para: Default::default(),
+                    on_path: None,
+                },
+            )
+        };
+        let bounds = |s: &Shape| crate::geometry::Shape::bounding_box(&s.local_path());
+        let grid = |f: &Fill| {
+            let Fill::Mesh(m) = f else { panic!("{f:?}") };
+            let p = m.nodes[0].pos;
+            m.nodes
+                .iter()
+                .fold(Rect::from_points(p, p), |r, n| r.union_pt(n.pos))
+        };
+        let old = bounds(&text("T"));
+        let mut cc = text("CC");
+        let wide = bounds(&cc);
+        assert!(wide.width() > old.width() * 1.5, "{wide:?} vs {old:?}");
+        cc.fill = Fill::Mesh(crate::Mesh::new(old, 2, 2, crate::Color::BLACK));
+        let mut past = text("CC");
+        let big = wide.inflate(10.0, 10.0);
+        past.fill = Fill::Mesh(crate::Mesh::new(big, 2, 2, crate::Color::BLACK));
+        let group = Shape::new(
+            ShapeId(2),
+            ShapeKind::Group {
+                children: vec![cc.clone()],
+            },
+        );
+        let mut doc = Document::default();
+        doc.pages[0].layers[0].shapes = vec![cc, group, past];
+        let json = doc.to_json().expect("json");
+        let back = Document::from_json(&json).expect("opens");
+        let shapes = &back.pages[0].layers[0].shapes;
+        let ShapeKind::Group { children } = &shapes[1].kind else {
+            panic!("a group");
+        };
+        for (got, want) in [
+            (grid(&shapes[0].fill), wide),
+            (grid(&children[0].fill), wide),
+            (grid(&shapes[2].fill), big),
+        ] {
+            for (g, w) in [
+                (got.x0, want.x0),
+                (got.y0, want.y0),
+                (got.x1, want.x1),
+                (got.y1, want.y1),
+            ] {
+                assert!((g - w).abs() < 1e-9, "{got:?} vs {want:?}");
+            }
+        }
+    }
+
     use super::*;
+
+    /// A drawing with a value that is not a number anywhere in it (a
+    /// division by zero's result, an imported number too large to hold)
+    /// is saved with 0 for that value, so the file opens in every
+    /// version: the writer wrote `null`, which no reader before 0.35
+    /// took for a number, so one such value made the whole file refuse
+    /// to open there and the drawing was lost. The `null`s in the file
+    /// are the settings that are not there, and nothing else.
+    #[test]
+    fn a_value_that_is_not_a_number_is_saved_as_zero() {
+        fn nulls(v: &serde_json::Value, key: Option<&str>, out: &mut Vec<String>) {
+            match v {
+                serde_json::Value::Null => {
+                    if !key.is_some_and(|k| NULL_SETTINGS.contains(&k)) {
+                        out.push(key.unwrap_or("[]").to_string());
+                    }
+                }
+                serde_json::Value::Array(items) => {
+                    items.iter().for_each(|x| nulls(x, None, out));
+                }
+                serde_json::Value::Object(m) => {
+                    m.iter().for_each(|(k, x)| nulls(x, Some(k), out));
+                }
+                _ => {}
+            }
+        }
+        for v in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let mut doc = Document::default();
+            let mut rect = Shape::new(
+                ShapeId(1),
+                ShapeKind::Rect {
+                    rect: crate::geometry::Rect::new(5.0, 5.0, v, 30.0),
+                    radius: 0.0,
+                    corners: None,
+                },
+            );
+            rect.transform = crate::geometry::Affine::new([1.0, 0.0, 0.0, 1.0, v, 0.0]);
+            rect.stroke = Some(Stroke::new(crate::Color::BLACK, v));
+            rect.opacity = v;
+            let mut text = Shape::new(
+                ShapeId(2),
+                ShapeKind::Text {
+                    spans: vec![TextSpan::new("Hello", "Sans", v)],
+                    origin: crate::geometry::Point::new(10.0, 60.0),
+                    frame: None,
+                    align: TextAlign::Left,
+                    para: ParagraphStyle::default(),
+                    on_path: None,
+                },
+            );
+            text.fill = Fill::Solid(crate::Color::Rgb {
+                r: v as f32,
+                g: 0.5,
+                b: 0.0,
+            });
+            doc.pages[0].layers[0].shapes = vec![rect, text];
+            doc.pages[0].size = crate::geometry::Size::new(100.0, v);
+            for version in [TDRAW_FORMAT_VERSION, 0] {
+                let json = doc.to_json_version(version).expect("json");
+                let tree: serde_json::Value = serde_json::from_str(&json).expect("parses");
+                let mut lost = Vec::new();
+                nulls(&tree, None, &mut lost);
+                assert!(lost.is_empty(), "version {version}: null under {lost:?}");
+                assert_eq!(tree["pages"][0]["size"]["height"], serde_json::json!(0.0));
+                let shape = &tree["pages"][0]["layers"][0]["shapes"][0];
+                assert_eq!(shape["opacity"], serde_json::json!(0.0));
+                assert_eq!(shape["stroke"]["width"], serde_json::json!(0.0));
+                let back = Document::from_json(&json).expect("opens again");
+                let shapes = &back.pages[0].layers[0].shapes;
+                assert_eq!(shapes.len(), 2);
+                let ShapeKind::Rect { rect, .. } = &shapes[0].kind else {
+                    panic!("a rectangle");
+                };
+                assert_eq!((rect.x0, rect.x1, rect.y1), (5.0, 0.0, 30.0));
+                assert_eq!(shapes[0].transform.as_coeffs()[4], 0.0);
+                assert_eq!(shapes[0].opacity, 0.0);
+                let ShapeKind::Text { spans, .. } = &shapes[1].kind else {
+                    panic!("a text");
+                };
+                assert_eq!((spans[0].text.as_str(), spans[0].size_pt), ("Hello", 0.0));
+                assert_eq!(back.pages[0].size.height, 0.0);
+            }
+        }
+        // A setting that is not there is still `null`, as the format has it.
+        fn settings(v: &serde_json::Value, key: Option<&str>, n: &mut usize) {
+            match v {
+                serde_json::Value::Null if key.is_some_and(|k| NULL_SETTINGS.contains(&k)) => {
+                    *n += 1;
+                }
+                serde_json::Value::Array(items) => {
+                    items.iter().for_each(|x| settings(x, None, n));
+                }
+                serde_json::Value::Object(m) => {
+                    m.iter().for_each(|(k, x)| settings(x, Some(k), n));
+                }
+                _ => {}
+            }
+        }
+        let json = Document::default().to_json().expect("json");
+        let tree: serde_json::Value = serde_json::from_str(&json).expect("parses");
+        let mut n = 0;
+        settings(&tree, None, &mut n);
+        assert!(n > 0, "{json}");
+    }
+
+    /// A `.tdraw` file saved before 0.35 with `null` for a value that is
+    /// not a number still opens: the value is read as 0 and everything
+    /// else is as it was. A `null` where something other than a number
+    /// belongs is still an error.
+    #[test]
+    fn a_file_with_a_value_that_is_not_a_number_still_opens() {
+        let bad = [f64::NAN, f64::INFINITY, f64::NEG_INFINITY];
+        for v in bad {
+            let mut doc = Document::default();
+            let mut rect = Shape::new(
+                ShapeId(1),
+                ShapeKind::Rect {
+                    rect: crate::geometry::Rect::new(5.0, 5.0, v, 30.0),
+                    radius: 0.0,
+                    corners: None,
+                },
+            );
+            rect.transform = crate::geometry::Affine::new([1.0, 0.0, 0.0, 1.0, v, 0.0]);
+            rect.stroke = Some(Stroke::new(crate::Color::BLACK, v));
+            rect.opacity = v;
+            let mut text = Shape::new(
+                ShapeId(2),
+                ShapeKind::Text {
+                    spans: vec![TextSpan::new("Hello", "Sans", v)],
+                    origin: crate::geometry::Point::new(10.0, 60.0),
+                    frame: None,
+                    align: TextAlign::Left,
+                    para: ParagraphStyle::default(),
+                    on_path: None,
+                },
+            );
+            text.fill = Fill::Solid(crate::Color::Rgb {
+                r: v as f32,
+                g: 0.5,
+                b: 0.0,
+            });
+            doc.pages[0].layers[0].shapes = vec![rect, text];
+            doc.pages[0].size = crate::geometry::Size::new(100.0, v);
+            let json = doc.to_json().expect("json");
+            assert!(json.contains("null"), "written as null");
+            let back = Document::from_json(&json).expect("opens again");
+            let shapes = &back.pages[0].layers[0].shapes;
+            assert_eq!(shapes.len(), 2);
+            let ShapeKind::Rect { rect, .. } = &shapes[0].kind else {
+                panic!("a rectangle");
+            };
+            assert_eq!((rect.x0, rect.x1, rect.y1), (5.0, 0.0, 30.0));
+            assert_eq!(shapes[0].transform.as_coeffs()[4], 0.0);
+            assert_eq!(shapes[0].stroke.as_ref().map(|s| s.width), Some(0.0));
+            assert_eq!(shapes[0].opacity, 0.0);
+            let ShapeKind::Text { spans, .. } = &shapes[1].kind else {
+                panic!("a text");
+            };
+            assert_eq!((spans[0].text.as_str(), spans[0].size_pt), ("Hello", 0.0));
+            assert_eq!(
+                shapes[1].fill,
+                Fill::Solid(crate::Color::Rgb {
+                    r: 0.0,
+                    g: 0.5,
+                    b: 0.0
+                })
+            );
+            assert_eq!(back.pages[0].size.height, 0.0);
+        }
+        // A null that is not a lost number is still refused.
+        let json = Document::default().to_json().expect("json");
+        let broken = json.replacen("\"pages\":[", "\"pages\":null,\"x\":[", 1);
+        assert!(broken.contains("\"pages\":null"));
+        assert!(Document::from_json(&broken).is_err());
+    }
+
+    /// A `.tdraw` file is compact JSON (#2345): its size follows the
+    /// drawing's nodes, not how deep they sit in groups inside groups,
+    /// and it opens as the same drawing. The indented layout wrote 5.3 MB
+    /// for these 10,000 curve nodes, and 13 MB inside eight groups.
+    #[test]
+    fn tdraw_size_does_not_grow_with_group_depth() {
+        use crate::geometry::BezPath;
+        let save = |depth: u64| {
+            let mut doc = Document::default();
+            let mut shapes: Vec<Shape> = (0..50u64)
+                .map(|k| {
+                    let mut p = BezPath::new();
+                    p.move_to((k as f64, k as f64 / 3.0));
+                    for i in 1..=200 {
+                        let f = i as f64 * 1.37 + k as f64 * 3.1;
+                        p.curve_to(
+                            (f / 7.0, f / 11.0),
+                            (f / 13.0, f / 17.0),
+                            (f / 19.0, f / 23.0),
+                        );
+                    }
+                    Shape::new(
+                        ShapeId(100 + k),
+                        ShapeKind::Path {
+                            path: p,
+                            closed: true,
+                        },
+                    )
+                })
+                .collect();
+            for d in 0..depth {
+                shapes = vec![Shape::new(
+                    ShapeId(10 + d),
+                    ShapeKind::Group { children: shapes },
+                )];
+            }
+            doc.pages[0].layers[0].shapes = shapes;
+            let json = doc.to_json().expect("json");
+            let back = Document::from_json(&json).expect("opens");
+            let nodes = |d: &Document| {
+                (100..150u64)
+                    .filter_map(|k| match &d.find_shape(ShapeId(k))?.kind {
+                        ShapeKind::Path { path, .. } => Some(path.elements().len()),
+                        _ => None,
+                    })
+                    .sum::<usize>()
+            };
+            assert_eq!((nodes(&back), nodes(&doc)), (50 * 201, 50 * 201));
+            json
+        };
+        let flat = save(0);
+        let deep = save(8);
+        assert!(!flat.contains('\n'), "no line breaks");
+        // About 155 bytes for each curve node (its three points in full);
+        // each group adds its own fields, some 500 bytes.
+        assert!(flat.len() < 1_700_000, "{} bytes", flat.len());
+        assert!(
+            deep.len() < flat.len() + 8_000,
+            "{} against {}",
+            deep.len(),
+            flat.len()
+        );
+    }
 
     /// Variable font axis values (#870) are set, replaced and taken off
     /// per tag, saved with the text in the native format and left out of
@@ -4955,6 +7659,88 @@ mod tests {
         assert!(spans[0].variations.is_empty());
     }
 
+    /// Bowed edges (#2188): a square bulged all round is a circle through
+    /// its corners, a little bow keeps the corners where they were and
+    /// lifts the edges' middles, rounded corners stay tangent to the
+    /// bowed edges, and a rectangle that bows is never written as a plain
+    /// one. No bow leaves the outline as it was.
+    #[test]
+    fn bulged_edges_bow_the_rectangle_out() {
+        use crate::geometry::{ParamCurve, ParamCurveDeriv, ParamCurveNearest, Shape as _};
+        let r = Rect::new(0.0, 0.0, 100.0, 100.0);
+        let full = Corners {
+            bulge: [1.0; 4],
+            ..Corners::default()
+        };
+        let p = full.path(r, (1.0, 1.0));
+        // Every point of the outline on the circle through the corners.
+        let c = Point::new(50.0, 50.0);
+        let radius = 50.0 * std::f64::consts::SQRT_2;
+        for seg in p.segments() {
+            for i in 0..=8 {
+                let q = seg.eval(i as f64 / 8.0);
+                assert!(((q - c).hypot() - radius).abs() < 0.05, "{q:?}");
+            }
+        }
+        // A little bow on the top edge alone.
+        let top = Corners {
+            bulge: [0.5, 0.0, 0.0, 0.0],
+            ..Corners::default()
+        };
+        let (mid, out) = top.edge_middle(Corners::EDGE_TOP, r);
+        assert_eq!(out, Vec2::new(0.0, 1.0));
+        let sag = 0.5 * (std::f64::consts::SQRT_2 - 1.0) * 50.0;
+        assert!((mid.y - (100.0 + sag)).abs() < 1e-9 && (mid.x - 50.0).abs() < 1e-9);
+        let b = top.path(r, (1.0, 1.0)).bounding_box();
+        assert!((b.y1 - (100.0 + sag)).abs() < 1e-6, "{b:?}");
+        assert!(b.y0.abs() < 1e-9 && b.x0.abs() < 1e-9 && (b.x1 - 100.0).abs() < 1e-9);
+        assert!((Corners::bulge_for(Corners::EDGE_TOP, r, sag) - 0.5).abs() < 1e-9);
+        // Rounded corners: the cut ends on the bowed edge, and the outline
+        // turns smoothly there (no kink between the edge and the corner).
+        let round = Corners {
+            radii: [10.0; 4],
+            bulge: [0.6; 4],
+            ..Corners::default()
+        };
+        let path = round.path(r, (1.0, 1.0));
+        let segs: Vec<_> = path.segments().collect();
+        for w in segs.windows(2) {
+            let (a, b) = (w[0], w[1]);
+            let ta = a.to_cubic().deriv().eval(1.0).to_vec2();
+            let tb = b.to_cubic().deriv().eval(0.0).to_vec2();
+            let turn = ta.cross(tb).atan2(ta.dot(tb)).abs();
+            assert!(turn < 0.02, "kink of {turn} rad at {:?}", a.end());
+        }
+        // The square corner nodes stay on the corners; the cut ends of a
+        // round corner lie on the bowed edge, not inside it.
+        let ends = round.ends(r, (1.0, 1.0));
+        for (_, v, h) in ends {
+            for q in [v, h] {
+                let d = segs
+                    .iter()
+                    .map(|s| s.nearest(q, 1e-9).distance_sq)
+                    .fold(f64::MAX, f64::min);
+                assert!(d < 1e-6, "{q:?}");
+            }
+        }
+        // Kept as a rectangle with corners, never plain, and the bow
+        // survives a trip through the file.
+        let kind = ShapeKind::rect_with_corners(r, top);
+        assert!(matches!(kind, ShapeKind::Rect { corners: Some(c), .. } if c.bulge[0] == 0.5));
+        let s = Shape::new(ShapeId(1), kind);
+        assert!(s.plain_rect().is_none());
+        let json = serde_json::to_string(&s).unwrap();
+        let back: Shape = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.kind, s.kind);
+        // No bow: the same outline as before, and no field in the file.
+        let plain = Corners {
+            radii: [10.0; 4],
+            ..Corners::default()
+        };
+        assert!(!serde_json::to_string(&plain).unwrap().contains("bulge"));
+        assert_eq!(plain.path(r, (1.0, 1.0)).elements().len(), 10);
+    }
+
     /// Imported rounded corners keep their size (#619): a corner larger
     /// than the shorter side stays as it was, and a stretched rectangle
     /// takes the stretch into its size, its corners round at the smaller
@@ -4966,6 +7752,7 @@ mod tests {
             radii: [30.0, 30.0, 0.0, 0.0],
             kind: CornerKind::Round,
             fixed: false,
+            ..Corners::default()
         };
         let mut s = Shape::new(
             ids.shape(),
@@ -5267,6 +8054,104 @@ mod tests {
         p
     }
 
+    /// A saved drawing is packed (#2849): each distinct picture and font
+    /// once however many objects hold it, the whole JSON gzip-compressed;
+    /// it reads back the same, with the copies sharing one buffer again.
+    /// Plain files (version 0, and every file before 0.47) still open,
+    /// and Save As version 0 writes one.
+    #[test]
+    fn tdraw_files_are_packed_with_each_picture_once() {
+        let mut doc = Document::new("Packed", crate::geometry::Size::new(100.0, 50.0));
+        let layer = doc.pages[0].layers[0].id;
+        // A picture of 200 kB of noise (it does not compress), on 50
+        // objects, as copies and symbols of a large drawing hold it.
+        let mut seed = 7u32;
+        let noise: Vec<u8> = (0..200_000)
+            .map(|_| {
+                seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+                (seed >> 16) as u8
+            })
+            .collect();
+        let picture = crate::SharedBytes::from(noise.clone());
+        for i in 0..50 {
+            let id = doc.ids_mut().shape();
+            // Half of them a copy of the bytes, not the shared buffer.
+            let png = if i % 2 == 0 {
+                picture.clone()
+            } else {
+                crate::SharedBytes::from(noise.clone())
+            };
+            let s = Shape::new(
+                id,
+                ShapeKind::Bitmap {
+                    rect: Rect::new(0.0, 0.0, 20.0, 10.0),
+                    width_px: 4,
+                    height_px: 2,
+                    png,
+                    fx: None,
+                },
+            );
+            doc.layer_mut(layer).expect("layer").shapes.push(s);
+        }
+        doc.fonts
+            .push(DocumentFont::new("Embedded", vec![5u8; 3000]));
+        doc.fonts
+            .push(DocumentFont::new("Same bytes", vec![5u8; 3000]));
+        let mut packed = Vec::new();
+        doc.write_tdraw_version(&mut packed, TDRAW_FORMAT_VERSION)
+            .expect("write");
+        assert!(is_gzip(&packed));
+        let plain = doc.to_json_version(0).expect("plain");
+        // 50 copies of 200 kB in base64 would be some 13 MB.
+        assert!(plain.len() > 13_000_000, "{}", plain.len());
+        assert!(packed.len() < 300_000, "{} bytes", packed.len());
+        let text = tdraw_text(&packed).expect("text");
+        assert_eq!(text.matches(crate::bytes::BLOB_PREFIX).count(), 52);
+        let table: serde_json::Value = serde_json::from_str(&text).expect("json");
+        assert_eq!(table[BLOBS_KEY].as_array().map(Vec::len), Some(2));
+        assert_eq!(tdraw_text_version(&text), TDRAW_FORMAT_VERSION);
+        let back = Document::from_tdraw_bytes(&packed).expect("reads");
+        let pictures: Vec<&crate::SharedBytes> = back.pages[0].layers[0]
+            .shapes
+            .iter()
+            .filter_map(|s| match &s.kind {
+                ShapeKind::Bitmap { png, .. } => Some(png),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(pictures.len(), 50);
+        assert!(pictures.iter().all(|p| ***p == noise[..]));
+        assert!(pictures
+            .iter()
+            .all(|p| crate::SharedBytes::ptr_eq(p, pictures[0])));
+        assert_eq!(back.fonts.len(), 2);
+        assert_eq!(*back.fonts[1].data, vec![5u8; 3000]);
+        // The same drawing as before: its JSON matches.
+        assert_eq!(
+            back.to_json_version(0).expect("json"),
+            plain,
+            "the packed file reads back as the drawing"
+        );
+        // A plain file of 0.46 (version 0, no table) opens, as bytes too.
+        assert!(!is_gzip(plain.as_bytes()));
+        assert_eq!(tdraw_text_version(&plain), 0);
+        let old = Document::from_tdraw_bytes(plain.as_bytes()).expect("plain opens");
+        assert_eq!(old.to_json_version(0).expect("json"), plain);
+        // Save As version 0 writes that plain file.
+        let mut v0 = Vec::new();
+        doc.write_tdraw_version(&mut v0, 0).expect("v0");
+        assert_eq!(String::from_utf8(v0).expect("text"), plain);
+        // A reference outside the table is an error, not a panic.
+        let broken = text.replace("blob:1\"", "blob:9\"");
+        assert!(Document::from_json(&broken).is_err());
+        // No table is left behind for the next file read or written.
+        assert!(crate::bytes::blob_read("blob:0").is_none());
+        assert!(!doc
+            .to_json()
+            .expect("json")
+            .contains(crate::bytes::BLOB_PREFIX));
+    }
+
     /// The file is written as it is made, and reads as the same JSON the
     /// tree built in memory gave.
     #[test]
@@ -5333,7 +8218,9 @@ mod tests {
         };
         for version in 0..=TDRAW_FORMAT_VERSION {
             let json = doc.to_json_version(version).expect("json");
-            assert_eq!(tdraw_text_version(&json), version);
+            // 1 is read as 0, whose layout it has.
+            let read_as = if version == 1 { 0 } else { version };
+            assert_eq!(tdraw_text_version(&json), read_as);
             assert_eq!(Document::from_json(&json).expect("reads").title, "Older");
         }
         let newer = doc.to_json_version(TDRAW_FORMAT_VERSION + 5).expect("json");
@@ -5369,6 +8256,38 @@ mod tests {
         let (top, dir) = back.at(0.0).expect("point");
         assert!((top - Point::new(0.0, 8.0)).hypot() < 0.01, "{top:?}");
         assert!(dir.x < -0.99, "{dir:?}");
+    }
+
+    /// #2715: letters round a circle took each the direction of the
+    /// chord of the flattened circle they stood on, so they turned in
+    /// steps of a chord's angle (about 5 degrees on a 50 mm radius) and
+    /// some stood visibly tilted. The direction now follows the curve
+    /// within a fraction of a degree, and a corner stays sharp.
+    #[test]
+    fn text_baselines_turn_smoothly_round_a_curve_and_keep_corners() {
+        let r = 50.0;
+        let circle = clockwise_circle(r);
+        let b = Baseline::new(&circle, 0.0, false);
+        let total = b.length();
+        let mut worst: f64 = 0.0;
+        for k in 0..997 {
+            let s = total * k as f64 / 997.0;
+            let (p, d) = b.at(s).expect("point");
+            // Clockwise round the origin: the tangent is (y, -x) / r.
+            let want = Vec2::new(p.y, -p.x).normalize();
+            worst = worst.max(d.cross(want).abs().asin().to_degrees());
+        }
+        assert!(worst < 1.0, "off the curve by {worst} degrees");
+        // A corner: the chord's own direction right up to it.
+        let mut l = BezPath::new();
+        l.move_to((0.0, 0.0));
+        l.line_to((10.0, 0.0));
+        l.line_to((10.0, 10.0));
+        let corner = Baseline::new(&l, 0.0, false);
+        let (_, d) = corner.at(9.99).expect("point");
+        assert!((d - Vec2::new(1.0, 0.0)).hypot() < 1e-9, "{d:?}");
+        let (_, d) = corner.at(10.01).expect("point");
+        assert!((d - Vec2::new(0.0, 1.0)).hypot() < 1e-9, "{d:?}");
     }
 
     #[test]
@@ -5424,6 +8343,7 @@ mod tests {
             color: Some(crate::Color::rgb8(255, 0, 0)),
             style: GuideStyle::Dotted,
             locked: true,
+            hidden: true,
         };
         let json = serde_json::to_string(&g).unwrap();
         assert!(json.contains("\"dir\":\"vertical\""));
@@ -5468,6 +8388,63 @@ mod tests {
     }
 
     #[test]
+    fn page_ranges_read_numbers_and_ranges_in_page_order() {
+        assert_eq!(parse_page_range("1-3, 7", 10), vec![0, 1, 2, 6]);
+        assert_eq!(parse_page_range(" 7 ; 3-1 ", 10), vec![0, 1, 2, 6]);
+        assert_eq!(parse_page_range("2,2,2-3", 10), vec![1, 2]);
+        // Pages past the end are left out; a huge range costs nothing.
+        assert_eq!(parse_page_range("4-99999999999", 5), vec![3, 4]);
+        assert_eq!(parse_page_range("9", 5), Vec::<usize>::new());
+        // Not a range: none.
+        for bad in ["", "a", "0", "1-x", "1,,b", "-3"] {
+            assert!(parse_page_range(bad, 5).is_empty(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn the_multipage_pages_are_kept_and_default_to_all() {
+        // A drawing saved before the setting existed shows every page.
+        let m: Metadata = serde_json::from_str(r#"{"author":"a"}"#).unwrap();
+        assert_eq!(m.multipage_pages, "");
+        assert_eq!(m.multipage_page_indices(5), None);
+        let json = serde_json::to_string(&m).unwrap();
+        assert!(!json.contains("multipage_pages"), "{json}");
+        let mut m = m;
+        m.multipage_pages = "1-2, 5".into();
+        let back: Metadata = serde_json::from_str(&serde_json::to_string(&m).unwrap()).unwrap();
+        assert_eq!(back.multipage_page_indices(5), Some(vec![0, 1, 4]));
+        // Fewer pages now: the ones left; none of them: every page.
+        assert_eq!(back.multipage_page_indices(2), Some(vec![0, 1]));
+        m.multipage_pages = "7-9".into();
+        assert_eq!(m.multipage_page_indices(5), None);
+    }
+
+    #[test]
+    fn the_page_spacing_defaults_to_30_mm_and_round_trips() {
+        // A drawing saved before the setting existed.
+        let m: Metadata = serde_json::from_str(r#"{"author":"a"}"#).unwrap();
+        assert_eq!(m.page_spacing, None);
+        assert_eq!(m.page_spacing(), DEFAULT_PAGE_SPACING);
+        assert_eq!(DEFAULT_PAGE_SPACING, 30.0);
+        assert_eq!(Document::default().metadata.page_spacing(), 30.0);
+        // Unset, it stays out of the file.
+        let json = serde_json::to_string(&m).unwrap();
+        assert!(!json.contains("page_spacing"), "{json}");
+        // Set, it is saved and read back.
+        let mut m = m;
+        m.page_spacing = Some(12.5);
+        let back: Metadata = serde_json::from_str(&serde_json::to_string(&m).unwrap()).unwrap();
+        assert_eq!(back.page_spacing(), 12.5);
+        // Out of range values are kept in range.
+        m.page_spacing = Some(-4.0);
+        assert_eq!(m.page_spacing(), 0.0);
+        m.page_spacing = Some(1e9);
+        assert_eq!(m.page_spacing(), MAX_PAGE_SPACING);
+        m.page_spacing = Some(f64::NAN);
+        assert_eq!(m.page_spacing(), DEFAULT_PAGE_SPACING);
+    }
+
+    #[test]
     fn json_round_trip() {
         let mut doc = Document::default();
         let id = doc.ids_mut().shape();
@@ -5490,6 +8467,52 @@ mod tests {
         assert!((b.x0 - 15.0).abs() < 1e-6 && (b.y1 - 35.0).abs() < 1e-6);
         assert_eq!(back.locate(id).unwrap(), (layer, 0));
         let _ = Point::ZERO;
+    }
+
+    /// A drawing with groups inside groups, 40 deep, saves and opens
+    /// again. The JSON reader's own nesting limit (128 levels, about 30
+    /// groups inside groups) refused such a file as "recursion limit
+    /// exceeded", so a drawing that saved fine was lost on reopening.
+    /// A file nested past [`MAX_JSON_DEPTH`] is refused with a clear
+    /// error, not a crash, and the bracket count ignores strings.
+    #[test]
+    fn deeply_nested_groups_save_and_open_again() {
+        let mut doc = Document::default();
+        let layer = doc.pages[0].layers[0].id;
+        let mut ids = doc.ids().clone();
+        let mut inner = Shape::new(
+            ids.shape(),
+            ShapeKind::Rect {
+                rect: Rect::new(10.0, 10.0, 50.0, 30.0),
+                radius: 0.0,
+                corners: None,
+            },
+        );
+        for _ in 0..40 {
+            inner = Shape::new(
+                ids.shape(),
+                ShapeKind::Group {
+                    children: vec![inner],
+                },
+            );
+        }
+        doc.set_ids(ids);
+        doc.layer_mut(layer).unwrap().shapes.push(inner);
+        let json = doc.to_json().unwrap();
+        assert!(json_depth(&json) > 128, "{}", json_depth(&json));
+        assert_eq!(tdraw_text_version(&json), TDRAW_FORMAT_VERSION);
+        let back = Document::from_json(&json).unwrap();
+        assert_eq!(doc, back);
+
+        assert_eq!(json_depth(r#"{"a":"[[{{","b":[1,[2,"\"]]]"]]}"#), 3);
+        let too_deep = format!(
+            "{}{}",
+            "[".repeat(MAX_JSON_DEPTH + 1),
+            "]".repeat(MAX_JSON_DEPTH + 1)
+        );
+        let err = Document::from_json(&too_deep).unwrap_err().to_string();
+        assert!(err.contains("levels deep"), "{err}");
+        assert_eq!(tdraw_text_version(&too_deep), 0);
     }
 
     #[test]
@@ -5717,6 +8740,66 @@ mod tests {
         assert!((area(&s) - (600.0 - 18.0)).abs() < 1e-9);
     }
 
+    /// The corner fields follow the corners as they lie on the page: a
+    /// rectangle turned by 180 degrees or flipped has its local top left
+    /// at another position (#1670).
+    #[test]
+    fn corners_are_read_where_they_are_seen() {
+        use std::f64::consts::PI;
+        let (tl, tr, bl, br) = (
+            Corners::TOP_LEFT,
+            Corners::TOP_RIGHT,
+            Corners::BOTTOM_LEFT,
+            Corners::BOTTOM_RIGHT,
+        );
+        assert_eq!(Corners::seen_through(Affine::IDENTITY), [tl, tr, bl, br]);
+        // Turned a little: where they were.
+        assert_eq!(Corners::seen_through(Affine::rotate(0.3)), [tl, tr, bl, br]);
+        assert_eq!(
+            Corners::seen_through(Affine::rotate(-0.3)),
+            [tl, tr, bl, br]
+        );
+        // Turned by 180 degrees (either way): every corner across.
+        assert_eq!(Corners::seen_through(Affine::rotate(PI)), [br, bl, tr, tl]);
+        assert_eq!(Corners::seen_through(Affine::rotate(-PI)), [br, bl, tr, tl]);
+        // Flipped across: left and right swap; upside down: top and bottom.
+        assert_eq!(
+            Corners::seen_through(Affine::scale_non_uniform(-1.0, 1.0)),
+            [tr, tl, br, bl]
+        );
+        assert_eq!(
+            Corners::seen_through(Affine::scale_non_uniform(1.0, -1.0)),
+            [bl, br, tl, tr]
+        );
+        // A quarter turn counter-clockwise: the local top left (x0, y1)
+        // goes to the bottom left.
+        assert_eq!(
+            Corners::seen_through(Affine::rotate(PI / 2.0)),
+            [tr, br, tl, bl]
+        );
+        // A stretch does not move them; a skew keeps one at each place.
+        assert_eq!(
+            Corners::seen_through(Affine::scale_non_uniform(4.0, 0.2)),
+            [tl, tr, bl, br]
+        );
+        let mut seen = Corners::seen_through(Affine::skew(1.5, 0.0));
+        seen.sort_unstable();
+        assert_eq!(seen, [0, 1, 2, 3]);
+        // Reading and writing the sizes by position.
+        let mut c = Corners::uniform(0.0, CornerKind::Round);
+        c.radii[tl] = 6.0;
+        let turned = Affine::rotate(PI);
+        assert_eq!(c.as_seen(turned).radii, [0.0, 0.0, 0.0, 6.0]);
+        assert_eq!(Corners::from_seen(c.as_seen(turned), turned), c);
+        let mut typed = Corners::uniform(0.0, CornerKind::Round);
+        typed.radii[tl] = 3.0;
+        assert_eq!(
+            Corners::from_seen(typed, turned).radii,
+            [0.0, 0.0, 0.0, 3.0]
+        );
+        assert_eq!(Corners::from_seen(typed, Affine::IDENTITY), typed);
+    }
+
     #[test]
     fn corner_ends_sit_on_the_edges() {
         let mut c = Corners::uniform(5.0, CornerKind::Round);
@@ -5794,6 +8877,79 @@ mod tests {
         assert!((ends[Corners::TOP_RIGHT].1.y - (37.0 - 30.0 * k)).abs() < 1e-9);
     }
 
+    /// A corner set on the page is not cut to half the shorter side: it
+    /// may take what its neighbours on both its sides leave (#1757).
+    #[test]
+    fn one_corner_may_take_what_its_neighbours_leave() {
+        // 100 x 80 mm, top left 10, top right 80: the top side holds 90
+        // of 100, the right side 80 of 80, so nothing shrinks.
+        for fixed in [true, false] {
+            let mut s = rect_shape(100.0, 80.0, Corners::default());
+            s.transform = Affine::scale(2.0);
+            let c = Corners {
+                radii: [20.0, 160.0, 0.0, 0.0],
+                fixed,
+                ..Corners::default()
+            };
+            s.kind = s.with_page_corners(c).unwrap();
+            assert_eq!(s.page_corners().unwrap().radii, [20.0, 160.0, 0.0, 0.0]);
+            assert_eq!(
+                s.drawn_page_corners().unwrap().radii,
+                [20.0, 160.0, 0.0, 0.0]
+            );
+            let ends = s
+                .kind
+                .rect_corners()
+                .unwrap()
+                .1
+                .ends(Rect::new(0.0, 0.0, 100.0, 80.0), axis_scale(s.transform));
+            // A quarter circle down the whole right side.
+            assert!((ends[Corners::TOP_RIGHT].1 - Point::new(100.0, 0.0)).hypot() < 1e-9);
+            assert!((ends[Corners::TOP_RIGHT].2 - Point::new(20.0, 80.0)).hypot() < 1e-9);
+        }
+    }
+
+    /// On a thin rectangle the corners of one long side can each be
+    /// larger than half the short side when their neighbours are smaller;
+    /// corners shrink, all by the same factor, only once the two on a
+    /// side together are longer than it (#1757).
+    #[test]
+    fn corners_shrink_only_when_a_side_is_too_short_for_its_two() {
+        let mut s = rect_shape(100.0, 20.0, Corners::default());
+        let mut c = Corners::uniform(0.0, CornerKind::Round);
+        c.fixed = true;
+        // A tab: 16 and 4 on the right side (20 of 20), 16 on the top left
+        // with 4 below it.
+        c.radii = [16.0, 16.0, 4.0, 4.0];
+        s.kind = s.with_page_corners(c).unwrap();
+        assert_eq!(s.page_corners().unwrap().radii, [16.0, 16.0, 4.0, 4.0]);
+        assert_eq!(
+            s.drawn_page_corners().unwrap().radii,
+            [16.0, 16.0, 4.0, 4.0]
+        );
+        // The area cut matches four quarter circles of those sizes (drawn
+        // as cubics, a hair outside the circle).
+        let cut = (4.0 - std::f64::consts::PI) / 4.0 * (2.0 * 256.0 + 2.0 * 16.0);
+        assert!((area(&s) - (2000.0 - cut)).abs() < 0.2, "{}", area(&s));
+        // 18 over 4 on the right side: 22 on 20, so every corner is drawn
+        // at 20 / 22 of its size; what was typed is kept.
+        c.radii = [16.0, 18.0, 4.0, 4.0];
+        s.kind = s.with_page_corners(c).unwrap();
+        assert_eq!(s.page_corners().unwrap().radii, [16.0, 18.0, 4.0, 4.0]);
+        let k = 20.0 / 22.0;
+        let drawn = s.drawn_page_corners().unwrap().radii;
+        for (d, r) in drawn.iter().zip([16.0, 18.0, 4.0, 4.0]) {
+            assert!((d - r * k).abs() < 1e-9, "{drawn:?}");
+        }
+        // Equal corners still stop at half the shorter side.
+        s.kind = s
+            .with_page_corners(Corners::uniform(30.0, CornerKind::Round))
+            .unwrap();
+        assert_eq!(s.drawn_page_corners().unwrap().radii, [10.0; 4]);
+        // Formats with one radius get the size that is drawn.
+        assert_eq!(s.plain_rect().unwrap().1, 10.0);
+    }
+
     #[test]
     fn fixed_corners_keep_their_size_when_scaled() {
         let r = 4.0;
@@ -5857,11 +9013,19 @@ mod tests {
             s.plain_rect(),
             Some((Rect::new(0.0, 0.0, 20.0, 10.0), 3.0, s.transform))
         );
-        // Fixed corners are stored as page sizes, limited by the page box.
+        // Fixed corners are stored as page sizes, as typed, and drawn
+        // fitted to the page box.
         let mut c = Corners::uniform(50.0, CornerKind::Scallop);
         c.fixed = true;
         let kind = s.with_page_corners(c).unwrap();
-        assert_eq!(kind.rect_corners().unwrap().1.radii, [10.0; 4]);
+        assert_eq!(kind.rect_corners().unwrap().1.radii, [50.0; 4]);
+        let mut fitted = s.clone();
+        fitted.kind = kind;
+        assert_eq!(fitted.drawn_page_corners().unwrap().radii, [10.0; 4]);
+        // Negative and non-finite sizes are square corners.
+        c.radii = [-1.0, f64::NAN, f64::INFINITY, 2.0];
+        let kind = s.with_page_corners(c).unwrap();
+        assert_eq!(kind.rect_corners().unwrap().1.radii, [0.0, 0.0, 0.0, 2.0]);
         // A fixed round radius on a uniformly scaled rectangle is still one radius.
         c.kind = CornerKind::Round;
         c.radii = [4.0; 4];
@@ -5940,6 +9104,19 @@ mod tests {
         let json = serde_json::to_string(&twisted).unwrap();
         assert!(json.contains("twist"));
         assert_eq!(serde_json::from_str::<ShapeKind>(&json).unwrap(), twisted);
+        // An inverted star (#1331) keeps its negative sharpness; an older
+        // file's star reads with the sharpness it had.
+        assert!(matches!(old, ShapeKind::Polygon { sharpness, .. } if sharpness == 0.5));
+        let inverted = ShapeKind::Polygon {
+            rect: Rect::new(0.0, 0.0, 2.0, 2.0),
+            points: 5,
+            sharpness: -0.3,
+            complex: None,
+            twist: 0.0,
+        };
+        let json = serde_json::to_string(&inverted).unwrap();
+        assert!(json.contains("\"sharpness\":-0.3"), "{json}");
+        assert_eq!(serde_json::from_str::<ShapeKind>(&json).unwrap(), inverted);
     }
 
     #[test]
@@ -6055,6 +9232,61 @@ mod tests {
             (p.x - 1.0).abs() < 1e-9 && (p.y - -5.0).abs() < 1e-9,
             "{p:?}"
         );
+    }
+
+    /// The text direction of a paragraph (#2670): older files read as
+    /// left to right and do not write it; right to left is saved and read
+    /// back, also as a paragraph's own format.
+    #[test]
+    fn text_direction_defaults_to_left_to_right_and_round_trips() {
+        let old: ParagraphStyle = serde_json::from_str("{}").expect("parses");
+        assert_eq!(old.direction, TextDirection::LeftToRight);
+        let json = serde_json::to_string(&old).expect("writes");
+        assert!(!json.contains("direction"), "{json}");
+        let mut rtl = old.clone();
+        rtl.direction = TextDirection::RightToLeft;
+        let json = serde_json::to_string(&rtl).expect("writes");
+        assert!(json.contains("\"direction\":\"right_to_left\""), "{json}");
+        let back: ParagraphStyle = serde_json::from_str(&json).expect("parses");
+        assert_eq!(back.direction, TextDirection::RightToLeft);
+        let f = crate::ParagraphFormat::of(TextAlign::Right, &rtl);
+        let json = serde_json::to_string(&f).expect("writes");
+        let back: crate::ParagraphFormat = serde_json::from_str(&json).expect("parses");
+        let mut p = ParagraphStyle::default();
+        back.apply_to(&mut p);
+        assert_eq!(p.direction, TextDirection::RightToLeft);
+        let plain = serde_json::to_string(&crate::ParagraphFormat::default()).expect("writes");
+        assert!(!plain.contains("direction"), "{plain}");
+    }
+
+    /// The column order of vertical text (#1986): older files read as
+    /// right to left, left to right is saved and read back, and such a
+    /// frame's text is placed from its top left.
+    #[test]
+    fn vertical_columns_default_to_right_to_left_and_round_trip() {
+        let old: ParagraphStyle = serde_json::from_str(r#"{"vertical":true}"#).expect("parses");
+        assert_eq!(old.vertical_columns, VerticalColumns::RightToLeft);
+        assert!(old.columns_from_right() && !old.columns_left_to_right());
+        let json = serde_json::to_string(&old).expect("writes");
+        assert!(!json.contains("vertical_columns"), "{json}");
+        let mut ltr = old.clone();
+        ltr.vertical_columns = VerticalColumns::LeftToRight;
+        let json = serde_json::to_string(&ltr).expect("writes");
+        assert!(
+            json.contains("\"vertical_columns\":\"left_to_right\""),
+            "{json}"
+        );
+        let back: ParagraphStyle = serde_json::from_str(&json).expect("reads");
+        assert_eq!(back, ltr);
+        assert!(back.columns_left_to_right() && !back.columns_from_right());
+        // Text set in lines keeps the setting but is not in columns.
+        let mut flat = ltr.clone();
+        flat.vertical = false;
+        assert!(!flat.columns_left_to_right() && !flat.columns_from_right());
+        let o = Point::new(10.0, 20.0);
+        let f = Some(geometry::Size::new(50.0, 80.0));
+        let shift = text_layout_shift(o, f, false, back.columns_from_right());
+        assert_eq!(shift * Point::ZERO, Point::new(10.0, 100.0));
     }
 
     #[test]
@@ -6238,5 +9470,230 @@ mod tests {
         )
         .expect("old");
         assert_eq!(old.outline, None);
+    }
+
+    /// OpenType features on and off (#1201): a tag turns a feature on, a
+    /// tag after a `-` turns a default feature off, and what the shaper
+    /// does anyway is not stored; superscript and subscript are kept
+    /// only when set, and older files read as plain text.
+    #[test]
+    fn features_switch_on_and_off_and_positions_round_trip() {
+        use super::{parse_feature, TextPosition, DEFAULT_ON_FEATURES};
+        assert_eq!(parse_feature("liga"), Some(("liga", true)));
+        assert_eq!(parse_feature("+liga"), Some(("liga", true)));
+        assert_eq!(parse_feature("-liga"), Some(("liga", false)));
+        assert_eq!(parse_feature("liga=0"), Some(("liga", false)));
+        assert_eq!(parse_feature("liga=1"), Some(("liga", true)));
+        assert_eq!(parse_feature(""), None);
+        assert_eq!(parse_feature("-"), None);
+        assert_eq!(parse_feature("toolong"), None);
+
+        let mut s = TextSpan::new("fi", "Quicksand", 12.0);
+        assert!(DEFAULT_ON_FEATURES.contains(&"liga"));
+        assert!(s.feature_on("liga"));
+        assert!(!s.feature_on("smcp"));
+        assert_eq!(s.feature_setting("liga"), None);
+        s.set_feature("liga", Some(false));
+        assert_eq!(s.features, vec!["-liga".to_string()]);
+        assert!(!s.feature_on("liga"));
+        assert_eq!(s.feature_setting("liga"), Some(false));
+        // Back on: nothing is stored, the shaper applies it anyway.
+        s.set_feature("liga", Some(true));
+        assert!(s.features.is_empty());
+        assert!(s.feature_on("liga"));
+        // A feature off by default is stored only when on.
+        s.set_feature("smcp", Some(true));
+        s.set_feature("onum", Some(true));
+        assert_eq!(s.features, vec!["smcp".to_string(), "onum".to_string()]);
+        s.set_feature("smcp", Some(false));
+        assert_eq!(s.features, vec!["onum".to_string()]);
+        s.set_feature("onum", None);
+        assert!(s.features.is_empty());
+        // The last entry for a tag wins, and an entry that is no feature
+        // is left alone.
+        s.features = vec!["liga".into(), "-liga".into(), "no feature".into()];
+        assert!(!s.feature_on("liga"));
+        s.set_feature("liga", None);
+        assert_eq!(s.features, vec!["no feature".to_string()]);
+
+        // Character width (#2190): full width is left out of the file and
+        // is what an older file reads as.
+        let mut w = TextSpan::new("a", "Arial", 12.0);
+        assert_eq!(w.width_pct, 100.0);
+        let json = serde_json::to_string(&w).expect("json");
+        assert!(!json.contains("width_pct"), "{json}");
+        w.width_pct = 80.0;
+        let json = serde_json::to_string(&w).expect("json");
+        assert!(json.contains("\"width_pct\":80.0"), "{json}");
+        assert_eq!(serde_json::from_str::<TextSpan>(&json).expect("back"), w);
+        let old: TextSpan = serde_json::from_str(
+            r#"{"text":"a","font_family":"Arial","size_pt":12.0,"bold":false,"italic":false}"#,
+        )
+        .expect("old");
+        assert_eq!(old.width_pct, 100.0);
+
+        // Superscript and subscript.
+        assert_eq!(TextPosition::Superscript.feature(), Some("sups"));
+        assert_eq!(TextPosition::Subscript.feature(), Some("subs"));
+        assert_eq!(TextPosition::Normal.feature(), None);
+        assert!(TextPosition::Superscript.synthetic_shift() > 0.0);
+        assert!(TextPosition::Subscript.synthetic_shift() < 0.0);
+        let mut s = TextSpan::new("2", "Arial", 12.0);
+        s.features = vec!["-liga".into()];
+        let json = serde_json::to_string(&s).expect("json");
+        assert!(!json.contains("position"), "{json}");
+        assert!(json.contains("\"-liga\""), "{json}");
+        s.position = TextPosition::Superscript;
+        let json = serde_json::to_string(&s).expect("json");
+        assert!(json.contains("\"position\":\"superscript\""), "{json}");
+        let back: TextSpan = serde_json::from_str(&json).expect("back");
+        assert_eq!(back, s);
+        // Older files: no position, and features as they were written.
+        let old: TextSpan = serde_json::from_str(
+            r#"{"text":"a","font_family":"Arial","size_pt":12.0,"bold":false,"italic":false,"features":["liga","smcp"]}"#,
+        )
+        .expect("old");
+        assert_eq!(old.position, TextPosition::Normal);
+        assert!(old.feature_on("liga") && old.feature_on("smcp"));
+    }
+
+    /// Underline and strike line styles (#1209): `true` and `false` of
+    /// older files read as a single thin line and no line and are written
+    /// back as they were; the other styles go by name; all caps, enclosed
+    /// and the overprints are kept only when set.
+    #[test]
+    fn line_styles_read_the_old_flags_and_write_them_back() {
+        let old: TextSpan = serde_json::from_str(
+            r#"{"text":"a","font_family":"Arial","size_pt":12.0,"bold":false,"italic":false,"underline":true,"strikethrough":false}"#,
+        )
+        .expect("old");
+        assert_eq!(old.underline, LineStyle::SingleThin);
+        assert_eq!(old.strikethrough, LineStyle::None);
+        assert!(!old.all_caps && !old.enclosed);
+        assert_eq!(old.overprint_fill, None);
+        assert_eq!(old.overprint_outline, None);
+        let json = serde_json::to_string(&old).expect("json");
+        assert!(json.contains("\"underline\":true"), "{json}");
+        assert!(json.contains("\"strikethrough\":false"), "{json}");
+        for key in [
+            "all_caps",
+            "enclosed",
+            "overprint_fill",
+            "overprint_outline",
+        ] {
+            assert!(!json.contains(key), "{key}: {json}");
+        }
+        // A file without the two fields at all: no lines.
+        let none: TextSpan = serde_json::from_str(
+            r#"{"text":"a","font_family":"Arial","size_pt":12.0,"bold":false,"italic":false}"#,
+        )
+        .expect("none");
+        assert_eq!(none.underline, LineStyle::None);
+        assert_eq!(none.strikethrough, LineStyle::None);
+
+        let mut s = TextSpan::new("a", "Arial", 12.0);
+        for style in LineStyle::ALL {
+            s.underline = style;
+            s.strikethrough = style;
+            let json = serde_json::to_string(&s).expect("json");
+            let back: TextSpan = serde_json::from_str(&json).expect("back");
+            assert_eq!(back, s, "{json}");
+        }
+        s.underline = LineStyle::DoubleThinWord;
+        s.strikethrough = LineStyle::SingleThick;
+        let json = serde_json::to_string(&s).expect("json");
+        assert!(
+            json.contains("\"underline\":\"double_thin_word\""),
+            "{json}"
+        );
+        assert!(
+            json.contains("\"strikethrough\":\"single_thick\""),
+            "{json}"
+        );
+        s.all_caps = true;
+        s.enclosed = true;
+        s.overprint_fill = Some(true);
+        s.overprint_outline = Some(false);
+        let json = serde_json::to_string(&s).expect("json");
+        let back: TextSpan = serde_json::from_str(&json).expect("back");
+        assert_eq!(back, s);
+        assert!(json.contains("\"overprint_outline\":false"), "{json}");
+
+        assert_eq!(LineStyle::from(true), LineStyle::SingleThin);
+        assert_eq!(LineStyle::from(false), LineStyle::None);
+        assert!(!LineStyle::None.is_on() && LineStyle::None.is_none());
+        assert!(LineStyle::SingleThinWord.word_only());
+        assert!(!LineStyle::SingleThin.word_only());
+        assert!(LineStyle::DoubleThinWord.double() && LineStyle::DoubleThin.double());
+        assert_eq!(LineStyle::None.thickness_share(), 0.0);
+        assert!((LineStyle::SingleThin.thickness_share() - 1.0 / 14.0).abs() < 1e-12);
+        assert!((LineStyle::SingleThickWord.thickness_share() - 1.0 / 7.0).abs() < 1e-12);
+        assert_eq!(
+            LineStyle::DoubleThin.with_word_only(true),
+            LineStyle::DoubleThinWord
+        );
+        assert_eq!(
+            LineStyle::SingleThickWord.with_word_only(false),
+            LineStyle::SingleThick
+        );
+        assert_eq!(LineStyle::None.with_word_only(true), LineStyle::None);
+    }
+
+    /// Characters with their own overprint (#1209) are drawn as parts of
+    /// their own, each part marked as its characters say (the object's
+    /// overprint where they say nothing); characters that agree with the
+    /// object make no parts.
+    #[test]
+    fn text_parts_carry_the_characters_overprint() {
+        let mut plain = TextSpan::new("ab", "Arial", 12.0);
+        let mut over = TextSpan::new("cd", "Arial", 12.0);
+        let mut s = Shape::new(
+            ShapeId(1),
+            ShapeKind::Text {
+                spans: vec![plain.clone(), over.clone()],
+                origin: Point::ZERO,
+                frame: None,
+                align: TextAlign::Left,
+                para: ParagraphStyle::default(),
+                on_path: None,
+            },
+        );
+        assert!(s.text_parts().is_none());
+        over.overprint_fill = Some(true);
+        over.overprint_outline = Some(true);
+        plain.overprint_outline = Some(false);
+        s.kind = ShapeKind::Text {
+            spans: vec![plain.clone(), over.clone()],
+            origin: Point::ZERO,
+            frame: None,
+            align: TextAlign::Left,
+            para: ParagraphStyle::default(),
+            on_path: None,
+        };
+        let parts = s.text_parts().expect("parts");
+        assert_eq!(parts.len(), 2);
+        assert!(!parts[0].overprint_fill && !parts[0].overprint_outline);
+        assert!(parts[1].overprint_fill && parts[1].overprint_outline);
+        for p in &parts {
+            let ShapeKind::Text { spans, .. } = &p.kind else {
+                panic!("text");
+            };
+            assert!(spans
+                .iter()
+                .all(|sp| sp.overprint_fill.is_none() && sp.overprint_outline.is_none()));
+        }
+        // The same overprint as the object: nothing to split.
+        s.overprint_fill = true;
+        s.overprint_outline = true;
+        plain.overprint_outline = None;
+        s.kind = ShapeKind::Text {
+            spans: vec![plain, over],
+            origin: Point::ZERO,
+            frame: None,
+            align: TextAlign::Left,
+            para: ParagraphStyle::default(),
+            on_path: None,
+        };
+        assert!(s.text_parts().is_none());
     }
 }

@@ -1,5 +1,7 @@
 # Desenhar retângulos e elipses
 
+> *Tradução automática: esta página pode estar atrasada em relação à versão em inglês.*
+
 Retângulos e elipses continuam sendo retângulos e elipses depois de
 desenhados: você pode mudar os cantos, transformar uma elipse em fatia ou arco
 e ainda redimensioná-los livremente. Para editá-los nó por nó, converta-os em
@@ -66,12 +68,20 @@ anti-horário a partir da direita) e a direção. Você também pode arrastar o 
 de uma elipse com a ferramenta [[tool.shape]] para fazer uma fatia (arrastando
 para dentro) ou um arco (para fora).
 
+Um arco é uma curva aberta: o preenchimento só aparece enquanto
+[[options.fill_open_curves]] estiver ativado nas opções do documento. Uma
+fatia é fechada e mantém o preenchimento.
+
 ## Elipse de 3 pontos {#three-point-ellipse}
 
 A ferramenta [[tool.three_point_ellipse]] desenha uma elipse inclinada:
 
 1. Arraste para desenhar a linha central da elipse, em qualquer ângulo.
 2. Mova o ponteiro para definir a altura e clique.
+
+Para um círculo em volta de um ponto, pressione no ponto e arraste com
+<kbd>Ctrl</kbd> pressionado: a linha arrastada é o raio, e o círculo é
+desenhado ao soltar, sem clique para a altura.
 
 ## O painel Cantos {#corners}
 
@@ -97,4 +107,5 @@ curvas, o que as configurações do retângulo não fazem. Abra-o em
 Um canto é um nó onde dois segmentos se encontram em ângulo; nós suaves não
 são cantos. Com a ferramenta [[tool.shape]] e alguns nós selecionados, só esses
 cantos são cortados. Um canto cujos lados são curtos demais para o corte é
-ignorado.
+ignorado. Num objeto esticado, um arredondamento ou recorte continua redondo,
+com o raio medido na página.

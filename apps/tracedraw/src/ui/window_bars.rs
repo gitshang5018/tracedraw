@@ -2,7 +2,8 @@
 //! vertical scrollbar on the right; along the bottom the document
 //! navigator (insert page before, first, previous, "1 of N", next, last,
 //! insert page after), the page tabs, a splitter, the horizontal
-//! scrollbar; and the Navigator button in the corner.
+//! scrollbar; and the Navigator button in the corner. With View >
+//! Scrollbars off the two scrollbars and the splitter are left out.
 
 use crate::app::App;
 use crate::i18n::{tr, trf};
@@ -18,6 +19,7 @@ const LINE: f32 = 40.0;
 /// Draw the scrollbars, the navigator row and the corner button around
 /// `canvas` inside `full`.
 pub fn window_bars(app: &mut App, ui: &mut Ui, full: Rect, canvas: Rect, ruler: f32) {
+    let scrollbars = app.settings.show_scrollbars;
     let p = ui.painter_at(full);
     let row = Rect::from_min_max(
         Pos2::new(full.min.x, full.max.y - BAR),
@@ -29,7 +31,9 @@ pub fn window_bars(app: &mut App, ui: &mut Ui, full: Rect, canvas: Rect, ruler: 
     );
     let corner = Rect::from_min_max(Pos2::new(full.max.x - BAR, full.max.y - BAR), full.max);
     p.rect_filled(row, 0.0, Tokens::panel());
-    p.rect_filled(vbar, 0.0, crate::theme::Tokens::panel());
+    if scrollbars {
+        p.rect_filled(vbar, 0.0, crate::theme::Tokens::panel());
+    }
     p.rect_filled(corner, 0.0, Tokens::panel());
     p.hline(row.x_range(), row.min.y, Stroke::new(1.0, Tokens::border()));
 
@@ -40,6 +44,19 @@ pub fn window_bars(app: &mut App, ui: &mut Ui, full: Rect, canvas: Rect, ruler: 
         Pos2::new(row.min.x + ruler + nav_w, row.max.y),
     );
     let rest = Rect::from_min_max(Pos2::new(nav.max.x, row.min.y), row.max);
+    if !scrollbars {
+        // No scrollbars (#1344): the page tabs take the rest of the row,
+        // the Navigator button stays in its corner.
+        ui.scope_builder(egui::UiBuilder::new().max_rect(nav), |ui| {
+            page_navigator(app, ui)
+        });
+        ui.scope_builder(egui::UiBuilder::new().max_rect(rest), |ui| {
+            ui.set_clip_rect(rest);
+            page_tabs(app, ui, rest)
+        });
+        super::view_navigator(app, ui, corner, canvas);
+        return;
+    }
     let split_x = rest.min.x + rest.width() * app.page_tabs_fraction.clamp(0.1, 0.9);
     let tabs = Rect::from_min_max(rest.min, Pos2::new(split_x - 4.0, rest.max.y));
     let grip = Rect::from_min_max(
@@ -346,7 +363,62 @@ pub fn page_navigator(app: &mut App, ui: &mut Ui) {
         if multipage_button(ui, app.multipage) {
             app.set_multipage(!app.multipage);
         }
+        // Next to it: which pages the view shows (#1440), lit while a
+        // range of pages is chosen.
+        let some = !app.doc().metadata.multipage_pages.is_empty();
+        if multipage_pages_button(ui, some) {
+            app.dialog = app.multipage_pages_dialog();
+        }
     });
+}
+
+/// The id of the page bar's button choosing the Multipage View's pages.
+pub const MULTIPAGE_PAGES_BUTTON: &str = "page_bar_multipage_pages";
+
+/// The Multipage View's pages: two small pages with a tick on the
+/// second, on a lit square while a range of pages is chosen. True when
+/// clicked.
+fn multipage_pages_button(ui: &mut Ui, some: bool) -> bool {
+    let (r, _) = ui.allocate_exact_size(Vec2::new(18.0, BAR - 1.0), Sense::hover());
+    let resp = ui.interact(r, egui::Id::new(MULTIPAGE_PAGES_BUTTON), Sense::click());
+    let p = ui.painter();
+    if some {
+        p.rect_filled(r.shrink2(Vec2::new(0.0, 1.0)), 2.0, Tokens::tool_active());
+    } else if resp.hovered() {
+        p.rect_filled(r, 0.0, Tokens::tool_hover());
+    }
+    let color = if some {
+        Tokens::text()
+    } else {
+        Tokens::text_dim()
+    };
+    let s = Stroke::new(1.0, color);
+    let c = r.center();
+    // A page behind, a page in front with a tick: "these pages".
+    let back = Rect::from_center_size(c + Vec2::new(-2.0, -1.5), Vec2::new(7.0, 9.0));
+    let front = Rect::from_center_size(c + Vec2::new(2.0, 1.5), Vec2::new(7.0, 9.0));
+    p.rect_stroke(back, 0.0, s, egui::StrokeKind::Inside);
+    p.rect_filled(front, 0.0, Tokens::panel());
+    p.rect_stroke(front, 0.0, s, egui::StrokeKind::Inside);
+    p.line_segment(
+        [
+            front.center() + Vec2::new(-2.0, 0.0),
+            front.center() + Vec2::new(-0.5, 1.5),
+        ],
+        s,
+    );
+    p.line_segment(
+        [
+            front.center() + Vec2::new(-0.5, 1.5),
+            front.center() + Vec2::new(2.0, -1.5),
+        ],
+        s,
+    );
+    resp.rich_tip(crate::ui::tips::pair(
+        "menu.view.multipage_pages",
+        "status.multipage_pages_desc",
+    ))
+    .clicked()
 }
 
 /// The id of the page bar's Multipage View button.
@@ -438,6 +510,7 @@ fn nav_button(ui: &mut Ui, g: Glyph, tip: &str) -> bool {
 /// wheel over them slides them one tab a notch (#794).
 fn page_tabs(app: &mut App, ui: &mut Ui, area: Rect) {
     const SLANT: f32 = 5.0;
+    app.page_tab_rects.clear();
     let names: Vec<String> = app.doc().pages.iter().map(|p| p.name.clone()).collect();
     let current = app.page_index();
     let n = names.len();
@@ -493,21 +566,109 @@ fn page_tabs(app: &mut App, ui: &mut Ui, area: Rect) {
         }
     }
     app.page_tabs_first = first;
-    let mut x = area.min.x + 4.0;
+    // A tab being dragged along the row (#2064): the page it came from
+    // and where the pointer took hold of it. While it is held the other
+    // tabs slide aside to show where it will land, and it follows the
+    // pointer (#2712).
+    let drag_key = egui::Id::new("page_tab_drag");
+    let (pointer_x, released, down) = ui.input(|inp| {
+        (
+            inp.pointer.latest_pos().map(|p| p.x),
+            inp.pointer.any_released(),
+            inp.pointer.any_down(),
+        )
+    });
+    let mut held = ui
+        .ctx()
+        .data(|d| d.get_temp::<(usize, f32)>(drag_key))
+        .filter(|(from, _)| *from < n && *from >= first);
+    if held.is_some() && !down && !released {
+        // A drag that ended without its tab seeing it (the tab went).
+        ui.ctx()
+            .data_mut(|d| d.remove_temp::<(usize, f32)>(drag_key));
+        held = None;
+    }
+    let start_x = area.min.x + 4.0;
+    let held_to = held.zip(pointer_x).map(|((from, grab), px)| {
+        let others: Vec<f32> = (first..n)
+            .filter(|j| *j != from)
+            .map(|j| width(ui, &names[j]) - SLANT)
+            .collect();
+        let held_w = width(ui, &names[from]) - SLANT;
+        // The dragged tab's middle decides, not the pointer's spot on it.
+        let mid = px - grab + held_w / 2.0;
+        (from, first + tab_drop_slot(&others, start_x, mid))
+    });
+    let order = match held_to {
+        Some((from, to)) => tab_order(n, from, to),
+        None => (0..n).collect(),
+    };
+    let mut floating: Option<(usize, Rect)> = None;
+    let mut x = start_x;
+    let mut pending_move: Option<(tracedraw_core::PageId, usize)> = None;
     let mut clicked = None;
     let mut double = None;
-    for (i, name) in names.iter().enumerate().skip(first) {
+    for &i in order.iter().skip(first) {
+        let name = &names[i];
         let galley = ui
             .painter()
             .layout_no_wrap(name.clone(), font.clone(), Tokens::text());
         let w = galley.size().x + 24.0;
-        let r = Rect::from_min_max(Pos2::new(x, area.min.y), Pos2::new(x + w, area.max.y - 1.0));
-        if r.min.x > area.max.x {
-            break;
+        let slot = Rect::from_min_max(Pos2::new(x, area.min.y), Pos2::new(x + w, area.max.y - 1.0));
+        if slot.min.x > area.max.x && held_to.is_none_or(|(from, _)| from != i) {
+            continue;
         }
+        let held_here = held.filter(|(from, _)| *from == i);
+        // The dragged tab is drawn where the pointer holds it; its slot
+        // shows where it will go.
+        let r = match (held_here, pointer_x) {
+            (Some((_, grab)), Some(px)) => {
+                let left = (px - grab).clamp(area.min.x, (area.max.x - w).max(area.min.x));
+                Rect::from_min_max(
+                    Pos2::new(left, area.min.y),
+                    Pos2::new(left + w, area.max.y - 1.0),
+                )
+            }
+            _ => slot,
+        };
         let resp = ui
-            .interact(r, egui::Id::new(("page_tab", i)), Sense::click())
+            .interact(r, egui::Id::new(("page_tab", i)), Sense::click_and_drag())
             .rich_tip(format!("{name}\n{}", tr("view.page_tab_desc")));
+        // A tab dragged along the row and let go moves its page to the
+        // place the other tabs made for it (#2064, #2712).
+        if resp.drag_started() {
+            let grab = pointer_x.map_or(w / 2.0, |px| px - r.min.x);
+            ui.ctx().data_mut(|d| d.insert_temp(drag_key, (i, grab)));
+        }
+        if resp.drag_stopped() {
+            ui.ctx()
+                .data_mut(|d| d.remove_temp::<(usize, f32)>(drag_key));
+            if let Some((from, to)) = held_to.filter(|(from, _)| *from == i) {
+                if to != from {
+                    if let Some(id) = app.doc().pages.get(from).map(|p| p.id) {
+                        pending_move = Some((id, to));
+                    }
+                }
+            }
+        }
+        if held_here.is_some() {
+            // An empty slot where the tab will land; the tab itself is
+            // drawn last, over its neighbours.
+            let p = ui.painter();
+            p.rect_stroke(
+                slot.shrink2(Vec2::new(SLANT, 2.0)),
+                2.0,
+                Stroke::new(1.0, Tokens::text_dim()),
+                egui::StrokeKind::Inside,
+            );
+            app.page_tab_rects.push((i, slot.intersect(area)));
+            floating = Some((i, r));
+            x += w - SLANT;
+            continue;
+        }
+        // A selection moved onto the tab goes to its page (#1346).
+        app.page_tab_rects.push((i, r.intersect(area)));
+        let drop_target = app.page_tab_hover.is_some_and(|(j, _)| j == i);
         let selected = i == current;
         let slant = SLANT;
         let shape = vec![
@@ -516,9 +677,11 @@ fn page_tabs(app: &mut App, ui: &mut Ui, area: Rect) {
             Pos2::new(r.max.x - slant, r.max.y),
             Pos2::new(r.min.x + slant, r.max.y),
         ];
+        // The current page's tab is highlighted as the active document
+        // tab above the rulers is (#2049).
         let fill = if selected {
-            crate::theme::Tokens::field()
-        } else if resp.hovered() {
+            crate::theme::Tokens::tab_active()
+        } else if resp.hovered() || drop_target {
             Tokens::tool_hover()
         } else {
             Tokens::panel_dark()
@@ -558,7 +721,48 @@ fn page_tabs(app: &mut App, ui: &mut Ui, area: Rect) {
         }
         x += w - slant;
     }
-    if let Some(i) = clicked {
+    if let Some((i, r)) = floating {
+        let galley = ui
+            .painter()
+            .layout_no_wrap(names[i].clone(), font.clone(), Tokens::text());
+        let shape = vec![
+            Pos2::new(r.min.x, r.min.y),
+            Pos2::new(r.max.x, r.min.y),
+            Pos2::new(r.max.x - SLANT, r.max.y),
+            Pos2::new(r.min.x + SLANT, r.max.y),
+        ];
+        let p = ui.painter();
+        let fill = if i == current {
+            crate::theme::Tokens::tab_active()
+        } else {
+            Tokens::tool_hover()
+        };
+        p.add(egui::epaint::PathShape::convex_polygon(
+            shape.clone(),
+            fill,
+            Stroke::new(1.0, Tokens::text_dim()),
+        ));
+        p.galley(
+            Pos2::new(
+                r.center().x - galley.size().x / 2.0,
+                r.center().y - galley.size().y / 2.0,
+            ),
+            galley,
+            Tokens::text(),
+        );
+        ui.ctx().request_repaint();
+    }
+    // A moved selection resting on another page's tab goes there.
+    let (time, ctrl) = ui.input(|i| (i.time, i.modifiers.command || i.modifiers.ctrl));
+    app.track_page_tab_drag(time, ctrl);
+    if app.page_tab_hover.is_some() {
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_secs_f64(0.1));
+    }
+    if let Some((page, to)) = pending_move {
+        app.run(tracedraw_core::Command::MovePage { page, to });
+        app.page_tabs_followed = None;
+    } else if let Some(i) = clicked {
         app.goto_page(i);
     }
     if let Some(i) = double {
@@ -574,6 +778,30 @@ fn page_tabs(app: &mut App, ui: &mut Ui, area: Rect) {
     }
 }
 
+/// Where a dragged page tab lands among the other tabs (#2712): the
+/// number of `others` (their widths along the row, from `start`) whose
+/// middle lies left of `mid`, the dragged tab's middle.
+pub(crate) fn tab_drop_slot(others: &[f32], start: f32, mid: f32) -> usize {
+    let mut x = start;
+    for (k, w) in others.iter().enumerate() {
+        if mid < x + w / 2.0 {
+            return k;
+        }
+        x += w;
+    }
+    others.len()
+}
+
+/// The order the `n` page tabs are drawn in while tab `from` is dragged
+/// to place `to`: the others keep their order and make room for it.
+pub(crate) fn tab_order(n: usize, from: usize, to: usize) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..n).filter(|j| *j != from).collect();
+    if from < n {
+        order.insert(to.min(order.len()), from);
+    }
+    order
+}
+
 /// What the page tab menu asks for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PageTabAction {
@@ -581,6 +809,7 @@ pub(crate) enum PageTabAction {
     InsertAfter,
     InsertBefore,
     Duplicate,
+    DuplicateToNewDocument,
     Delete,
     SwitchOrientation,
 }
@@ -589,11 +818,15 @@ pub(crate) enum PageTabAction {
 /// row has a picture and the menu has no separators; the page size and
 /// background stay in the Layout menu. An ellipsis marks the rows that
 /// open a dialog.
-pub(crate) const PAGE_TAB_MENU: [(&str, PageTabAction); 6] = [
+pub(crate) const PAGE_TAB_MENU: [(&str, PageTabAction); 7] = [
     ("menu.layout.rename_page", PageTabAction::Rename),
     ("page_tab.insert_after", PageTabAction::InsertAfter),
     ("page_tab.insert_before", PageTabAction::InsertBefore),
     ("menu.layout.duplicate_page", PageTabAction::Duplicate),
+    (
+        "page_tab.duplicate_to_new_document",
+        PageTabAction::DuplicateToNewDocument,
+    ),
     ("page_tab.delete", PageTabAction::Delete),
     (
         "menu.layout.switch_orientation",
@@ -617,7 +850,6 @@ pub(crate) fn page_tab_menu(app: &App, ui: &mut Ui) -> Option<PageTabAction> {
 /// Carry out a page tab menu command on the current page.
 pub(crate) fn apply_page_tab_action(app: &mut App, action: PageTabAction) {
     use crate::ui::dialogs::Dialog;
-    use tracedraw_core::Command;
     match action {
         PageTabAction::Rename => {
             let name = app
@@ -630,6 +862,7 @@ pub(crate) fn apply_page_tab_action(app: &mut App, action: PageTabAction) {
         PageTabAction::InsertBefore => app.insert_page(false),
         PageTabAction::InsertAfter => app.insert_page(true),
         PageTabAction::Duplicate => app.dialog = Dialog::duplicate_page(),
+        PageTabAction::DuplicateToNewDocument => app.duplicate_page_to_new_document(),
         PageTabAction::Delete => {
             if app.doc().pages.len() > 1 {
                 app.delete_page();
@@ -638,10 +871,8 @@ pub(crate) fn apply_page_tab_action(app: &mut App, action: PageTabAction) {
         PageTabAction::SwitchOrientation => {
             let s = app.page_size();
             let page = app.page;
-            app.run(Command::ResizePage {
-                page,
-                size: tracedraw_core::geometry::Size::new(s.height, s.width),
-            });
+            let size = tracedraw_core::geometry::Size::new(s.height, s.width);
+            app.resize_pages_about_centre(&[page], size, "Switch Page Orientation");
             app.fit_pending = true;
         }
     }
@@ -650,6 +881,288 @@ pub(crate) fn apply_page_tab_action(app: &mut App, action: PageTabAction) {
 #[cfg(test)]
 mod tests {
     use crate::app::App;
+
+    #[test]
+    fn a_dragged_page_tab_lands_by_its_middle() {
+        use super::{tab_drop_slot, tab_order};
+        // Three other tabs 50 wide from x = 0.
+        let others = [50.0, 50.0, 50.0];
+        assert_eq!(tab_drop_slot(&others, 0.0, 10.0), 0);
+        assert_eq!(tab_drop_slot(&others, 0.0, 30.0), 1);
+        assert_eq!(tab_drop_slot(&others, 0.0, 120.0), 2);
+        assert_eq!(tab_drop_slot(&others, 0.0, 500.0), 3);
+        // The others keep their order and make room.
+        assert_eq!(tab_order(4, 1, 0), [1, 0, 2, 3]);
+        assert_eq!(tab_order(4, 0, 3), [1, 2, 3, 0]);
+        assert_eq!(tab_order(4, 2, 2), [0, 1, 2, 3]);
+        assert_eq!(tab_order(3, 0, 9), [1, 2, 0]);
+    }
+
+    /// #2712: while "Page 2" is dragged before "Page 1" the tabs swap
+    /// places on the row before the button is let go, and letting go
+    /// moves the page there.
+    #[test]
+    fn page_tabs_slide_aside_while_one_is_dragged() {
+        use egui::{Event, PointerButton, Pos2};
+        crate::i18n::set_language("en");
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        app.show_welcome = false;
+        app.add_page();
+        let frame = |app: &mut App, events: Vec<Event>| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1200.0, 800.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| crate::ui::root(app, ui));
+            out.textures_delta.clear();
+        };
+        let button = |pos: Pos2, pressed: bool| Event::PointerButton {
+            pos,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame(&mut app, Vec::new());
+        frame(&mut app, Vec::new());
+        let rect = |app: &App, i: usize| {
+            app.page_tab_rects
+                .iter()
+                .find(|(j, _)| *j == i)
+                .map(|(_, r)| *r)
+                .expect("tab shown")
+        };
+        let first = app.doc().pages[0].id;
+        let second = app.doc().pages[1].id;
+        let (r0, r1) = (rect(&app, 0), rect(&app, 1));
+        assert!(r0.min.x < r1.min.x);
+        let grab = r1.center();
+        frame(&mut app, vec![Event::PointerMoved(grab)]);
+        frame(&mut app, vec![button(grab, true)]);
+        // Along the row, in steps, to the left of the first tab.
+        let to = Pos2::new(r0.min.x + 2.0, grab.y);
+        for k in 1..=6 {
+            let t = k as f32 / 6.0;
+            let p = Pos2::new(grab.x + (to.x - grab.x) * t, grab.y);
+            frame(&mut app, vec![Event::PointerMoved(p)]);
+        }
+        frame(&mut app, Vec::new());
+        // Still held: the page has not moved, but the first page's tab
+        // made room on the left for the dragged one.
+        assert_eq!(
+            app.doc().pages[0].id,
+            first,
+            "nothing moves before the drop"
+        );
+        assert!(
+            rect(&app, 0).min.x > rect(&app, 1).min.x,
+            "the other tab slid aside: {:?} {:?}",
+            rect(&app, 0),
+            rect(&app, 1)
+        );
+        frame(&mut app, vec![button(to, false)]);
+        frame(&mut app, Vec::new());
+        assert_eq!(app.doc().pages[0].id, second, "dropped first");
+        assert_eq!(app.doc().pages[1].id, first);
+    }
+
+    /// Live test of 0.41: the Navigator has a key, N in the shortcut
+    /// table under View > Navigator (free there, see
+    /// `options::tests::no_two_default_commands_share_a_shortcut`). Held,
+    /// it shows the Navigator until it is let go; the menu row opens it
+    /// until Esc or a click, a click on the picture going there first. A
+    /// key the user gives it replaces N.
+    #[test]
+    fn view_navigator_has_the_key_n() {
+        use egui::{Event, Key, Modifiers, PointerButton};
+        crate::i18n::set_language("en");
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        app.show_welcome = false;
+        let frame = |app: &mut App, mut events: Vec<Event>| {
+            // The modifiers held, as the window reports them with a key.
+            let modifiers = events.iter().find_map(|e| match e {
+                Event::Key { modifiers, .. } => Some(*modifiers),
+                _ => None,
+            });
+            if let Some(m) = modifiers {
+                events.insert(0, Event::ModifiersChanged(m));
+            }
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1200.0, 800.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| crate::ui::root(app, ui));
+            out.textures_delta.clear();
+        };
+        let key = |k: Key, pressed: bool, modifiers: Modifiers| Event::Key {
+            key: k,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers,
+        };
+        let popup = |ctx: &egui::Context| {
+            ctx.memory(|m| m.area_rect(egui::Id::new("view_navigator_popup")))
+        };
+        frame(&mut app, Vec::new());
+        frame(&mut app, Vec::new());
+        let entries = crate::ui::menus::commands(&mut app, &ctx);
+        let nav = entries
+            .iter()
+            .find(|e| e.key == "menu.view.navigator")
+            .expect("View > Navigator");
+        assert_eq!(nav.shortcut, "N");
+        assert_eq!(nav.path, ["menu.view"]);
+        // Held: open while down, shut once up.
+        frame(&mut app, vec![key(Key::N, true, Modifiers::NONE)]);
+        assert!(app.navigator_open, "N held opens it");
+        frame(&mut app, Vec::new());
+        assert!(app.navigator_open, "and keeps it open while held");
+        frame(&mut app, vec![key(Key::N, false, Modifiers::NONE)]);
+        assert!(!app.navigator_open, "let go, it closes");
+        // Shift+N is not its key.
+        frame(&mut app, vec![key(Key::N, true, Modifiers::SHIFT)]);
+        assert!(!app.navigator_open);
+        frame(&mut app, vec![key(Key::N, false, Modifiers::SHIFT)]);
+        // The menu row: open until Esc.
+        assert!(crate::ui::menus::run_command(
+            &mut app,
+            &ctx,
+            "menu.view.navigator"
+        ));
+        frame(&mut app, Vec::new());
+        frame(&mut app, Vec::new());
+        assert!(app.navigator_open && app.navigator_pinned);
+        frame(&mut app, vec![key(Key::Escape, true, Modifiers::NONE)]);
+        frame(&mut app, vec![key(Key::Escape, false, Modifiers::NONE)]);
+        assert!(
+            !app.navigator_open && !app.navigator_pinned,
+            "Esc closes it"
+        );
+        // Open again; passing over the picture does not move the view, a
+        // click on it does and closes the Navigator.
+        crate::ui::menus::run_command(&mut app, &ctx, "menu.view.navigator");
+        frame(&mut app, Vec::new());
+        frame(&mut app, Vec::new());
+        let pic = popup(&ctx).expect("the Navigator's picture");
+        let spot = pic.min + (pic.max - pic.min) * 0.2;
+        let before = app.view.origin;
+        frame(&mut app, vec![Event::PointerMoved(spot)]);
+        assert_eq!(app.view.origin, before, "passing over moves nothing");
+        let button = |pressed| Event::PointerButton {
+            pos: spot,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        };
+        frame(&mut app, vec![button(true)]);
+        assert_ne!(app.view.origin, before, "a press goes there");
+        frame(&mut app, vec![button(false)]);
+        frame(&mut app, Vec::new());
+        assert!(!app.navigator_pinned && !app.navigator_open);
+        // A click away closes it too.
+        crate::ui::menus::run_command(&mut app, &ctx, "menu.view.navigator");
+        frame(&mut app, Vec::new());
+        let away = egui::pos2(600.0, 300.0);
+        frame(&mut app, vec![Event::PointerMoved(away)]);
+        frame(
+            &mut app,
+            vec![Event::PointerButton {
+                pos: away,
+                button: PointerButton::Primary,
+                pressed: true,
+                modifiers: Modifiers::NONE,
+            }],
+        );
+        assert!(!app.navigator_pinned);
+        frame(
+            &mut app,
+            vec![Event::PointerButton {
+                pos: away,
+                button: PointerButton::Primary,
+                pressed: false,
+                modifiers: Modifiers::NONE,
+            }],
+        );
+        // A key of the user's replaces N.
+        app.settings
+            .shortcuts
+            .push(("menu.view.navigator".into(), "Shift+N".into()));
+        frame(&mut app, vec![key(Key::N, true, Modifiers::NONE)]);
+        assert!(!app.navigator_open, "N is no longer its key");
+        frame(&mut app, vec![key(Key::N, false, Modifiers::NONE)]);
+        frame(&mut app, vec![key(Key::N, true, Modifiers::SHIFT)]);
+        assert!(app.navigator_open, "Shift+N is");
+        frame(&mut app, vec![key(Key::N, false, Modifiers::SHIFT)]);
+        assert!(!app.navigator_open);
+        assert!(!app.navigator_pinned, "held, it does not stay open");
+    }
+
+    /// View > Scrollbars hides the drawing window's scrollbars: the
+    /// drawing gets their room on the right, the page tabs and the
+    /// Navigator button stay, and the command shows them again (#1344).
+    #[test]
+    fn view_scrollbars_hides_and_shows_them() {
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        app.show_welcome = false;
+        let frame = |ctx: &egui::Context, app: &mut App| {
+            for _ in 0..2 {
+                let input = egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1200.0, 800.0),
+                    )),
+                    ..Default::default()
+                };
+                let mut out = ctx.run_ui(input, |ui| crate::ui::root(app, ui));
+                out.textures_delta.clear();
+            }
+        };
+        let drawn = |ctx: &egui::Context, id: &str| ctx.read_response(egui::Id::new(id)).is_some();
+        frame(&ctx, &mut app);
+        assert!(app.settings.show_scrollbars, "shown by default");
+        assert!(drawn(&ctx, "vscroll") && drawn(&ctx, "hscroll"));
+        let with = app.canvas_rect;
+        assert!(crate::ui::menus::run_command(
+            &mut app,
+            &ctx,
+            "menu.view.scrollbars"
+        ));
+        assert!(!app.settings.show_scrollbars);
+        frame(&ctx, &mut app);
+        assert!(!drawn(&ctx, "vscroll") && !drawn(&ctx, "hscroll"));
+        assert!(!drawn(&ctx, "vscroll_up") && !drawn(&ctx, "hscroll_left"));
+        let without = app.canvas_rect;
+        assert!(
+            (without.right() - with.right() - super::BAR).abs() < 0.5,
+            "{with:?} {without:?}"
+        );
+        assert_eq!(without.bottom(), with.bottom(), "the page tabs stay");
+        assert!(drawn(&ctx, "view_navigator"));
+        assert!(
+            ctx.read_response(egui::Id::new(("page_tab", 0usize)))
+                .is_some(),
+            "the page tab"
+        );
+        assert!(crate::ui::menus::run_command(
+            &mut app,
+            &ctx,
+            "menu.view.scrollbars"
+        ));
+        frame(&ctx, &mut app);
+        assert!(drawn(&ctx, "vscroll"));
+        assert_eq!(app.canvas_rect, with);
+    }
 
     #[test]
     fn the_page_tab_menu_inserts_duplicates_turns_and_deletes_pages() {
@@ -732,7 +1245,7 @@ mod tests {
     }
 
     #[test]
-    fn the_page_tab_menu_has_six_rows_in_order_each_with_a_picture() {
+    fn the_page_tab_menu_has_seven_rows_in_order_each_with_a_picture() {
         use super::PageTabAction as A;
         use crate::i18n::tr;
         let mut app = App::headless();
@@ -746,6 +1259,7 @@ mod tests {
                 "page_tab.insert_after",
                 "page_tab.insert_before",
                 "menu.layout.duplicate_page",
+                "page_tab.duplicate_to_new_document",
                 "page_tab.delete",
                 "menu.layout.switch_orientation",
             ]
@@ -758,6 +1272,7 @@ mod tests {
                 A::InsertAfter,
                 A::InsertBefore,
                 A::Duplicate,
+                A::DuplicateToNewDocument,
                 A::Delete,
                 A::SwitchOrientation
             ]
@@ -795,13 +1310,13 @@ mod tests {
         // With one page, Delete is greyed and cannot be hit.
         let one = App::headless();
         let keys: Vec<String> = replayed_rows(&one).into_iter().map(|(k, _)| k).collect();
-        assert_eq!(keys.len(), 5);
+        assert_eq!(keys.len(), 6);
         assert!(!keys.iter().any(|k| k == "page_tab.delete"));
     }
 
     #[test]
     fn the_page_tab_menu_has_no_separators() {
-        // The menu is exactly as tall as six rows stacked.
+        // The menu is exactly as tall as seven rows stacked.
         let app = App::headless();
         let ctx = crate::theme::ui_context();
         let mut heights = [0.0f32; 3];
@@ -821,10 +1336,10 @@ mod tests {
             });
         });
         let step = heights[1] - heights[0];
-        let six = heights[0] + 5.0 * step;
+        let seven = heights[0] + 6.0 * step;
         assert!(
-            (heights[2] - six).abs() < 0.5,
-            "menu {} vs six rows {six}",
+            (heights[2] - seven).abs() < 0.5,
+            "menu {} vs seven rows {seven}",
             heights[2]
         );
     }
@@ -875,6 +1390,44 @@ mod tests {
         assert_eq!(app.page_index(), 1);
         assert_eq!(app.doc().pages[0].id, first);
         assert_eq!(count(&app, 1), 1);
+    }
+
+    /// Duplicate Page to New Document (#2510): a new untitled drawing in
+    /// its own tab with a copy of the current page, its size, layers and
+    /// objects; the drawing it came from keeps its pages.
+    #[test]
+    fn duplicate_page_to_new_document_opens_a_copy_of_the_page() {
+        use super::{apply_page_tab_action, PageTabAction};
+        let mut app = App::headless();
+        app.insert_page(true);
+        let second = app.page;
+        app.run(tracedraw_core::Command::ResizePage {
+            page: second,
+            size: tracedraw_core::geometry::Size::new(100.0, 50.0),
+        });
+        app.new_shape(tracedraw_core::ShapeKind::Rect {
+            rect: tracedraw_core::Rect::new(0.0, 0.0, 10.0, 10.0),
+            radius: 0.0,
+            corners: None,
+        })
+        .expect("shape");
+        let tabs = app.docs.len();
+        let layers = app.doc().page(second).map(|p| p.layers.len()).ok();
+        apply_page_tab_action(&mut app, PageTabAction::DuplicateToNewDocument);
+        assert_eq!(app.docs.len(), tabs + 1);
+        assert!(app.file.is_none());
+        assert_eq!(app.doc().pages.len(), 1);
+        let page = &app.doc().pages[0];
+        assert_eq!(app.page, page.id);
+        assert_eq!(Some(page.layers.len()), layers);
+        let shapes: usize = page.layers.iter().map(|l| l.shapes.len()).sum();
+        assert_eq!(shapes, 1);
+        let s = app.page_size();
+        assert!((s.width - 100.0).abs() < 1e-9 && (s.height - 50.0).abs() < 1e-9);
+        assert!(app.engine.undo_label().is_none());
+        // The first drawing keeps both pages.
+        app.switch_document(tabs - 1);
+        assert_eq!(app.doc().pages.len(), 2);
     }
 
     #[test]

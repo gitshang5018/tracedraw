@@ -69,8 +69,18 @@ pub fn polygon(pts: &[Point]) -> BezPath {
     p
 }
 
+/// The even places of `steps` steps between two objects (both left out).
+fn even_steps(steps: usize) -> Vec<f64> {
+    (1..=steps).map(|k| k as f64 / (steps + 1) as f64).collect()
+}
+
 /// Intermediate shapes between `a` and `b` (excluding both), `steps` of them.
 pub fn blend(a: &BezPath, b: &BezPath, steps: usize, samples: usize) -> Vec<BezPath> {
+    blend_at(a, b, &even_steps(steps), samples)
+}
+
+/// [`blend`] with the steps at the places `ts` (0 is `a`, 1 is `b`).
+pub fn blend_at(a: &BezPath, b: &BezPath, ts: &[f64], samples: usize) -> Vec<BezPath> {
     // Outlines of several parts (letters, shapes with holes) morph part by
     // part: the n-th part of one into the n-th part of the other, in
     // order; a part without a partner grows from, or shrinks to, a point
@@ -87,7 +97,7 @@ pub fn blend(a: &BezPath, b: &BezPath, steps: usize, samples: usize) -> Vec<BezP
     if ka.len() > 1 || kb.len() > 1 {
         let n = ka.len().max(kb.len());
         let per = (samples / 2).clamp(24, 96);
-        let mut out = vec![BezPath::new(); steps];
+        let mut out = vec![BezPath::new(); ts.len()];
         for i in 0..n {
             let (x, y) = match (ka.get(i), kb.get(i)) {
                 (Some(x), Some(y)) => (x.clone(), y.clone()),
@@ -95,7 +105,7 @@ pub fn blend(a: &BezPath, b: &BezPath, steps: usize, samples: usize) -> Vec<BezP
                 (None, Some(y)) => (point_path(y), y.clone()),
                 (None, None) => continue,
             };
-            for (k, step) in blend_one(&x, &y, steps, per).into_iter().enumerate() {
+            for (k, step) in blend_one(&x, &y, ts, per).into_iter().enumerate() {
                 if let Some(o) = out.get_mut(k) {
                     o.extend(step.elements().iter().copied());
                 }
@@ -103,7 +113,7 @@ pub fn blend(a: &BezPath, b: &BezPath, steps: usize, samples: usize) -> Vec<BezP
         }
         return out;
     }
-    blend_one(a, b, steps, samples)
+    blend_one(a, b, ts, samples)
 }
 
 /// [`blend`], but with one-part outlines paired from given nodes:
@@ -127,6 +137,18 @@ pub fn blend_from_nodes(
     samples: usize,
     nodes: Option<[Point; 4]>,
 ) -> Vec<BezPath> {
+    blend_from_nodes_at(a, b, &even_steps(steps), samples, nodes)
+}
+
+/// [`blend_from_nodes`] with the steps at the places `ts` (0 is `a`, 1
+/// is `b`), as an accelerated blend that applies to sizing morphs them.
+pub fn blend_from_nodes_at(
+    a: &BezPath,
+    b: &BezPath,
+    ts: &[f64],
+    samples: usize,
+    nodes: Option<[Point; 4]>,
+) -> Vec<BezPath> {
     let one_part = |p: &BezPath| {
         p.elements()
             .iter()
@@ -135,32 +157,31 @@ pub fn blend_from_nodes(
             == 1
     };
     let Some([a0, a1, b0, b1]) = nodes else {
-        return blend(a, b, steps, samples);
+        return blend_at(a, b, ts, samples);
     };
     if !one_part(a) || !one_part(b) {
-        return blend(a, b, steps, samples);
+        return blend_at(a, b, ts, samples);
     }
     if let Some((sa, sb)) = paired_nodes(a, b, [a0, a1, b0, b1]) {
-        return node_steps(&sa, &sb, steps);
+        return node_steps(&sa, &sb, ts);
     }
     // Two open lines (arcs blended in a .cdr file) morph end to end and
     // stay open: run as a ring and closed, each step gained a chord back
     // to its start and the steps crossed over (#980).
     if let Some((sa, sb)) = open_paired_nodes(a, b) {
-        return open_node_steps(&sa, &sb, steps);
+        return open_node_steps(&sa, &sb, ts);
     }
     let (Some(pa), Some(pb)) = (
         run_from(&resample(a, samples), a0, a1),
         run_from(&resample(b, samples), b0, b1),
     ) else {
-        return blend(a, b, steps, samples);
+        return blend_at(a, b, ts, samples);
     };
     if pa.len() != pb.len() {
-        return blend(a, b, steps, samples);
+        return blend_at(a, b, ts, samples);
     }
-    (1..=steps)
-        .map(|k| {
-            let t = k as f64 / (steps + 1) as f64;
+    ts.iter()
+        .map(|&t| {
             polygon(
                 &pa.iter()
                     .zip(&pb)
@@ -175,20 +196,19 @@ pub fn blend_from_nodes(
 /// each node and control point of a step lies on the straight line
 /// between its two paired points, and a step's segment is a line where
 /// both paired segments are lines.
-fn node_steps(sa: &[Seg], sb: &[Seg], steps: usize) -> Vec<BezPath> {
-    let mut out = open_node_steps(sa, sb, steps);
+fn node_steps(sa: &[Seg], sb: &[Seg], ts: &[f64]) -> Vec<BezPath> {
+    let mut out = open_node_steps(sa, sb, ts);
     out.iter_mut().for_each(|p| p.close_path());
     out
 }
 
 /// [`node_steps`] left open: the steps of two open outlines.
-fn open_node_steps(sa: &[Seg], sb: &[Seg], steps: usize) -> Vec<BezPath> {
+fn open_node_steps(sa: &[Seg], sb: &[Seg], ts: &[f64]) -> Vec<BezPath> {
     let (Some(fa), Some(fb)) = (sa.first(), sb.first()) else {
         return Vec::new();
     };
-    (1..=steps)
-        .map(|k| {
-            let t = k as f64 / (steps + 1) as f64;
+    ts.iter()
+        .map(|&t| {
             let mut out = BezPath::with_capacity(sa.len() + 2);
             out.move_to(fa.p0.lerp(fb.p0, t));
             for (x, y) in sa.iter().zip(sb) {
@@ -533,18 +553,18 @@ const MAX_SHAPE_NODES: usize = 512;
 /// node for node, and their steps stay open lines (#1024). Very large
 /// outlines, or an open line with a closed outline, are taken as one
 /// closed run of points each.
-fn blend_one(a: &BezPath, b: &BezPath, steps: usize, samples: usize) -> Vec<BezPath> {
+fn blend_one(a: &BezPath, b: &BezPath, ts: &[f64], samples: usize) -> Vec<BezPath> {
     let pa = resample(a, samples);
     let pb = resample(b, samples);
     if pa.len() != pb.len() || pa.is_empty() {
         return Vec::new();
     }
     if let Some((sa, sb)) = shape_paired_nodes(a, b, &pa, &pb) {
-        return node_steps(&sa, &sb, steps);
+        return node_steps(&sa, &sb, ts);
     }
     // Two open lines morph end to end and stay open lines.
     if let Some((sa, sb)) = open_paired_nodes(a, b) {
-        return open_node_steps(&sa, &sb, steps);
+        return open_node_steps(&sa, &sb, ts);
     }
     // Match the two outlines by shape, not by position: wind b the way a
     // is wound, then start b at the point whose direction from b's centre
@@ -579,9 +599,8 @@ fn blend_one(a: &BezPath, b: &BezPath, steps: usize, samples: usize) -> Vec<BezP
         })
         .unwrap_or(0);
     let pb: Vec<Point> = (0..pb.len()).map(|i| pb[(i + start) % pb.len()]).collect();
-    (1..=steps)
-        .map(|k| {
-            let t = k as f64 / (steps + 1) as f64;
+    ts.iter()
+        .map(|&t| {
             polygon(
                 &pa.iter()
                     .zip(&pb)
@@ -1004,9 +1023,279 @@ pub fn smear(path: &BezPath, at: Point, delta: Vec2, radius: f64) -> BezPath {
     })
 }
 
+/// The share of the nib, from its centre, that Smudge carries whole.
+const SMUDGE_CORE: f64 = 0.5;
+/// How far the nib goes in one of Smudge's small moves, as a share of
+/// its radius. The carried share falls from all to nothing over half
+/// the radius, at most `1.5 / (radius / 2)` a millimetre, so a move of
+/// an eighth of the radius shifts neighbouring points by at most three
+/// eighths of their distance: the outline never folds over itself.
+const SMUDGE_STEP: f64 = 0.125;
+/// How far behind the nib's centre, as a share of its radius, Smudge's
+/// push eases out (#2546).
+const SMUDGE_BEHIND: f64 = 0.1;
+/// How many small moves one call makes at most (a move longer than
+/// that many steps is made in longer ones).
+const SMUDGE_MAX_STEPS: usize = 2048;
+
+/// Smudge tool: the nib (`radius`) goes from `from` to `to` and carries
+/// the outline under it along. The points within half the radius of the
+/// nib's centre go all the way with it (times `pressure`, 0 to 1), so a
+/// stroke draws the outline out into a tongue as wide as that core, with
+/// the piece of outline it took at its end; from there to the nib's edge
+/// the carried share eases to nothing (`s = u^2 (3 - 2 u)`, `u` from 1
+/// at the core to 0 at the edge), so the tongue's sides run smoothly
+/// into the outline that stayed.
+///
+/// The move is made in small moves of an eighth of the radius, each
+/// from the outline the one before left, whatever the distance between
+/// `from` and `to`: a quick stroke, which arrives as a few long moves,
+/// gives the same outline as a slow one. It used to be one push of the
+/// whole move with a weight that peaks at the nib's centre, after a
+/// smoothing pass per pointer event: a quick stroke left a thin spike
+/// behind the centre and a slow one, smoothed at every event, hardly
+/// moved the outline (#2228).
+pub fn smudge(path: &BezPath, from: Point, to: Point, radius: f64, pressure: f64) -> BezPath {
+    smudge_way(path, from, to, radius, pressure, false)
+}
+
+/// Smudge on the way back: a move of a stroke that turns back against
+/// the way it went out (see [`smudge`]). The outline the stroke drew
+/// out is behind the nib's centre now, and it comes back with the nib:
+/// the nib carries the outline on both sides of its centre, so pushing
+/// an edge out and dragging back over the same path in one stroke
+/// brings it back near where it was (#2710). The outline behind the
+/// nib at the start of a stroke still stays (#2546): only the way back
+/// carries it.
+pub fn smudge_back(path: &BezPath, from: Point, to: Point, radius: f64, pressure: f64) -> BezPath {
+    smudge_way(path, from, to, radius, pressure, true)
+}
+
+fn smudge_way(
+    path: &BezPath,
+    from: Point,
+    to: Point,
+    radius: f64,
+    pressure: f64,
+    back: bool,
+) -> BezPath {
+    let delta = to - from;
+    let len = delta.hypot();
+    let usable = from.is_finite()
+        && to.is_finite()
+        && radius.is_finite()
+        && radius > 0.0
+        && pressure.is_finite()
+        && pressure > 0.0
+        && len > 1e-9;
+    if !usable {
+        return path.clone();
+    }
+    let pressure = pressure.min(1.0);
+    let steps = ((len / (radius * SMUDGE_STEP)).ceil() as usize).clamp(1, SMUDGE_MAX_STEPS);
+    let step = delta / steps as f64;
+    let max_len = radius / 8.0;
+    let core = radius * SMUDGE_CORE;
+    let carried = |d: f64| -> f64 {
+        if d <= core {
+            1.0
+        } else if d >= radius {
+            0.0
+        } else {
+            let u = (radius - d) / (radius - core);
+            u * u * (3.0 - 2.0 * u)
+        }
+    };
+    // The nib pushes what lies before it: the outline behind its centre
+    // stays where it is, easing in over a tenth of the radius, so a stroke
+    // from inside a shape draws its edge out and one from outside dents
+    // it, and the rest of the object is not dragged along (#2546).
+    let dir = delta / len;
+    let ahead = |along: f64| -> f64 {
+        let fade = radius * SMUDGE_BEHIND;
+        if back || along >= 0.0 {
+            1.0
+        } else if along <= -fade {
+            0.0
+        } else {
+            let u = (along + fade) / fade;
+            u * u * (3.0 - 2.0 * u)
+        }
+    };
+    // The stretch the nib passes over: a circle round the middle of the
+    // move that holds the nib at both ends.
+    let middle = from.midpoint(to);
+    brush_runs(path, middle, radius + len / 2.0, |run, closed| {
+        let mut pts = sampled(run, max_len);
+        for k in 0..steps {
+            // The sides of the tongue stretch as its end goes on: keep
+            // their points close, every few moves.
+            if k > 0 && k % 4 == 0 {
+                pts = spaced(&pts, max_len);
+            }
+            let c = from + step * k as f64;
+            // The front that pushes goes as far as the pressure lets the
+            // outline follow.
+            let front = from + step * (k as f64 * pressure);
+            let reach = kurbo::Rect::from_points(c, c).inflate(radius, radius);
+            for q in &mut pts {
+                if reach.contains(q.at) {
+                    let w = carried((q.at - c).hypot()) * ahead((q.at - front).dot(dir));
+                    if w > 0.0 {
+                        q.at += step * (w * pressure);
+                        q.moved = true;
+                    }
+                }
+            }
+        }
+        rebuild_moved(run, &pts, closed)
+    })
+}
+
+/// A point of a stretch Smudge works on: where it is, where it lay on
+/// the stretch (segment and parameter, for the points sampled from it),
+/// and whether the nib moved it.
+#[derive(Clone, Copy)]
+struct Carried {
+    at: Point,
+    on: Option<(usize, f64)>,
+    moved: bool,
+}
+
+/// Points along `run`'s segments no more than about `max_len` apart,
+/// each with the segment and parameter it lies at, the end included.
+fn sampled(run: &BezPath, max_len: f64) -> Vec<Carried> {
+    use kurbo::{ParamCurve as _, ParamCurveArclen as _};
+    let segs: Vec<kurbo::PathSeg> = run.segments().collect();
+    let mut out = Vec::new();
+    for (i, seg) in segs.iter().enumerate() {
+        let len = seg.arclen(0.01);
+        let n = if len.is_finite() {
+            ((len / max_len.max(0.05)).ceil() as usize).clamp(1, 4096)
+        } else {
+            1
+        };
+        for k in 0..n {
+            let t = k as f64 / n as f64;
+            out.push(Carried {
+                at: seg.eval(t),
+                on: Some((i, t)),
+                moved: false,
+            });
+        }
+    }
+    if let Some(last) = segs.last() {
+        out.push(Carried {
+            at: last.end(),
+            on: Some((segs.len() - 1, 1.0)),
+            moved: false,
+        });
+    }
+    out
+}
+
+/// `run` with only the stretch of `pts` the nib moved drawn again as
+/// smooth curves: the outline before the first point it moved and after
+/// the last stays exactly as it was. Smoothing and refitting the whole
+/// stretch at every pointer event let the outline beside the nib creep
+/// and wobble, the more the slower the stroke (#2546).
+fn rebuild_moved(run: &BezPath, pts: &[Carried], closed: bool) -> BezPath {
+    use kurbo::ParamCurve as _;
+    let all = |pts: &[Carried]| pts.iter().map(|q| q.at).collect::<Vec<_>>();
+    let (Some(first), Some(last)) = (
+        pts.iter().position(|q| q.moved),
+        pts.iter().rposition(|q| q.moved),
+    ) else {
+        return run.clone();
+    };
+    // The points the curve is held at: the last sampled point before the
+    // moved stretch and the first after it.
+    let a = (0..first)
+        .rev()
+        .find(|&i| pts.get(i).is_some_and(|q| q.on.is_some()));
+    let b = (last + 1..pts.len()).find(|&i| pts.get(i).is_some_and(|q| q.on.is_some()));
+    let (Some(a), Some(b)) = (a, b) else {
+        // The nib moved an end of the stretch: it is all drawn again.
+        return fewer_curves(&crate::geometry::smooth_path(&all(pts), closed));
+    };
+    let segs: Vec<kurbo::PathSeg> = run.segments().collect();
+    let (Some((ia, ta)), Some((ib, tb))) =
+        (pts.get(a).and_then(|q| q.on), pts.get(b).and_then(|q| q.on))
+    else {
+        return run.clone();
+    };
+    let mut out = BezPath::new();
+    let Some(start) = segs.first().map(|s| s.start()) else {
+        return run.clone();
+    };
+    out.move_to(start);
+    for seg in segs.iter().take(ia) {
+        out.push(seg.as_path_el());
+    }
+    if ta > 0.0 {
+        if let Some(seg) = segs.get(ia) {
+            out.push(seg.subsegment(0.0..ta).as_path_el());
+        }
+    }
+    let middle = fewer_curves(&crate::geometry::smooth_path(&all(&pts[a..=b]), false));
+    out.extend(
+        middle
+            .elements()
+            .iter()
+            .filter(|e| !matches!(e, PathEl::MoveTo(_)))
+            .copied(),
+    );
+    if tb < 1.0 {
+        if let Some(seg) = segs.get(ib) {
+            out.push(seg.subsegment(tb..1.0).as_path_el());
+        }
+    }
+    for seg in segs.iter().skip(ib + 1) {
+        out.push(seg.as_path_el());
+    }
+    if closed {
+        out.close_path();
+    }
+    out
+}
+
+/// `pts` with points put in so that no two neighbours are more than
+/// `max_len` apart (the new ones lie on no segment of the stretch and
+/// count as moved when either neighbour was).
+fn spaced(pts: &[Carried], max_len: f64) -> Vec<Carried> {
+    let max_len = max_len.max(0.05);
+    let mut out = Vec::with_capacity(pts.len());
+    for w in pts.windows(2) {
+        let len = (w[1].at - w[0].at).hypot();
+        let n = if len.is_finite() {
+            ((len / max_len).ceil() as usize).clamp(1, 4096)
+        } else {
+            1
+        };
+        out.push(w[0]);
+        for k in 1..n {
+            out.push(Carried {
+                at: w[0].at.lerp(w[1].at, k as f64 / n as f64),
+                on: None,
+                moved: w[0].moved || w[1].moved,
+            });
+        }
+    }
+    if let Some(l) = pts.last() {
+        out.push(*l);
+    }
+    out
+}
+
 /// Rotate points within `radius` of `at` by up to `angle` (Twirl tool).
+/// The stretch in reach is measured into points a sixth of the nib apart
+/// for a small turn and closer the more it turns, `radius / 6 / (1 +
+/// |angle|)`, so neighbours stay about as far apart once turned: a hold
+/// that twirls the outline round several times (#2640) still comes back
+/// as a smooth spiral, not a few points joined round the centre.
 pub fn twirl(path: &BezPath, at: Point, angle: f64, radius: f64) -> BezPath {
-    brush_each(path, at, radius, radius / 6.0, false, |pts, _| {
+    let spacing = radius / 6.0 / (1.0 + angle.abs().min(TWIRL_MAX_ANGLE));
+    brush_each(path, at, radius, spacing, false, |pts, _| {
         pts.into_iter()
             .map(|p| {
                 let v = p - at;
@@ -1021,6 +1310,10 @@ pub fn twirl(path: &BezPath, at: Point, angle: f64, radius: f64) -> BezPath {
             .collect()
     })
 }
+
+/// The turn (radians) past which [`twirl`] measures its points no
+/// closer: about twelve turns.
+const TWIRL_MAX_ANGLE: f64 = 75.0;
 
 /// Smooth tool: the stretch of the curve within the nib's reach is
 /// measured into close points (half a millimetre apart), each eased
@@ -1114,68 +1407,520 @@ fn fit_within(path: &BezPath, accuracy: f64) -> BezPath {
     }
 }
 
-/// Pull (`amount` > 0) or push (< 0) the nodes and control points within
-/// `radius` of `at` towards or away from it (Attract and Repel tools);
-/// nearer ones move more, none past the middle.
-pub fn attract(path: &BezPath, at: Point, radius: f64, amount: f64) -> BezPath {
-    let f = |p: Point| -> Point {
-        let v = at - p;
+/// Attract and Repel tools: the stretch of the curve within the nib's
+/// reach is measured into points (a twelfth of the nib apart), each
+/// moved straight towards (`dose` > 0, Attract) or away from (`dose` <
+/// 0, Repel) the nib's centre, by the same rule in every direction, and
+/// fitted back into curves (within 0.01 mm). `dose` runs from 0 (no change) to 1 (the
+/// whole effect, which a hold in one place reaches and then keeps): with
+/// `f = |dose|`, `w = 1 - d / radius` and the weight easing smoothly to
+/// nothing at the nib's edge, `s = w^2 (3 - 2 w)`, a point `d` from the
+/// centre goes to `d (1 - f s)` for Attract (never past the centre) and
+/// to `d + f s (radius - d) / 2` for Repel (at most half the nib out,
+/// never past the nib's edge). Both keep the order of the points along
+/// every ray from the centre, so the outline never folds over, and the
+/// same dose on the same curve gives the same curve.
+pub fn attract(path: &BezPath, at: Point, radius: f64, dose: f64) -> BezPath {
+    if !(dose.is_finite() && radius.is_finite() && radius > 0.0) || dose == 0.0 {
+        return path.clone();
+    }
+    let f = dose.abs().min(1.0);
+    let pull = dose > 0.0;
+    let moved = |p: Point| -> Point {
+        let v = p - at;
         let d = v.hypot();
-        if d > radius || d < 1e-9 {
+        if d >= radius || d < 1e-9 {
             return p;
         }
-        let k = (1.0 - d / radius) * amount;
-        p + v * (k / d).min(0.9)
+        let w = 1.0 - d / radius;
+        let s = w * w * (3.0 - 2.0 * w);
+        let to = if pull {
+            d * (1.0 - f * s)
+        } else {
+            d + f * s * (radius - d) / 2.0
+        };
+        at + v * (to / d)
+    };
+    // Fitted closer than the other brushes' merge: a hold moves the
+    // curve a few hundredths of a millimetre a step, which a looser fit
+    // would swallow until the dose had grown.
+    brush_runs(path, at, radius, |run, closed| {
+        let pts: Vec<Point> = densify(run, radius / 12.0).into_iter().map(moved).collect();
+        fit_within(
+            &crate::geometry::smooth_path(&pts, closed),
+            ATTRACT_ACCURACY,
+        )
+    })
+}
+
+/// How far Attract and Repel's rebuilt curve may stray from the moved
+/// points, mm.
+const ATTRACT_ACCURACY: f64 = 0.01;
+
+/// A jagged edge within `radius` of `at` (Roughen tool, one step): see
+/// [`roughen_stroke`].
+pub fn roughen(path: &BezPath, at: Point, radius: f64, amount: f64, spacing: f64) -> BezPath {
+    roughen_stroke(path, &[at], radius, amount, spacing)
+}
+
+/// Roughen tool, a whole stroke: `base` (the outline as it was when the
+/// stroke began) made jagged where the nib went (a nib of `radius`
+/// around each of `centers`). Points `spacing` apart along each
+/// subpath, counted from its start, are pushed off the curve along its
+/// normal by up to `amount` times the nib's weight there (`1 - d /
+/// radius` from the nearest nib on the way), the push from the point's
+/// place; the nodes stay where they are. Between pushed points the
+/// outline runs in straight lines, so the spikes stay sharp; the rest
+/// keeps its segments exactly, nodes and handles included. The stroke
+/// is worked out from `base` every time, so going over the same place
+/// again, or holding the button, gives the same spikes: a stroke adds
+/// at most one node per `spacing` of the stretch it covered, never more
+/// however long it lasts.
+pub fn roughen_stroke(
+    base: &BezPath,
+    centers: &[Point],
+    radius: f64,
+    amount: f64,
+    spacing: f64,
+) -> BezPath {
+    use crate::geometry::Shape as _;
+    use kurbo::{ParamCurve as _, ParamCurveArclen as _, ParamCurveDeriv as _, PathSeg};
+    let spacing = if spacing.is_finite() {
+        spacing.max(0.05)
+    } else {
+        1.0
+    };
+    let centers: Vec<Point> = centers.iter().copied().filter(|c| c.is_finite()).collect();
+    let usable = radius.is_finite() && radius > 0.0 && amount.is_finite() && amount != 0.0;
+    let Some(reach) = centers
+        .iter()
+        .map(|c| kurbo::Rect::from_points(*c, *c))
+        .reduce(|a, b| a.union(b))
+        .filter(|_| usable)
+        .map(|r| r.inflate(radius, radius))
+    else {
+        return base.clone();
+    };
+    let meets = |b: kurbo::Rect| {
+        b.x0 <= reach.x1 && reach.x0 <= b.x1 && b.y0 <= reach.y1 && reach.y0 <= b.y1
+    };
+    // The places in cells a nib wide, so a point looks only at the
+    // places of its own cell and the eight around it: a long stroke's
+    // steps stay quick.
+    let cell_of = |p: Point| ((p.x / radius).floor() as i64, (p.y / radius).floor() as i64);
+    let mut cells: std::collections::HashMap<(i64, i64), Vec<Point>> =
+        std::collections::HashMap::new();
+    for c in &centers {
+        cells.entry(cell_of(*c)).or_default().push(*c);
+    }
+    let weight = |p: Point| -> f64 {
+        let (cx, cy) = cell_of(p);
+        let mut best: f64 = 0.0;
+        for dx in -1..=1 {
+            for dy in -1..=1 {
+                if let Some(list) = cells.get(&(cx + dx, cy + dy)) {
+                    for c in list {
+                        best = best.max(1.0 - (p - *c).hypot() / radius);
+                    }
+                }
+            }
+        }
+        best
+    };
+    // Whether a place lies within a nib of the box `b`.
+    let near = |b: kurbo::Rect| -> bool {
+        let (x0, y0) = cell_of(Point::new(b.x0 - radius, b.y0 - radius));
+        let (x1, y1) = cell_of(Point::new(b.x1 + radius, b.y1 + radius));
+        if (x1 - x0 + 1).saturating_mul(y1 - y0 + 1) > cells.len() as i64 {
+            return cells
+                .keys()
+                .any(|(x, y)| (x0..=x1).contains(x) && (y0..=y1).contains(y));
+        }
+        (x0..=x1).any(|x| (y0..=y1).any(|y| cells.contains_key(&(x, y))))
+    };
+    let tangent = |seg: &PathSeg, t: f64| -> Vec2 {
+        let v = match seg {
+            PathSeg::Line(l) => l.p1 - l.p0,
+            PathSeg::Quad(q) => q.deriv().eval(t).to_vec2(),
+            PathSeg::Cubic(c) => c.deriv().eval(t).to_vec2(),
+        };
+        if v.hypot() > 1e-9 {
+            v
+        } else {
+            seg.eval((t + 1e-4).min(1.0)) - seg.eval((t - 1e-4).max(0.0))
+        }
+    };
+    // The subpaths in their order, each with whether the stroke made it
+    // jagged (closed ones only).
+    let mut pieces: Vec<(BezPath, bool)> = Vec::new();
+    for (sub, closed) in subpaths(base) {
+        // A closed piece no bigger than the spikes (the bits a crossed
+        // outline leaves when it is cleaned up, below) is left as it is:
+        // spikes as tall as itself only shattered it into more such bits
+        // every stroke.
+        let b = sub.bounding_box();
+        let tiny = closed && b.width().max(b.height()) < amount.abs();
+        if tiny || !meets(b) {
+            pieces.push((sub, false));
+            continue;
+        }
+        let Some(start) = sub.elements().iter().find_map(|e| match e {
+            PathEl::MoveTo(p) => Some(*p),
+            _ => None,
+        }) else {
+            pieces.push((sub, false));
+            continue;
+        };
+        let mut els: Vec<PathEl> = vec![PathEl::MoveTo(start)];
+        // The way the outline runs at a place, taken between the places
+        // before and after it that lie `span` away in a straight line
+        // rather than at the place itself: on an outline a stroke has
+        // already made jagged, the local direction swings with every
+        // spike, and pushes along those swung normals crossed the outline
+        // over itself, which the fill then showed as white slivers over
+        // the object (#2229).
+        let span = spacing.max(amount.abs()) * 2.0;
+        let way = Polyline::of(&sub, closed);
+        // Arc length from the subpath's start: where the segment starts
+        // and where the next point falls.
+        let mut s0 = 0.0;
+        let mut next = spacing;
+        for seg in sub.segments() {
+            let len = seg.arclen(0.01);
+            let near = meets(seg.bounding_box()) && near(seg.bounding_box());
+            // The points on this segment: (t, place, pushed).
+            let mut pts: Vec<(f64, Point, bool)> = Vec::new();
+            while next < s0 + len - 1e-9 {
+                if near {
+                    let t = seg.inv_arclen(next - s0, 0.01).clamp(0.0, 1.0);
+                    let p = seg.eval(t);
+                    let w = weight(p);
+                    let tan = way
+                        .direction(next, span)
+                        .unwrap_or_else(|| tangent(&seg, t));
+                    let l = tan.hypot();
+                    if w > 0.0 && l > 1e-12 {
+                        let normal = Vec2::new(-tan.y / l, tan.x / l);
+                        // A number from -1 to 1 that depends on the place only.
+                        let h = ((p.x * 12.9898 + p.y * 78.233).sin() * 43758.5453).fract();
+                        let r = 2.0 * h.abs() - 1.0;
+                        pts.push((t, p + normal * (r * amount * w), true));
+                    } else {
+                        pts.push((t, p, false));
+                    }
+                }
+                next += spacing;
+            }
+            s0 += len;
+            if !pts.iter().any(|(_, _, pushed)| *pushed) {
+                els.push(seg.as_path_el());
+                continue;
+            }
+            // Unpushed points keep the segment exactly between them;
+            // from and to a pushed point the outline runs straight.
+            let mut exact_from = Some(0.0);
+            let (mut prev_t, mut prev_pushed) = (0.0, false);
+            for (t, p, pushed) in pts
+                .into_iter()
+                .chain(std::iter::once((1.0, seg.end(), false)))
+            {
+                if pushed || prev_pushed {
+                    if let Some(t0) = exact_from.take() {
+                        if prev_t > t0 + 1e-12 {
+                            els.push(seg.subsegment(t0..prev_t).as_path_el());
+                        }
+                    }
+                    els.push(PathEl::LineTo(p));
+                    if !pushed {
+                        exact_from = Some(t);
+                    }
+                }
+                prev_t = t;
+                prev_pushed = pushed;
+            }
+            if let Some(t0) = exact_from {
+                if t0 < 1.0 - 1e-12 {
+                    els.push(seg.subsegment(t0..1.0).as_path_el());
+                }
+            }
+        }
+        if closed {
+            // The closing line is drawn by the close.
+            if matches!(els.last(), Some(PathEl::LineTo(p)) if (*p - start).hypot() < 1e-9)
+                && els.len() > 2
+            {
+                els.pop();
+            }
+            els.push(PathEl::ClosePath);
+        }
+        let made = BezPath::from_vec(els);
+        let jagged = closed && made != sub;
+        pieces.push((made, jagged));
+    }
+    // Spikes pushed in on a tight bend, or a stroke over an outline an
+    // earlier one made jagged, can still cross the outline over itself
+    // or over another of its subpaths; the even-odd fill showed each
+    // overlap, and each gap the crossed outline closed round, as a hole:
+    // the white slivers of #2229. Then each subpath that crosses itself
+    // is replaced by everything inside its outer edge, and the subpaths
+    // are put together by the even-odd rule as before, so every spike
+    // stays filled and holes made of other subpaths stay holes. The
+    // closed subpaths the jagged ones may run into (their boxes meet)
+    // are put together with them.
+    let rough_box = pieces
+        .iter()
+        .filter(|(_, jagged)| *jagged)
+        .map(|(p, _)| p.bounding_box())
+        .reduce(|a, b| a.union(b));
+    let in_group = |p: &BezPath, jagged: bool| -> bool {
+        if jagged {
+            return true;
+        }
+        let Some(r) = rough_box else {
+            return false;
+        };
+        let closed = p.elements().last() == Some(&PathEl::ClosePath);
+        let b = p.bounding_box();
+        closed && b.x0 <= r.x1 && r.x0 <= b.x1 && b.y0 <= r.y1 && r.y0 <= b.y1
+    };
+    let group: Vec<usize> = (0..pieces.len())
+        .filter(|&i| in_group(&pieces[i].0, pieces[i].1))
+        .collect();
+    let tangled = rough_box.is_some() && {
+        let all: Vec<PathEl> = group
+            .iter()
+            .flat_map(|&i| pieces[i].0.elements().iter().copied())
+            .collect();
+        crosses_itself(&BezPath::from_vec(all))
     };
     let mut out = BezPath::new();
-    for el in path.elements() {
-        out.push(match *el {
-            PathEl::MoveTo(p) => PathEl::MoveTo(f(p)),
-            PathEl::LineTo(p) => PathEl::LineTo(f(p)),
-            PathEl::QuadTo(a, p) => PathEl::QuadTo(f(a), f(p)),
-            PathEl::CurveTo(a, b, p) => PathEl::CurveTo(f(a), f(b), f(p)),
-            PathEl::ClosePath => PathEl::ClosePath,
-        });
+    if tangled {
+        let mut areas = BezPath::new();
+        for &i in &group {
+            let r = &pieces[i].0;
+            let area = if crosses_itself(r) {
+                crate::shaping::outer_cover(r, spacing * spacing)
+            } else {
+                r.clone()
+            };
+            areas.extend(area.elements().iter().copied());
+        }
+        let joined = crate::shaping::overlay_with(
+            &areas,
+            &BezPath::new(),
+            crate::shaping::Op::Weld,
+            crate::shaping::FillRule::EvenOdd,
+        );
+        // In the place of the first of them.
+        for (i, (p, _)) in pieces.iter().enumerate() {
+            if Some(&i) == group.first() {
+                out.extend(joined.elements().iter().copied());
+            } else if !group.contains(&i) {
+                out.extend(p.elements().iter().copied());
+            }
+        }
+    } else {
+        for (p, _) in &pieces {
+            out.extend(p.elements().iter().copied());
+        }
     }
     out
 }
 
-/// A jagged edge within `radius` of `at` (Roughen tool): the curve in
-/// points `spacing` apart, each within the nib pushed off the curve by up
-/// to `amount` (less towards the nib's edge), joined by straight lines.
-/// The spikes come from the points' places, so a step over the same spot
-/// gives the same spikes.
-pub fn roughen(path: &BezPath, at: Point, radius: f64, amount: f64, spacing: f64) -> BezPath {
-    brush_each(path, at, radius, spacing.max(0.05), true, |pts, closed| {
-        let n = pts.len();
-        if n < 3 {
-            return pts;
+/// Whether the outlines of a path cross: any of its pieces, flattened,
+/// meet anywhere but where one runs into the next.
+fn crosses_itself(path: &BezPath) -> bool {
+    // The flattened pieces, each with the next and previous of its own
+    // subpath.
+    let mut segs: Vec<(Point, Point)> = Vec::new();
+    let mut chain: Vec<(usize, usize)> = Vec::new(); // (first, last) piece of each subpath
+    let mut pts: Vec<Point> = Vec::new();
+    let mut flush = |pts: &mut Vec<Point>, segs: &mut Vec<(Point, Point)>| {
+        pts.dedup_by(|a, b| (*a - *b).hypot() < 1e-9);
+        if pts.len() >= 2 {
+            let first = segs.len();
+            for w in pts.windows(2) {
+                segs.push((w[0], w[1]));
+            }
+            chain.push((first, segs.len() - 1));
         }
-        (0..n)
-            .map(|i| {
-                let p = pts[i];
-                let d = (p - at).hypot();
-                if d > radius {
-                    return p;
+        pts.clear();
+    };
+    kurbo::flatten(path.elements().iter().copied(), 0.01, &mut |el| match el {
+        PathEl::MoveTo(p) => {
+            flush(&mut pts, &mut segs);
+            pts.push(p);
+        }
+        PathEl::LineTo(p) => pts.push(p),
+        PathEl::ClosePath => {
+            if let Some(a) = pts.first().copied() {
+                pts.push(a);
+            }
+            flush(&mut pts, &mut segs);
+        }
+        _ => {}
+    });
+    flush(&mut pts, &mut segs);
+    let mut sub_of = vec![0usize; segs.len()];
+    for (k, (f, l)) in chain.iter().enumerate() {
+        for s in sub_of.iter_mut().take(l + 1).skip(*f) {
+            *s = k;
+        }
+    }
+    let next_to = |i: usize, j: usize| -> bool {
+        if sub_of[i] != sub_of[j] {
+            return false;
+        }
+        let (f, l) = chain[sub_of[i]];
+        let ring = (segs[f].0 - segs[l].1).hypot() < 1e-9;
+        i.abs_diff(j) == 1 || (ring && i.min(j) == f && i.max(j) == l)
+    };
+    let side = |p: Point, q: Point, r: Point| (q - p).cross(r - p);
+    // Pieces in order of their left edge; each is checked against those
+    // still open at that edge.
+    let x0 = |i: usize| segs[i].0.x.min(segs[i].1.x);
+    let x1 = |i: usize| segs[i].0.x.max(segs[i].1.x);
+    let mut order: Vec<usize> = (0..segs.len()).collect();
+    order.sort_by(|a, b| x0(*a).total_cmp(&x0(*b)));
+    let mut open: Vec<usize> = Vec::new();
+    for &i in &order {
+        open.retain(|&j| x1(j) >= x0(i));
+        let (a, b) = segs[i];
+        for &j in &open {
+            let (c, d) = segs[j];
+            if next_to(i, j) || a.y.max(b.y) < c.y.min(d.y) || c.y.max(d.y) < a.y.min(b.y) {
+                continue;
+            }
+            // Strictly through each other: pieces that only touch (at a
+            // node the overlay put in for both, up to rounding) don't
+            // count.
+            const EPS: f64 = 1e-9;
+            let (d1, d2) = (side(a, b, c), side(a, b, d));
+            let (d3, d4) = (side(c, d, a), side(c, d, b));
+            let apart = |x: f64, y: f64| (x > EPS && y < -EPS) || (x < -EPS && y > EPS);
+            if apart(d1, d2) && apart(d3, d4) {
+                return true;
+            }
+        }
+        open.push(i);
+    }
+    false
+}
+
+/// A subpath flattened into points with the arc length up to each, so
+/// a place a given length along it is quick to find.
+struct Polyline {
+    pts: Vec<Point>,
+    at: Vec<f64>,
+    closed: bool,
+}
+
+impl Polyline {
+    fn of(sub: &BezPath, closed: bool) -> Self {
+        let mut pts: Vec<Point> = Vec::new();
+        kurbo::flatten(sub.elements().iter().copied(), 0.01, &mut |el| match el {
+            PathEl::MoveTo(p) | PathEl::LineTo(p) => pts.push(p),
+            _ => {}
+        });
+        if closed {
+            if let (Some(a), Some(b)) = (pts.first().copied(), pts.last().copied()) {
+                if (a - b).hypot() > 1e-12 {
+                    pts.push(a);
                 }
-                let (prev, next) = if closed {
-                    (pts[(i + n - 1) % n], pts[(i + 1) % n])
+            }
+        }
+        let mut at = Vec::with_capacity(pts.len());
+        let mut s = 0.0;
+        for (i, p) in pts.iter().enumerate() {
+            if i > 0 {
+                s += (*p - pts[i - 1]).hypot();
+            }
+            at.push(s);
+        }
+        Polyline { pts, at, closed }
+    }
+
+    fn len(&self) -> f64 {
+        self.at.last().copied().unwrap_or(0.0)
+    }
+
+    /// The place `s` along (wrapped round on a closed subpath, held to
+    /// the ends on an open one).
+    fn point(&self, s: f64) -> Option<Point> {
+        let len = self.len();
+        if self.pts.len() < 2 || len <= 1e-12 {
+            return None;
+        }
+        let s = if self.closed {
+            s.rem_euclid(len)
+        } else {
+            s.clamp(0.0, len)
+        };
+        let i = self
+            .at
+            .partition_point(|a| *a <= s)
+            .clamp(1, self.pts.len() - 1);
+        let (a, b) = (self.at[i - 1], self.at[i]);
+        let f = if b - a > 1e-12 {
+            (s - a) / (b - a)
+        } else {
+            0.0
+        };
+        Some(self.pts[i - 1].lerp(self.pts[i], f))
+    }
+
+    /// The way the subpath runs at `s`: from the last place before it to
+    /// the first place after it that lie `reach` away from it in a
+    /// straight line (on a jagged stretch the length along the outline
+    /// says little about how far it has got). `None` where the subpath
+    /// never gets that far, or that gives no direction.
+    fn direction(&self, s: f64, reach: f64) -> Option<Vec2> {
+        let p = self.point(s)?;
+        let len = self.len();
+        let n = self.pts.len();
+        let i = self
+            .at
+            .partition_point(|a| *a <= s.clamp(0.0, len))
+            .clamp(1, n - 1);
+        let far = |q: &Point| (*q - p).hypot() >= reach;
+        let step = |k: usize, fwd: bool| -> Option<usize> {
+            if fwd {
+                if k + 1 < n {
+                    Some(k + 1)
+                } else if self.closed {
+                    Some(1)
                 } else {
-                    (pts[i.saturating_sub(1)], pts[(i + 1).min(n - 1)])
-                };
-                let t = next - prev;
-                let len = t.hypot();
-                if len < 1e-12 {
-                    return p;
+                    None
                 }
-                let normal = Vec2::new(-t.y / len, t.x / len);
-                // A number from -1 to 1 that depends on the place only.
-                let h = ((p.x * 12.9898 + p.y * 78.233).sin() * 43758.5453).fract();
-                let r = 2.0 * h.abs() - 1.0;
-                p + normal * (r * amount * (1.0 - d / radius))
-            })
-            .collect()
-    })
+            } else if k > 0 {
+                Some(k - 1)
+            } else if self.closed {
+                Some(n - 2)
+            } else {
+                None
+            }
+        };
+        let mut ahead = None;
+        let mut k = i;
+        for _ in 0..n {
+            if far(&self.pts[k]) {
+                ahead = Some(self.pts[k]);
+                break;
+            }
+            k = step(k, true)?;
+        }
+        let mut behind = None;
+        let mut k = i - 1;
+        for _ in 0..n {
+            if far(&self.pts[k]) {
+                behind = Some(self.pts[k]);
+                break;
+            }
+            k = step(k, false)?;
+        }
+        let v = ahead? - behind?;
+        (v.hypot() > 1e-9).then_some(v)
+    }
 }
 
 /// Flatten and insert points so no segment is longer than `max_len`.
@@ -1247,16 +1992,244 @@ mod tests {
         let c = Point::new(8.0, 8.0);
         // How far out the corner nearest the nib (10, 10) now is.
         let reach = |p: &BezPath| {
-            p.elements()
-                .iter()
-                .filter_map(|e| match e {
-                    PathEl::MoveTo(q) | PathEl::LineTo(q) => Some(q.x + q.y),
-                    _ => None,
-                })
-                .fold(f64::MIN, f64::max)
+            let mut most = f64::MIN;
+            kurbo::flatten(p.elements().iter().copied(), 0.01, &mut |e| match e {
+                PathEl::MoveTo(q) | PathEl::LineTo(q) => most = most.max(q.x + q.y),
+                _ => {}
+            });
+            most
         };
         let (pulled, pushed) = (attract(&sq, c, 5.0, 1.0), attract(&sq, c, 5.0, -1.0));
         assert!(reach(&pulled) < 20.0 && reach(&pushed) > 20.0);
+    }
+
+    /// Points along `p` about `step` apart, curves flattened.
+    fn along(p: &BezPath, step: f64) -> Vec<Point> {
+        densify(p, step)
+    }
+
+    /// The distance from `q` to the nearest of `pts`.
+    fn nearest(q: Point, pts: &[Point]) -> f64 {
+        pts.iter()
+            .map(|p| (*p - q).hypot())
+            .fold(f64::INFINITY, f64::min)
+    }
+
+    /// Attract and Repel move the curve along the rays from the nib's
+    /// centre by the same rule in every direction: a straight line past
+    /// the nib, whatever its nodes (here one off to the side), ends up
+    /// where the rule puts each of its points, the same on both sides,
+    /// and a circle about the centre stays a circle. The live test of
+    /// 0.41 found Repel pushing unevenly: it moved the line's nodes and
+    /// handles only.
+    #[test]
+    fn attract_and_repel_are_the_same_in_every_direction() {
+        let mut line = BezPath::new();
+        line.move_to((-40.0, 0.0));
+        line.line_to((3.0, 0.0));
+        line.line_to((40.0, 0.0));
+        let at = Point::new(0.0, -4.0);
+        let r = 10.0;
+        for dose in [1.0, -1.0, 0.4, -0.4] {
+            let out = along(&attract(&line, at, r, dose), 0.02);
+            for x in [-8.0, -6.0, -4.0, -2.0, 0.0, 2.0, 4.0, 6.0, 8.0] {
+                let p = Point::new(x, 0.0);
+                let v = p - at;
+                let d = v.hypot();
+                if d >= r {
+                    continue;
+                }
+                let (f, w) = (f64::abs(dose), 1.0 - d / r);
+                let s = w * w * (3.0 - 2.0 * w);
+                let to = if dose > 0.0 {
+                    d * (1.0 - f * s)
+                } else {
+                    d + f * s * (r - d) / 2.0
+                };
+                let want = at + v * (to / d);
+                let miss = nearest(want, &out);
+                assert!(miss < 0.12, "dose {dose}, x {x}: {miss} from {want:?}");
+            }
+            // Both sides alike.
+            for x in [2.0, 5.0, 7.0] {
+                let side = |x: f64| {
+                    out.iter()
+                        .filter(|p| (p.x - x).abs() < 0.05)
+                        .map(|p| p.y)
+                        .fold(f64::NAN, f64::max)
+                };
+                assert!(
+                    (side(x) - side(-x)).abs() < 0.12,
+                    "dose {dose}, x {x}: {} {}",
+                    side(x),
+                    side(-x)
+                );
+            }
+        }
+        // A circle about the centre stays round.
+        let ring = kurbo::Circle::new(at, 5.0).to_path(0.001);
+        for dose in [1.0, -1.0] {
+            let out = along(&attract(&ring, at, r, dose), 0.05);
+            let ds: Vec<f64> = out.iter().map(|p| (*p - at).hypot()).collect();
+            let lo = ds.iter().copied().fold(f64::INFINITY, f64::min);
+            let hi = ds.iter().copied().fold(0.0, f64::max);
+            let want = if dose > 0.0 { 2.5 } else { 6.25 };
+            // Within the accuracy the fitted curves keep (0.1 mm).
+            assert!(
+                lo > want - 0.15 && hi < want + 0.15,
+                "dose {dose}: {lo}..{hi}"
+            );
+        }
+    }
+
+    /// Attract never pulls past the nib's centre and Repel never pushes
+    /// past its edge, however large the dose: a dose past the whole
+    /// effect is the whole effect, so a hold comes to rest.
+    #[test]
+    fn attract_and_repel_stay_within_the_nib() {
+        let sq = Rect::new(0.0, 0.0, 10.0, 10.0).to_path(0.01);
+        let at = Point::new(9.0, 9.0);
+        assert_eq!(attract(&sq, at, 5.0, 7.0), attract(&sq, at, 5.0, 1.0));
+        assert_eq!(attract(&sq, at, 5.0, -7.0), attract(&sq, at, 5.0, -1.0));
+        assert_eq!(attract(&sq, at, 5.0, 0.0), sq);
+        assert_eq!(attract(&sq, at, 5.0, f64::NAN), sq);
+        // Out of the square only within the nib (the fitted curves kept
+        // within 0.1 mm).
+        let pushed = along(&attract(&sq, at, 5.0, -1.0), 0.05);
+        assert!(pushed
+            .iter()
+            .all(|p| (*p - at).hypot() < 5.0 + 0.1 || p.x <= 10.1 && p.y <= 10.1));
+        assert!(pushed.iter().any(|p| p.x + p.y > 21.0), "pushed out");
+    }
+
+    /// Roughen works a whole stroke out from the outline it began with:
+    /// the same way twice gives the same spikes, a way going back over
+    /// itself adds nothing, and the nodes it adds are at most one per
+    /// spacing along the stretch it covered (the live test of 0.41 found
+    /// a long hold piling up nodes into a mess).
+    #[test]
+    fn a_roughen_stroke_adds_spikes_once() {
+        let sq = Rect::new(0.0, 0.0, 40.0, 40.0).to_path(0.01);
+        let way: Vec<Point> = (0..=20)
+            .map(|k| Point::new(10.0 + k as f64, 40.0))
+            .collect();
+        let once = roughen_stroke(&sq, &way, 5.0, 1.5, 1.0);
+        assert_ne!(once, sq);
+        let mut back = way.clone();
+        back.extend(way.iter().rev().copied());
+        back.extend(way.iter().copied());
+        assert_eq!(roughen_stroke(&sq, &back, 5.0, 1.5, 1.0), once);
+        // The stretch covered runs from x = 5 to 35 on the top side.
+        let added = node_points(&once).len() - node_points(&sq).len();
+        assert!((20..=34).contains(&added), "{added} nodes");
+        // Spikes within the amount; the other sides exactly as they were.
+        let b = once.bounding_box();
+        assert!(b.y1 > 40.3 && b.y1 <= 41.5 + 1e-9 && b.y0 == 0.0, "{b:?}");
+        assert!(once
+            .elements()
+            .contains(&PathEl::LineTo(Point::new(40.0, 0.0))));
+        // Prefix of the way: the part done so far stays as it was.
+        let half = roughen_stroke(&sq, &way[..10], 5.0, 1.5, 1.0);
+        let left: Vec<Point> = node_points(&half)
+            .into_iter()
+            .filter(|p| p.y > 39.0 && p.x < 12.0)
+            .collect();
+        let left_once: Vec<Point> = node_points(&once)
+            .into_iter()
+            .filter(|p| p.y > 39.0 && p.x < 12.0)
+            .collect();
+        assert_eq!(left, left_once);
+        // Bad input changes nothing.
+        assert_eq!(roughen_stroke(&sq, &[], 5.0, 1.5, 1.0), sq);
+        assert_eq!(roughen_stroke(&sq, &way, f64::NAN, 1.5, 1.0), sq);
+        assert_eq!(
+            roughen_stroke(&sq, &[Point::new(f64::NAN, 0.0)], 5.0, 1.5, 1.0),
+            sq
+        );
+    }
+
+    /// Strokes over an outline an earlier stroke made jagged pushed
+    /// spikes across the outline, and the even-odd fill showed each
+    /// overlap as a white sliver over the object (#2229). Now, however
+    /// often a place is gone over, every place the outline goes round is
+    /// filled (even-odd agrees with nonzero), and a hole made of a second
+    /// subpath stays a hole.
+    #[test]
+    fn roughen_leaves_no_white_slivers() {
+        use kurbo::Circle;
+        // Places in the box where the even-odd fill leaves out what the
+        // outline goes round (nonzero), skipping `skip`.
+        let slivers = |p: &BezPath, skip: &dyn Fn(Point) -> bool| -> Vec<Point> {
+            let b = p.bounding_box();
+            let mut bad = Vec::new();
+            let mut y = b.y0 + 0.013;
+            while y < b.y1 {
+                let mut x = b.x0 + 0.017;
+                while x < b.x1 {
+                    let q = Point::new(x, y);
+                    let w = p.winding(q);
+                    if !skip(q) && w != 0 && w % 2 == 0 {
+                        bad.push(q);
+                    }
+                    x += 0.37;
+                }
+                y += 0.37;
+            }
+            bad
+        };
+        let nodes = |p: &BezPath| -> Vec<Point> {
+            p.elements()
+                .iter()
+                .filter_map(|e| match e {
+                    PathEl::MoveTo(p) | PathEl::LineTo(p) | PathEl::CurveTo(_, _, p) => Some(*p),
+                    _ => None,
+                })
+                .collect()
+        };
+        for base in [
+            Circle::new((0.0, 0.0), 20.0).to_path(0.01),
+            Circle::new((0.0, 0.0), 5.0).to_path(0.01),
+            Rect::new(0.0, 0.0, 40.0, 40.0).to_path(0.01),
+        ] {
+            let pts = nodes(&base);
+            let mut way = Vec::new();
+            for w in pts.windows(2) {
+                way.extend((0..10).map(|k| w[0].lerp(w[1], k as f64 / 10.0)));
+            }
+            for (amount, spacing) in [(2.0, 1.0), (5.0, 1.0)] {
+                let mut p = base.clone();
+                for pass in 1..=3 {
+                    p = roughen_stroke(&p, &way, 8.0, amount, spacing);
+                    let bad = slivers(&p, &|_| false);
+                    assert!(
+                        bad.is_empty(),
+                        "{amount}/{spacing} pass {pass}: white at {:?}",
+                        &bad[..bad.len().min(5)]
+                    );
+                }
+                // Still a jagged version of the same object.
+                assert!(p.contains(base.bounding_box().center()));
+            }
+        }
+        // A ring: the outer edge made jagged, the hole kept.
+        let mut donut = Circle::new((0.0, 0.0), 20.0).to_path(0.01);
+        donut.extend(Circle::new((0.0, 0.0), 10.0).to_path(0.01));
+        let way: Vec<Point> = (0..=40)
+            .map(|k| Point::new(-20.0 + k as f64, 20.0))
+            .collect();
+        let mut p = donut;
+        for pass in 1..=3 {
+            p = roughen_stroke(&p, &way, 8.0, 5.0, 1.0);
+            let bad = slivers(&p, &|q: Point| q.to_vec2().hypot() < 10.5);
+            assert!(
+                bad.is_empty(),
+                "ring pass {pass}: white at {:?}",
+                &bad[..bad.len().min(5)]
+            );
+        }
+        let even_odd_in = |q: Point| p.winding(q) % 2 != 0;
+        assert!(!even_odd_in(Point::new(0.0, 0.0)), "the hole filled in");
+        assert!(even_odd_in(Point::new(0.0, -15.0)));
     }
 
     /// The nodes of a path's elements (end points).
@@ -1814,9 +2787,209 @@ mod tests {
         assert!((back.bounding_box().x0 - 5.0).abs() < 1e-6);
     }
 
-    /// #1133: a long Smudge or Twirl stroke circling a square ends, keeps
-    /// a handful of nodes and stays finite. The curve fitter used before
-    /// hung or panicked partway through such a stroke.
+    /// A Smudge stroke from `a` to `b` in moves of `step` mm.
+    fn smudge_stroke(path: &BezPath, a: Point, b: Point, step: f64, radius: f64) -> BezPath {
+        let n = ((b - a).hypot() / step).ceil().max(1.0) as usize;
+        let mut out = path.clone();
+        let mut last = a;
+        for k in 1..=n {
+            let at = a.lerp(b, k as f64 / n as f64);
+            out = smudge(&out, last, at, radius, 1.0);
+            last = at;
+        }
+        out
+    }
+
+    /// The flattened points of `path` whose `y` lies within half a
+    /// millimetre of `y`: their smallest and largest `x`.
+    fn span_at(path: &BezPath, y: f64) -> (f64, f64) {
+        let pts: Vec<Point> = densify(path, 0.1)
+            .into_iter()
+            .filter(|p| (p.y - y).abs() < 0.5)
+            .collect();
+        let lo = pts.iter().map(|p| p.x).fold(f64::INFINITY, f64::min);
+        let hi = pts.iter().map(|p| p.x).fold(f64::NEG_INFINITY, f64::max);
+        (lo, hi)
+    }
+
+    /// #2546: a Smudge stroke from inside a rounded rectangle out across
+    /// its top changes the outline only under the nib. Everything farther
+    /// from the stroke than the nib's radius stays where it was,
+    /// at any speed (a slow stroke refitted the stretch beside the nib at
+    /// every event, so the edge crept and wobbled), and a nib wide enough
+    /// to cover the bottom edge where the stroke starts does not drag that
+    /// edge along behind it.
+    #[test]
+    fn smudge_leaves_the_outline_away_from_the_nib() {
+        use kurbo::ParamCurveNearest as _;
+        let shape = crate::geometry::rect_path(Rect::new(0.0, 0.0, 60.0, 40.0), 8.0);
+        let on_shape = |p: Point| {
+            shape
+                .segments()
+                .map(|s| s.nearest(p, 1e-9).distance_sq)
+                .fold(f64::INFINITY, f64::min)
+                .sqrt()
+        };
+        let (a, b) = (Point::new(30.0, 20.0), Point::new(30.0, 55.0));
+        let off_stroke = |p: Point| {
+            let ab = b - a;
+            let t = ((p - a).dot(ab) / ab.hypot2()).clamp(0.0, 1.0);
+            (p - (a + ab * t)).hypot()
+        };
+        for (step, radius) in [(0.5, 10.0), (1.0, 10.0), (4.0, 10.0), (1.0, 25.0)] {
+            let out = smudge_stroke(&shape, a, b, step, radius);
+            for p in densify(&out, 0.2) {
+                if off_stroke(p) > radius * 1.01 {
+                    assert!(
+                        on_shape(p) < 0.06,
+                        "step {step}, nib {radius}: {p:?} moved {}",
+                        on_shape(p)
+                    );
+                }
+            }
+            // The outline is drawn out with the nib.
+            assert!(out.bounding_box().y1 > 50.0, "step {step}, nib {radius}");
+            // Behind where the stroke began, the outline is untouched,
+            // even inside the wide nib.
+            for p in densify(&out, 0.2) {
+                if p.y < 15.0 {
+                    assert!(
+                        on_shape(p) < 0.06,
+                        "nib {radius}: {p:?} behind the stroke moved"
+                    );
+                }
+            }
+        }
+    }
+
+    /// #2710: dragging the nib out past the edge and back over the same
+    /// path in one stroke brings the edge back near where it was. The way
+    /// back used to leave the tongue standing, since only the outline
+    /// ahead of the nib was pushed.
+    #[test]
+    fn smudge_out_and_back_returns_the_edge() {
+        let square = Rect::new(0.0, 0.0, 60.0, 40.0).to_path(0.01);
+        let (a, b) = (Point::new(30.0, 30.0), Point::new(30.0, 55.0));
+        let radius = 10.0;
+        let out = smudge_stroke(&square, a, b, 1.0, radius);
+        assert!(out.bounding_box().y1 > 54.0, "{:?}", out.bounding_box());
+        let n = 25;
+        let mut back = out.clone();
+        let mut last = b;
+        for k in 1..=n {
+            let at = b.lerp(a, k as f64 / n as f64);
+            back = smudge_back(&back, last, at, radius, 1.0);
+            last = at;
+        }
+        let bb = back.bounding_box();
+        assert!(bb.y1 < 44.0, "the tongue stayed out: {bb:?}");
+        // The edge is back along most of its width, not dented in far.
+        for x in [12.0, 20.0, 30.0, 40.0, 48.0] {
+            let top = densify(&back, 0.1)
+                .into_iter()
+                .filter(|p| (p.x - x).abs() < 0.5 && p.y > 20.0)
+                .map(|p| p.y)
+                .fold(f64::NEG_INFINITY, f64::max);
+            assert!(top > 33.0 && top < 44.0, "edge at x {x} is at {top}");
+        }
+        assert!(
+            (back.area().abs() - 2400.0).abs() < 200.0,
+            "{}",
+            back.area()
+        );
+        // Without the way back the tongue stays: the plain move pushes
+        // only what lies ahead.
+        let mut stays = out.clone();
+        let mut last = b;
+        for k in 1..=n {
+            let at = b.lerp(a, k as f64 / n as f64);
+            stays = smudge(&stays, last, at, radius, 1.0);
+            last = at;
+        }
+        assert!(stays.bounding_box().y1 > 50.0);
+    }
+
+    /// #2228: Smudge draws the outline out along the stroke into a
+    /// tongue, the same whether the stroke comes as many short moves or
+    /// a few long ones. A 10 mm nib dragged 30 mm up out of a square's
+    /// top side: the outline goes all the way with the nib's centre, the
+    /// tongue is as wide as the nib's core halfway up and does not thin
+    /// into a spike near its end, and its sides do not cross. A quick
+    /// stroke (6 mm moves) used to leave a thin spike, a slow one (1 mm
+    /// moves) a bulge of 11 mm for the 30 mm drag.
+    #[test]
+    fn smudge_draws_a_tongue_whatever_the_speed() {
+        let square = Rect::new(0.0, 0.0, 60.0, 40.0).to_path(0.01);
+        let (a, b) = (Point::new(30.0, 38.0), Point::new(30.0, 68.0));
+        let radius = 10.0;
+        let slow = smudge_stroke(&square, a, b, 1.0, radius);
+        let quick = smudge_stroke(&square, a, b, 6.0, radius);
+        let once = smudge(&square, a, b, radius, 1.0);
+        for (name, out) in [("slow", &slow), ("quick", &quick), ("once", &once)] {
+            let bounds = out.bounding_box();
+            // The top side was 2 mm ahead of the nib's centre and stays
+            // so (each move refits the curve within a tenth of a
+            // millimetre).
+            assert!((bounds.y1 - 70.0).abs() < 1.5, "{name}: {bounds:?}");
+            // The rest of the square is where it was.
+            assert!(
+                bounds.x0.abs() < 1e-6 && bounds.y0.abs() < 1e-6 && (bounds.x1 - 60.0).abs() < 1e-6,
+                "{name}: {bounds:?}"
+            );
+            for y in [50.0, 60.0, 67.0] {
+                let (lo, hi) = span_at(out, y);
+                assert!(
+                    hi - lo > radius * 0.9 && hi - lo < radius * 2.0 + 0.5,
+                    "{name}: {} mm wide at {y}",
+                    hi - lo
+                );
+                assert!(
+                    (lo + hi - 60.0).abs() < 1.0,
+                    "{name}: off the stroke at {y}: {lo} to {hi}"
+                );
+            }
+            assert!(
+                out.elements().len() < 60,
+                "{name}: {}",
+                out.elements().len()
+            );
+            assert!(matches!(out.elements().last(), Some(PathEl::ClosePath)));
+            // The outline goes round once: the tongue adds its area and
+            // no loop takes any away.
+            let area = out.area().abs();
+            assert!(area > 2400.0 + 30.0 * radius * 0.9, "{name}: {area}");
+        }
+        // The same outline at any speed.
+        for y in [45.0, 50.0, 55.0, 60.0, 65.0] {
+            let (s, q) = (span_at(&slow, y), span_at(&quick, y));
+            assert!(
+                (s.0 - q.0).abs() < 1.5 && (s.1 - q.1).abs() < 1.5,
+                "at {y}: slow {s:?}, quick {q:?}"
+            );
+        }
+        // Half the pressure: the outline follows half as far.
+        let half = smudge(&square, a, b, radius, 0.5);
+        let top = half.bounding_box().y1;
+        assert!(top > 45.0 && top < 62.0, "{top}");
+        // Nothing to do, or nothing usable: the path itself.
+        assert_eq!(smudge(&square, a, a, radius, 1.0), square);
+        assert_eq!(smudge(&square, a, b, f64::NAN, 1.0), square);
+        assert_eq!(smudge(&square, a, b, radius, 0.0), square);
+        assert_eq!(
+            smudge(&square, a, Point::new(f64::NAN, 0.0), radius, 1.0),
+            square
+        );
+        // A stroke away from the outline leaves it exactly.
+        let far = Point::new(200.0, 200.0);
+        assert_eq!(
+            smudge(&square, far, far + Vec2::new(5.0, 0.0), radius, 1.0),
+            square
+        );
+    }
+
+    /// #1133: a long Smudge, Twirl, Attract or Repel stroke circling a
+    /// square ends, keeps a handful of nodes and stays finite. The curve
+    /// fitter used before hung or panicked partway through such a stroke.
     #[test]
     fn long_smudge_and_twirl_strokes_stay_light() {
         let mut square = BezPath::new();
@@ -1825,16 +2998,19 @@ mod tests {
         square.line_to((40.0, 40.0));
         square.line_to((0.0, 40.0));
         square.close_path();
-        for smudge in [true, false] {
+        for brush in ["smudge", "twirl", "attract", "repel"] {
             let mut q = square.clone();
             for k in 0..600 {
                 let a = k as f64 * 0.05;
                 let at = Point::new(20.0 + 22.0 * a.cos(), 20.0 + 22.0 * a.sin());
-                q = if smudge {
-                    let d = Vec2::new(-0.55 * a.sin(), 0.55 * a.cos());
-                    smear(&smooth(&q, at, 10.0, 0.2), at, d, 10.0)
-                } else {
-                    twirl(&q, at, 0.1, 10.0)
+                q = match brush {
+                    "smudge" => {
+                        let d = Vec2::new(-0.55 * a.sin(), 0.55 * a.cos());
+                        smudge(&q, at - d, at, 10.0, 1.0)
+                    }
+                    "twirl" => twirl(&q, at, 0.1, 10.0),
+                    "attract" => attract(&q, at, 10.0, 0.05),
+                    _ => attract(&q, at, 10.0, -0.05),
                 };
                 assert!(q.elements().len() < 200, "step {k}: {}", q.elements().len());
             }

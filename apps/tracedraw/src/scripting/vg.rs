@@ -29,6 +29,14 @@ pub(super) struct AppView {
     pub nodes: Vec<(u64, usize)>,
     /// The colour profiles in use: RGB, CMYK, grayscale.
     pub profiles: [String; 3],
+    /// The palettes of the Palette Manager (`Application.Palettes`): each
+    /// name with its named colours.
+    pub palettes: Vec<(String, Vec<(String, Color)>)>,
+    /// View > Simulate Overprints is on.
+    pub simulate_overprints: bool,
+    /// The page sizes the user saved, which name a page's paper before
+    /// the built-in ones (`Page.Paper`).
+    pub page_sizes: Vec<crate::settings::PageSizePreset>,
 }
 
 impl AppView {
@@ -49,8 +57,26 @@ impl AppView {
                 doc_cmyk.unwrap_or_else(|| p.cmyk_profile.clone()),
                 p.gray_profile.clone(),
             ],
+            palettes: app
+                .palettes
+                .iter()
+                .map(|p| (p.display_name(), p.colors.clone()))
+                .collect(),
+            simulate_overprints: app.simulate_overprints,
+            page_sizes: app.settings.page_sizes.clone(),
         }
     }
+}
+
+/// A palette for macros: its name and its colours, each with its name.
+fn palette_json(name: &str, colors: &[(String, Color)]) -> Value {
+    json!({
+        "name": name,
+        "colors": colors
+            .iter()
+            .map(|(n, c)| json!({"name": n, "color": c}))
+            .collect::<Vec<_>>(),
+    })
 }
 
 fn ids(a: &Value, key: &str) -> Vec<ShapeId> {
@@ -76,6 +102,53 @@ fn kind_tag(k: &ShapeKind) -> &'static str {
 }
 
 impl HostInner {
+    /// The name of a spot colour's ink: the drawing's ink list first, then
+    /// a spot colour of that ink in an open palette. `None` for colours
+    /// that are not spot colours, or an ink nobody names.
+    fn ink_name(&self, c: Color) -> Option<String> {
+        let Color::Spot { ink, .. } = c else {
+            return None;
+        };
+        if let Some(i) = self.doc.ink(ink) {
+            return Some(i.name.clone());
+        }
+        self.view
+            .palettes
+            .iter()
+            .flat_map(|(_, colors)| colors)
+            .find(|(_, pc)| matches!(pc, Color::Spot { ink: i, .. } if *i == ink))
+            .map(|(n, _)| n.clone())
+    }
+
+    /// A spot colour a macro applies whose ink the drawing does not have
+    /// yet: the ink joins the drawing's list under its palette name, so
+    /// exports print it on a plate of its own.
+    fn add_ink_for(&mut self, c: Color) -> Result<(), String> {
+        let Color::Spot {
+            ink,
+            c: cc,
+            m,
+            y,
+            k,
+            ..
+        } = c
+        else {
+            return Ok(());
+        };
+        if self.doc.ink(ink).is_some() {
+            return Ok(());
+        }
+        let name = self
+            .ink_name(c)
+            .unwrap_or_else(|| format!("Spot {ink:08x}"));
+        let mut inks = self.doc.inks.clone();
+        inks.push(tracedraw_core::document::Ink {
+            id: ink,
+            name,
+            cmyk: [cc, m, y, k],
+        });
+        self.run(Command::SetInks { inks })
+    }
     /// The top-level layer holding `id` (nested objects: their outermost
     /// group's layer).
     pub(super) fn layer_of(&self, id: ShapeId) -> Result<LayerId, String> {
@@ -232,10 +305,34 @@ impl HostInner {
         }))
     }
 
-    fn bounds_of(&self, list: &[ShapeId]) -> Option<tracedraw_core::geometry::Rect> {
+    /// The box of the objects; with `outline`, widened by half of each
+    /// object's outline, as CorelDRAW's `GetBoundingBox(..., True)`
+    /// gives it (#2165: crop marks are placed from it).
+    fn bounds_with(
+        &self,
+        list: &[ShapeId],
+        outline: bool,
+    ) -> Option<tracedraw_core::geometry::Rect> {
+        fn half_outline(s: &Shape) -> f64 {
+            let own = s.stroke.as_ref().map_or(0.0, |k| k.width.max(0.0) / 2.0);
+            match &s.kind {
+                ShapeKind::Group { children } => {
+                    children.iter().map(half_outline).fold(own, f64::max)
+                }
+                _ => own,
+            }
+        }
         list.iter()
             .filter_map(|id| self.doc.shape_on_page(*id))
-            .map(|s| s.bounds())
+            .map(|s| {
+                let b = s.bounds();
+                if outline {
+                    let h = half_outline(&s);
+                    b.inflate(h, h)
+                } else {
+                    b
+                }
+            })
             .reduce(|a, b| a.union(b))
     }
 
@@ -255,6 +352,7 @@ impl HostInner {
                 "view": [self.view.center.0, self.view.center.1],
                 "profiles": self.view.profiles,
                 "master": self.doc.master.iter().map(|l| l.id.raw()).collect::<Vec<_>>(),
+                "simulate_overprints": self.view.simulate_overprints,
             }),
             "vg_info" => self.info(ShapeId(id_arg(a, "id")?))?,
             "vg_default_stroke" => {
@@ -263,7 +361,8 @@ impl HostInner {
             "vg_exists" => json!({"yes": self.doc.find_shape(ShapeId(id_arg(a, "id")?)).is_some()}),
             "vg_bounds" => {
                 let list = ids(a, "ids");
-                match self.bounds_of(&list) {
+                let outline = a.get("outline").and_then(|v| v.as_bool()).unwrap_or(false);
+                match self.bounds_with(&list, outline) {
                     Some(b) => json!({"x0": b.x0, "y0": b.y0, "x1": b.x1, "y1": b.y1}),
                     None => json!({"x0": 0.0, "y0": 0.0, "x1": 0.0, "y1": 0.0}),
                 }
@@ -304,6 +403,9 @@ impl HostInner {
                         .map_err(|e| format!("not a fill: {e}"))?;
                 let shapes = ids(a, "ids");
                 if !shapes.is_empty() {
+                    if let Fill::Solid(c) = &fill {
+                        self.add_ink_for(*c)?;
+                    }
                     self.run(Command::SetFill { shapes, fill })?;
                 }
                 json!({})
@@ -570,6 +672,43 @@ impl HostInner {
                 }
                 json!({"ids": out})
             }
+            // Copy, Cut and Paste (#2165: a tiling macro copies its crop
+            // marks and pastes them for the other side).
+            "vg_copy" | "vg_cut" => {
+                let list: Vec<ShapeId> = ids(a, "ids")
+                    .into_iter()
+                    .filter(|id| self.doc.shape_on_page(*id).is_some())
+                    .collect();
+                if list.is_empty() {
+                    return Err("nothing to copy".into());
+                }
+                self.clip = list
+                    .iter()
+                    .filter_map(|id| self.doc.shape_on_page(*id))
+                    .collect();
+                if method == "vg_cut" {
+                    self.run(Command::DeleteShapes {
+                        shapes: list.clone(),
+                    })?;
+                    self.selection.retain(|s| !list.contains(s));
+                }
+                json!({})
+            }
+            "vg_paste" => {
+                if self.clip.is_empty() {
+                    return Err("the clipboard is empty".into());
+                }
+                let layer = self.layer_for(a)?;
+                let mut out = Vec::new();
+                for s in self.clip.clone() {
+                    let copy = self.fresh_ids(s);
+                    out.push(copy.id);
+                    self.run(Command::AddShape { layer, shape: copy })?;
+                }
+                // What is pasted is selected, as in CorelDRAW.
+                self.selection = out.clone();
+                json!({"ids": out.iter().map(|i| i.raw()).collect::<Vec<_>>()})
+            }
             "vg_delete" => {
                 let list: Vec<ShapeId> = ids(a, "ids")
                     .into_iter()
@@ -618,11 +757,37 @@ impl HostInner {
                     .enumerate()
                     .find(|(_, p)| p.id == pid)
                     .ok_or("no page")?;
+                // The paper the size is, by name ("A4"), or "" for a
+                // size of its own (#1255).
+                let paper = crate::ui::dialogs::paper_name(p.size, &self.view.page_sizes)
+                    .unwrap_or_default();
                 json!({
                     "name": p.name, "w": p.size.width, "h": p.size.height, "index": i + 1,
+                    "paper": paper,
                     "layers": p.layers.iter().map(|l| l.id.raw()).collect::<Vec<_>>(),
                     "master": self.doc.master.iter().map(|l| l.id.raw()).collect::<Vec<_>>(),
                 })
+            }
+            "vg_paper_size" => {
+                // The size of a paper by name, the user's saved sizes
+                // first, portrait.
+                let name = a.get("name").and_then(|n| n.as_str()).unwrap_or("");
+                let size = self
+                    .view
+                    .page_sizes
+                    .iter()
+                    .find(|p| p.name.eq_ignore_ascii_case(name))
+                    .map(|p| (p.width_mm, p.height_mm))
+                    .or_else(|| {
+                        crate::ui::dialogs::paper_presets()
+                            .into_iter()
+                            .find(|(n, _)| n.eq_ignore_ascii_case(name))
+                            .map(|(_, s)| (s.width, s.height))
+                    });
+                match size {
+                    Some((w, h)) => json!({"w": w.min(h), "h": w.max(h)}),
+                    None => json!({}),
+                }
             }
             "vg_rename_page" => {
                 let page = PageId(id_arg(a, "page")?);
@@ -714,6 +879,37 @@ impl HostInner {
                 let path = s.page_path();
                 let len: f64 = path.segments().map(|seg| seg.arclen(1e-4)).sum();
                 json!({"length": len})
+            }
+            // Application.FontList: the families the font lists offer.
+            "vg_fonts" => json!({"families": tracedraw_text::fonts().families()}),
+            "vg_palettes" => json!({
+                "palettes": self
+                    .view
+                    .palettes
+                    .iter()
+                    .map(|(name, colors)| palette_json(name, colors))
+                    .collect::<Vec<_>>(),
+            }),
+            "vg_doc_palette" => {
+                let colors: Vec<(String, Color)> = self
+                    .doc
+                    .palette
+                    .iter()
+                    .map(|c| (self.ink_name(*c).unwrap_or_default(), *c))
+                    .collect();
+                palette_json(&self.doc.title, &colors)
+            }
+            "vg_ink_name" => {
+                let ink = a.get("ink").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                let c = Color::Spot {
+                    ink,
+                    tint: 1.0,
+                    c: 0.0,
+                    m: 0.0,
+                    y: 0.0,
+                    k: 0.0,
+                };
+                json!({"name": self.ink_name(c).unwrap_or_default()})
             }
             "vg_color" => {
                 let c: Color = a
@@ -828,6 +1024,12 @@ impl HostInner {
                     };
                 let data = match ext.as_str() {
                     "svg" => tracedraw_io::svg::page_to_svg(&self.doc, idx).into_bytes(),
+                    "pdf" if a.get("current_page").and_then(|v| v.as_bool()) == Some(true) => {
+                        // PDFSettings.PublishRange = pdfCurrentPage.
+                        let mut one = self.doc.clone();
+                        one.pages.retain(|pg| pg.id == page);
+                        tracedraw_io::pdf::document_to_pdf(&one)
+                    }
                     "pdf" => tracedraw_io::pdf::document_to_pdf(&self.doc),
                     "eps" | "ps" => tracedraw_io::eps::document_to_ps(&self.doc).into_bytes(),
                     "cdr" => tracedraw_cdr::write::document_to_cdr(&self.doc),
@@ -884,6 +1086,15 @@ impl HostInner {
                     shapes: vec![ShapeId(id_arg(a, "id")?)],
                     shadow: None,
                 })?;
+                json!({})
+            }
+            "vg_view" => {
+                // ActiveView.Type: the enhanced view with overprints turns
+                // View > Simulate Overprints on, another view type off.
+                if let Some(on) = a.get("simulate_overprints").and_then(|v| v.as_bool()) {
+                    self.view.simulate_overprints = on;
+                    self.simulate_overprints = Some(on);
+                }
                 json!({})
             }
             "vg_status" => {
@@ -1134,6 +1345,7 @@ impl HostInner {
                             zoom,
                             origin_x: 0.0,
                             origin_y: h as f64,
+                            stretch_y: 1.0,
                         },
                         anti_alias,
                         ..tracedraw_render::RenderOptions::default()
@@ -1247,6 +1459,95 @@ impl HostInner {
                 }
                 json!({"effects": list})
             }
+            "vg_add_contour" => {
+                // Shape.CreateContour: a contour effect of `steps` rings
+                // `offset` mm apart, outside, inside or to the centre,
+                // stepping from the object's fill colour to `fill`.
+                let id = ShapeId(id_arg(a, "id")?);
+                let s = self.shape(id.raw())?;
+                let direction = num(a, "direction", 2.0) as i64;
+                let offset = num(a, "offset", 1.0).abs();
+                if offset <= 0.0 {
+                    return Err("the contour offset must be more than 0".into());
+                }
+                let fill_to = a
+                    .get("fill")
+                    .cloned()
+                    .and_then(|v| serde_json::from_value(v).ok())
+                    .or(match s.fill {
+                        Fill::Solid(c) => Some(c),
+                        _ => None,
+                    })
+                    .unwrap_or(Color::WHITE);
+                let mut effects = s.effects.clone();
+                effects.push(tracedraw_core::live::Effect::Contour {
+                    steps: (num(a, "steps", 1.0).max(1.0) as u32).min(999),
+                    offset,
+                    outside: direction == 2,
+                    to_center: direction == 0,
+                    fill_to,
+                    outline_to: None,
+                    fill_end_to: None,
+                    color_blend: 0,
+                    corners: Some(tracedraw_core::shaping::Join::Miter),
+                    accel_objects: 0.0,
+                    accel_colors: 0.0,
+                });
+                let index = effects.len() - 1;
+                self.run(Command::SetEffects { shape: id, effects })?;
+                json!({"index": index})
+            }
+            "vg_outline_to_object" => {
+                // Outline.ConvertToObject: a filled curve of the outline's
+                // shape and colour, right above the object; the object
+                // loses its outline.
+                let id = ShapeId(id_arg(a, "id")?);
+                let layer = self.layer_of(id)?;
+                let s = self.doc.shape_on_page(id).ok_or("no shape")?;
+                let Some(st) = s.stroke.clone() else {
+                    return Err("the object has no outline".into());
+                };
+                let path =
+                    crate::tools2::outline_object_path(&s).ok_or("the outline draws nothing")?;
+                let oid = self.new_id();
+                let mut o = Shape::new(oid, ShapeKind::Path { path, closed: true });
+                o.fill = Fill::Solid(st.color);
+                o.stroke = None;
+                o.overprint_fill = s.overprint_outline;
+                self.run(Command::AddShape { layer, shape: o })?;
+                self.run(Command::OrderRelative {
+                    shapes: vec![oid],
+                    reference: id,
+                    in_front: true,
+                })?;
+                self.run(Command::SetStroke {
+                    shapes: vec![id],
+                    stroke: None,
+                })?;
+                json!({"id": oid.raw()})
+            }
+            "vg_copy_to_layer" => {
+                // ShapeRange.CopyToLayer: copies on the given layer, where
+                // the objects are on their page.
+                let layer = LayerId(
+                    a.get("layer")
+                        .and_then(|v| v.as_u64())
+                        .ok_or("missing layer")?,
+                );
+                if self.doc.layer(layer).is_err() {
+                    return Err("no such layer".into());
+                }
+                let mut out = Vec::new();
+                for id in ids(a, "ids") {
+                    let Some(s) = self.doc.shape_on_page(id) else {
+                        continue;
+                    };
+                    let copy = self.fresh_ids(s);
+                    out.push(copy.id.raw());
+                    self.run(Command::AddShape { layer, shape: copy })?;
+                }
+                json!({"ids": out})
+            }
             "vg_separate" => {
                 // The object and its effects become plain objects, as
                 // Flatten Effects makes them; a drop shadow becomes a
@@ -1293,11 +1594,12 @@ impl HostInner {
                 });
                 self.run(Command::DeleteShapes { shapes: vec![id] })?;
                 for p in parts {
-                    let p = self.fresh_ids(p);
+                    // The object itself keeps its id, as macros tell it
+                    // from the pieces its effects leave by its StaticID.
+                    let p = if p.id == id { p } else { self.fresh_ids(p) };
                     fresh.push(p.id.raw());
                     self.run(Command::AddShape { layer, shape: p })?;
                 }
-                self.selection.retain(|x| *x != id);
                 json!({"ids": fresh})
             }
             _ => return Ok(None),
@@ -1307,6 +1609,127 @@ impl HostInner {
 
 /// The JavaScript object model.
 pub(super) const PRELUDE: &str = include_str!("vg_model.js");
+
+/// The object model with the parameter names of its methods set as
+/// `__params`, read from its source: the script engine does not keep the
+/// source of class methods, and macros pass arguments by name
+/// (`CreateArtisticText(..., Font:="Arial", Size:=10)`).
+pub(super) fn prelude() -> &'static str {
+    static FULL: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    FULL.get_or_init(|| format!("{PRELUDE}\n{}", param_names_js(PRELUDE)))
+}
+
+/// `Owner.prototype.Method.__params = [...]` (or `Owner.Method` for
+/// static methods and object literals) for every method of `src` written
+/// as `class Owner {` / `const Owner = {` with members indented two
+/// spaces, or as `Owner.prototype.Method = function (...)`. Parameter
+/// names are lower case, as named arguments are matched.
+fn param_names_js(src: &str) -> String {
+    fn names(list: &str) -> Vec<String> {
+        list.split(',')
+            .map(|p| p.split('=').next().unwrap_or("").trim())
+            .filter(|p| !p.is_empty() && !p.starts_with("..."))
+            .map(|p| p.to_ascii_lowercase())
+            .collect()
+    }
+    fn ident(s: &str) -> Option<&str> {
+        let end = s
+            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '$'))
+            .unwrap_or(s.len());
+        let id = &s[..end];
+        (!id.is_empty() && !id.starts_with(|c: char| c.is_ascii_digit())).then_some(id)
+    }
+    let mut out = String::new();
+    let mut emit = |target: String, params: Vec<String>| {
+        if params.is_empty() {
+            return;
+        }
+        let list = params
+            .iter()
+            .map(|p| format!("{p:?}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        out.push_str(&format!(
+            "try {{ if (typeof {target} === 'function' && !{target}.__params) {target}.__params = [{list}]; }} catch (e) {{}}\n"
+        ));
+    };
+    // (owner, members belong to its prototype)
+    let mut owner: Option<(String, bool)> = None;
+    for line in src.lines() {
+        if let Some(rest) = line.strip_prefix("class ") {
+            owner = ident(rest).map(|n| (n.to_string(), true));
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("const ") {
+            if let Some(n) = ident(rest) {
+                if rest[n.len()..].trim_start().starts_with("= {") {
+                    owner = Some((n.to_string(), false));
+                    continue;
+                }
+            }
+        }
+        if line.starts_with('}') {
+            owner = None;
+        }
+        // Owner.prototype.Method = function (a, b) {
+        if let Some(i) = line.find(".prototype.") {
+            let head = &line[..i];
+            if let Some(cls) = ident(head.trim_start()) {
+                let rest = &line[i + ".prototype.".len()..];
+                if let Some(m) = ident(rest) {
+                    let tail = rest[m.len()..].trim_start();
+                    if let Some(f) = tail.strip_prefix("= function") {
+                        if let (Some(a), Some(b)) = (f.find('('), f.find(')')) {
+                            if a < b && head.trim_start() == cls {
+                                emit(format!("{cls}.prototype.{m}"), names(&f[a + 1..b]));
+                            }
+                        }
+                    }
+                }
+            }
+            continue;
+        }
+        let Some((cls, proto)) = &owner else {
+            continue;
+        };
+        let Some(member) = line.strip_prefix("  ") else {
+            continue;
+        };
+        if member.starts_with(' ') {
+            continue;
+        }
+        let (member, is_static) = match member.strip_prefix("static ") {
+            Some(m) => (m, true),
+            None => (member, false),
+        };
+        if member.starts_with("get ") || member.starts_with("set ") {
+            continue;
+        }
+        let Some(m) = ident(member) else {
+            continue;
+        };
+        if m == "constructor" {
+            continue;
+        }
+        let tail = &member[m.len()..];
+        let Some(args) = tail.strip_prefix('(') else {
+            continue;
+        };
+        let Some(close) = args.find(')') else {
+            continue;
+        };
+        if !args[close + 1..].trim_start().starts_with('{') {
+            continue;
+        }
+        let target = if *proto && !is_static {
+            format!("{cls}.prototype.{m}")
+        } else {
+            format!("{cls}.{m}")
+        };
+        emit(target, names(&args[..close]));
+    }
+    out
+}
 
 #[cfg(test)]
 #[path = "vg_tests.rs"]

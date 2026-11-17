@@ -84,7 +84,9 @@ pub fn ellipse_arc_path(rect: Rect, start_deg: f64, end_deg: f64, pie: bool) -> 
 /// `rect`, with its first vertex at the top.
 ///
 /// `points` is the number of vertices; `sharpness` in `0.0..1.0` pulls every
-/// other vertex toward the centre, turning a polygon into a star.
+/// other vertex toward the centre, turning a polygon into a star, and a
+/// negative one puts those points past the centre: an inverted star (see
+/// [`star_inner_ratio`]).
 pub fn polygon_path(rect: Rect, points: u32, sharpness: f64) -> BezPath {
     twisted_polygon_path(rect, points, sharpness, 0.0)
 }
@@ -108,6 +110,43 @@ pub fn twisted_polygon_path(rect: Rect, points: u32, sharpness: f64, twist: f64)
     }
     path.close_path();
     path
+}
+
+/// Whether `sharpness` makes a polygon a star: any finite value but 0
+/// (a negative one an inverted star).
+pub fn is_star_sharpness(sharpness: f64) -> bool {
+    sharpness.is_finite() && sharpness != 0.0
+}
+
+/// The distance of a star's inner points from its centre, as a part of
+/// the vertices' distance, for a star `sharpness` (not 0). From 0 to 1
+/// the points come in from the rim (`1 - sharpness`) to the centre; from
+/// 0 to -1 they lie past the centre, on the far side (#1331): `-0.5`
+/// puts them half way out on the opposite side, `-1` at the centre again.
+/// The ratio is then negative: `-(1 - |sharpness|)`.
+pub fn star_inner_ratio(sharpness: f64) -> f64 {
+    if !sharpness.is_finite() {
+        return 1.0;
+    }
+    let s = sharpness.clamp(-1.0, 1.0);
+    if s < 0.0 {
+        -(1.0 + s)
+    } else {
+        1.0 - s
+    }
+}
+
+/// The star sharpness whose inner points sit at `ratio` of the vertices'
+/// distance from the centre, negative past it: the inverse of
+/// [`star_inner_ratio`], kept a star (its size between 0.001 and 0.999)
+/// on either side.
+pub fn star_sharpness_for_ratio(ratio: f64) -> f64 {
+    let r = if ratio.is_finite() { ratio } else { 0.0 };
+    if r < 0.0 {
+        -(1.0 + r).clamp(0.001, 0.999)
+    } else {
+        (1.0 - r).clamp(0.001, 0.999)
+    }
 }
 
 /// The fewest points a complex star has.
@@ -170,10 +209,10 @@ fn polygon_unit_vertices(
     } else {
         0.0
     };
-    let star = sharpness > 0.0 || twist != 0.0;
+    let star = is_star_sharpness(sharpness) || twist != 0.0;
     // A plain polygon turned keeps its sides' middles as the inner points.
-    let inner = if sharpness > 0.0 {
-        1.0 - sharpness.clamp(0.0, 1.0)
+    let inner = if is_star_sharpness(sharpness) {
+        star_inner_ratio(sharpness)
     } else {
         (std::f64::consts::PI / points as f64).cos()
     };
@@ -323,12 +362,39 @@ pub fn transformed_bounds(path: &BezPath, transform: Affine) -> Rect {
     (transform * path.clone()).bounding_box()
 }
 
+/// [`bspline_path`] with the control points `fixed` says (one flag a
+/// point, missing ones floating) made fixed: the curve passes through a
+/// fixed point, with a corner there between the lines of the control
+/// polygon, as a point taken three times by the cubic spline does. The
+/// ends of an open spline are fixed already (#1758).
+pub fn bspline_path_fixed(points: &[Point], fixed: &[bool], closed: bool) -> BezPath {
+    if !fixed.contains(&true) {
+        return bspline_path(points, closed);
+    }
+    let n = points.len();
+    let mut all = Vec::with_capacity(n + 2 * fixed.len());
+    for (i, p) in points.iter().enumerate() {
+        let end = !closed && (i == 0 || i + 1 == n);
+        let times = if fixed.get(i).copied().unwrap_or(false) && !end {
+            3
+        } else {
+            1
+        };
+        all.extend(std::iter::repeat_n(*p, times));
+    }
+    bspline_path(&all, closed)
+}
+
 /// A cubic B-spline over the control points `points` as Bezier
-/// segments (quadratic with three points, a line with two). Open: the
-/// clamped uniform spline, which starts at the first point and ends at
-/// the last, its ends tangent to the control polygon. Closed: the
-/// periodic spline, smooth all round. Each knot span becomes one segment,
-/// its control points the blossoms of the span's ends.
+/// segments. Open: the uniform spline with each end point taken three
+/// times, so it starts at the first point and ends at the last, its ends
+/// tangent to the control polygon, and is made the same way all along:
+/// a new end point placed where the last one is leaves the curve as it
+/// was, so the curve drawn so far does not jump when one more point is
+/// added (#2184). Two points make a line. Closed: the periodic spline,
+/// smooth all round (quadratic with three points). Each knot span
+/// becomes one segment, its control points the blossoms of the span's
+/// ends.
 pub fn bspline_path(points: &[Point], closed: bool) -> BezPath {
     let mut path = BezPath::new();
     let n = points.len();
@@ -338,6 +404,9 @@ pub fn bspline_path(points: &[Point], closed: bool) -> BezPath {
     if n == 1 {
         path.move_to(points[0]);
         return path;
+    }
+    if !closed && n > 2 {
+        return open_bspline_path(points);
     }
     let deg = if closed { 3.min(n) } else { 3.min(n - 1) };
     if deg <= 1 {
@@ -416,6 +485,28 @@ pub fn bspline_path(points: &[Point], closed: bool) -> BezPath {
     path
 }
 
+/// The open uniform cubic B-spline over `points` (three or more) with
+/// both end points taken three times: one Bezier segment for each four
+/// control points in a row, segments of no length left out.
+fn open_bspline_path(points: &[Point]) -> BezPath {
+    let n = points.len();
+    let get = |i: usize| points[i.saturating_sub(2).min(n - 1)];
+    let mut path = BezPath::new();
+    path.move_to(points[0]);
+    for i in 0..n + 1 {
+        let (a, b, c, d) = (get(i), get(i + 1), get(i + 2), get(i + 3));
+        let p1 = b.lerp(c, 1.0 / 3.0);
+        let p2 = b.lerp(c, 2.0 / 3.0);
+        let p3 = ((b.to_vec2() + c.to_vec2() * 4.0 + d.to_vec2()) / 6.0).to_point();
+        let p0 = ((a.to_vec2() + b.to_vec2() * 4.0 + c.to_vec2()) / 6.0).to_point();
+        if p0 == p3 && p1 == p0 && p2 == p0 {
+            continue;
+        }
+        path.curve_to(p1, p2, p3);
+    }
+    path
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -471,6 +562,37 @@ mod tests {
         }
     }
 
+    /// A fixed control point is on the curve, a floating one is not; an
+    /// open spline's ends are on it either way (#1758).
+    #[test]
+    fn a_fixed_bspline_point_is_on_the_curve() {
+        let pts = [
+            Point::new(0.0, 0.0),
+            Point::new(10.0, 20.0),
+            Point::new(30.0, 20.0),
+            Point::new(40.0, 0.0),
+            Point::new(60.0, 10.0),
+        ];
+        let dist = |path: &BezPath, q: Point| {
+            path.segments()
+                .flat_map(|s| (0..=200).map(move |k| s.eval(k as f64 / 200.0)))
+                .map(|p| (p - q).hypot())
+                .fold(f64::INFINITY, f64::min)
+        };
+        let floating = bspline_path(&pts, false);
+        assert!(dist(&floating, pts[2]) > 1.0);
+        let fixed = bspline_path_fixed(&pts, &[false, false, true], false);
+        assert!(dist(&fixed, pts[2]) < 1e-6, "through the fixed point");
+        assert!(dist(&fixed, pts[1]) > 1.0, "not the floating one");
+        assert!((fixed.segments().next().expect("seg").start() - pts[0]).hypot() < 1e-9);
+        // No flag set: the plain spline.
+        assert_eq!(bspline_path_fixed(&pts, &[false; 5], false), floating);
+        // Closed too.
+        let closed = bspline_path_fixed(&pts, &[false, true], true);
+        assert!(dist(&closed, pts[1]) < 1e-6);
+        assert!(dist(&bspline_path(&pts, true), pts[1]) > 1.0);
+    }
+
     #[test]
     fn bsplines_start_and_end_on_their_ends_and_stay_inside() {
         let pts = [
@@ -482,40 +604,77 @@ mod tests {
         ];
         let p = bspline_path(&pts, false);
         let segs: Vec<_> = p.segments().collect();
-        assert_eq!(segs.len(), 2, "one cubic a knot span");
+        assert_eq!(segs.len(), 6, "one cubic a span, ends taken three times");
         assert!((segs[0].start() - pts[0]).hypot() < 1e-9);
-        assert!((segs[1].end() - pts[4]).hypot() < 1e-9);
+        assert!((segs[5].end() - pts[4]).hypot() < 1e-9);
         // Smooth where the segments meet, and inside the control points' box.
         let b = p.bounding_box();
         assert!(b.x0 >= -1e-9 && b.x1 <= 60.0 + 1e-9 && b.y0 >= -1e-9 && b.y1 <= 20.0 + 1e-9);
-        if let (PathSeg::Cubic(c0), PathSeg::Cubic(c1)) = (segs[0], segs[1]) {
-            let t0 = c0.p3 - c0.p2;
-            let t1 = c1.p1 - c1.p0;
-            assert!(
-                (t0.x * t1.y - t0.y * t1.x).abs() < 1e-6,
-                "tangent continuity"
-            );
-        } else {
-            panic!("cubic segments");
+        for w in segs.windows(2) {
+            if let (PathSeg::Cubic(c0), PathSeg::Cubic(c1)) = (w[0], w[1]) {
+                let t0 = c0.p3 - c0.p2;
+                let t1 = c1.p1 - c1.p0;
+                assert!(
+                    (t0.x * t1.y - t0.y * t1.x).abs() < 1e-6,
+                    "tangent continuity"
+                );
+            } else {
+                panic!("cubic segments");
+            }
         }
-        // Four points: one cubic with those control points.
-        let p = bspline_path(&pts[..4], false);
-        let segs: Vec<_> = p.segments().collect();
-        assert_eq!(segs.len(), 1);
-        if let PathSeg::Cubic(c) = segs[0] {
-            assert!((c.p1 - pts[1]).hypot() < 1e-9 && (c.p2 - pts[2]).hypot() < 1e-9);
+        // Tangent to the control polygon at the ends.
+        if let (PathSeg::Cubic(c0), PathSeg::Cubic(c5)) = (segs[0], segs[5]) {
+            let (t, e) = (c0.p3 - c0.p0, pts[1] - pts[0]);
+            assert!((t.x * e.y - t.y * e.x).abs() < 1e-6);
+            let (t, e) = (c5.p3 - c5.p0, pts[4] - pts[3]);
+            assert!((t.x * e.y - t.y * e.x).abs() < 1e-6);
         }
         // Closed: one segment a point, ending where it began.
         let p = bspline_path(&pts, true);
         let segs: Vec<_> = p.segments().collect();
         assert_eq!(segs.len(), 5);
         assert!((segs[4].end() - segs[0].start()).hypot() < 1e-9);
-        // Two points: a line; three: a quadratic.
+        // Two points: a line; three: cubics from end to end.
         assert_eq!(bspline_path(&pts[..2], false).segments().count(), 1);
-        assert!(matches!(
-            bspline_path(&pts[..3], false).segments().next(),
-            Some(PathSeg::Quad(_))
-        ));
+        let three = bspline_path(&pts[..3], false);
+        assert!(three.segments().all(|s| matches!(s, PathSeg::Cubic(_))));
+        assert!((three.segments().last().expect("seg").end() - pts[2]).hypot() < 1e-9);
+    }
+
+    /// The curve drawn so far stays as it is when one more point is
+    /// added where the last one is, as when the pointer leaves a point
+    /// just placed with the B-spline tool, and a new point moved off
+    /// changes only the last stretches, by little for a little move
+    /// (#2184).
+    #[test]
+    fn a_new_bspline_end_point_does_not_move_the_curve_before_it() {
+        let pts = [
+            Point::new(0.0, 0.0),
+            Point::new(10.0, 0.0),
+            Point::new(20.0, 10.0),
+            Point::new(30.0, 0.0),
+            Point::new(40.0, 10.0),
+        ];
+        // (Two points make a line, which three in a row follow.)
+        for k in 3..=pts.len() {
+            let before = bspline_path(&pts[..k], false);
+            let mut more = pts[..k].to_vec();
+            more.push(pts[k - 1]);
+            assert_eq!(bspline_path(&more, false), before, "{k} points");
+        }
+        // The pointer a little way off: every segment but the last three
+        // is the same, and those move by no more than the pointer did.
+        let before: Vec<PathSeg> = bspline_path(&pts, false).segments().collect();
+        let mut more = pts.to_vec();
+        more.push(pts[4] + Vec2::new(0.5, 0.0));
+        let after: Vec<PathSeg> = bspline_path(&more, false).segments().collect();
+        let same = before.len() - 2;
+        assert_eq!(after[..same], before[..same]);
+        for k in 0..=20 {
+            let t = k as f64 / 20.0;
+            let d = (after[same].eval(t) - before[same].eval(t)).hypot();
+            assert!(d <= 0.5, "{d}");
+        }
     }
 
     #[test]
@@ -603,6 +762,42 @@ mod tests {
             .filter(|e| matches!(e, PathEl::LineTo(_)))
             .count();
         assert_eq!(n, 9);
+    }
+
+    /// #1331: a negative sharpness puts the inner points past the centre.
+    #[test]
+    fn negative_sharpness_inverts_the_star() {
+        let r = Rect::new(-10.0, -10.0, 10.0, 10.0);
+        let pts = |s: f64| -> Vec<Point> {
+            polygon_path(r, 5, s)
+                .elements()
+                .iter()
+                .filter_map(|e| e.end_point())
+                .collect()
+        };
+        let (plain, inverted) = (pts(0.7), pts(-0.7));
+        assert_eq!(inverted.len(), 10);
+        for i in 0..10 {
+            if i % 2 == 0 {
+                // The vertices stay.
+                assert!((plain[i] - inverted[i]).hypot() < 1e-9);
+            } else {
+                // Each inner point mirrored through the centre.
+                assert!((plain[i].to_vec2() + inverted[i].to_vec2()).hypot() < 1e-9);
+            }
+        }
+        assert!((star_inner_ratio(-0.7) + 0.3).abs() < 1e-12);
+        assert!((star_inner_ratio(0.7) - 0.3).abs() < 1e-12);
+        assert_eq!(star_inner_ratio(-1.0), 0.0);
+        for s in [0.001, 0.3, 0.999, -0.001, -0.3, -0.999] {
+            assert!((star_sharpness_for_ratio(star_inner_ratio(s)) - s).abs() < 1e-12);
+        }
+        // Kept a star on both sides, never 0.
+        assert_eq!(star_sharpness_for_ratio(2.0), 0.001);
+        assert_eq!(star_sharpness_for_ratio(-2.0), -0.001);
+        assert_eq!(star_sharpness_for_ratio(0.0), 0.999);
+        assert!(is_star_sharpness(-0.5) && !is_star_sharpness(0.0));
+        assert!(!is_star_sharpness(f64::NAN));
     }
 
     #[test]

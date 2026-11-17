@@ -29,6 +29,10 @@ impl Default for PainterlySettings {
     }
 }
 
+/// How wide a brushstroke drawn with a pen is at no pressure, as a share
+/// of the brush size (#883).
+pub const PEN_FLOOR: f64 = 0.15;
+
 /// i18n keys of the picker's groups.
 pub const GROUPS: [&str; 3] = [
     "painterly.group_dry",
@@ -79,7 +83,19 @@ impl App {
             },
         );
         shape.fill = Fill::None;
-        shape.stroke = Some(self.painterly_stroke(None, id));
+        let mut stroke = self.painterly_stroke(None, id);
+        // Drawn with a pen: the brush follows its pressure along the
+        // stroke (#883); the mouse keeps it even.
+        if let Some(pen) = self
+            .pen_pressures(points)
+            .and_then(|pr| crate::pen::PressureProfile::new(points, pr))
+        {
+            stroke.widths =
+                pen.width_nodes(crate::pen::FREEHAND_NODES, stroke.width, PEN_FLOOR, &|_| {
+                    1.0
+                });
+        }
+        shape.stroke = Some(stroke);
         shape.name = Some(tr("painterly.object_name"));
         self.run(Command::AddShape { layer, shape });
         self.selection = vec![id];
@@ -102,6 +118,20 @@ impl App {
                 stroke.painterly.as_mut(),
             ) {
                 new.seed = old.seed;
+                // A pen's pressure stays with the stroke, scaled to the
+                // new size (#883).
+                if let Some(base) = s.stroke.as_ref().filter(|b| b.width > 1e-9) {
+                    let k = stroke.width / base.width;
+                    stroke.widths = base
+                        .widths
+                        .iter()
+                        .map(|n| tracedraw_core::style::WidthNode {
+                            at: n.at,
+                            left: n.left * k,
+                            right: n.right * k,
+                        })
+                        .collect();
+                }
             }
             self.run(Command::SetStroke {
                 shapes: vec![s.id],
@@ -154,7 +184,7 @@ pub fn painterly_bar(app: &mut App, ui: &mut egui::Ui) {
     app.sync_painterly_from_selection();
     let before = app.painterly;
     let current = app.painterly.brush.brush;
-    egui::ComboBox::from_id_salt("painterly_brush")
+    crate::ui::keynav::ComboBox::from_id_salt("painterly_brush")
         .selected_text(brush_name(current))
         .width(150.0)
         .height(420.0)
@@ -172,13 +202,13 @@ pub fn painterly_bar(app: &mut App, ui: &mut egui::Ui) {
         })
         .response
         .rich_tip(crate::ui::tips::keyed("painterly.brush_tip"));
-    ui.label("⬤").rich_tip(tr("painterly.size"));
+    ui.label("\u{26AB}").rich_tip(tr("painterly.size"));
     let mut size = app.units.world_from_mm(app.painterly.size);
     if ui
         .add(
             NumField::new(&mut size)
                 .range(app.units.world_from_mm(0.1)..=app.units.world_from_mm(200.0))
-                .fixed_decimals(app.settings.precision.min(10) as usize)
+                .length_decimals(app.settings.precision.min(10) as usize)
                 .unit_mm(app.units.world_to_mm(1.0))
                 .suffix(format!(" {}", app.units.short()))
                 .width(76.0),
@@ -188,7 +218,7 @@ pub fn painterly_bar(app: &mut App, ui: &mut egui::Ui) {
     {
         app.painterly.size = app.units.world_to_mm(size).max(0.1);
     }
-    ui.label("▦").rich_tip(tr("painterly.transparency"));
+    ui.label("\u{25A3}").rich_tip(tr("painterly.transparency"));
     let mut pct = (app.painterly.brush.transparency * 100.0).round();
     if ui
         .add(

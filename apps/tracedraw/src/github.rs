@@ -631,7 +631,11 @@ mod tests {
     }
 
     fn ok(body: String) -> HttpResult {
-        Ok(HttpResponse { status: 200, body })
+        Ok(HttpResponse {
+            status: 200,
+            body,
+            retry_after: None,
+        })
     }
 
     #[test]
@@ -789,6 +793,7 @@ mod tests {
         app.github_answer(
             step,
             Ok(HttpResponse {
+                retry_after: None,
                 status: 409,
                 body: "{}".into(),
             }),
@@ -864,7 +869,7 @@ mod tests {
     #[ignore]
     fn live_open_of_a_public_drawing() {
         let r = Remote {
-            owner: "igtoth".into(),
+            owner: "tracedraw".into(),
             repo: "tracedraw".into(),
             branch: "main".into(),
             path: "sample.tdraw".into(),

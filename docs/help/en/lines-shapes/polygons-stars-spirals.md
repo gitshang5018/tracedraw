@@ -21,6 +21,9 @@ buttons that choose what it draws:
 
 - **Star**: a star with the given number of points (5 at first) and
   **sharpness** (0.5 at first; 0 makes a polygon, 1 the thinnest spikes).
+  A negative sharpness inverts the star: its inner points come out on the
+  other side of the centre. Dragging an inner point through the centre
+  with the Shape tool does the same.
 - **Complex star**: a star whose sides cross, made by joining each point to
   one further on (9 points and sharpness 2 at first). Its middle stays
   empty. With some numbers of points it is made of several closed shapes, as
@@ -49,17 +52,57 @@ button on the property bar to choose one from five sets:
 - **Banners**: ribbons, waves, scroll, explosion, burst and pennant.
 - **Callouts**: rectangle, rounded, oval, cloud and line callouts.
 
+The **All** tab shows every set at once, one under the other.
+
 Then drag a box. The shape becomes one curve with the default fill and
 outline. Parts that should look separate, such as the faces of a cube, are
 separate parts of the curve, and holes such as the middle of a ring stay
 holes whatever the fill.
 
+### My shapes {#my-shapes}
+
+The last tab of the shape picker, **My shapes**, holds shapes of your own.
+Select the objects to make a shape from and click
+[[menu.object.add_common_shape]] in that tab (it is also in
+[[menu.object > menu.object.create]] and on the right-click menu). Their
+outlines become one shape, which is picked at once. Draw it as any other
+common shape by dragging a box; hold <kbd>Ctrl</kbd> to keep its
+proportions. To take a shape out, pick it and click
+[[shapes.mine_remove]], or right-click it. The built-in shapes cannot be
+removed.
+
+Your shapes are kept with your settings, so they are still there the
+next time TraceDraw starts.
+
 ## Action Lines {#action-lines}
 
 The [[tool.action_lines]] tool draws speed lines in a comic-book style: a
 group of **lines** (2 to 500, 12 at first) that are **parallel** (at first)
-or **radial**. Their lengths vary, but the same box always gives the same
-lines.
+or **radial**. Their lengths vary, but the same settings and box always
+give the same lines; **New Random** deals another set.
+
+On the property bar:
+
+- **Length**: how much the lengths vary (0 % makes them all equal).
+- **Middle** (radial): how much of the middle stays empty.
+- **Width**: 0 draws thin lines with the default outline; a width draws
+  filled strokes in its colour, with **Width var.** (how much thinner a
+  stroke may be) and **Ends** (square, pointed at one end, or pointed at
+  both).
+- **Spacing**: how unevenly the lines are spaced.
+- **Angle**: turns parallel lines, or where radial lines start.
+- **Oval** (radial): the lines reach the edge of an oval box instead of
+  a circle.
+- **From** (parallel): the side the lines start from: right, left or
+  centre.
+
+## Speech Balloon {#speech-balloons}
+
+[[tool.balloon]]: Draw speech balloons for comics: body and tail in one curve, the tail dragged to point at anyone.
+
+1. Choose the style on the property bar: Speech, Thought, Whisper, Shout or Caption.
+2. Drag a box: the balloon fills it, its tail welded on in one curve.
+3. Drag the diamond at the tail's tip to point the tail at someone; set its width and bend on the bar.
 
 ## Graph Paper {#graph-paper}
 

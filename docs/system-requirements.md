@@ -1,7 +1,7 @@
 # System requirements
 
 What TraceDraw needs to run, for the builds published on the
-[releases page](https://github.com/igtoth/tracedraw/releases). The
+[releases page](https://github.com/tracedraw/tracedraw/releases). The
 operating system, library and graphics lines come from the build
 settings, the packaging files and the release programs themselves. The
 memory, processor and disk lines are measured or estimated, and say so.
@@ -10,13 +10,13 @@ memory, processor and disk lines are measured or estimated, and say so.
 
 |                 | Minimum                                             | Recommended                                     |
 |-----------------|-----------------------------------------------------|-------------------------------------------------|
-| Windows         | Windows 10 version 1809, x64                        | Windows 10 22H2 or Windows 11, x64              |
+| Windows         | Windows 10 version 1809, x64 or 32-bit x86          | Windows 10 22H2 or Windows 11, x64              |
 | macOS           | macOS 11 Big Sur, Apple silicon or Intel            | A current macOS release                         |
 | Linux           | x86_64 or arm64 with glibc 2.35 (Ubuntu 22.04, Debian 12, Fedora 36 or later) | A current distribution, X11 or Wayland |
 | Browser         | WebGL 2                                             | A current Chrome, Edge, Firefox or Safari       |
 | Graphics        | OpenGL 2.1, or none (drawn on the CPU)              | A card with Direct3D 12, Vulkan or Metal        |
 | Memory (RAM)    | 2 GB (estimate)                                     | 8 GB (estimate)                                 |
-| Processor       | Any 64-bit x86_64 or ARM64 processor, 2 cores       | 4 cores or more                                 |
+| Processor       | x86_64 or ARM64 (x86 on 32-bit Windows), 2 cores    | 4 cores or more                                 |
 | Disk            | 150 MB free                                         | 500 MB free                                     |
 
 ## Operating systems
@@ -24,12 +24,25 @@ memory, processor and disk lines are measured or estimated, and say so.
 - **Windows:** 10 version 1809 (build 17763) or later, x64. That is the
   floor of the Store package (`packaging/windows/msix/AppxManifest.xml`);
   the installer and the portable zip carry the C runtime inside the
-  program, so a fresh Windows needs nothing more. There is no 32-bit
-  build and no Windows on ARM build.
+  program, so a fresh Windows needs nothing more. 32-bit Windows 10 has
+  its own installer and portable zip (`windows-x86`, built for
+  `i686-pc-windows-msvc`, #1975). On 64-bit Windows its installer
+  recommends the x64 setup and installs only when asked to; the Store
+  has no 32-bit package. A
+  32-bit program can use at most 2 GB of memory, so very large drawings
+  and exports are better done on 64-bit Windows. There is no Windows on ARM build.
+  Windows 7 and 8.1 are not supported: the Rust Windows targets the
+  program is built for need Windows 10, so on older versions it stops
+  at start with a missing-function error. A user reported it
+  running on Windows 7 x64 with the VxKex NEXT compatibility layer
+  (discussion #2790); that is untested by us and at your own risk.
 - **macOS:** 11 Big Sur or later (`LSMinimumSystemVersion` in
   `packaging/macos/Info.plist`), with a separate download for Apple
   silicon (arm64) and for Intel (x86_64).
-- **Linux:** x86_64 and arm64, as AppImage, `.deb` or a plain `.tar.gz`.
+- **Linux:** x86_64 and arm64, as AppImage, `.deb` or a plain `.tar.gz`,
+  and x86_64 as a Flatpak bundle. The Flatpak runs on the freedesktop
+  24.08 runtime, which brings its own glibc, so it also starts on the
+  older distributions below once Flatpak is installed (#2054).
   The programs are built on Ubuntu 22.04 and need **glibc 2.35 or later**
   (the newest symbol version in `objdump -T` of the 0.19.8 programs is
   `GLIBC_2.35`; the `.deb` asks for `libc6 (>= 2.35)`). The AppImage does
@@ -38,14 +51,17 @@ memory, processor and disk lines are measured or estimated, and say so.
   Rocky 10, or later.
   **Older distributions** (Ubuntu 20.04, Debian 11, RHEL 9 and its
   rebuilds, glibc 2.34 or older) cannot start the native programs; the
-  [browser version](https://igtoth.github.io/tracedraw/) runs there.
+  [browser version](https://tracedraw.github.io/tracedraw/) runs there.
   Other libraries are loaded when the program starts: `libxkbcommon`
   (and `libxkbcommon-x11` on X11), the system's OpenGL or EGL, and a
   Vulkan driver when there is one. A desktop that runs other graphical
   programs has them. The open and save dialogs use the desktop portal
   (`xdg-desktop-portal`) or, without it, `zenity`.
 - **Browser:** a browser with WebGL 2 (the page says so when it is
-  missing).
+  missing). On an Android tablet or an iPad the page can be installed
+  as an app from the browser; a tablet with a mouse and keyboard, or
+  the Touch workspace, suits editing best (`docs/behavior/web.md`,
+  Installing on a tablet).
 
 ## Graphics
 
@@ -92,4 +108,4 @@ estimates from them:
   room for autosaves of large documents and exports.
 
 Something here wrong for your computer? Send `tracedraw.log` in
-[an issue](https://github.com/igtoth/tracedraw/issues/new?template=bug_report.yml).
+[an issue](https://github.com/tracedraw/tracedraw/issues/new?template=bug_report.yml).

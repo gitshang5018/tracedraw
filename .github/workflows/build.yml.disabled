@@ -67,6 +67,7 @@ jobs:
 
   build:
     needs: test
+    continue-on-error: ${{ matrix.experimental == true }}
     strategy:
       fail-fast: false
       matrix:
@@ -74,6 +75,15 @@ jobs:
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             name: windows-x86_64
+          # 32-bit Windows 10 (#1975): the setup is for 32-bit
+          # Windows (on 64-bit it asks first), the portable zip runs on
+          # either. New, so a
+          # failure of this build does not hold back the release of the
+          # others (`experimental`).
+          - os: windows-latest
+            target: i686-pc-windows-msvc
+            name: windows-x86
+            experimental: true
           - os: macos-latest
             target: aarch64-apple-darwin
             name: macos-arm64
@@ -113,11 +123,19 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y pkg-config libxkbcommon-dev libwayland-dev libgl1-mesa-dev \
-            libx11-dev libxcursor-dev libxrandr-dev libxi-dev libgtk-3-dev libfuse2
+            libx11-dev libxcursor-dev libxrandr-dev libxi-dev libgtk-3-dev libfuse2 zsync
           cargo install cargo-deb
 
+      # The spell checker of Windows (apps/tracedraw/src/spell_windows.rs,
+      # #1405) on a real Windows: its tests alone, in a crate of their own
+      # so the whole app is not built for tests.
+      - name: Windows spell checker
+        if: runner.os == 'Windows' && matrix.target == 'x86_64-pc-windows-msvc'
+        working-directory: scripts/windows/spell-check
+        run: cargo test -- --nocapture
+
       - name: Build
-        run: cargo build --release --target ${{ matrix.target }} -p tracedraw -p tracedraw-cli
+        run: cargo build --release --target ${{ matrix.target }} -p tracedraw -p tracedraw-cli -p tracedraw-thumbnailer
 
       # The main window, after the splash screen and without it, can be
       # maximized and resized under a window manager (see
@@ -166,21 +184,24 @@ jobs:
           files: |
             ${{ github.workspace }}\target\${{ matrix.target }}\release\tracedraw.exe
             ${{ github.workspace }}\target\${{ matrix.target }}\release\tracedraw-cli.exe
+            ${{ github.workspace }}\target\${{ matrix.target }}\release\tracedraw_thumbnailer.dll
           file-digest: SHA256
           timestamp-rfc3161: http://timestamp.acs.microsoft.com
           timestamp-digest: SHA256
           description: TraceDraw
-          description-url: https://github.com/igtoth/tracedraw
+          description-url: https://github.com/tracedraw/tracedraw
 
       - name: Programs to sign (SignPath)
         id: unsigned-programs
         if: steps.signing.outputs.provider == 'signpath'
         uses: actions/upload-artifact@v4
         with:
-          name: unsigned-programs
+          # One per Windows build: artifact names are unique in a run.
+          name: unsigned-programs-${{ matrix.name }}
           path: |
             target/${{ matrix.target }}/release/tracedraw.exe
             target/${{ matrix.target }}/release/tracedraw-cli.exe
+            target/${{ matrix.target }}/release/tracedraw_thumbnailer.dll
           if-no-files-found: error
           retention-days: 1
 
@@ -202,7 +223,7 @@ jobs:
       - name: Use the signed programs (SignPath)
         if: steps.signing.outputs.provider == 'signpath'
         shell: pwsh
-        run: Copy-Item signed-programs\*.exe "target\${{ matrix.target }}\release\" -Force
+        run: Copy-Item signed-programs\*.exe,signed-programs\*.dll "target\${{ matrix.target }}\release\" -Force
 
       - name: Package (Windows)
         if: runner.os == 'Windows'
@@ -210,17 +231,20 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
           $src = "target\${{ matrix.target }}\release"
-          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DVersion=${{ steps.ver.outputs.version }} /DSrcDir="$PWD\$src" packaging\windows\tracedraw.iss
+          # The files' processor name, as the in-app updater looks for it
+          # (apps/tracedraw/src/updates.rs, asset_names): x86 for 32-bit.
+          $arch = if ("${{ matrix.target }}" -like "i686-*") { "x86" } else { "x86_64" }
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DVersion=${{ steps.ver.outputs.version }} /DArch=$arch /DSrcDir="$PWD\$src" packaging\windows\tracedraw.iss
           # The portable zip carries the settings folder, so it keeps its
           # preferences beside the program and writes nothing to %APPDATA%.
           Copy-Item -Recurse -Force packaging\windows\portable\tracedraw-settings "$src\tracedraw-settings"
-          Compress-Archive -Path "$src\tracedraw.exe","$src\tracedraw-cli.exe","$src\tracedraw-settings",README.md,LICENSE-MIT,LICENSE-APACHE -DestinationPath "dist\tracedraw-${{ steps.ver.outputs.version }}-windows-x86_64-portable.zip"
+          Compress-Archive -Path "$src\tracedraw.exe","$src\tracedraw-cli.exe","$src\tracedraw-settings",README.md,LICENSE-MIT,LICENSE-APACHE -DestinationPath "dist\tracedraw-${{ steps.ver.outputs.version }}-windows-$arch-portable.zip"
 
       # The Microsoft Store package (the Store signs it). Attached to the
       # release once the Store identity variables are set; until then a
-      # check package is built and not published.
+      # check package is built and not published. 64-bit only.
       - name: Store package (Windows)
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && matrix.target == 'x86_64-pc-windows-msvc'
         # Only a check until the Store identity is set: it must not hold
         # back the other downloads.
         continue-on-error: ${{ vars.MSIX_IDENTITY_NAME == '' }}
@@ -247,14 +271,14 @@ jobs:
           timestamp-rfc3161: http://timestamp.acs.microsoft.com
           timestamp-digest: SHA256
           description: TraceDraw Setup
-          description-url: https://github.com/igtoth/tracedraw
+          description-url: https://github.com/tracedraw/tracedraw
 
       - name: Installer to sign (SignPath)
         id: unsigned-installer
         if: steps.signing.outputs.provider == 'signpath'
         uses: actions/upload-artifact@v4
         with:
-          name: unsigned-installer
+          name: unsigned-installer-${{ matrix.name }}
           path: dist/*-setup.exe
           if-no-files-found: error
           retention-days: 1
@@ -300,6 +324,47 @@ jobs:
         with:
           name: tracedraw-${{ matrix.name }}
           path: dist/*
+          if-no-files-found: error
+
+  # The Flatpak bundle (#2054): the x86_64 tar.gz repackaged on the
+  # freedesktop runtime by packaging/linux/flatpak/manifest.sh, attached
+  # as tracedraw-<version>-linux-x86_64.flatpak (install it with
+  # `flatpak install --user <file>`). Flathub itself builds from the
+  # manifest that a version's release carries. New, so a failure here
+  # does not hold back the release.
+  flatpak:
+    needs: build
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    container:
+      image: ghcr.io/flathub-infra/flatpak-github-actions:freedesktop-24.08
+      options: --privileged
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          name: tracedraw-linux-x86_64
+          path: linux
+      - name: Manifest
+        id: ver
+        shell: bash
+        run: |
+          tgz=$(ls linux/tracedraw-*-linux-x86_64.tar.gz | head -n 1)
+          v=${tgz#linux/tracedraw-}; v=${v%-linux-x86_64.tar.gz}
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          cp "$tgz" packaging/linux/flatpak/tracedraw-linux-x86_64.tar.gz
+          bash packaging/linux/flatpak/manifest.sh local "$v" > packaging/linux/flatpak/io.github.tracedraw.TraceDraw.yml
+          cat packaging/linux/flatpak/io.github.tracedraw.TraceDraw.yml
+      - uses: flatpak/flatpak-github-actions/flatpak-builder@v6
+        with:
+          manifest-path: packaging/linux/flatpak/io.github.tracedraw.TraceDraw.yml
+          bundle: tracedraw-${{ steps.ver.outputs.version }}-linux-x86_64.flatpak
+          upload-artifact: false
+          cache: false
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tracedraw-flatpak
+          path: tracedraw-${{ steps.ver.outputs.version }}-linux-x86_64.flatpak
           if-no-files-found: error
 
   # The browser build: WebAssembly and WebGL 2, published to GitHub Pages
@@ -371,6 +436,26 @@ jobs:
           grep -q "data-wasm-size=\"$size\"" site/index.html
           if grep -q "@VERSION@" site/index.html; then exit 1; fi
           cp assets/icon/tracedraw-256.png site/icon-256.png
+          # The interface languages but English, which the module embeds:
+          # the page fetches the one chosen (apps/tracedraw/src/i18n.rs).
+          mkdir -p site/lang
+          for f in apps/tracedraw/lang/*.toml; do
+            [ "$(basename "$f")" = en.toml ] || cp "$f" site/lang/
+          done
+          # The installable app (docs/behavior/web.md, "Installing on a
+          # tablet"): the manifest, its icons and the service worker, whose
+          # cache is named after the version and a digest of the page,
+          # script and module, so every deploy is a new worker and a new
+          # cache (never a stale module against a new script).
+          cp web/manifest.webmanifest site/
+          cp assets/icon/tracedraw-192.png site/icon-192.png
+          cp assets/icon/tracedraw-512.png site/icon-512.png
+          build=$(cat site/index.html site/tracedraw.js site/tracedraw_bg.wasm site/manifest.webmanifest site/lang/*.toml | sha256sum | cut -c1-16)
+          sed -e "s/@VERSION@/${{ steps.ver.outputs.version }}/" -e "s/@BUILD@/$build/" web/sw.js > site/sw.js
+          # The module loads, the page links the manifest and registers the
+          # worker, the manifest and the worker are valid and name files the
+          # site holds (Node, no packages, no network).
+          node scripts/web/check_pwa.mjs site
           (cd site && zip -r "../dist/tracedraw-${{ steps.ver.outputs.version }}-web.zip" .)
 
       # The font folder of the published page (web/fonts.txt): free fonts
@@ -409,10 +494,121 @@ jobs:
         with:
           path: site
 
+  # The Android app (docs/behavior/android.md, docs/android-play.md): the
+  # editor as a shared library for 64-bit ARM, built with the NDK and
+  # build tools the runner has, as a debug-signed APK to install by hand
+  # and as an App Bundle (.aab) for Google Play. The bundle is signed with
+  # the upload key when the ANDROID_KEYSTORE_* secrets are set (Play App
+  # Signing) and with the debug key otherwise. Both are kept with the
+  # run only, never attached to the releases (their names do not match
+  # tracedraw-*): uploading to Play is the owner's step.
+  android:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@1.97.0
+        with:
+          targets: aarch64-linux-android, x86_64-linux-android
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: android
+      - name: Build
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          # 64-bit ARM for tablets and phones; x86_64 for Chromebooks and
+          # the emulator check below.
+          ANDROID_ABIS: arm64-v8a x86_64
+        run: |
+          # The newest NDK the runner has, the SDK's build tools and the
+          # platform the app targets (installed when the runner lacks it).
+          export ANDROID_NDK_HOME="${ANDROID_NDK_LATEST_HOME:-$ANDROID_NDK_HOME}"
+          echo "NDK $ANDROID_NDK_HOME, SDK $ANDROID_HOME"
+          if [ ! -f "$ANDROID_HOME/platforms/android-36/android.jar" ]; then
+            yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" >/dev/null
+          fi
+          scripts/android/build.sh
+          ls -la dist-android/*.apk dist-android/*.aab
+          # The emulator check's keyboard, kept apart from the app.
+          scripts/android/build_test_ime.sh dist-android/test/tracedraw-test-ime.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-apk
+          path: dist-android/*.apk
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-test-ime
+          path: dist-android/test/tracedraw-test-ime.apk
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-aab
+          path: dist-android/*.aab
+          if-no-files-found: error
+
+  # The app started on Android emulators, Android 11 and Android 14
+  # (scripts/android/emulator_check.sh): the x86_64 APK installed,
+  # launched from its launcher activity, still running 45 s later, nothing
+  # crashed in the system log, its first frame drawn with the system fonts
+  # loaded and the editor on the screenshot. The runner's KVM runs the
+  # emulator at full speed; the x86_64 library is the same code as the
+  # ARM64 one (the emulator's ARM translation stops the ARM64 library in
+  # the activity glue's first JNI calls, which the x86_64 one passes, so
+  # it cannot stand in for an ARM device). With the test keyboard built
+  # by the android job (scripts/android/test-ime, never shipped) it also
+  # taps with the Text tool and types through the keyboard and as key
+  # presses (#1489, #1496). The screenshot and the logs are kept as the
+  # android-emulator-api* artifacts.
+  android-emulator:
+    needs: android
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        api: [30, 34]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          name: android-apk
+          path: apk
+      - uses: actions/download-artifact@v4
+        with:
+          name: android-test-ime
+          path: test-ime
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Start the app on an emulator
+        # v2.38.0
+        uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d
+        with:
+          api-level: ${{ matrix.api }}
+          target: google_apis
+          arch: x86_64
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
+          script: TRACEDRAW_TEST_IME=test-ime/tracedraw-test-ime.apk scripts/android/emulator_check.sh "$(ls apk/*-x86_64-debug.apk | head -n 1)" dist-android/emulator-check
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: android-emulator-api${{ matrix.api }}
+          path: dist-android/emulator-check
+          if-no-files-found: warn
+
   # GitHub Pages must be set to "GitHub Actions" (Settings > Pages); the
   # job tries to enable it and does not fail the build when it cannot.
+  # Runs for every push to main and for a manual run of main, so the site
+  # can be published again by hand after Pages was turned off.
   pages:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     needs: web
     runs-on: ubuntu-latest
     continue-on-error: true
@@ -433,33 +629,56 @@ jobs:
   # "nightly" pre-release with the installers of that commit.
   release:
     if: (github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main')) || (github.event_name == 'workflow_dispatch' && inputs.release != '')
-    needs: [build, web]
+    needs: [build, web, android, flatpak]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      # Only CHANGELOG.md is needed, for the notes of a version.
+      # Only CHANGELOG.md is needed, for the notes of a version, and the
+      # Flatpak manifest's script.
       - uses: actions/checkout@v5
         with:
-          sparse-checkout: CHANGELOG.md
+          sparse-checkout: |
+            CHANGELOG.md
+            packaging/linux/flatpak/manifest.sh
           sparse-checkout-cone-mode: false
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
           pattern: tracedraw-*
           merge-multiple: true
+      # The Android APKs (one per ABI, signed with a debug key) go with the
+      # installers, so a tablet can install the build of the same commit.
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          name: android-apk
       - name: Release notes
         shell: bash
         run: |
+          # The files are listed by the release page itself, below the
+          # notes; the notes hold the changes only.
+          v="${RELEASE_TAG#v}"
+          : > release-notes.md
           if [[ -n "$RELEASE_TAG" ]]; then
             # The version's section of CHANGELOG.md ("## 0.3.0 (date)").
-            v="${RELEASE_TAG#v}"
-            awk -v head="## ${v} " 'index($0, head) == 1 { p = 1; next } /^## / && p { exit } p' CHANGELOG.md > release-notes.md
+            echo "## Changes" >> release-notes.md
+            awk -v head="## ${v} " 'index($0, head) == 1 { p = 1; next } /^## / && p { exit } p' CHANGELOG.md >> release-notes.md
           else
-            echo "Installers built from ${GITHUB_SHA} on main. Replaced on every push." > release-notes.md
+            echo "Installers built from ${GITHUB_SHA} on main. Replaced on every push." >> release-notes.md
           fi
           printf '\nCode signing policy: https://github.com/%s#code-signing-policy\n' "$GITHUB_REPOSITORY" >> release-notes.md
           cat release-notes.md
+      # A version's Flathub manifest (#2054), with the SHA-256 of the
+      # tar.gz files it attaches: what the Flathub repository is given.
+      - name: Flathub manifest
+        if: env.RELEASE_TAG != ''
+        shell: bash
+        run: |
+          v="${RELEASE_TAG#v}"
+          bash packaging/linux/flatpak/manifest.sh flathub "$v" "$GITHUB_SHA" \
+            "artifacts/tracedraw-$v-linux-x86_64.tar.gz" "artifacts/tracedraw-$v-linux-arm64.tar.gz" \
+            > artifacts/io.github.tracedraw.TraceDraw.yml
       - name: Drop the previous nightly
         if: env.RELEASE_TAG == ''
         env:
@@ -474,3 +693,96 @@ jobs:
           prerelease: ${{ env.RELEASE_TAG == '' }}
           make_latest: ${{ env.RELEASE_TAG != '' && 'true' || 'false' }}
           body_path: release-notes.md
+
+  # Chocolatey (#2689): a version's package (tracedraw.<version>.nupkg,
+  # which runs the release's setup silently) is attached to the release
+  # and, once the CHOCOLATEY_API_KEY secret is set (a free account's key
+  # on community.chocolatey.org), pushed to the community repository,
+  # where each version passes its checks first. A failure here never
+  # holds back the release.
+  chocolatey:
+    if: (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && inputs.release != '')
+    needs: release
+    runs-on: windows-latest
+    continue-on-error: true
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          sparse-checkout: packaging/windows/chocolatey
+      - uses: actions/download-artifact@v4
+        with:
+          path: setups
+          pattern: tracedraw-windows-*
+          merge-multiple: true
+      - name: Pack
+        shell: pwsh
+        run: packaging\windows\chocolatey\pack.ps1 -Version "$($env:RELEASE_TAG.TrimStart('v'))" -SetupDir setups -OutDir choco
+      - name: Attach to the release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$env:RELEASE_TAG" (Get-ChildItem choco\*.nupkg).FullName --repo "${{ github.repository }}" --clobber
+      - name: Push to Chocolatey
+        shell: pwsh
+        env:
+          CHOCOLATEY_API_KEY: ${{ secrets.CHOCOLATEY_API_KEY }}
+        run: |
+          if (-not $env:CHOCOLATEY_API_KEY) {
+            "Chocolatey: CHOCOLATEY_API_KEY not set, nothing pushed" >> $env:GITHUB_STEP_SUMMARY
+            exit 0
+          }
+          $pkg = (Get-ChildItem choco\*.nupkg | Select-Object -First 1).FullName
+          choco push $pkg --source https://push.chocolatey.org/ --api-key $env:CHOCOLATEY_API_KEY
+          if ($LASTEXITCODE -ne 0) { throw "choco push failed ($LASTEXITCODE)" }
+          "Chocolatey: $(Split-Path -Leaf $pkg) pushed for moderation" >> $env:GITHUB_STEP_SUMMARY
+
+  # Microsoft Store: a version's MSIX is submitted for certification, once
+  # the Store API secrets and the MSSTORE_APP_ID variable are set (see
+  # docs/code-signing.md). The new submission copies the last published one
+  # (listings, screenshots, price, age ratings) and replaces only the
+  # package. It works once the app is live in the Store, and a failure here
+  # never holds back the release.
+  store:
+    if: (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && inputs.release != '')
+    needs: release
+    runs-on: windows-latest
+    continue-on-error: true
+    steps:
+      - name: Store API
+        id: store
+        shell: bash
+        env:
+          HAS_MSSTORE: ${{ secrets.MSSTORE_CLIENT_SECRET != '' && vars.MSSTORE_APP_ID != '' }}
+        run: |
+          echo "enabled=$HAS_MSSTORE" >> "$GITHUB_OUTPUT"
+          if [[ "$HAS_MSSTORE" != true ]]; then
+            echo "Microsoft Store: API not set up, nothing submitted" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: actions/download-artifact@v4
+        if: steps.store.outputs.enabled == 'true'
+        with:
+          path: store
+          pattern: tracedraw-windows-*
+          merge-multiple: true
+      - uses: microsoft/microsoft-store-apppublisher@v1.1
+        if: steps.store.outputs.enabled == 'true'
+      - name: Submit to the Microsoft Store
+        if: steps.store.outputs.enabled == 'true'
+        shell: pwsh
+        env:
+          MSSTORE_TENANT_ID: ${{ secrets.MSSTORE_TENANT_ID }}
+          MSSTORE_SELLER_ID: ${{ secrets.MSSTORE_SELLER_ID }}
+          MSSTORE_CLIENT_ID: ${{ secrets.MSSTORE_CLIENT_ID }}
+          MSSTORE_CLIENT_SECRET: ${{ secrets.MSSTORE_CLIENT_SECRET }}
+          MSSTORE_APP_ID: ${{ vars.MSSTORE_APP_ID }}
+        run: |
+          $msix = Get-ChildItem store\*.msix | Select-Object -First 1
+          if (-not $msix) { throw 'No .msix in the Windows build' }
+          msstore reconfigure --tenantId $env:MSSTORE_TENANT_ID --sellerId $env:MSSTORE_SELLER_ID --clientId $env:MSSTORE_CLIENT_ID --clientSecret $env:MSSTORE_CLIENT_SECRET
+          if ($LASTEXITCODE -ne 0) { throw "msstore reconfigure failed ($LASTEXITCODE)" }
+          # Uploads the package and commits the submission for certification.
+          msstore publish $msix.FullName --appId $env:MSSTORE_APP_ID
+          if ($LASTEXITCODE -ne 0) { throw "msstore publish failed ($LASTEXITCODE)" }
+          "Microsoft Store: $($msix.Name) submitted for certification" >> $env:GITHUB_STEP_SUMMARY

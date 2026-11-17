@@ -24,6 +24,8 @@ all'estremità sinistra apre il menu della tavolozza.
 La tavolozza può essere spostata su un altro bordo della finestra o resa
 mobile: trascinala dalla sua maniglia tratteggiata.
 
+Su ogni lato può stare al bordo della finestra o accanto al disegno, tra il disegno e i pannelli o la casella degli strumenti di quel lato. Mentre la trascini, una fascia blu mostra dove andrà; fai clic destro sulla maniglia per scegliere un posto da un elenco.
+
 ## La tavolozza del documento {#document-palette}
 
 Ogni colore che applichi a un oggetto entra nella tavolozza del documento,
@@ -45,6 +47,7 @@ colori di ciascuna. Aprilo con
 
 - Spunta una tavolozza per mostrarla sotto la finestra di disegno.
 - [[docker.edit]] la apre nell'editor delle tavolozze.
+- [[docker.palette_lock]] blocca una tavolozza che hai aperto o creato, così l'editor delle tavolozze non può modificarla; [[docker.palette_unlock]] consente di nuovo di modificarla.
 - [[menu.window.palette_open]] apre un file di tavolozza (`.tdpal`, `.gpl`,
   `.ase` o `.aco`).
 - [[menu.window.palette_from_document]] e
@@ -65,8 +68,9 @@ l'editor delle tavolozze.
 2. Digita il suo [[dialog.name]].
 3. Fai clic su un colore per selezionarlo; [[dialog.add_color]] aggiunge il
    colore corrente e [[dialog.remove_color]] rimuove quello selezionato.
-4. Fai clic su [[dialog.save_palette]] per salvarla come file.
-5. Fai clic su [[dialog.close]].
+4. Spunta [[dialog.spot_color]] per rendere il colore selezionato un colore spot: un inchiostro con nome stampato su una lastra propria. Le esportazioni PDF lo mantengono come inchiostro separato.
+5. Fai clic su [[dialog.save_palette]] per salvarla come file.
+6. Fai clic su [[dialog.ok]].
 
 Le tavolozze integrate non possono essere modificate; crea una nuova
 tavolozza o modificane una copia.

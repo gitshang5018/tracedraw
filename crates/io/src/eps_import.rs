@@ -25,6 +25,26 @@ use tracedraw_core::{
 const PT_MM: f64 = 25.4 / 72.0;
 const MAX_OPS: u64 = 6_000_000;
 const MAX_DEPTH: usize = 200;
+/// How deep `{ ... }` procedures may nest in the program text. The
+/// reader of a procedure body calls itself once per level, so a file of
+/// nothing but opening braces (100 000 of them in 100 KB) ran the stack
+/// out, which cannot be caught, and closed the program. Real programs
+/// nest a handful of levels; procedures beyond this depth are read as
+/// empty.
+const MAX_PROC_NESTING: usize = 512;
+/// The stack the interpreter runs on (a thread of its own, outside the
+/// browser) and how much of it a program's recursion may use before it
+/// is stopped as nested too deeply. A counted depth alone cannot keep a
+/// hostile program from running the stack out: one nested `exec` takes
+/// some 70 KB of stack in a debug build (the operator match's frame),
+/// so 150 of them overflowed a 2 MB thread long before [`MAX_DEPTH`].
+#[cfg(not(target_arch = "wasm32"))]
+const INTERP_STACK: usize = 32 << 20;
+#[cfg(not(target_arch = "wasm32"))]
+const STACK_BUDGET: usize = 24 << 20;
+/// In the browser there is one thread, with a stack of about 1 MB.
+#[cfg(target_arch = "wasm32")]
+const STACK_BUDGET: usize = 384 << 10;
 const MAX_STACK: usize = 50_000;
 const MAX_STRING: usize = 64 << 20;
 
@@ -74,8 +94,36 @@ pub fn is_eps(bytes: &[u8]) -> bool {
         || head.starts_with(b"%!")
 }
 
-/// Parse an EPS (or plain PostScript) file into shapes.
+/// Parse an EPS (or plain PostScript) file into shapes. Outside the
+/// browser the program runs on a thread with a stack of its own
+/// ([`INTERP_STACK`]), so its recursion has a known room whatever
+/// thread asks for the import; when that thread cannot be started the
+/// program runs here.
 pub fn parse(bytes: &[u8], ids: &mut IdSource) -> Result<Imported, String> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let spawned: Option<Result<Imported, String>> = std::thread::scope(|s| {
+            let handle = std::thread::Builder::new()
+                .name("eps-import".into())
+                .stack_size(INTERP_STACK)
+                .spawn_scoped(s, || parse_here(bytes, ids, STACK_BUDGET))
+                .ok()?;
+            Some(
+                handle
+                    .join()
+                    .unwrap_or_else(|_| Err("the PostScript reader stopped unexpectedly".into())),
+            )
+        });
+        if let Some(result) = spawned {
+            return result;
+        }
+    }
+    parse_here(bytes, ids, STACK_BUDGET)
+}
+
+/// [`parse`] on the current thread, the program's recursion allowed
+/// `stack_budget` bytes of its stack.
+fn parse_here(bytes: &[u8], ids: &mut IdSource, stack_budget: usize) -> Result<Imported, String> {
     // DOS EPS binary header: PostScript section offset and length.
     let ps: &[u8] = if bytes.starts_with(&[0xc5, 0xd0, 0xd3, 0xc6]) && bytes.len() >= 12 {
         let off = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]) as usize;
@@ -89,7 +137,17 @@ pub fn parse(bytes: &[u8], ids: &mut IdSource) -> Result<Imported, String> {
     let start = postscript_start(ps).ok_or("not a PostScript file")?;
     let ps = &ps[start..];
     let bbox = bounding_box(ps);
+    // A classic Illustrator file that names no procedure set: its
+    // operators, defined first in PostScript (#1728).
+    let with_procs;
+    let ps = if classic_ai_without_procs(ps) {
+        with_procs = [CLASSIC_AI_PROCS.as_bytes(), b"\n", ps].concat();
+        &with_procs[..]
+    } else {
+        ps
+    };
     let mut interp = Interp::new(ps, ids, bbox);
+    interp.stack_budget = stack_budget;
     interp.install_systemdict();
     interp.run_main();
     let warnings = std::mem::take(&mut interp.warnings);
@@ -164,6 +222,73 @@ pub fn parse(bytes: &[u8], ids: &mut IdSource) -> Result<Imported, String> {
 }
 
 /// `%%HiResBoundingBox` or `%%BoundingBox` in points.
+/// The operators of the classic (PostScript-based) Illustrator format
+/// that TraceDraw writes, as the public format specification describes
+/// them, in PostScript: path construction (`m`, `l`, `L`, `c`, `C`,
+/// `v`, `V`, `y`, `Y`), painting (`f`, `F`, `s`, `S`, `b`, `B`, `n`,
+/// `N`), compound paths (`*u`, `*U`), clipping (`W` in a `q` ... `Q`
+/// group), groups (`u`, `U`), process, grey, RGB and custom colours for
+/// the fill (`k`, `g`, `Xa`, `x`, `Xx`) and the outline (`K`, `G`, `XA`,
+/// `X`, `XX`), outline settings and layers. A custom colour's tint runs
+/// from 0 (the whole colour) to 1 (none: white).
+/// The fill and outline colours are kept apart, as the format keeps
+/// them; the parts of a compound path are painted together at its end.
+const CLASSIC_AI_PROCS: &str = "\
+/_f {0 0 0 1 setcmykcolor} def /_s {0 0 0 1 setcmykcolor} def
+/_cp false def /_pp {} def /_clip false def
+/k {[ 5 1 roll /setcmykcolor load ] cvx /_f exch def} def
+/K {[ 5 1 roll /setcmykcolor load ] cvx /_s exch def} def
+/g {[ exch /setgray load ] cvx /_f exch def} def
+/G {[ exch /setgray load ] cvx /_s exch def} def
+/Xa {[ 4 1 roll /setrgbcolor load ] cvx /_f exch def} def
+/XA {[ 4 1 roll /setrgbcolor load ] cvx /_s exch def} def
+/_tc {/_t exch def pop [ 5 1 roll 4 {1 _t sub mul 4 1 roll} repeat /setcmykcolor load ] cvx} def
+/_tr {/_t exch def pop [ 4 1 roll 3 {1 exch sub 1 _t sub mul 1 exch sub 3 1 roll} repeat /setrgbcolor load ] cvx} def
+/x {_tc /_f exch def} def /X {_tc /_s exch def} def
+/Xx {1 eq {_tr} {_tc} ifelse /_f exch def} def
+/XX {1 eq {_tr} {_tc} ifelse /_s exch def} def
+/w {setlinewidth} def /j {setlinejoin} def /J {setlinecap} def
+/M {setmiterlimit} def /d {setdash} def
+/m {moveto} def /l {lineto} def /L {lineto} def /c {curveto} def /C {curveto} def
+/v {currentpoint 6 2 roll curveto} def /V {currentpoint 6 2 roll curveto} def
+/y {2 copy curveto} def /Y {2 copy curveto} def
+/_F {gsave _f fill grestore} def /_S {gsave _s stroke grestore} def
+/_done {_clip {clip /_clip false def} if newpath} def
+/_paint {_cp {/_pp exch def} {exec _done} ifelse} def
+/F {{_F} _paint} def /f {closepath F} def
+/S {{_S} _paint} def /s {closepath S} def
+/B {{_F _S} _paint} def /b {closepath B} def
+/N {{} _paint} def /n {closepath N} def
+/W {/_clip true def} def
+/*u {/_cp true def} def /*U {/_cp false def _pp _done /_pp {} def} def
+/u {.tdbegingroup} def /U {.tdendgroup} def /q {gsave} def /Q {grestore} def
+/Lb {clear} def /Ln {pop} def /LB {} def
+/A {pop} def /O {pop} def /R {pop} def /D {pop} def
+";
+
+/// The file is a classic Illustrator file (its header carries the
+/// format's version comments) that defines none of the format's
+/// operators itself: no procedure set in its prolog.
+fn classic_ai_without_procs(ps: &[u8]) -> bool {
+    let head = String::from_utf8_lossy(&ps[..ps.len().min(64 << 10)]);
+    let mut classic = false;
+    for line in head.lines() {
+        if line.starts_with("%AI5_FileFormat")
+            || line.starts_with("%%AI8_CreatorVersion")
+            || line.starts_with("%AI3_")
+        {
+            classic = true;
+        }
+        if line.starts_with("%%BeginResource") || line.starts_with("%%BeginProcSet") {
+            return false;
+        }
+        if line.starts_with("%%EndProlog") {
+            break;
+        }
+    }
+    classic
+}
+
 fn bounding_box(ps: &[u8]) -> Option<Rect> {
     let head = String::from_utf8_lossy(&ps[..ps.len().min(64 << 10)]);
     let mut lo: Option<Rect> = None;
@@ -770,6 +895,21 @@ struct Interp<'a> {
     pages: Vec<(usize, Option<Size>)>,
     /// The page size `setpagedevice` set, mm.
     page_size: Option<Size>,
+    /// Where each open group of a classic Illustrator file (`u`) started
+    /// among the objects painted.
+    group_starts: Vec<usize>,
+    /// Where the stack stood when the program started running, and how
+    /// many bytes of it the program's recursion may use (see
+    /// [`STACK_BUDGET`]).
+    stack_base: usize,
+    stack_budget: usize,
+}
+
+/// Where the stack stands now: the address of a local variable.
+#[inline(never)]
+fn stack_mark() -> usize {
+    let probe = 0u8;
+    std::hint::black_box(&probe) as *const u8 as usize
 }
 
 impl<'a> Interp<'a> {
@@ -807,6 +947,9 @@ impl<'a> Interp<'a> {
             jpeg_files: Vec::new(),
             pages: Vec::new(),
             page_size: None,
+            group_starts: Vec::new(),
+            stack_base: stack_mark(),
+            stack_budget: usize::MAX,
         }
     }
 
@@ -969,6 +1112,9 @@ impl<'a> Interp<'a> {
             "resourcestatus",
             "setpagedevice",
             "currentpagedevice",
+            // the groups of classic Illustrator files (see CLASSIC_AI_PROCS)
+            ".tdbegingroup",
+            ".tdendgroup",
             "nulldevice",
             "echo",
             "setuserparams",
@@ -1174,7 +1320,7 @@ impl<'a> Interp<'a> {
             match self.scanner.next() {
                 Token::Eof => break,
                 Token::ProcStart => {
-                    let p = self.read_proc();
+                    let p = self.read_proc(0);
                     self.push(p);
                 }
                 Token::ProcEnd => {}
@@ -1188,13 +1334,34 @@ impl<'a> Interp<'a> {
     }
 
     /// Read a `{ ... }` body from the scanner into a procedure object.
-    fn read_proc(&mut self) -> Obj {
+    /// `depth` is how many bodies this one is inside; at
+    /// [`MAX_PROC_NESTING`] the body is skipped, braces counted, and an
+    /// empty procedure stands for it.
+    fn read_proc(&mut self, depth: usize) -> Obj {
+        if depth >= MAX_PROC_NESTING {
+            let mut open = 1usize;
+            loop {
+                match self.scanner.next() {
+                    Token::Eof => break,
+                    Token::ProcStart => open += 1,
+                    Token::ProcEnd => {
+                        open -= 1;
+                        if open == 0 {
+                            break;
+                        }
+                    }
+                    Token::Obj(_) => {}
+                }
+            }
+            self.warn("procedures nested too deeply; the innermost were left out");
+            return mk_array(Vec::new(), true);
+        }
         let mut items = Vec::new();
         loop {
             match self.scanner.next() {
                 Token::Eof | Token::ProcEnd => break,
                 Token::ProcStart => {
-                    let inner = self.read_proc();
+                    let inner = self.read_proc(depth + 1);
                     items.push(inner);
                 }
                 Token::Obj(o) => items.push(o),
@@ -1233,6 +1400,10 @@ impl<'a> Interp<'a> {
     fn exec_obj(&mut self, o: Obj) -> Flow {
         self.ops += 1;
         if self.ops > MAX_OPS {
+            return Flow::Stop;
+        }
+        if self.stack_base.abs_diff(stack_mark()) > self.stack_budget {
+            self.warn("procedures nested too deeply");
             return Flow::Stop;
         }
         match o {
@@ -1304,6 +1475,25 @@ impl<'a> Interp<'a> {
     }
 
     // ----- shapes -----
+
+    /// The objects painted since `start` become one group (two or more;
+    /// one object stays as it is). Page ends inside the group move to
+    /// its end.
+    fn close_group(&mut self, start: usize) {
+        if start > self.shapes.len() || self.shapes.len() - start < 2 {
+            return;
+        }
+        let children = self.shapes.split_off(start);
+        let mut group = self.new_shape(ShapeKind::Group { children });
+        group.fill = Fill::None;
+        group.stroke = None;
+        self.shapes.push(group);
+        for (at, _) in &mut self.pages {
+            if *at > start {
+                *at = start + 1;
+            }
+        }
+    }
 
     fn new_shape(&mut self, kind: ShapeKind) -> Shape {
         Shape::new(ShapeId(self.ids.shape().0), kind)
@@ -2336,6 +2526,16 @@ impl<'a> Interp<'a> {
                 self.gs = GState::default();
                 self.gs.ctm = self.base;
                 self.gs.path = path;
+            }
+            ".tdbegingroup" => {
+                if self.group_starts.len() < 256 {
+                    self.group_starts.push(self.shapes.len());
+                }
+            }
+            ".tdendgroup" => {
+                if let Some(start) = self.group_starts.pop() {
+                    self.close_group(start);
+                }
             }
             "showpage" | "copypage" => {
                 // A page ends (copypage keeps the marks on the device;
@@ -3568,6 +3768,7 @@ impl<'a> Interp<'a> {
                 (xstep.abs() * scale).max(tracedraw_core::Pattern::MIN_TILE_MM),
                 (ystep.abs() * scale).max(tracedraw_core::Pattern::MIN_TILE_MM),
             ),
+            placement: Default::default(),
         }));
     }
 
@@ -3909,7 +4110,7 @@ impl<'a> Interp<'a> {
         if f.borrow().main {
             return match self.scanner.next() {
                 Token::Eof | Token::ProcEnd => None,
-                Token::ProcStart => Some(self.read_proc()),
+                Token::ProcStart => Some(self.read_proc(0)),
                 Token::Obj(o) => Some(o),
             };
         }
@@ -4884,5 +5085,106 @@ mod tests {
         )
         .expect("parse");
         assert!(imp.shapes.is_empty());
+    }
+
+    /// Procedures nested 100 000 deep in the text (a hostile or damaged
+    /// file of 200 KB) are read without running the stack out: the
+    /// reader of a body called itself once per brace, which overflowed
+    /// the stack and closed the program. The innermost bodies are left
+    /// out with a warning; a program nested a few hundred deep still
+    /// runs whole.
+    #[test]
+    fn deeply_nested_procedures_are_bounded() {
+        let mut ids = IdSource::default();
+        let mut text = b"%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 100 100\n".to_vec();
+        text.extend(std::iter::repeat_n(b'{', 100_000));
+        text.extend(std::iter::repeat_n(b'}', 100_000));
+        text.extend_from_slice(b" exec 0 0 moveto 10 10 lineto stroke\n");
+        let imp = parse(&text, &mut ids).expect("parse");
+        assert!(
+            imp.warnings.iter().any(|w| w.contains("deeply")),
+            "{:?}",
+            imp.warnings
+        );
+        assert_eq!(imp.shapes.len(), 1, "{:?}", imp.warnings);
+        // Within the bound every level runs: 150 nested bodies, each
+        // running the one inside it, draw the line at the centre.
+        let mut text = b"%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 100 100\n".to_vec();
+        text.extend(std::iter::repeat_n(b'{', 150));
+        text.extend_from_slice(b" 0 0 moveto 10 10 lineto stroke ");
+        text.extend(std::iter::repeat_n(b"} exec ".as_slice(), 150).flatten());
+        let imp = parse(&text, &mut ids).expect("parse");
+        assert!(imp.warnings.is_empty(), "{:?}", imp.warnings);
+        assert_eq!(imp.shapes.len(), 1);
+        // The same program with a stack budget of 64 KB stops as nested
+        // too deeply instead of running the stack out: this is what
+        // keeps a program whose frames are bigger than the counted
+        // depth allows for from closing the program.
+        let imp = parse_here(&text, &mut ids, 64 << 10).expect("parse");
+        assert!(
+            imp.warnings.iter().any(|w| w.contains("deeply")),
+            "{:?}",
+            imp.warnings
+        );
+        assert!(imp.shapes.is_empty());
+    }
+
+    /// A classic Illustrator file as tracing programs write them: RGB
+    /// (`Xa`), custom (`x`, `Xx`) colours and groups (`u` ... `U`),
+    /// with no procedure set (d#2949: everything came in black and
+    /// ungrouped).
+    #[test]
+    fn classic_ai_rgb_and_custom_colours_and_groups() {
+        let imp = run("%!PS-Adobe-3.0\n%%Creator: tracer\n%AI5_FileFormat 3\n\
+            %%BoundingBox: 0 0 100 100\n%%EndProlog\n%%BeginSetup\n%%EndSetup\n\
+            u\n1 0 0 Xa\n0 0 m 10 0 L 10 10 L 0 10 L 0 0 L f\n\
+            0 0 1 XA 2 w\n20 0 m 30 0 L 30 10 L S\n\
+            U\n\
+            0 1 1 0 (Spot red) 0.25 x\n40 0 m 50 0 L 50 10 L f\n\
+            0 0.5 0 (Green) 0 1 Xx\n60 0 m 70 0 L 70 10 L f\n\
+            1 0 0 0 (Cyan) 0 0 Xx\n80 0 m 90 0 L 90 10 L f\n\
+            u\n0 0 m 1 0 L 1 1 L f\nU\n\
+            %%Trailer\n");
+        assert!(
+            imp.warnings.iter().all(|w| !w.contains("undefined")),
+            "{:?}",
+            imp.warnings
+        );
+        assert_eq!(imp.shapes.len(), 5, "{:?}", imp.shapes);
+        let ShapeKind::Group { children } = &imp.shapes[0].kind else {
+            panic!("the first two paths make a group: {:?}", imp.shapes[0].kind);
+        };
+        assert_eq!(children.len(), 2);
+        let near = |a: f32, b: f32| (a - b).abs() < 1e-4;
+        assert!(
+            matches!(children[0].fill, Fill::Solid(Color::Rgb { r, g, b }) if near(r, 1.0) && near(g, 0.0) && near(b, 0.0)),
+            "{:?}",
+            children[0].fill
+        );
+        let stroke = children[1].stroke.as_ref().expect("the line is stroked");
+        assert!(
+            matches!(stroke.color, Color::Rgb { r, g, b } if near(r, 0.0) && near(g, 0.0) && near(b, 1.0)),
+            "{:?}",
+            stroke.color
+        );
+        // A custom colour at tint 0.25 is three quarters of the colour.
+        assert!(
+            matches!(imp.shapes[1].fill, Fill::Solid(Color::Cmyk { c, m, y, k }) if near(c, 0.0) && near(m, 0.75) && near(y, 0.75) && near(k, 0.0)),
+            "{:?}",
+            imp.shapes[1].fill
+        );
+        // `Xx` with type 1 is RGB, type 0 CMYK.
+        assert!(
+            matches!(imp.shapes[2].fill, Fill::Solid(Color::Rgb { r, g, b }) if near(r, 0.0) && near(g, 0.5) && near(b, 0.0)),
+            "{:?}",
+            imp.shapes[2].fill
+        );
+        assert!(
+            matches!(imp.shapes[3].fill, Fill::Solid(Color::Cmyk { c, .. }) if near(c, 1.0)),
+            "{:?}",
+            imp.shapes[3].fill
+        );
+        // A group of one object is the object.
+        assert!(matches!(imp.shapes[4].kind, ShapeKind::Path { .. }));
     }
 }

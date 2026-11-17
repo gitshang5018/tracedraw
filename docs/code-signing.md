@@ -46,7 +46,13 @@ time of writing).
 
 - `tracedraw.exe` and `tracedraw-cli.exe`, before they are packed (so the
   installer, the portable zip and the MSIX all carry signed programs).
-- The installer, `tracedraw-<version>-windows-x86_64-setup.exe`.
+- The installers, `tracedraw-<version>-windows-x86_64-setup.exe` and
+  the 32-bit `tracedraw-<version>-windows-x86-setup.exe` (#1975). Each
+  Windows build uploads its own SignPath artifacts
+  (`unsigned-programs-<build>`, `unsigned-installer-<build>`); the
+  "installer" artifact configuration in SignPath must match
+  `tracedraw-*-windows-*-setup.exe`, as
+  `packaging/windows/signpath/installer.xml` does.
 - Not signed: the uninstaller the installer writes (it is never
   downloaded, so SmartScreen does not check it) and the macOS and Linux
   packages.
@@ -102,7 +108,7 @@ SignPath that means approving every push, so leave it off there.
 3. Open the app's Product management > Product identity page and copy
    three values into GitHub variables:
    - `MSIX_IDENTITY_NAME`: Package/Identity/Name (like
-     `12345IghorToth.TraceDraw`);
+     `12345TraceDraw.TraceDraw`);
    - `MSIX_PUBLISHER`: Package/Identity/Publisher (like `CN=1A2B3C4D-...`);
    - `MSIX_PUBLISHER_NAME`: Package/Properties/PublisherDisplayName (your
      name as the Store shows it).
@@ -115,11 +121,37 @@ SignPath that means approving every push, so leave it off there.
    privacy policy address and the reason for the full-trust capability)
    see [`store-listing.md`](store-listing.md).
 6. The manifest is `packaging/windows/msix/AppxManifest.xml` (the program
-   runs with full trust; `.tdraw` and `.cdr` open with it; `tracedraw` and
-   `tracedraw-cli` work in a terminal); its tiles are in
+   runs with full trust; `.tdraw` and `.cdr` open with it; `tracedraw-cli`
+   works in a terminal); its tiles are in
    `packaging/windows/msix/Assets/`. Without the variables the build still
    packs a check package with a placeholder identity, so a broken manifest
-   shows up in CI, but does not publish it.
+   shows up in CI, but does not publish it. The package has a single
+   application: the Store refuses a second one hidden from the Start menu (a
+   "headless app") without a waiver, and an application may declare only one
+   command-line alias, so the Store package has `tracedraw-cli` but not the
+   `tracedraw` alias.
+7. Submitting each version automatically. Once the app is live in the Store
+   (the API cannot make the first submission), the `store` job of the build
+   hands every version's MSIX to the Store and submits it for certification:
+   the new submission copies the last published one and replaces only the
+   package. It needs a Microsoft Entra application with access to the
+   account:
+   - Partner Center > Account settings > User management > Microsoft Entra
+     applications: add an application (create a tenant first if the account
+     has none) and give it the Manager role;
+   - in the Entra admin center (<https://entra.microsoft.com/>), on that
+     application: Certificates & secrets > New client secret;
+   - in GitHub add the secrets `MSSTORE_TENANT_ID` (Identity > Overview >
+     Tenant ID), `MSSTORE_CLIENT_ID` (the application's Application (client)
+     ID), `MSSTORE_CLIENT_SECRET` (the secret's value) and
+     `MSSTORE_SELLER_ID` (Partner Center > Account settings > Legal info >
+     Seller ID), and the variable `MSSTORE_APP_ID` (the Store ID,
+     `9P50L12VHF33`).
+
+   Without them the job only notes that nothing was submitted. A draft
+   left in Partner Center is discarded by the next version (`msstore
+   publish` starts again from the last published submission), so finish
+   or submit manual edits before tagging.
 
 ## Azure Artifact Signing
 

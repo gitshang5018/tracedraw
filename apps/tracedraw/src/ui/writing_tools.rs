@@ -1,4 +1,4 @@
-//! Text > Writing Tools: one dialog with three tabs (Spell Checker,
+//! Text > Proofing: one dialog with three tabs (Spell Checker,
 //! Grammar, Thesaurus), "?" and Close; and Text > Custom Optional
 //! Hyphens. See docs/behavior/writing-tools.md.
 
@@ -60,7 +60,7 @@ pub struct ThesaurusTab {
     pub auto_close: bool,
 }
 
-/// Text > Writing Tools.
+/// Text > Proofing.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct WritingToolsState {
     /// 0 Spell Checker, 1 Grammar, 2 Thesaurus.
@@ -332,7 +332,7 @@ fn spell_tab(app: &mut App, ui: &mut Ui, st: &mut WritingToolsState) {
                 });
             ui.horizontal(|ui| {
                 ui.label(tr("writing.check"));
-                egui::ComboBox::from_id_salt("spell_scope")
+                crate::ui::keynav::ComboBox::from_id_salt("spell_scope")
                     .selected_text(tr(match scope {
                         CheckScope::Document => "writing.scope_document",
                         CheckScope::Selection => "writing.scope_selection",
@@ -560,7 +560,7 @@ fn grammar_tab(app: &mut App, ui: &mut Ui, st: &mut WritingToolsState, close: &m
                 });
             ui.horizontal(|ui| {
                 ui.label(tr("writing.check"));
-                egui::ComboBox::from_id_salt("grammar_scope")
+                crate::ui::keynav::ComboBox::from_id_salt("grammar_scope")
                     .selected_text(tr(match scope {
                         CheckScope::Document => "writing.scope_document",
                         CheckScope::Selection => "writing.scope_selection",
@@ -694,7 +694,7 @@ fn thesaurus_tab(app: &mut App, ui: &mut Ui, st: &mut WritingToolsState, close: 
             .add(egui::TextEdit::singleline(&mut t.word).desired_width(330.0))
             .rich_tip(crate::ui::tips::keyed("thesaurus.word"));
         let history = t.history.clone();
-        egui::ComboBox::from_id_salt("thesaurus_history")
+        crate::ui::keynav::ComboBox::from_id_salt("thesaurus_history")
             .width(20.0)
             .selected_text("")
             .show_ui(ui, |ui| {
@@ -981,7 +981,7 @@ pub fn custom_hyphens_dialog(
                         ui.label(tr("hyphens.language"));
                         let ui_lang = crate::i18n::language();
                         let ui_lang = ui_lang.split('-').next().unwrap_or("en").to_string();
-                        egui::ComboBox::from_id_salt("hyphens_lang")
+                        crate::ui::keynav::ComboBox::from_id_salt("hyphens_lang")
                             .width(230.0)
                             .selected_text(language_name(&st.language))
                             .show_ui(ui, |ui| {

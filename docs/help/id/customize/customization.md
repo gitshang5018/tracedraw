@@ -1,5 +1,7 @@
 # Opsi kustomisasi
 
+> *Terjemahan mesin: halaman ini mungkin tertinggal dari versi bahasa Inggris.*
+
 [[menu.tools > menu.tools.options > menu.tools.options_customization]] mengatur
 tampilan antarmuka, pintasan keyboard Anda sendiri, bilah mana yang tampil, dan
 perilaku palet warna.
@@ -13,6 +15,9 @@ perilaku palet warna.
 - [[options.ui_shadows]] (bayangan yang lebih sedikit membantu grafis yang
   lebih lambat).
 - [[options.colored_icons]]: setiap kelompok alat mendapat warnanya sendiri.
+- [[options.docker_tabs_icons_only]]: tab panel di sisi jendela hanya
+  menampilkan gambarnya, dengan nama di tip. Jika mati, tab menampilkan
+  gambar dan nama, dan kolom yang tabnya tidak muat dapat digeser.
 - [[options.ui_size]]: seberapa besar menu, bilah, ikon, dan panel, relatif
   terhadap penskalaan yang diberikan sistem Anda untuk monitor (awalnya 100%).
   [[options.reset_to_default]] kembali ke 100%. Ukuran antarmuka tidak pernah
@@ -43,6 +48,14 @@ menghapusnya, dan mengatur ulang ke bawaan menghapus semuanya. Tombol alat
 berupa satu huruf atau <kbd>Shift</kbd> dan satu huruf. Lihat
 [Pintasan keyboard](../reference/keyboard-shortcuts.md).
 
+Sebuah perintah dapat memiliki beberapa pintasan: tombol baru bergabung dengan
+yang sudah ada (tombol bawaan tetap berfungsi di sampingnya), dan setiap tombol
+punya tombol hapus sendiri. Tombol bilah yang menjalankan perintah menu (Baru,
+Buka, Simpan, Batalkan, Perbesar, dan lainnya) juga menerima pintasan, sama
+dengan perintah menunya, begitu pula baris yang hanya kadang ditampilkan menu.
+Daftar **Tombol bilah alat** memuat semua tombol bilah Standar dan Zoom: seret
+dari sana kembali ke bilah tombol yang telah Anda hapus.
+
 ## Bilah Perintah {#command-bars}
 
 ![Halaman Bilah Perintah pada opsi kustomisasi](../../img/customize-customization-command-bars.png)
@@ -63,6 +76,9 @@ berupa satu huruf atau <kbd>Shift</kbd> dan satu huruf. Lihat
 
 - [[options.palette_auto_update]] dan [[options.palette_show_document]]
   (keduanya aktif).
+- [[options.palette_position]] (Atas, Bawah, Kiri, Kanan, atau Mengambang)
+  palet bawaan, seperti yang diatur menunya sendiri; tidak berubah selama
+  bilah alat terkunci.
 - [[options.palette_swatches]]: [[options.palette_no_color]] (aktif), dan apa
   yang dilakukan [[options.palette_right_button]]:
   [[options.palette_set_outline]] (bawaan) atau membuka

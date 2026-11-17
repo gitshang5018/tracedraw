@@ -1,5 +1,7 @@
 # Suavizar, borrar e tornar áspero o contorno
 
+> *Tradução automática: esta página pode estar atrasada em relação à versão em inglês.*
+
 Os pincéis de modelagem do submenu Forma remodelam o contorno de um objeto
 onde você arrasta sobre ele, como uma ferramenta de escultor: [[tool.smooth]],
 [[tool.smear]], [[tool.twirl]], [[tool.attract_repel]], [[tool.smudge]] e
@@ -7,8 +9,10 @@ onde você arrasta sobre ele, como uma ferramenta de escultor: [[tool.smooth]],
 
 ## Usar um pincel de modelagem {#using}
 
-1. Selecione uma curva. Outros objetos são convertidos em curvas antes; sem
-   nada selecionado, é usado o objeto sob o ponteiro.
+1. Selecione as curvas a mudar. Outros objetos são convertidos em curvas
+   antes. Os pincéis mudam só os objetos selecionados: sem nada selecionado,
+   arrastar não faz nada, e a barra de status pede para selecionar um objeto
+   antes.
 2. Escolha a ferramenta e defina o **tamanho da ponta** (o raio do pincel, 10
    mm de início) e as outras configurações na barra de propriedades.
 3. Arraste sobre o contorno.
@@ -47,13 +51,17 @@ alternar. Manter o ponteiro parado continua o efeito.
 
 ## Esfumar {#smudge}
 
-A ferramenta [[tool.smudge]] (<kbd>V</kbd>) suaviza um pouco o contorno e
-depois o borra, então ele é puxado sem dobras. **Pressão** (1 a 100%, 100% de
-início) define quanto.
+A ferramenta [[tool.smudge]] (<kbd>V</kbd>) leva junto com o ponteiro o
+contorno que está sob a ponta: um traço que cruza o contorno o estica em uma
+língua com cerca de metade da largura da ponta, cujos lados se unem
+suavemente ao resto do contorno, seja o traço rápido ou lento. **Pressão**
+(1 a 100%, 100% de início) define quanto o contorno acompanha.
 
 ## Tornar áspero {#roughen}
 
 A ferramenta [[tool.roughen]] (<kbd>E</kbd>) acrescenta pontas serrilhadas ao
 longo do contorno. **Frequência** (1 a 10 pontas a cada 10 mm, 5 de início)
 define quantas, e **Tamanho da ponta** (2 mm de início) a altura. As pontas são
-retas, então ficam afiadas.
+retas, então ficam afiadas. Passar de novo sobre o contorno num novo traço o
+deixa mais áspero; pontas que cruzam o contorno continuam preenchidas, sem
+frestas brancas entre elas.

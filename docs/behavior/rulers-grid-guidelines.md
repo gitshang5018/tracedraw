@@ -24,7 +24,14 @@
   showing dashed lines across the window while dragging.
 - Dragging out of a ruler adds a guideline (horizontal from the top ruler,
   vertical from the left one) where it is released inside the window.
-- Double-clicking a ruler or the corner opens Document Options at Rulers.
+- Double-clicking a ruler or the corner opens Document Setup at Rulers.
+- Right-clicking a ruler or the corner opens the rulers' menu where it
+  was clicked (#1831): Ruler Setup..., Grid Setup... and Guidelines
+  Setup... open Document Setup at Rulers, Grid and Guidelines, and Rulers
+  (checked, Alt+Shift+R) hides the rulers, as View > Rulers does. A click
+  outside closes it
+  (`ui::rulers::tests::a_right_click_on_a_ruler_opens_its_menu`,
+  `ui::rulers::tests::the_ruler_menu_opens_the_setup_pages_and_hides_the_rulers`).
 
 ### Origin
 
@@ -33,7 +40,7 @@ corner, 0, 0 by default). Rulers, the status bar's cursor coordinates,
 the property bar's X and Y, the Transformations summary, the Guidelines
 panel and the document grid all count from it.
 
-### Document Options > Rulers
+### Document Setup > Rulers
 
 Units (inches, millimeters, picas,
 points, pixels, ciceros, didots, feet, yards, miles, centimeters, meters,
@@ -43,7 +50,7 @@ Show rulers, and a button that puts the origin back at the page corner.
 
 ### Drawing scale
 
-Document Options > Rulers > Drawing scale makes a distance on the page
+Document Setup > Rulers > Drawing scale makes a distance on the page
 stand for a distance in the world (`drawing_scale.rs`):
 
 - Typical scales: 1:1 (default), 1:2, 1:5, 1:10, 1:20, 1:25, 1:50, 1:75,
@@ -59,13 +66,13 @@ stand for a distance in the world (`drawing_scale.rs`):
   the scale, "millimeters (1:100)"), the cursor coordinates and object
   details on the status bar, the property bar's position, size, nudge,
   duplicate distance and corner sizes, the Transformations, Object
-  Coordinates, Step and Repeat, Corners and Join Curves panels, contour
+  Coordinates, Repeat Copies, Corners and Join Curves panels, contour
   offsets, the grid spacing, guideline positions, the ruler origin and the
   symmetry centre, and the labels of new dimension lines.
 - Not through it, as printed: the page size, bleed, page margins and
   columns of the guideline presets, the baseline grid, outline widths, text
   sizes, paragraph indents, tabs and columns, barcodes and QR codes, nib
-  widths (eraser, artistic media) and Border and Grommet.
+  widths (eraser, artistic media) and Banner Hems and Eyelets.
 - The scale is saved with the drawing (`scale_page` and `scale_world` in
   mm with the units they were given in); changing it is an undo step.
 
@@ -73,7 +80,7 @@ stand for a distance in the world (`drawing_scale.rs`):
 
 - View > Grid > Document Grid shows it over the page and the desktop,
   behind objects, as 1 px `#DCDCDC` lines or `#8C8C8C` dots at the
-  intersections (Document Options > Grid > Show grid as).
+  intersections (Document Setup > Grid > Show grid as).
 - Spacing: horizontal and vertical, 10 mm by default, shown either as a
   distance ("millimeters apart") or as lines per unit. Lines pass through
   the ruler origin.
@@ -114,7 +121,37 @@ stand for a distance in the world (`drawing_scale.rs`):
   colour or the document's default guideline colour (blue). Selected
   guidelines are red.
 - Each guideline has a colour, a style (solid, dashed, dotted, dash dot)
-  and a lock, saved with the drawing.
+  and a lock, saved with the drawing in `.tdraw` files (every page's
+  guidelines). `.cdr` files keep them too (#1161): the guidelines every
+  page has go once on the master page's guides layer, as the other
+  program's files keep theirs, and each page's others on its own guides
+  layer (before version 14 on its entry for the master's guides layer);
+  opening the file makes the master page's guidelines the drawing's
+  master guidelines (below). The colour, style and lock of a guideline
+  are not written there (they come back in the default colour, dashed
+  and unlocked).
+- Master guidelines (#1928): the drawing has guidelines of its own that
+  every page shows, beside each page's own. The Objects docker lists
+  them as "Guides (all pages)" under the Master Page and each page's own
+  as "Guides" under the page. A click on either row chooses the
+  guidelines edited (the row is highlighted): new guidelines, from the
+  rulers, the Guidelines panel or presets, go there; only those are
+  picked, moved, locked and deleted, the others are drawn as they are
+  and still snapped to. When TraceDraw starts the master guidelines
+  are the ones chosen, so guidelines
+  dragged from the rulers are on every page; a click on a page's own
+  "Guides" row makes new ones that page's only (#1775). The padlock of
+  a row locks or unlocks all of its guidelines; its eye shows or hides
+  that row's guidelines only, the others staying (hidden ones are not
+  picked or snapped to; with guidelines off, opening an eye turns them
+  on), and the drawing keeps it (`master_guides_hidden`,
+  `page_guides_hidden` in `.tdraw`; `Command::SetGuidesShown`; #1775,
+  `guides::tests::guidelines_are_shared_at_first_and_each_set_has_its_own_eye`).
+  Each change is one undo step (`Command::SetMasterGuides`). In `.tdraw` files they are
+  `master_guides`; in `.cdr` files they go on the master page's guides
+  layer with the guidelines every page has (on each page's own layer
+  when the pages differ in size).
+  Test: `guides::tests::master_guidelines_are_set_once_for_every_page`.
 - Pick tool: a click selects a guideline (Shift adds or removes); a press
   and drag moves it, snapping to the grid, the page and objects; dropping
   it outside the drawing window deletes it. The move is one undo step.
@@ -124,12 +161,17 @@ stand for a distance in the world (`drawing_scale.rs`):
   step "Move Guidelines"; a right click during the drag leaves copies
   where it ends and the guidelines where they were ("Copy Guidelines",
   the copies selected); dropped outside the window they all go (#376).
+- A guideline across an unselected picture takes the press: the pointer
+  shows the arrows across it and a drag moves the guideline, not the
+  picture (pictures often fill the page behind the guidelines). Other
+  unselected objects, and a selected picture, still take the press
+  (#2640, `pick_drag_tests::a_guideline_over_a_picture_is_dragged_and_the_picture_stays`).
 - Edit > Duplicate (Ctrl+D) with guidelines and no objects selected
   copies them, moved by the duplicate offset (unlocked), the copies
   selected; the Guidelines docker's Duplicate does the same, and its
   Clear deletes every guideline of the type shown, one undo step
   (`selected_guidelines_move_copy_duplicate_and_clear_together`). The
-  duplicate offset is Layout > Document Options > General > Duplicate
+  duplicate offset is Page > Document Setup > General > Duplicate
   offset.
 - Edit > Copy (Ctrl+C) and Cut (Ctrl+X) with guidelines and no objects
   selected put them on the clipboard (status "n guideline(s) copied"; Cut
@@ -148,8 +190,28 @@ stand for a distance in the world (`drawing_scale.rs`):
 - A click on the only selected guideline shows its rotation handles: a
   pivot where it was clicked and two curved arrows 70 px along it.
   Dragging an arrow turns the guideline about the pivot in whole degrees;
-  0 and 180 make it horizontal, 90 and 270 vertical.
-- Locked guidelines can be selected but not moved or deleted.
+  0 and 180 make it horizontal, 90 and 270 vertical. The pivot (the
+  pointer shows the move arrows over it) can be dragged anywhere: it
+  snaps as a drawing tool's point does (to objects' nodes and other
+  snap points when snapping to objects is on, the page, the grid and
+  guidelines, the guideline itself included), the guideline staying
+  where it is; a guideline turned about a pivot off it keeps its
+  distance from the pivot. A click on the pivot keeps the handles
+  (#1850, `guides::tests::a_guides_rotation_centre_drags_and_snaps_to_a_node`).
+- The pivot stays with its guideline: deselected and selected again,
+  alone with one click, the Transformations docker's Rotate page
+  (Relative center on) still turns it about that pivot, and a second
+  click brings the handles back with the pivot where it was, not where
+  the guideline was clicked. A guideline never given a pivot turns
+  about the docker's box. Moving the guideline by other means forgets
+  it (#2335, `guides::tests::a_guideline_keeps_its_moved_centre_once_deselected`).
+- Locked guidelines can be selected but not moved, rotated, nudged,
+  deleted or edited: a click or double click on a locked guideline never
+  shows its rotation handles, and locking one that shows them hides them;
+  the Guidelines docker's Clear, colour and style leave locked ones as
+  they are (the status bar says the guideline is locked when nothing
+  else changed). The padlock of the Guides row in the Objects panel
+  locks or unlocks every guideline of the page the same way (#1385).
 - The pointer over a guideline (where no object is) shows the arrows
   across it: up and down for a horizontal one, sideways for a vertical
   one, the move arrows for a slanted one, the plain arrow for a locked
@@ -174,7 +236,10 @@ stand for a distance in the world (`drawing_scale.rs`):
   moves it at once (`propbar::guide_bar`, `App::set_selected_guide_line`).
   With several selected it says how many. A locked guideline shows
   "locked" and does not move.
-- Edit > Select All > Guidelines selects every guideline of the page.
+- Edit > Select All > Guidelines selects every guideline of the page;
+  so does Ctrl+A while a guideline is selected (it selects the objects
+  otherwise, #1753,
+  `pick_drag_tests::ctrl_a_with_a_guideline_selected_selects_all_guidelines`).
 
 ### Guidelines panel
 
@@ -189,7 +254,7 @@ guideline as soon as it is entered (Enter or leaving the field), with no
 need for Modify, which stays for a change of type and for Add's values
 (`guides::tests::typed_values_move_the_selected_guideline_and_the_panel_follows_it`).
 
-### Document Options > Guidelines
+### Document Setup > Guidelines
 
 Show guidelines, Snap to guidelines, the default guideline colour, the
 default preset guideline colour, and presets added in the preset colour:
@@ -206,7 +271,7 @@ A preset line already present is not added twice.
 
 ## Save as Default
 
-Tools > Save Settings as Default (and the button in Options) keeps the
+Tools > Save as Defaults (and the button in Options) keeps the
 active drawing's grid, ruler and guideline settings, and its default
 properties for new objects (see `object-styles.md`), for new drawings.
 
@@ -218,6 +283,9 @@ properties for new objects (see `object-styles.md`), for new drawings.
 - `guides::tests::dragging_a_guide_is_one_undo_step_and_leaves_other_guides_alone`
 - `guides::tests::dropping_a_guide_outside_the_window_deletes_it`
 - `guides::tests::locked_guides_select_but_do_not_move_or_delete`
+- `guides::tests::locked_guide_shows_no_rotation_handles`
+- `guides::tests::clear_colour_and_style_leave_locked_guides_alone`
+- `pick_drag_tests::locked_guidelines_cannot_be_rotated_moved_nudged_or_deleted`
 - `pick_drag_tests::arrow_keys_nudge_the_selected_guidelines`
 - `guides::tests::second_click_rotates_a_guide_about_the_clicked_point`
 - `ui::layout_options::tests::*` (form origin, presets)

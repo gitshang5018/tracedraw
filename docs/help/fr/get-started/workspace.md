@@ -9,9 +9,8 @@ soit clair.
 De haut en bas et de gauche à droite :
 
 - La **barre de menus** contient toutes les commandes, dans les menus
-  [[menu.file]], [[menu.edit]], [[menu.view]], [[menu.layout]],
-  [[menu.object]], [[menu.effects]], [[menu.bitmaps]], [[menu.text]],
-  [[menu.table]], [[menu.tools]], [[menu.window]] et [[menu.help]]. Chaque
+  [[menu.file]], [[menu.edit]], [[menu.view]], [[menu.object]],
+  [[menu.text]], [[menu.bitmaps]], [[menu.effects]], [[menu.layout]], [[menu.tools]], [[menu.window]] et [[menu.help]]. Chaque
   commande affiche son raccourci à côté. Sans dessin ouvert, seuls
   [[menu.file]], [[menu.tools]], [[menu.window]] et [[menu.help]] sont
   affichés. La page [Commandes des menus](../reference/menus.md) liste toutes
@@ -46,7 +45,7 @@ La barre d'outils standard contient, par groupes :
 7. Désactiver le magnétisme (<kbd>Alt+Q</kbd>) et la liste des éléments
    magnétiques.
 8. Options, qui ouvre la liste des pages d'options.
-9. Lancer : Gestionnaire de polices, écran d'accueil et Gestion des couleurs.
+9. Lancer : Gestionnaire de polices, TraceCut et écran d'accueil.
 
 Survolez un bouton pour voir son nom, son raccourci et ce qu'il fait.
 

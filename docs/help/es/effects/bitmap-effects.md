@@ -16,7 +16,9 @@ ocultar, reordenar o quitar cualquiera de ellos más tarde, y al quitar el
 3. Los efectos sin ajustes se aplican de inmediato. Los demás abren un cuadro
    de diálogo con vistas previas de **antes** y **después** del primer objeto
    seleccionado: ajuste los valores y haga clic en [[dialog.ok]].
-   **Restablecer** devuelve todos los ajustes a su valor predeterminado.
+   Los ajustes están en un panel a la derecha; debajo de él, **Restablecer**
+   devuelve todos los ajustes a su valor predeterminado y las dos flechas
+   deshacen y rehacen los cambios hechos en el cuadro de diálogo.
 
 ![Un cuadro de diálogo de efecto de mapa de bits](../../img/effects-bitmap-effects.png)
 
@@ -75,6 +77,19 @@ grupos de efectos.
 [[menu.effects > menu.effects.flatten]] hace permanentes los efectos: un mapa
 de bits conserva lo que muestra, y un objeto vectorial se convierte en mapa de
 bits.
+
+### En todas las páginas
+
+En un dibujo de varias páginas, el cuadro de diálogo de un efecto muestra la
+casilla [[dialog.fx_all_pages]] mientras hay una imagen seleccionada. Si está
+marcada, Aceptar aplica también el efecto a todas las imágenes de todas las
+páginas, en un solo paso de deshacer. Las imágenes bloqueadas y las de capas
+bloqueadas no cambian.
+
+[[menu.effects > menu.effects.all_pages]] hace lo mismo con los efectos que ya
+tiene la imagen seleccionada, incluidos los que no tienen cuadro de diálogo:
+todas las demás imágenes reciben la misma lista de efectos, en un solo paso de
+deshacer.
 
 ## El Selector de efectos {#effect-picker}
 

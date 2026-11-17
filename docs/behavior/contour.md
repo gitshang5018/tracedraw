@@ -9,14 +9,32 @@ Contour panel share the controls in `ui/contour_bar.rs`.
 | Control | Default | Range |
 |---|---|---|
 | To centre, Inside, Outside | Outside | |
-| Steps | 3 | 1 to 999 (to centre: as many as fit) |
+| Steps | 3 | 1 to 999 (to centre: as many as fit); a slider on a logarithmic scale with its number box |
 | Offset | 2 mm | 0.001 to 1000 mm, between steps |
 | Corners | Mitred | Mitred, Round, Bevelled |
 | Colour direction | Direct | Direct, Clockwise, Counterclockwise (through the hues) |
 | Last step's fill and outline colours | white, black | |
+| Last fill colour (the end of a fountain fill, #1265) | white | |
 | Object acceleration, colour acceleration | 0 % | -100 to 100 % |
 
+The colour buttons of the bar (fill, outline and last fill colour)
+open the colour palette's swatches
+and, under Other, the colour's swatch: a click on it closes the list
+and opens the colour picker beside the button (viewer, Model list,
+eyedropper, sliders), which stays open while it is used and closes on a
+click elsewhere or Esc. The picker used to sit inside the list, so the
+first click closed both and the Model list took the list away with it
+(#1262, `ui::fill_tool_bars::color_pick`, shared by the colour buttons
+of the Extrude and Smart Fill bars;
+`ui::fill_tool_bars::tests::other_opens_a_picker_that_stays` and
+`the_first_click_on_other_opens_a_picker_that_works`).
+
 Ctrl+F9 opens the Contour panel.
+
+A contour in a `.cdr` file saved by another program (version 9 seen,
+#1031) opens live: the object gets this effect with the file's offset,
+step count, side and end colours, and the steps the file stores go
+(`docs/cdr-format.md`, the Contour row).
 
 ## Formulas
 
@@ -27,16 +45,38 @@ Ctrl+F9 opens the Contour panel.
   object's scale, stretch and rotation applied and the steps are taken
   back into the object's own coordinates, so an 80 mm inside step of a
   scaled polygon lies 80 mm from its edges (#754).
+- The object's area is read with its fill rule: text, and objects set
+  to the nonzero rule, with the nonzero rule, so the overlapping strokes
+  of a letter (as many variable fonts draw them) make no holes, which
+  the even-odd rule gave contours of their own (#2156).
 - `accelerate(t, a) = t ^ (4 ^ a)`: 0 spaces the steps evenly, positive
   values pack them toward the object, negative ones toward the last
   step.
 - Corners: the offset outline's corners are mitred (sharp; corners under
   about 9 degrees are cut off), round, or bevelled. Contours from older
-  files, which have no corner setting, are round.
+  files, which have no corner setting, are round. A round corner's curve
+  leaves the straight side before it along that side and arrives at the
+  next side along it, so it runs on from the sides it joins and stays at
+  the contour's distance (#1542,
+  `shaping::tests::a_round_offset_corner_runs_on_from_its_sides`). The
+  curves of an offset are fitted within 0.05 mm of it and within a
+  tenth of the offset, whichever is less, so the round corners of a
+  contour a few hundredths of a millimetre wide are still arcs and not
+  straight cuts (#2176,
+  `shaping::tests::the_round_corners_of_a_narrow_offset_stay_round`).
 - Colours: step `i` of the `n` drawn takes `accelerate(i / n, colours)`
   of the way from the object's fill (and outline) colour to the last
   step's colours, mixed directly or through the hues clockwise or
   counterclockwise. An object without fill gives unfilled steps.
+- A fountain-filled object's steps keep its fountain (kind, angle,
+  stops' places) and change its colours (#1265): each stop at place `s`
+  (0 at the start, 1 at the end) goes the step's share of the way to
+  the colour `s` of the way from the fill colour to the last fill
+  colour, so on the last step the fountain runs from the fill colour to
+  the last fill colour. Contours from older files have no last fill
+  colour and take the fill colour for both ends. Other fills (solid,
+  pattern, texture, mesh) give solid steps from their first colour, as
+  before.
 - Outside steps are drawn behind the object, farthest first; inside
   steps in front of it, outermost first.
 
@@ -50,11 +90,41 @@ Ctrl+F9 opens the Contour panel.
 - A click selects the object under the pointer (or nothing). Groups and
   bitmaps get no contour.
 
+## Handles
+
+With the tool and one object selected that has a contour, the canvas
+shows its handles (#1265, `ContourHandles`, `canvas::draw_contour_handles`,
+plain segments and two small rectangles, the offset square 11 screen
+pixels wide, or the node size of Options > Nodes and Handles and two
+pixels more when that is larger, #2731):
+
+- A line from the middle of the object's right edge (page bounds, `a`),
+  to the right for Outside, to the left for Inside and To centre.
+- The offset handle (a square) at its end: `a + d * steps * offset`
+  (To centre: `a + d * offset`), `d` being 1 or -1. Dragging it sets the
+  distance `t` along the line from `a` (the pointer's height is
+  ignored): `offset = t / steps` (To centre `offset = t`), at least
+  0.01 mm, the steps kept.
+- The steps handle (a bar across the line) at `a + d * offset`, the
+  first step's distance without acceleration (none To centre). Dragging
+  it to `t` gives `steps = round(steps * offset / t)` (1 to 999) and the
+  offset that keeps the last step where it was.
+- A press within 12 screen pixels (or the pick distance of Options >
+  Nodes and Handles, when larger, #2731) takes a handle, the steps handle first
+  where they meet; the pointer shows a sideways arrow over them. A drag
+  from anywhere else draws a new contour as before.
+- The contour is drawn live at every move; the first move of a drag
+  starts an undo step "Contour" and the others change it, so a drag is
+  one step.
+
 ## Property bar and panel
 
 - The controls show the selected object's contour and edit the selected
   contours live (a run of changes is one undo step). Apply (shown when
-  a selected object has no contour) adds the contour; Clear Contour
+  a selected object has no contour) adds the contour, as Enter does in
+  a number box of the bar or panel (d#2945,
+  `contour_bar::tests::enter_in_a_box_of_the_panel_applies_the_contour`);
+  Clear Contour
   removes it; Break Apart turns the steps into objects, grouped beside
   the object when there are several (`App::break_effect_groups`).
 - Object > Break Contour Group Apart (Ctrl+K, and the right-click
@@ -69,9 +139,22 @@ Ctrl+F9 opens the Contour panel.
 
 - `live::tests::contour_outside_three_steps`
 - `live::tests::contour_offset_is_measured_on_the_page`
+- `live::tests::contour_steps_keep_a_fountain_toward_both_end_colours`
 - `shaping::tests::offset_corners_are_mitred_round_or_bevelled`
+- `shaping::tests::offset_reads_overlapping_strokes_with_the_fill_rule_given`
+- `live::tests::effects_read_text_with_the_nonzero_rule`
+- `effect_outline_tests::inside_contour_of_letters_keeps_its_distance` and
+  `outside_contour_of_letters_keeps_its_distance` (text crate): on the
+  letters of a static and of a variable face, every point of a round
+  contour lies at the offset from the letters' outline, of a mitred one
+  no nearer.
 - `contour_tool::tests::a_drag_draws_a_live_contour`
 - `contour_tool::tests::the_bar_edits_the_selected_contour`
+- `contour_tool::tests::handles_drag_the_offset_and_the_steps`: a 20 mm
+  square with 3 outside steps of 2 mm has its line from (20, 10) to
+  (26, 10) and the steps handle at (22, 10); the offset handle dragged to
+  x = 32 gives 3 steps of 4 mm in one undo step; the steps handle then
+  dragged to x = 22 gives 6 steps of 2 mm.
 - `ui::contour_bar::tests::the_bar_and_the_panel_draw`
 - Given a 20 mm square, outside, 3 steps of 2 mm, mitred, then the
   outermost step is a 32 mm square and its fill is the end colour.

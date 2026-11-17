@@ -117,20 +117,37 @@ impl Bar {
         Bar::ROWS.contains(&self)
     }
 
-    /// The height of the toolbar's band in a row, its line included.
+    /// The height of the toolbar's band in a row, its line included, at
+    /// the button size in force (see [`Self::row_height_at`]).
     pub fn row_height(self) -> f32 {
+        self.row_height_at(crate::theme::bar_size())
+    }
+
+    /// The height of the toolbar's band at button size `size`: the room
+    /// for its buttons and the margins above and below them (36 px,
+    /// 53 px for the property bar, up to Medium buttons; taller with
+    /// Large and Extra Large ones, so they are never cut off).
+    pub fn row_height_at(self, size: crate::settings::ButtonSize) -> f32 {
         match self {
-            Bar::Property => 53.0,
-            _ => 36.0,
+            Bar::Property => self.inner_height_at(size) + 16.0,
+            _ => self.inner_height_at(size) + 4.0,
         }
     }
 
-    /// The room the toolbar's buttons take across its row: the band less
-    /// the margins above and below them.
+    /// The room the toolbar's buttons take across its row at the button
+    /// size in force.
     fn inner_height(self) -> f32 {
+        self.inner_height_at(crate::theme::bar_size())
+    }
+
+    /// The room the toolbar's buttons take across its row: the band less
+    /// the margins above and below them. It holds a button of `size`
+    /// (with the property bar's padding round its fields).
+    fn inner_height_at(self, size: crate::settings::ButtonSize) -> f32 {
+        let m = size.metrics();
         match self {
-            Bar::Property => 37.0,
-            _ => 32.0,
+            Bar::Property => 37f32.max(m.prop_button + 9.0),
+            _ => 32f32.max(m.button),
         }
     }
 
@@ -199,14 +216,10 @@ impl Bar {
     /// The size of the bar floating (points), title strip included.
     pub fn floating_size(self, app: &App) -> Vec2 {
         match self {
-            Bar::Toolbox => vec2(crate::ui::toolbox::floating_width(app) + 8.0, 400.0),
-            Bar::Palette => vec2(
-                460.0,
-                crate::ui::palette::thickness(app, crate::ui::palette::Row::Main)
-                    + crate::ui::palette::ROW_H * app.extra_palettes.len() as f32
-                    + TITLE_H
-                    + 4.0,
-            ),
+            Bar::Toolbox => toolbox_window_size(app),
+            Bar::Palette => {
+                crate::ui::palette_bars::floating_window_size(app, crate::ui::palette::Row::Main)
+            }
             Bar::Standard => vec2(940.0, 36.0 + TITLE_H + 4.0),
             Bar::Property => vec2(1100.0, 53.0 + TITLE_H + 4.0),
             Bar::Status => vec2(900.0, 40.0),
@@ -224,6 +237,51 @@ pub type RowPlace = [u32; 2];
 
 /// Height of a floating bar's title strip.
 pub const TITLE_H: f32 = 18.0;
+/// The margin before a floating bar's name in its title.
+const TITLE_PAD: f32 = 6.0;
+/// The least a floating bar's window is wide: room for a few letters of
+/// its name (or the ellipsis) before the close button.
+pub const FLOATING_MIN_W: f32 = 68.0;
+/// The margins round the floating toolbox's grid of buttons: 4 px at
+/// each side, 3 px above and below, and the window's 1 px border.
+pub const TOOLBOX_MARGIN: Vec2 = vec2(10.0, 8.0);
+/// The border of a floating bar's window.
+const WINDOW_STROKE: f32 = 1.0;
+
+/// The room a floating bar's name has in a title `width` wide: after
+/// the margin, before the close button and a gap.
+pub fn title_room(width: f32) -> f32 {
+    (width - TITLE_PAD - TITLE_H - 2.0).max(0.0)
+}
+
+/// A floating bar's name laid out in `room`: cut with an ellipsis when
+/// it is longer (the galley says so, and the title then shows the whole
+/// name as a tooltip).
+pub fn title_galley(ui: &Ui, name: &str, room: f32) -> std::sync::Arc<egui::Galley> {
+    let mut job = egui::text::LayoutJob::simple_singleline(
+        name.to_string(),
+        egui::FontId::proportional(11.0),
+        Tokens::text(),
+    );
+    job.wrap = egui::text::TextWrapping::truncate_at_width(room.max(0.0));
+    ui.painter().layout_job(job)
+}
+
+/// The size of the floating toolbox's window: its grid of buttons (see
+/// `toolbox::flow`) with its margins and title, never narrower than
+/// [`FLOATING_MIN_W`].
+pub fn toolbox_window_size(app: &App) -> Vec2 {
+    let grid = crate::ui::toolbox::floating_flow(app).size;
+    vec2(
+        (grid.x + TOOLBOX_MARGIN.x).max(FLOATING_MIN_W),
+        grid.y + TOOLBOX_MARGIN.y + TITLE_H,
+    )
+}
+
+/// Where the floating toolbox's window was drawn this frame.
+pub fn toolbox_window_id() -> egui::Id {
+    egui::Id::new("floating_toolbox_window")
+}
 /// How near an edge a dropped bar docks there.
 pub const EDGE_ZONE: f32 = 56.0;
 
@@ -238,6 +296,12 @@ pub struct BarLayout {
     pub status: Dock,
     /// Top-left corners of the floating bars (screen points).
     pub toolbox_pos: [f32; 2],
+    /// The room the floating toolbox's grid of buttons was resized to,
+    /// in cells (a button and its gap each, `toolbox::floating_cell`),
+    /// so its columns hold when the buttons change size; None, two
+    /// buttons wide and as tall as its rows. See `toolbox::flow`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub toolbox_size: Option<[f32; 2]>,
     pub palette_pos: [f32; 2],
     pub standard_pos: [f32; 2],
     pub property_pos: [f32; 2],
@@ -256,6 +320,33 @@ pub struct BarLayout {
     /// the right edge by default (see [`BarLayout::migrate`]).
     #[serde(default)]
     pub version: u32,
+    /// Whether the docked palette lies beside the drawing (between it and
+    /// the docker column or toolbox on that side) rather than at the
+    /// window's edge. None: its first place for the side, beside the
+    /// drawing at the top and the bottom, at the edge at the left and the
+    /// right (as before the choice existed).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub palette_beside: Option<bool>,
+    /// The palette docked at the left or the right lies between the two
+    /// docker columns of that side (see [`PaletteSpot::Between`]).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub palette_between: bool,
+}
+
+/// Where the docked palette lies on its side, from the window's edge
+/// inwards.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum PaletteSpot {
+    /// At the window's edge (and always while floating).
+    Edge,
+    /// At the left or the right, between the side's two docker columns
+    /// (the column at the window's edge and the second one, nearer the
+    /// drawing). While the side has one column it lies after that column,
+    /// beside the drawing, and goes back between them once there are two.
+    Between,
+    /// Beside the drawing, between it and the dockers, the toolbox or the
+    /// toolbars on that side.
+    Beside,
 }
 
 /// The current layout version.
@@ -270,6 +361,7 @@ impl Default for BarLayout {
             property: Dock::Top,
             status: Dock::Bottom,
             toolbox_pos: [120.0, 160.0],
+            toolbox_size: None,
             palette_pos: [300.0, 600.0],
             standard_pos: [200.0, 140.0],
             property_pos: [200.0, 200.0],
@@ -281,6 +373,8 @@ impl Default for BarLayout {
             rows: Default::default(),
             locked: false,
             version: LAYOUT_VERSION,
+            palette_beside: None,
+            palette_between: false,
         }
     }
 }
@@ -297,6 +391,26 @@ impl BarLayout {
             self.palette = Dock::Bottom;
         }
         self.version = self.version.max(LAYOUT_VERSION);
+    }
+
+    /// Whether the docked palette lies beside the drawing (see
+    /// [`BarLayout::palette_beside`]).
+    pub fn palette_beside(&self) -> bool {
+        self.palette_beside
+            .unwrap_or(self.dock(Bar::Palette).horizontal())
+    }
+
+    /// The palette's place: its dock and, docked, where on that side
+    /// ([`PaletteSpot::Edge`] when floating).
+    pub fn palette_place(&self) -> (Dock, PaletteSpot) {
+        let dock = self.dock(Bar::Palette);
+        let spot = match dock {
+            Dock::Floating => PaletteSpot::Edge,
+            Dock::Left | Dock::Right if self.palette_between => PaletteSpot::Between,
+            _ if self.palette_beside() => PaletteSpot::Beside,
+            _ => PaletteSpot::Edge,
+        };
+        (dock, spot)
     }
 
     pub fn dock(&self, bar: Bar) -> Dock {
@@ -694,14 +808,42 @@ pub fn bar_menu(app: &mut App, resp: &egui::Response, bar: Bar) {
         .show(|ui| crate::ui::menus::body(ui, |ui| menu_body(app, ui, bar)));
 }
 
+/// The entries of a button size list in the bars' menu > Customize:
+/// the five sizes Ctrl+wheel steps through, smallest first, after
+/// "Default" (None) in the toolbox's own list (`with_default`).
+pub fn size_menu(with_default: bool) -> Vec<(&'static str, Option<crate::settings::ButtonSize>)> {
+    let default = with_default.then_some(("bars.size_default", None));
+    default
+        .into_iter()
+        .chain(
+            crate::settings::ButtonSize::ALL
+                .iter()
+                .map(|s| (s.key(), Some(*s))),
+        )
+        .collect()
+}
+
 fn menu_body(app: &mut App, ui: &mut Ui, bar: Bar) {
     use crate::ui::menus::{check, item, radio, radio_if, sep, sub};
     ui.set_min_width(200.0);
     let current = app.settings.bars.dock(bar);
     let free = !app.settings.bars.locked;
-    for d in bar.docks() {
-        if radio_if(ui, d.key(), "", current == *d, free) {
-            move_bar(app, bar, *d, None);
+    if bar == Bar::Palette {
+        // Every place: each side at the window's edge or beside the
+        // drawing, at the left and the right between the two docker
+        // columns (while the side has two), and floating.
+        let now = app.settings.bars.palette_place();
+        for (place, key) in PALETTE_PLACES {
+            let open = place.1 != PaletteSpot::Between || two_columns(app, place.0);
+            if radio_if(ui, key, "", now == place, free && open) {
+                move_palette(app, place.0, place.1, None);
+            }
+        }
+    } else {
+        for d in bar.docks() {
+            if radio_if(ui, d.key(), "", current == *d, free) {
+                move_bar(app, bar, *d, None);
+            }
         }
     }
     sep(ui);
@@ -710,8 +852,9 @@ fn menu_body(app: &mut App, ui: &mut Ui, bar: Bar) {
     sep(ui);
     sub(ui, "bars.customize", |ui| {
         sub(ui, "bars.default_button_size", |ui| {
-            for size in crate::settings::ButtonSize::ALL {
-                if radio(ui, size.key(), "", app.settings.button_size == size) {
+            for (key, size) in size_menu(false) {
+                let Some(size) = size else { continue };
+                if radio(ui, key, "", app.settings.button_size == size) {
                     app.settings.button_size = size;
                 }
             }
@@ -723,12 +866,9 @@ fn menu_body(app: &mut App, ui: &mut Ui, bar: Bar) {
             sep(ui);
             sub(ui, "bars.button_size", |ui| {
                 let own = app.settings.toolbox_button_size;
-                if radio(ui, "bars.size_default", "", own.is_none()) {
-                    app.settings.toolbox_button_size = None;
-                }
-                for size in crate::settings::ButtonSize::ALL {
-                    if radio(ui, size.key(), "", own == Some(size)) {
-                        app.settings.toolbox_button_size = Some(size);
+                for (key, size) in size_menu(true) {
+                    if radio(ui, key, "", own == size) {
+                        app.settings.toolbox_button_size = size;
                     }
                 }
             });
@@ -776,6 +916,95 @@ pub fn reset(app: &mut App) {
         b.set_visible(app, true);
     }
     crate::ui::bar_items::reset(app);
+}
+
+/// Where the window drawing keeps the room the bars and dockers leave
+/// (the drawing and its tabs) for the palette's drop bands.
+pub const DRAWING_ROOM: &str = "bars_drawing_room";
+
+/// The palette's places in its menu, with their names: each side beside
+/// the drawing and at the window's edge (the plain names keep the places
+/// they had before the choice existed), the left and the right between
+/// their two docker columns, then floating.
+pub const PALETTE_PLACES: [((Dock, PaletteSpot), &str); 11] = [
+    ((Dock::Top, PaletteSpot::Beside), "bars.top"),
+    ((Dock::Top, PaletteSpot::Edge), "bars.palette_top_edge"),
+    ((Dock::Bottom, PaletteSpot::Beside), "bars.bottom"),
+    (
+        (Dock::Bottom, PaletteSpot::Edge),
+        "bars.palette_bottom_edge",
+    ),
+    ((Dock::Left, PaletteSpot::Edge), "bars.left"),
+    (
+        (Dock::Left, PaletteSpot::Between),
+        "bars.palette_left_between",
+    ),
+    (
+        (Dock::Left, PaletteSpot::Beside),
+        "bars.palette_left_beside",
+    ),
+    ((Dock::Right, PaletteSpot::Edge), "bars.right"),
+    (
+        (Dock::Right, PaletteSpot::Between),
+        "bars.palette_right_between",
+    ),
+    (
+        (Dock::Right, PaletteSpot::Beside),
+        "bars.palette_right_beside",
+    ),
+    ((Dock::Floating, PaletteSpot::Edge), "bars.floating"),
+];
+
+/// Put the palette at `dock`, at `spot` on that side (floating at `at`
+/// when given). The place is kept in the preferences.
+pub fn move_palette(app: &mut App, dock: Dock, spot: PaletteSpot, at: Option<Pos2>) {
+    move_bar(app, Bar::Palette, dock, at);
+    if dock != Dock::Floating && app.settings.bars.dock(Bar::Palette) == dock {
+        let between = spot == PaletteSpot::Between && matches!(dock, Dock::Left | Dock::Right);
+        app.settings.bars.palette_beside = Some(spot == PaletteSpot::Beside);
+        app.settings.bars.palette_between = between;
+    }
+}
+
+/// The window's side `side` (left or right) holds two docker columns,
+/// for the palette to lie between.
+pub fn two_columns(app: &App, side: Dock) -> bool {
+    use crate::app::DockerPlace;
+    [DockerPlace::Right, DockerPlace::Left]
+        .into_iter()
+        .any(|p| {
+            let at_left = crate::ui::dockers::strip_at_left(p);
+            let here = matches!((side, at_left), (Dock::Left, true) | (Dock::Right, false));
+            here && !app.docker_column(p).0.is_empty() && !app.docker_column(p.inner()).0.is_empty()
+        })
+}
+
+/// The gaps between the two docker columns of each side that has two, as
+/// the last layout left them (see [`crate::ui::dockers::DOCKER_COLUMNS`]):
+/// the side and the rect between the columns, from the top to the bottom
+/// they share; no wider than the line where they meet while the palette
+/// is elsewhere.
+pub fn column_gaps(columns: &[(crate::app::DockerPlace, Rect)]) -> Vec<(Dock, Rect)> {
+    let mut out = Vec::new();
+    for (inner, ir) in columns.iter().filter(|(p, _)| p.is_inner()) {
+        let Some((_, er)) = columns.iter().find(|(p, _)| *p == inner.edge()) else {
+            continue;
+        };
+        let top = ir.top().max(er.top());
+        let bottom = ir.bottom().min(er.bottom());
+        let (side, gap) = if crate::ui::dockers::strip_at_left(*inner) {
+            (Dock::Left, (er.right(), ir.left()))
+        } else {
+            (Dock::Right, (ir.right(), er.left()))
+        };
+        if bottom > top && gap.1 >= gap.0 {
+            out.push((
+                side,
+                Rect::from_min_max(pos2(gap.0, top), pos2(gap.1, bottom)),
+            ));
+        }
+    }
+    out
 }
 
 /// Put `bar` at `dock` (floating at `at` when given). A toolbar coming to
@@ -843,12 +1072,139 @@ pub fn drag_overlay(app: &mut App, ctx: &egui::Context, menu_h: f32) {
         }
         return;
     }
+    if drag.bar == Bar::Palette {
+        // The palette also docks beside the drawing: between it and the
+        // docker column, the toolbox or the toolbars on that side.
+        // Between a side's two docker columns too.
+        let drawing = ctx
+            .data(|d| d.get_temp::<Rect>(egui::Id::new(DRAWING_ROOM)))
+            .unwrap_or(Rect::NOTHING);
+        let gaps = column_gaps(&crate::ui::dockers::column_rects(ctx));
+        let (dock, spot) = palette_target(screen, menu_h, drawing, &gaps, p);
+        let zone = match spot {
+            PaletteSpot::Beside => beside_zone(app, dock, drawing),
+            PaletteSpot::Between => gaps
+                .iter()
+                .find(|(d, _)| *d == dock)
+                .map(|(_, gap)| between_zone(app, *gap))
+                .unwrap_or(drawing),
+            PaletteSpot::Edge => drop_zone(app, drag, dock, screen, menu_h, p),
+        };
+        painter.rect(zone, 2.0, fill, edge, egui::StrokeKind::Inside);
+        if !down {
+            app.bar_drag = None;
+            move_palette(app, dock, spot, Some(p - drag.grab));
+        }
+        return;
+    }
     let dock = target_dock(drag.bar, screen, menu_h, p);
     let zone = drop_zone(app, drag, dock, screen, menu_h, p);
     painter.rect(zone, 2.0, fill, edge, egui::StrokeKind::Inside);
     if !down {
         app.bar_drag = None;
         move_bar(app, drag.bar, dock, Some(p - drag.grab));
+    }
+}
+
+/// Where the palette goes when dropped with the pointer at `p`: the
+/// nearest of the window's edges, the edges of `drawing` (the room the
+/// bars and dockers leave) and the gaps between two docker columns
+/// (`gaps`, see [`column_gaps`]) within [`EDGE_ZONE`], with the spot on
+/// that side; else floating. Where an edge of the drawing lies on the
+/// window's edge, the window's edge wins.
+pub fn palette_target(
+    screen: Rect,
+    menu_h: f32,
+    drawing: Rect,
+    gaps: &[(Dock, Rect)],
+    p: Pos2,
+) -> (Dock, PaletteSpot) {
+    let top = screen.top() + menu_h;
+    let along_y = p.y >= drawing.top() - EDGE_ZONE && p.y <= drawing.bottom() + EDGE_ZONE;
+    let along_x = p.x >= drawing.left() - EDGE_ZONE && p.x <= drawing.right() + EDGE_ZONE;
+    let mut spots = vec![
+        (Dock::Left, PaletteSpot::Edge, p.x - screen.left()),
+        (Dock::Right, PaletteSpot::Edge, screen.right() - p.x),
+        (Dock::Top, PaletteSpot::Edge, p.y - top),
+        (Dock::Bottom, PaletteSpot::Edge, screen.bottom() - p.y),
+    ];
+    for (side, gap) in gaps {
+        if p.y >= gap.top() && p.y <= gap.bottom() {
+            let dist = (gap.left() - p.x).max(p.x - gap.right()).max(0.0);
+            spots.push((*side, PaletteSpot::Between, dist));
+        }
+    }
+    if drawing.is_positive() {
+        let beside = [
+            (
+                Dock::Left,
+                drawing.left(),
+                screen.left(),
+                along_y,
+                (p.x - drawing.left()).abs(),
+            ),
+            (
+                Dock::Right,
+                drawing.right(),
+                screen.right(),
+                along_y,
+                (drawing.right() - p.x).abs(),
+            ),
+            (
+                Dock::Top,
+                drawing.top(),
+                top,
+                along_x,
+                (p.y - drawing.top()).abs(),
+            ),
+            (
+                Dock::Bottom,
+                drawing.bottom(),
+                screen.bottom(),
+                along_x,
+                (drawing.bottom() - p.y).abs(),
+            ),
+        ];
+        for (dock, at, window_edge, along, dist) in beside {
+            if along && (at - window_edge).abs() > 1.0 {
+                spots.push((dock, PaletteSpot::Beside, dist));
+            }
+        }
+    }
+    spots.sort_by(|a, b| a.2.total_cmp(&b.2).then(a.1.cmp(&b.1)));
+    match spots.first() {
+        Some(&(dock, spot, dist)) if dist <= EDGE_ZONE => (dock, spot),
+        _ => (Dock::Floating, PaletteSpot::Edge),
+    }
+}
+
+/// The band the palette would take in `gap`, between two docker columns:
+/// the gap itself while the palette lies there, else a band of its width
+/// across the line where the columns meet.
+fn between_zone(app: &App, gap: Rect) -> Rect {
+    let thick = crate::ui::palette::thickness(app, crate::ui::palette::Row::Main);
+    if gap.width() >= thick - 0.5 {
+        gap
+    } else {
+        Rect::from_center_size(gap.center(), vec2(thick, gap.height()))
+    }
+}
+
+/// The band the palette would take beside the drawing at `dock`.
+fn beside_zone(app: &App, dock: Dock, drawing: Rect) -> Rect {
+    let thick = crate::ui::palette::thickness(app, crate::ui::palette::Row::Main);
+    match dock {
+        Dock::Left => {
+            Rect::from_min_max(drawing.min, pos2(drawing.left() + thick, drawing.bottom()))
+        }
+        Dock::Right => {
+            Rect::from_min_max(pos2(drawing.right() - thick, drawing.top()), drawing.max)
+        }
+        Dock::Top => Rect::from_min_max(drawing.min, pos2(drawing.right(), drawing.top() + thick)),
+        Dock::Bottom => {
+            Rect::from_min_max(pos2(drawing.left(), drawing.bottom() - thick), drawing.max)
+        }
+        Dock::Floating => drawing,
     }
 }
 
@@ -929,7 +1285,22 @@ pub fn docked_rows(app: &mut App, ui: &mut Ui, dock: Dock) {
     if dock == Dock::Bottom {
         order.reverse();
     }
+    // Along the top, palette bars may lie among the rows, each over the
+    // row it was put before (`palette_bars::toolbar_band`).
+    let bands = if dock == Dock::Top {
+        crate::ui::palette_bars::toolbar_bands(app)
+    } else {
+        Vec::new()
+    };
+    let mut next_band = 0;
     for (index, bars) in order {
+        while let Some(&(row, k)) = bands.get(next_band) {
+            if row as usize > index {
+                break;
+            }
+            crate::ui::palette_bars::toolbar_band(app, ui, k, row);
+            next_band += 1;
+        }
         let height = bars.iter().map(|b| b.row_height()).fold(0.0, f32::max);
         let panel = if dock == Dock::Top {
             egui::Panel::top(egui::Id::new(("bar_row_top", index)))
@@ -978,6 +1349,7 @@ pub fn docked_rows(app: &mut App, ui: &mut Ui, dock: Dock) {
                     grip(app, &mut body_ui, *bar, true);
                     let gap = body_ui.spacing().item_spacing.x;
                     let len = toolbar_body(app, &mut body_ui, *bar);
+                    size_buttons_by_wheel(app, &child, slot, *bar);
                     // The length the toolbar takes whole: its margins, grip
                     // and buttons.
                     let natural = (2.0 + 9.0 + gap + len + 4.0).ceil();
@@ -995,6 +1367,10 @@ pub fn docked_rows(app: &mut App, ui: &mut Ui, dock: Dock) {
                     slots: spots,
                 });
             });
+    }
+    // Under every row of toolbars.
+    for &(row, k) in bands.get(next_band..).unwrap_or_default() {
+        crate::ui::palette_bars::toolbar_band(app, ui, k, row);
     }
 }
 
@@ -1037,9 +1413,9 @@ pub fn floating_bars(app: &mut App, ctx: &egui::Context) {
         Bar::Zoom,
         Bar::Transform,
         Bar::TimeTracker,
-        Bar::Toolbox,
-        Bar::Palette,
     ] {
+        // The floating palette is drawn with the palette bars
+        // (`palette_bars::floating`), which flow and resize.
         if !bar.visible(app) || app.settings.bars.dock(bar) != Dock::Floating {
             continue;
         }
@@ -1068,31 +1444,317 @@ pub fn floating_bars(app: &mut App, ctx: &egui::Context) {
                     })
                     .show(ui, |ui| {
                         ui.set_width(size.x);
-                        title_strip(app, ui, bar, size.x);
+                        // The title's row first; drawn once the body is
+                        // laid out, as wide as the window then is: a
+                        // body grown wider (another tool's property bar)
+                        // keeps the close button at its right end
+                        // (#1921).
+                        let (_, title) = ui.allocate_space(vec2(size.x, TITLE_H));
                         let body = ui.scope(|ui| floating_body(app, ui, bar, size)).response;
-                        // The toolbox's buttons and the palette's colors
-                        // open menus of their own.
-                        if !matches!(bar, Bar::Toolbox | Bar::Palette) {
+                        let width = ui.min_rect().width().max(size.x);
+                        title_strip_at(
+                            app,
+                            ui,
+                            bar,
+                            Rect::from_min_size(title.min, vec2(width, TITLE_H)),
+                        );
+                        // The palette's colors open menus of their own.
+                        if bar != Bar::Palette {
                             menu_anywhere(app, ui, bar, body.rect, false);
+                            // Ctrl+wheel over a floating toolbar sizes
+                            // the bars' buttons.
+                            size_buttons_by_wheel(app, ui, body.rect, bar);
                         }
                     });
             });
+    }
+    floating_toolbox(app, ctx);
+}
+
+/// Ctrl+wheel over a toolbar (in `rect`) steps the default button size,
+/// as the bars' menu > Customize > Default Button Size does: up larger,
+/// down smaller. The wheel is taken, so the bar does not slide with it
+/// and the drawing does not zoom.
+pub fn size_buttons_by_wheel(app: &mut App, ui: &Ui, rect: Rect, bar: Bar) {
+    if let Some(steps) = ctrl_wheel_steps(ui, rect, egui::Id::new(("bar_size_wheel", bar as u8))) {
+        app.settings.button_size = app.settings.button_size.stepped(steps);
+    }
+}
+
+/// Ctrl+wheel over `rect` (the pointer there, on this layer): the
+/// notches turned, up positive, parts of a notch adding up as over a
+/// field (`field::wheel_steps`); None when the wheel did not turn with
+/// Ctrl (or Command) there. A turn takes the wheel, so nothing scrolls
+/// with it; the drawing zooms only with the wheel over the drawing
+/// itself.
+pub fn ctrl_wheel_steps(ui: &Ui, rect: Rect, id: egui::Id) -> Option<i32> {
+    if !ui.rect_contains_pointer(rect) {
+        return None;
+    }
+    let with_ctrl = ui.input(|i| {
+        i.raw.events.iter().any(|e| {
+            matches!(
+                e,
+                egui::Event::MouseWheel { modifiers, .. } if modifiers.ctrl || modifiers.command
+            )
+        })
+    });
+    if !with_ctrl {
+        return None;
+    }
+    crate::ui::field::wheel_steps(ui, id)
+}
+
+/// An edge or a corner of the floating toolbox being dragged: the
+/// window's right and bottom edges to keep in place while its left or
+/// top edge moves.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+struct ToolboxResize {
+    keep_right: Option<f32>,
+    keep_bottom: Option<f32>,
+}
+
+fn toolbox_resize_id() -> egui::Id {
+    egui::Id::new("floating_toolbox_resize")
+}
+
+/// Whether an edge or a corner of the floating toolbox is being dragged
+/// (the grid then follows the pointer rather than settling on its rows).
+pub fn toolbox_resizing(ctx: &egui::Context) -> bool {
+    ctx.data(|d| d.get_temp::<ToolboxResize>(toolbox_resize_id()))
+        .is_some()
+}
+
+/// The floating toolbox: a window hugging its grid of buttons, with the
+/// title strip, that can be resized at its edges and corners. Dragging
+/// an edge asks for that room, the grid flows to fit it (two columns in
+/// a tall narrow window, more columns and fewer rows in a wider one, a
+/// row or two in a wide short one; see `toolbox::flow`), and the window
+/// follows the grid; the size is kept in the preferences
+/// (`bars.toolbox_size`). Dragging the left or the top edge keeps the
+/// opposite edge in place.
+fn floating_toolbox(app: &mut App, ctx: &egui::Context) {
+    let bar = Bar::Toolbox;
+    if !bar.visible(app) || app.settings.bars.dock(bar) != Dock::Floating {
+        return;
+    }
+    let screen = ctx.content_rect();
+    let size = toolbox_window_size(app);
+    let mut pos = app.settings.bars.pos(bar);
+    let resize: Option<ToolboxResize> = ctx.data(|d| d.get_temp(toolbox_resize_id()));
+    if let Some(r) = resize {
+        if let Some(right) = r.keep_right {
+            pos.x = right - size.x;
+        }
+        if let Some(bottom) = r.keep_bottom {
+            pos.y = bottom - size.y;
+        }
+    }
+    // Keep the title on the screen.
+    pos.x = pos
+        .x
+        .clamp(screen.left(), (screen.right() - 60.0).max(screen.left()));
+    pos.y = pos
+        .y
+        .clamp(screen.top(), (screen.bottom() - TITLE_H).max(screen.top()));
+    if resize.is_some() && app.settings.bars.pos(bar) != pos {
+        app.settings.bars.set_pos(bar, pos);
+    }
+    let area = egui::Area::new(egui::Id::new(("floating_bar", bar as u8)))
+        .fixed_pos(pos)
+        .order(egui::Order::Middle)
+        .show(ctx, |ui| {
+            let frame = egui::Frame::new()
+                .fill(Tokens::panel())
+                .stroke(Stroke::new(
+                    WINDOW_STROKE,
+                    crate::theme::Tokens::window_border(),
+                ))
+                .shadow(egui::epaint::Shadow {
+                    offset: [0, 3],
+                    blur: 10,
+                    spread: 0,
+                    color: Color32::from_black_alpha(50),
+                })
+                .show(ui, |ui| {
+                    // The title, then the grid with its margins: the
+                    // window is exactly as large as `toolbox_window_size`
+                    // says.
+                    ui.spacing_mut().item_spacing = Vec2::ZERO;
+                    ui.set_width(size.x - 2.0 * WINDOW_STROKE);
+                    title_strip(app, ui, bar, size.x - 2.0 * WINDOW_STROKE);
+                    floating_body(app, ui, bar, size);
+                });
+            let window = frame.response.rect;
+            ui.ctx()
+                .data_mut(|d| d.insert_temp(toolbox_window_id(), window));
+            crate::ui::toolbox::size_by_wheel(app, ui, window);
+            toolbox_resize_handles(app, ui, window);
+        });
+    let _ = area;
+}
+
+/// The edges and corners of the floating toolbox's window: dragging one
+/// asks the grid for the room between the pointer and the opposite edge.
+fn toolbox_resize_handles(app: &mut App, ui: &mut Ui, window: Rect) {
+    const GRAB: f32 = 5.0;
+    const OUT: f32 = 3.0;
+    const CORNER: f32 = 12.0;
+    let grid: Rect = ui
+        .ctx()
+        .data(|d| d.get_temp(crate::ui::toolbox::floating_grid_id()))
+        .unwrap_or(window);
+    let (l, t, r, b) = (window.left(), window.top(), window.right(), window.bottom());
+    // (left, top, right, bottom) edges each handle moves, and its zone.
+    let handles: [(bool, bool, bool, bool, Rect, egui::CursorIcon); 8] = [
+        (
+            true,
+            true,
+            false,
+            false,
+            Rect::from_min_max(pos2(l - OUT, t - OUT), pos2(l + CORNER, t + CORNER)),
+            egui::CursorIcon::ResizeNwSe,
+        ),
+        (
+            false,
+            true,
+            true,
+            false,
+            Rect::from_min_max(pos2(r - CORNER, t - OUT), pos2(r + OUT, t + CORNER)),
+            egui::CursorIcon::ResizeNeSw,
+        ),
+        (
+            true,
+            false,
+            false,
+            true,
+            Rect::from_min_max(pos2(l - OUT, b - CORNER), pos2(l + CORNER, b + OUT)),
+            egui::CursorIcon::ResizeNeSw,
+        ),
+        (
+            false,
+            false,
+            true,
+            true,
+            Rect::from_min_max(pos2(r - CORNER, b - CORNER), pos2(r + OUT, b + OUT)),
+            egui::CursorIcon::ResizeNwSe,
+        ),
+        (
+            true,
+            false,
+            false,
+            false,
+            Rect::from_min_max(pos2(l - OUT, t + CORNER), pos2(l + GRAB, b - CORNER)),
+            egui::CursorIcon::ResizeHorizontal,
+        ),
+        (
+            false,
+            false,
+            true,
+            false,
+            Rect::from_min_max(pos2(r - GRAB, t + CORNER), pos2(r + OUT, b - CORNER)),
+            egui::CursorIcon::ResizeHorizontal,
+        ),
+        (
+            false,
+            true,
+            false,
+            false,
+            Rect::from_min_max(pos2(l + CORNER, t - OUT), pos2(r - CORNER, t + GRAB)),
+            egui::CursorIcon::ResizeVertical,
+        ),
+        (
+            false,
+            false,
+            false,
+            true,
+            Rect::from_min_max(pos2(l + CORNER, b - GRAB), pos2(r - CORNER, b + OUT)),
+            egui::CursorIcon::ResizeVertical,
+        ),
+    ];
+    let mut resizing = None;
+    for (k, (left, top, right, bottom, zone, cursor)) in handles.into_iter().enumerate() {
+        let resp = ui.interact(zone, egui::Id::new(("toolbox_resize", k)), Sense::drag());
+        if resp.hovered() || resp.dragged() {
+            ui.ctx().set_cursor_icon(cursor);
+        }
+        let Some(p) = resp.interact_pointer_pos().filter(|_| resp.dragged()) else {
+            continue;
+        };
+        let mut asked = crate::ui::toolbox::floating_asked(app);
+        if !asked.y.is_finite() {
+            asked.y = grid.height();
+        }
+        let mut keep = ToolboxResize::default();
+        if right {
+            asked.x = p.x - grid.left();
+        }
+        if bottom {
+            asked.y = p.y - grid.top();
+        }
+        if left {
+            asked.x = grid.right() - p.x;
+            keep.keep_right = Some(window.right());
+        }
+        if top {
+            asked.y = grid.bottom() - p.y;
+            keep.keep_bottom = Some(window.bottom());
+        }
+        // A side edge alone asks for a width: the rows then take the
+        // height they need (the grid settles on it when the drag ends).
+        if (left || right) && !(top || bottom) {
+            asked.y = crate::ui::toolbox::FREE_HEIGHT;
+        }
+        app.settings.bars.toolbox_size = Some(crate::ui::toolbox::floating_cells(
+            app,
+            Vec2::new(asked.x.max(1.0), asked.y.max(1.0)),
+        ));
+        resizing = Some(keep);
+        break;
+    }
+    let id = toolbox_resize_id();
+    match resizing {
+        Some(keep) => {
+            ui.ctx().data_mut(|d| d.insert_temp(id, keep));
+            ui.ctx().request_repaint();
+        }
+        None => {
+            if toolbox_resizing(ui.ctx()) {
+                ui.ctx().data_mut(|d| d.remove::<ToolboxResize>(id));
+                ui.ctx().request_repaint();
+            }
+        }
     }
 }
 
 /// A floating bar's title: its name and a close button. Dragging it moves
 /// the bar (docking it near an edge); a double click docks it back.
 fn title_strip(app: &mut App, ui: &mut Ui, bar: Bar, width: f32) {
-    let (rect, resp) = ui.allocate_exact_size(vec2(width, TITLE_H), Sense::click_and_drag());
+    let (rect, _) = ui.allocate_exact_size(vec2(width, TITLE_H), Sense::hover());
+    title_strip_at(app, ui, bar, rect);
+}
+
+/// [`title_strip`] in `rect`, room already taken for it.
+fn title_strip_at(app: &mut App, ui: &mut Ui, bar: Bar, rect: Rect) {
+    let width = rect.width();
+    let resp = ui.interact(
+        rect,
+        egui::Id::new(("bar_title", bar as u8)),
+        Sense::click_and_drag(),
+    );
+    let name = tr(bar.key());
+    let galley = title_galley(ui, &name, title_room(width));
     let p = ui.painter();
     p.rect_filled(rect, 0.0, crate::theme::Tokens::tab_strip());
-    p.text(
-        pos2(rect.left() + 6.0, rect.center().y),
-        egui::Align2::LEFT_CENTER,
-        tr(bar.key()),
-        egui::FontId::proportional(11.0),
-        Tokens::text(),
+    let text_pos = pos2(
+        rect.left() + TITLE_PAD,
+        rect.center().y - galley.size().y / 2.0,
     );
+    let cut = galley.elided;
+    p.galley(text_pos, galley, Tokens::text());
+    // A name cut short (a long translation in a narrow window) shows
+    // whole as a tooltip.
+    let resp = if cut { resp.rich_tip(&name) } else { resp };
     let close = Rect::from_center_size(
         pos2(rect.right() - TITLE_H / 2.0, rect.center().y),
         vec2(TITLE_H, TITLE_H),
@@ -1149,10 +1811,6 @@ fn floating_body(app: &mut App, ui: &mut Ui, bar: Bar, size: Vec2) {
         Bar::Palette => {
             ui.set_width(size.x);
             crate::ui::palette::palette_row(app, ui);
-            // The further palettes shown, under it (#1164).
-            for which in crate::ui::palette::extra_rows(app) {
-                crate::ui::palette::extra_palette_row(app, ui, which);
-            }
         }
         Bar::Standard => {
             egui::Frame::new()
@@ -1187,8 +1845,689 @@ fn floating_body(app: &mut App, ui: &mut Ui, bar: Bar, size: Vec2) {
 mod tests {
     use super::*;
 
+    /// Customize > Default Button Size and Toolbox Toolbar > Button Size
+    /// list the five sizes Ctrl+wheel steps through, in the same order,
+    /// each with its own name.
+    #[test]
+    fn the_size_menus_list_the_five_wheel_sizes() {
+        use crate::settings::ButtonSize;
+        let bars = size_menu(false);
+        let toolbox = size_menu(true);
+        assert_eq!(bars.len(), 5);
+        assert_eq!(toolbox.len(), 6);
+        assert_eq!(toolbox[0], ("bars.size_default", None));
+        assert_eq!(&toolbox[1..], &bars[..]);
+        let mut wheel = ButtonSize::ExtraSmall;
+        for (key, size) in &bars {
+            assert_eq!(*size, Some(wheel));
+            assert_ne!(crate::i18n::tr(key), *key, "{key} has a name");
+            wheel = wheel.stepped(1);
+        }
+        let names: std::collections::HashSet<String> =
+            bars.iter().map(|(k, _)| crate::i18n::tr(k)).collect();
+        assert_eq!(names.len(), 5);
+    }
+
+    /// One frame of the whole window with `events`, the keys held first.
+    fn frame(ctx: &egui::Context, app: &mut App, events: Vec<egui::Event>, mods: egui::Modifiers) {
+        let mut all = vec![egui::Event::ModifiersChanged(mods)];
+        all.extend(events);
+        let input = egui::RawInput {
+            screen_rect: Some(screen()),
+            events: all,
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input, |ui| crate::ui::root(app, ui));
+        out.textures_delta.clear();
+    }
+
+    fn wheel(at: Pos2, dy: f32, mods: egui::Modifiers) -> Vec<egui::Event> {
+        vec![
+            egui::Event::PointerMoved(at),
+            egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Line,
+                delta: vec2(0.0, dy),
+                phase: egui::TouchPhase::Move,
+                modifiers: mods,
+            },
+        ]
+    }
+
+    /// A drag of the left button from `from` to `to`, in steps.
+    fn drag(ctx: &egui::Context, app: &mut App, from: Pos2, to: Pos2) {
+        let button = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame(
+            ctx,
+            app,
+            vec![egui::Event::PointerMoved(from)],
+            egui::Modifiers::NONE,
+        );
+        frame(ctx, app, vec![button(from, true)], egui::Modifiers::NONE);
+        for k in 1..=8 {
+            let p = from + (to - from) * (k as f32 / 8.0);
+            frame(
+                ctx,
+                app,
+                vec![egui::Event::PointerMoved(p)],
+                egui::Modifiers::NONE,
+            );
+        }
+        frame(ctx, app, vec![button(to, false)], egui::Modifiers::NONE);
+        for _ in 0..3 {
+            frame(ctx, app, Vec::new(), egui::Modifiers::NONE);
+        }
+    }
+
+    /// Where the floating toolbox's window was drawn in the last frame.
+    fn drawn_window(ctx: &egui::Context) -> Rect {
+        ctx.data(|d| d.get_temp(toolbox_window_id()))
+            .expect("the window was drawn")
+    }
+
+    /// Where the floating toolbox's grid was drawn in the last frame.
+    fn drawn_grid(ctx: &egui::Context) -> Rect {
+        ctx.data(|d| d.get_temp(crate::ui::toolbox::floating_grid_id()))
+            .expect("the grid was drawn")
+    }
+
+    /// A floating bar's close button stays at the right end of its title
+    /// when the bar's body is wider than the window's own width (the
+    /// Rectangle tool's property bar), and the title runs the whole
+    /// width (#1921).
+    #[test]
+    fn a_floating_bars_close_button_follows_its_width() {
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        app.show_welcome = false;
+        move_bar(
+            &mut app,
+            Bar::Property,
+            Dock::Floating,
+            Some(pos2(40.0, 300.0)),
+        );
+        app.set_tool(crate::tools::Tool::Rectangle);
+        for _ in 0..4 {
+            frame(&ctx, &mut app, Vec::new(), egui::Modifiers::NONE);
+        }
+        let window = ctx
+            .memory(|m| m.area_rect(egui::Id::new(("floating_bar", Bar::Property as u8))))
+            .expect("the floating property bar");
+        let nominal = Bar::Property.floating_size(&app).x;
+        assert!(
+            window.width() > nominal + 10.0,
+            "the body is wider than the nominal width: {window:?}"
+        );
+        let close = ctx
+            .read_response(egui::Id::new(("bar_close", Bar::Property as u8)))
+            .expect("the close button")
+            .rect;
+        assert!(
+            (window.right() - close.right()).abs() < 3.0,
+            "{close:?} at the right end of {window:?}"
+        );
+        let title = ctx
+            .read_response(egui::Id::new(("bar_title", Bar::Property as u8)))
+            .expect("the title")
+            .rect;
+        assert!(close.right() <= title.right() + 0.5);
+        assert!(title.width() > nominal + 8.0, "{title:?}");
+    }
+
+    /// A floating bar's name is cut with an ellipsis where the title is
+    /// too narrow for it, and shows whole where there is room; the
+    /// least width leaves room for the close button and a few letters.
+    #[test]
+    fn floating_titles_fit_their_windows() {
+        assert!(title_room(FLOATING_MIN_W) >= 24.0);
+        assert_eq!(title_room(10.0), 0.0);
+        let ctx = crate::theme::ui_context();
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            // The longest names of the toolbox among the languages.
+            for long in [
+                "Hilfsmittelpalette",
+                "Набор инструментов",
+                "Caixa de ferramentas",
+            ] {
+                let cut = title_galley(ui, long, title_room(FLOATING_MIN_W));
+                assert!(cut.elided, "{long}");
+                assert!(cut.size().x <= title_room(FLOATING_MIN_W) + 0.5, "{long}");
+                assert!(
+                    cut.rows.iter().any(|r| r.text().ends_with('\u{2026}')),
+                    "{long}: {:?}",
+                    cut.rows.iter().map(|r| r.text()).collect::<Vec<_>>()
+                );
+                let whole = title_galley(ui, long, title_room(300.0));
+                assert!(!whole.elided, "{long}");
+                assert_eq!(whole.text(), long);
+            }
+            // The English name fits a window two buttons wide at the
+            // least width.
+            let english = title_galley(ui, "Toolbox", title_room(FLOATING_MIN_W));
+            assert!(!english.elided);
+        });
+        out.textures_delta.clear();
+    }
+
+    /// The floating toolbox in the real window. Dragging an edge reflows
+    /// its grid: the right edge dragged outwards gives more buttons to a
+    /// row and fewer rows, the window hugging them; the left edge dragged
+    /// inwards gives fewer and keeps the right edge where it was; the
+    /// bottom edge dragged upwards widens the rows until they fit. The
+    /// size settles on the grid's own and is kept in the preferences, in
+    /// cells. Ctrl+wheel over the window steps its buttons' size (up
+    /// larger, down smaller) and leaves the drawing's zoom alone, as does
+    /// the plain wheel over it, while over the drawing beside it the
+    /// wheel zooms as before. (The button sizes are shared by every
+    /// window drawn in the process, so no frame here runs at another
+    /// size than the default: the size stepped is read and put back.)
+    #[test]
+    fn the_floating_toolbox_resizes_by_its_edges_and_by_ctrl_wheel() {
+        let _sizes = crate::theme::button_sizes_lock();
+        use crate::settings::ButtonSize;
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        app.show_welcome = false;
+        assert!(app.settings.bars.set_dock(Bar::Toolbox, Dock::Floating));
+        app.settings.bars.set_pos(Bar::Toolbox, pos2(700.0, 300.0));
+        for _ in 0..4 {
+            frame(&ctx, &mut app, Vec::new(), egui::Modifiers::NONE);
+        }
+        let window = drawn_window(&ctx);
+        assert_eq!(window.min, pos2(700.0, 300.0));
+        assert!(window.contains_rect(drawn_grid(&ctx)));
+        assert!(window.width() >= FLOATING_MIN_W);
+
+        // Two buttons to a row at first.
+        let before = crate::ui::toolbox::floating_flow(&app);
+        assert!(before.rows.iter().all(|n| *n <= 2), "{:?}", before.rows);
+        // The right edge, 300 px to the right.
+        let edge = pos2(window.right() - 2.0, window.center().y);
+        drag(&ctx, &mut app, edge, edge + vec2(300.0, 0.0));
+        let wide = crate::ui::toolbox::floating_flow(&app);
+        assert!(wide.rows[0] >= 6, "{:?}", wide.rows);
+        assert!(wide.rows.len() < before.rows.len());
+        assert_eq!(
+            app.settings.bars.toolbox_size,
+            Some(crate::ui::toolbox::floating_cells(&app, wide.size)),
+            "settled on the grid"
+        );
+        assert!(!toolbox_resizing(&ctx));
+        let window = drawn_window(&ctx);
+        assert_eq!(window.min, pos2(700.0, 300.0), "the corner stayed");
+        assert!(window.width() > 250.0, "{window:?}");
+        // The left edge dragged inwards: fewer to a row, the right edge
+        // where it was.
+        let right = window.right();
+        let edge = pos2(window.left() + 2.0, window.center().y);
+        drag(&ctx, &mut app, edge, edge + vec2(150.0, 0.0));
+        let narrower = crate::ui::toolbox::floating_flow(&app);
+        assert!(
+            narrower.rows[0] < wide.rows[0] && narrower.rows.len() > wide.rows.len(),
+            "{:?} {:?}",
+            narrower.rows,
+            wide.rows
+        );
+        let window = drawn_window(&ctx);
+        assert!(
+            (window.right() - right).abs() <= 1.0,
+            "{} vs {right}",
+            window.right()
+        );
+        assert!(window.left() > 800.0, "{window:?}");
+        // The bottom edge dragged upwards: the rows widen to fit.
+        let edge = pos2(window.center().x, window.bottom() - 2.0);
+        drag(
+            &ctx,
+            &mut app,
+            edge,
+            edge - vec2(0.0, window.height() * 0.6),
+        );
+        let flat = crate::ui::toolbox::floating_flow(&app);
+        assert!(flat.rows.len() < narrower.rows.len(), "{:?}", flat.rows);
+        assert!(flat.size.y < narrower.size.y);
+        assert!(drawn_window(&ctx).height() < window.height());
+
+        // Ctrl+wheel over the window: the toolbox's own button size
+        // steps up and down, and the drawing keeps its zoom.
+        let zoom = app.view.zoom;
+        assert_eq!(app.settings.toolbox_button_size, None);
+        assert_eq!(app.settings.button_size, ButtonSize::Small);
+        let over = drawn_grid(&ctx).center();
+        frame(
+            &ctx,
+            &mut app,
+            vec![egui::Event::PointerMoved(over)],
+            egui::Modifiers::NONE,
+        );
+        frame(
+            &ctx,
+            &mut app,
+            wheel(over, 1.0, egui::Modifiers::CTRL),
+            egui::Modifiers::CTRL,
+        );
+        assert_eq!(app.settings.toolbox_button_size, Some(ButtonSize::Medium));
+        app.settings.toolbox_button_size = None;
+        frame(&ctx, &mut app, Vec::new(), egui::Modifiers::NONE);
+        frame(
+            &ctx,
+            &mut app,
+            wheel(over, -1.0, egui::Modifiers::CTRL),
+            egui::Modifiers::CTRL,
+        );
+        assert_eq!(
+            app.settings.toolbox_button_size,
+            Some(ButtonSize::ExtraSmall)
+        );
+        app.settings.toolbox_button_size = None;
+        // The default button size (the other bars) stays.
+        assert_eq!(app.settings.button_size, ButtonSize::Small);
+        for _ in 0..3 {
+            frame(&ctx, &mut app, Vec::new(), egui::Modifiers::NONE);
+        }
+        assert_eq!(app.view.zoom, zoom);
+        assert_eq!(crate::ui::toolbox::floating_flow(&app).rows, flat.rows);
+        // The plain wheel over the window: no zoom, no size.
+        frame(
+            &ctx,
+            &mut app,
+            wheel(over, 1.0, egui::Modifiers::NONE),
+            egui::Modifiers::NONE,
+        );
+        for _ in 0..3 {
+            frame(&ctx, &mut app, Vec::new(), egui::Modifiers::NONE);
+        }
+        assert_eq!(app.view.zoom, zoom);
+        assert_eq!(app.settings.toolbox_button_size, None);
+        // Over the drawing, away from the window, the wheel zooms.
+        let canvas = app.canvas_rect;
+        let away = pos2(canvas.left() + 40.0, canvas.top() + 40.0);
+        assert!(!drawn_window(&ctx).contains(away));
+        frame(
+            &ctx,
+            &mut app,
+            vec![egui::Event::PointerMoved(away)],
+            egui::Modifiers::NONE,
+        );
+        frame(
+            &ctx,
+            &mut app,
+            wheel(away, 1.0, egui::Modifiers::NONE),
+            egui::Modifiers::NONE,
+        );
+        for _ in 0..3 {
+            frame(&ctx, &mut app, Vec::new(), egui::Modifiers::NONE);
+        }
+        assert_ne!(app.view.zoom, zoom);
+        // Back at its first place, the size is forgotten.
+        reset(&mut app);
+        assert_eq!(app.settings.bars.toolbox_size, None);
+    }
+
     fn screen() -> Rect {
         Rect::from_min_size(Pos2::ZERO, vec2(1600.0, 1000.0))
+    }
+
+    #[test]
+    fn the_palette_docks_beside_the_drawing_or_at_the_window_edge() {
+        let s = screen();
+        let drawing = Rect::from_min_max(pos2(60.0, 120.0), pos2(1200.0, 900.0));
+        let at = |x: f32, y: f32| palette_target(s, 24.0, drawing, &[], pos2(x, y));
+        use PaletteSpot::{Beside, Edge};
+        assert_eq!(at(1190.0, 500.0), (Dock::Right, Beside));
+        assert_eq!(at(1230.0, 500.0), (Dock::Right, Beside));
+        assert_eq!(at(1590.0, 500.0), (Dock::Right, Edge));
+        assert_eq!(at(75.0, 500.0), (Dock::Left, Beside));
+        assert_eq!(at(10.0, 500.0), (Dock::Left, Edge));
+        assert_eq!(at(600.0, 890.0), (Dock::Bottom, Beside));
+        assert_eq!(at(600.0, 995.0), (Dock::Bottom, Edge));
+        assert_eq!(at(600.0, 125.0), (Dock::Top, Beside));
+        assert_eq!(at(600.0, 30.0), (Dock::Top, Edge));
+        assert_eq!(at(600.0, 500.0), (Dock::Floating, Edge));
+        // An edge of the drawing on the window's edge is the window's.
+        let wide = Rect::from_min_max(pos2(0.0, 120.0), pos2(1600.0, 900.0));
+        assert_eq!(
+            palette_target(s, 24.0, wide, &[], pos2(1590.0, 500.0)),
+            (Dock::Right, Edge)
+        );
+        // The place is kept in the preferences; older preferences have
+        // none and keep the places they had.
+        let mut l = BarLayout::default();
+        assert_eq!(l.palette_place(), (Dock::Bottom, Beside));
+        l.set_dock(Bar::Palette, Dock::Right);
+        assert_eq!(l.palette_place(), (Dock::Right, Edge));
+        l.palette_beside = Some(true);
+        let back: BarLayout =
+            serde_json::from_str(&serde_json::to_string(&l).expect("json")).expect("layout");
+        assert_eq!(back.palette_place(), (Dock::Right, Beside));
+        let old: BarLayout = serde_json::from_str(r#"{"palette":"bottom"}"#).expect("old");
+        assert_eq!(old.palette_place(), (Dock::Bottom, Beside));
+    }
+
+    /// Between two docker columns of a side: the gap where they meet is a
+    /// drop target as near as the drawing's edge; the place is kept in
+    /// the preferences and comes back; at the top or the bottom, or with
+    /// preferences from before, it is no place.
+    #[test]
+    fn the_palette_docks_between_two_docker_columns() {
+        use crate::app::DockerPlace;
+        use PaletteSpot::{Beside, Between, Edge};
+        let s = screen();
+        let drawing = Rect::from_min_max(pos2(60.0, 120.0), pos2(800.0, 900.0));
+        // drawing | second column 800..1167 | first column 1200..1600.
+        let columns = [
+            (
+                DockerPlace::Right,
+                Rect::from_min_max(pos2(1200.0, 100.0), pos2(1600.0, 960.0)),
+            ),
+            (
+                DockerPlace::RightInner,
+                Rect::from_min_max(pos2(800.0, 100.0), pos2(1167.0, 960.0)),
+            ),
+        ];
+        let gaps = column_gaps(&columns);
+        assert_eq!(
+            gaps,
+            vec![(
+                Dock::Right,
+                Rect::from_min_max(pos2(1167.0, 100.0), pos2(1200.0, 960.0))
+            )]
+        );
+        let at = |x: f32, y: f32| palette_target(s, 24.0, drawing, &gaps, pos2(x, y));
+        assert_eq!(at(1180.0, 500.0), (Dock::Right, Between));
+        assert_eq!(at(1140.0, 500.0), (Dock::Right, Between));
+        assert_eq!(at(1230.0, 500.0), (Dock::Right, Between));
+        assert_eq!(at(805.0, 500.0), (Dock::Right, Beside));
+        assert_eq!(at(1595.0, 500.0), (Dock::Right, Edge));
+        assert_eq!(at(1000.0, 500.0), (Dock::Floating, Edge));
+        // No gap while a side has one column.
+        assert!(column_gaps(&columns[..1]).is_empty());
+        assert_eq!(
+            palette_target(s, 24.0, drawing, &[], pos2(1180.0, 500.0)),
+            (Dock::Floating, Edge)
+        );
+        // The band: across the line while the palette is elsewhere, the
+        // gap itself while it lies there.
+        let app = App::headless();
+        let thick = crate::ui::palette::thickness(&app, crate::ui::palette::Row::Main);
+        let line = Rect::from_min_max(pos2(1200.0, 100.0), pos2(1200.0, 960.0));
+        let band = between_zone(&app, line);
+        assert!((band.width() - thick).abs() < 0.01 && band.center().x == 1200.0);
+        assert_eq!(between_zone(&app, gaps[0].1), gaps[0].1);
+        // Kept in the preferences, and back at the next start.
+        let mut l = BarLayout::default();
+        l.set_dock(Bar::Palette, Dock::Right);
+        l.palette_between = true;
+        assert_eq!(l.palette_place(), (Dock::Right, Between));
+        let json = serde_json::to_string(&l).expect("json");
+        assert!(json.contains("\"palette_between\":true"), "{json}");
+        let back: BarLayout = serde_json::from_str(&json).expect("layout");
+        assert_eq!(back.palette_place(), (Dock::Right, Between));
+        // Written only when on; preferences from before have it off.
+        let off = serde_json::to_string(&BarLayout::default()).expect("json");
+        assert!(!off.contains("palette_between"), "{off}");
+        let old: BarLayout =
+            serde_json::from_str(r#"{"palette":"right","palette_beside":true}"#).expect("old");
+        assert_eq!(old.palette_place(), (Dock::Right, Beside));
+        // Along the top it means nothing.
+        l.set_dock(Bar::Palette, Dock::Top);
+        assert_eq!(l.palette_place().1, Beside);
+        // Through the menu's place.
+        let mut app = App::headless();
+        move_palette(&mut app, Dock::Left, Between, None);
+        assert_eq!(app.settings.bars.palette_place(), (Dock::Left, Between));
+        move_palette(&mut app, Dock::Left, Beside, None);
+        assert_eq!(app.settings.bars.palette_place(), (Dock::Left, Beside));
+        assert!(!app.settings.bars.palette_between);
+        // Every place of the menu is a different one, each named.
+        for (i, (place, key)) in PALETTE_PLACES.iter().enumerate() {
+            assert!(PALETTE_PLACES[i + 1..].iter().all(|(p, _)| p != place));
+            assert_ne!(crate::i18n::tr(key), *key);
+        }
+    }
+
+    /// The palette dragged near the drawing's right edge shows a band there
+    /// and, dropped, lies between the drawing and the docker column; at the
+    /// window's right edge it lies outside the dockers, as before.
+    #[test]
+    fn the_palette_dropped_beside_the_drawing_lies_between_it_and_the_dockers() {
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        app.show_welcome = false;
+        app.show_dockers = true;
+        let run = |app: &mut App, events: Vec<egui::Event>| -> Vec<egui::Shape> {
+            let input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1600.0, 1000.0))),
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| crate::ui::root(app, ui));
+            out.textures_delta.clear();
+            out.shapes.into_iter().map(|c| c.shape).collect()
+        };
+        for _ in 0..3 {
+            run(&mut app, Vec::new());
+        }
+        let canvas = app.canvas_rect;
+        assert!(canvas.is_positive());
+        let palette_x = || {
+            ctx.data(|d| d.get_temp::<Rect>(egui::Id::new(("palette_expand_rect", 0u8))))
+                .expect("the palette")
+                .center()
+                .x
+        };
+        app.bar_drag = Some(BarDrag {
+            bar: Bar::Palette,
+            grab: vec2(5.0, 5.0),
+            last: None,
+        });
+        let at = pos2(canvas.right() - 10.0, canvas.center().y);
+        let press = egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let shapes = run(&mut app, vec![egui::Event::PointerMoved(at), press]);
+        let blue = Color32::from_rgb(0x1E, 0x78, 0xD7);
+        let band = shapes.iter().find_map(|s| match s {
+            egui::Shape::Rect(r) if r.stroke.color == blue => Some(r.rect),
+            _ => None,
+        });
+        let band = band.expect("the drop band");
+        assert!(
+            band.right() < 1500.0 && (band.right() - at.x).abs() < 40.0,
+            "the band lies beside the drawing: {band:?} {at:?}"
+        );
+        run(
+            &mut app,
+            vec![egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        assert!(app.bar_drag.is_none());
+        assert_eq!(
+            app.settings.bars.palette_place(),
+            (Dock::Right, PaletteSpot::Beside)
+        );
+        for _ in 0..3 {
+            run(&mut app, Vec::new());
+        }
+        let beside = palette_x();
+        assert!(
+            beside > app.canvas_rect.right() && beside < 1600.0 - 300.0,
+            "between the drawing and the dockers: {beside} {:?}",
+            app.canvas_rect
+        );
+        // From the menu, at the window's right edge: outside the dockers.
+        move_palette(&mut app, Dock::Right, PaletteSpot::Edge, None);
+        for _ in 0..3 {
+            run(&mut app, Vec::new());
+        }
+        assert!(palette_x() > 1550.0, "at the edge: {}", palette_x());
+        assert_eq!(
+            app.settings.bars.palette_place(),
+            (Dock::Right, PaletteSpot::Edge)
+        );
+    }
+
+    /// The screenshot's layout: drawing | Properties | palette | the
+    /// other panels. A panel dragged just inside its column makes a
+    /// second column there; the palette dragged to where the two meet
+    /// shows its band there and, dropped, lies between them as a column,
+    /// the panels keeping their tab strips; the next start puts it all
+    /// back.
+    #[test]
+    fn the_palette_dropped_between_two_docker_columns_lies_between_them() {
+        use crate::app::{DockerDrag, DockerPlace, DockerTab};
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        app.show_welcome = false;
+        app.show_dockers = true;
+        let run = |ctx: &egui::Context, app: &mut App, events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1600.0, 1000.0))),
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| crate::ui::root(app, ui));
+            out.textures_delta.clear();
+            out.shapes.into_iter().map(|c| c.shape).collect::<Vec<_>>()
+        };
+        let press = |at: Pos2, pressed: bool| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let blue = Color32::from_rgb(0x1E, 0x78, 0xD7);
+        let band = |shapes: &[egui::Shape]| {
+            shapes.iter().find_map(|s| match s {
+                egui::Shape::Rect(r) if r.stroke.color == blue => Some(r.rect),
+                _ => None,
+            })
+        };
+        let column = |ctx: &egui::Context, place: DockerPlace| {
+            crate::ui::dockers::column_rects(ctx)
+                .into_iter()
+                .find(|(p, _)| *p == place)
+                .map(|(_, r)| r)
+        };
+        for _ in 0..3 {
+            run(&ctx, &mut app, Vec::new());
+        }
+        let edge = column(&ctx, DockerPlace::Right).expect("the default column");
+        assert!(column(&ctx, DockerPlace::RightInner).is_none());
+        // Properties dragged just inside the default column: a second
+        // column, between it and the drawing.
+        app.docker_drag = Some(DockerDrag {
+            tab: DockerTab::Properties,
+            grab: vec2(10.0, 10.0),
+            last: None,
+        });
+        let at = pos2(edge.left() - 20.0, edge.center().y);
+        let shapes = run(
+            &ctx,
+            &mut app,
+            vec![egui::Event::PointerMoved(at), press(at, true)],
+        );
+        let b = band(&shapes).expect("the docker's band");
+        assert!((b.right() - edge.left()).abs() < 1.0, "{b:?} {edge:?}");
+        run(&ctx, &mut app, vec![press(at, false)]);
+        assert_eq!(
+            app.docker_place(DockerTab::Properties),
+            Some(DockerPlace::RightInner)
+        );
+        for _ in 0..3 {
+            run(&ctx, &mut app, Vec::new());
+        }
+        let edge = column(&ctx, DockerPlace::Right).expect("the edge column");
+        let inner = column(&ctx, DockerPlace::RightInner).expect("the second column");
+        assert!(inner.right() <= edge.left() + 0.5, "{inner:?} {edge:?}");
+        assert!(two_columns(&app, Dock::Right) && !two_columns(&app, Dock::Left));
+        // The palette dragged to where they meet.
+        app.bar_drag = Some(BarDrag {
+            bar: Bar::Palette,
+            grab: vec2(5.0, 5.0),
+            last: None,
+        });
+        let at = pos2(edge.left() - 4.0, edge.center().y);
+        let shapes = run(
+            &ctx,
+            &mut app,
+            vec![egui::Event::PointerMoved(at), press(at, true)],
+        );
+        let b = band(&shapes).expect("the palette's band");
+        assert!(
+            (b.center().x - edge.left()).abs() < 1.0 && b.width() < 60.0,
+            "the band lies between the columns: {b:?}"
+        );
+        run(&ctx, &mut app, vec![press(at, false)]);
+        assert!(app.bar_drag.is_none());
+        assert_eq!(
+            app.settings.bars.palette_place(),
+            (Dock::Right, PaletteSpot::Between)
+        );
+        let palette = |ctx: &egui::Context| {
+            ctx.data(|d| d.get_temp::<Rect>(egui::Id::new(("palette_expand_rect", 0u8))))
+                .expect("the palette")
+        };
+        let check = |ctx: &egui::Context, app: &App| {
+            let edge = column(ctx, DockerPlace::Right).expect("the edge column");
+            let inner = column(ctx, DockerPlace::RightInner).expect("the second column");
+            let pal = palette(ctx);
+            assert!(
+                pal.center().x > inner.right() - 0.5 && pal.center().x < edge.left() + 0.5,
+                "the palette lies between the columns: {pal:?} {inner:?} {edge:?}"
+            );
+            // A column of the palette's width between them, its end
+            // buttons low down the column.
+            let thick = crate::ui::palette::thickness(app, crate::ui::palette::Row::Main);
+            let gap = edge.left() - inner.right();
+            assert!((gap - thick).abs() < 1.0, "{gap} {thick}");
+            assert!(pal.center().y > edge.center().y, "{pal:?}");
+            assert!(app.canvas_rect.right() <= inner.left() + 0.5);
+            // Each column keeps its tab strip and its docker.
+            assert!(
+                inner.width() > 300.0 && edge.width() > 300.0,
+                "{inner:?} {edge:?}"
+            );
+        };
+        for _ in 0..3 {
+            run(&ctx, &mut app, Vec::new());
+        }
+        check(&ctx, &app);
+        // The next start.
+        app.sync_settings();
+        let json = serde_json::to_string(&app.settings).expect("json");
+        let saved: crate::settings::Settings = serde_json::from_str(&json).expect("settings");
+        let ctx = crate::theme::ui_context();
+        let mut next = App::headless();
+        next.apply_settings(saved);
+        next.show_welcome = false;
+        assert_eq!(
+            next.settings.bars.palette_place(),
+            (Dock::Right, PaletteSpot::Between)
+        );
+        for _ in 0..3 {
+            run(&ctx, &mut next, Vec::new());
+        }
+        check(&ctx, &next);
+        // With one column left on the side it lies beside the drawing.
+        next.move_docker(DockerTab::Properties, DockerPlace::Right, None);
+        for _ in 0..3 {
+            run(&ctx, &mut next, Vec::new());
+        }
+        let edge = column(&ctx, DockerPlace::Right).expect("the edge column");
+        let pal = palette(&ctx);
+        assert!(pal.right() <= edge.left() + 0.5 && pal.left() >= next.canvas_rect.right() - 0.5);
     }
 
     #[test]
@@ -1526,5 +2865,37 @@ mod tests {
             serde_json::from_str(&serde_json::to_string(&l).expect("json")).expect("back");
         back.migrate();
         assert_eq!(back.palette, Dock::Right);
+    }
+
+    /// Each button size's docked rows hold their buttons: the band grows
+    /// with Large and Extra Large buttons and keeps today's heights up to
+    /// Medium (36 px, 53 px for the property bar).
+    #[test]
+    fn every_button_size_s_rows_fit_their_buttons() {
+        use crate::settings::ButtonSize;
+        for size in ButtonSize::ALL {
+            let m = size.metrics();
+            for bar in [Bar::Standard, Bar::Property, Bar::Text, Bar::Zoom] {
+                let button = if bar == Bar::Property {
+                    m.prop_button
+                } else {
+                    m.button
+                };
+                let inner = bar.inner_height_at(size);
+                assert!(inner >= button, "{size:?} {bar:?}: {inner} < {button}");
+                assert!(bar.row_height_at(size) >= inner + 4.0, "{size:?} {bar:?}");
+            }
+            if matches!(
+                size,
+                ButtonSize::ExtraSmall | ButtonSize::Small | ButtonSize::Medium
+            ) {
+                assert_eq!(Bar::Standard.row_height_at(size), 36.0, "{size:?}");
+                assert_eq!(Bar::Property.row_height_at(size), 53.0, "{size:?}");
+            }
+        }
+        assert_eq!(Bar::Standard.row_height_at(ButtonSize::Large), 46.0);
+        assert_eq!(Bar::Property.row_height_at(ButtonSize::Large), 63.0);
+        assert_eq!(Bar::Standard.row_height_at(ButtonSize::ExtraLarge), 56.0);
+        assert_eq!(Bar::Property.row_height_at(ButtonSize::ExtraLarge), 71.0);
     }
 }

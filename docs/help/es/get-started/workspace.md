@@ -9,9 +9,8 @@ Ayuda tenga sentido.
 De arriba abajo y de izquierda a derecha:
 
 - La **barra de menús** contiene todos los comandos, en los menús
-  [[menu.file]], [[menu.edit]], [[menu.view]], [[menu.layout]],
-  [[menu.object]], [[menu.effects]], [[menu.bitmaps]], [[menu.text]],
-  [[menu.table]], [[menu.tools]], [[menu.window]] y [[menu.help]]. Cada
+  [[menu.file]], [[menu.edit]], [[menu.view]], [[menu.object]],
+  [[menu.text]], [[menu.bitmaps]], [[menu.effects]], [[menu.layout]], [[menu.tools]], [[menu.window]] y [[menu.help]]. Cada
   comando muestra su atajo al lado. Sin ningún dibujo abierto, solo se ven
   [[menu.file]], [[menu.tools]], [[menu.window]] y [[menu.help]]. La página
   [Comandos de menú](../reference/menus.md) enumera todos los comandos.
@@ -48,8 +47,7 @@ La barra de herramientas estándar contiene, en grupos:
 7. Desactivar ajuste (<kbd>Alt+Q</kbd>) y la lista de elementos a los que
    ajustar.
 8. Opciones, que abre la lista de páginas de opciones.
-9. Iniciar: Administrador de fuentes, pantalla de bienvenida y Gestión del
-   color.
+9. Iniciar: Administrador de fuentes, TraceCut y pantalla de bienvenida.
 
 Pase el puntero sobre un botón para ver su nombre, su atajo y lo que hace.
 

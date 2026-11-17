@@ -1,6 +1,8 @@
 # ビットマップのカラーモードを変更する
 
-[[menu.bitmaps > menu.bitmaps.mode]] は、選択したビットマップを別のカラーモードに変換します。選択したビットマップはすべて元に戻す操作 1 回分で変更され、透明度は保たれます。設定があるモードでは、変換前と変換後のプレビュー付きのダイアログボックスが開きます。
+> *機械翻訳です。このページは英語版より古い場合があります。*
+
+[[menu.bitmaps > menu.bitmaps.mode]] は、選択したビットマップを別のカラーモードに変換します。選択したビットマップはすべて元に戻す操作 1 回分で変更され、透明度は保たれます。設定があるモードでは、変換前と変換後のプレビュー付きのダイアログボックスが開きます。設定は右側のパネルにあり、その下の [[dialog.reset]] は設定を戻し、2 つの矢印はダイアログボックスで行った変更を元に戻したりやり直したりします。
 
 | モード | 結果 |
 |---|---|
@@ -8,9 +10,11 @@
 | [[menu.bitmaps.mode_grayscale]] | グレーの濃淡 |
 | [[menu.bitmaps.mode_duotone]] | 1 から 4 色のインキ (下記を参照) |
 | [[menu.bitmaps.mode_paletted]] | 最大 256 色 (下記を参照) |
-| [[menu.bitmaps.mode_rgb]] | ピクセルはそのまま |
+| [[menu.bitmaps.mode_rgb]] | ビットマップのモードが RGB になり、ピクセルはそのまま |
 | [[menu.bitmaps.mode_lab]] | Lab カラー |
-| [[menu.bitmaps.mode_cmyk]] | ピクセルはそのまま。出力時にカラーマネジメントが変換します |
+| [[menu.bitmaps.mode_cmyk]] | ビットマップのモードが CMYK になり、ピクセルはカラーマネジメントのプロファイルで計算した、インクで印刷できる色で表示されます |
+
+選択したビットマップがすべてそのモードのとき、メニューの [[menu.bitmaps.mode_rgb]] または [[menu.bitmaps.mode_cmyk]] にチェックが付き、ステータスバーには選択したビットマップのモードが「Bitmap 600 x 400 px (CMYK)」のように表示されます。`.cdr` ファイルの CMYK 画像は CMYK モードで開き、`.tdraw` ファイルはモードを保持します。[[menu.tools > menu.tools.convert_colors]] も、変換するビットマップのモードを同じように設定します（[色の変換](../color/convert-colors.md)を参照）。
 
 ## 白黒 {#black-and-white}
 

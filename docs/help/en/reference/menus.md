@@ -27,6 +27,7 @@ only the Welcome Screen is open. The menus can show your own shortcuts; see
 | [[menu.file.acquire_image]] | [Importing](../file-formats/import.md) |
 | [[menu.file.import]] | [Importing](../file-formats/import.md) |
 | [[menu.file.export]] | [Exporting](../file-formats/export.md) |
+| [[menu.file.export_with_options]] | [Exporting](../file-formats/export.md) |
 | [[menu.file.export_for]] | [Exporting for the web](../web-graphics/export-for-web.md) |
 | [[menu.file.export_for_web]] | [Exporting for the web](../web-graphics/export-for-web.md) |
 | [[menu.file.export_for_office]] | [Exporting for the web](../web-graphics/export-for-web.md) |
@@ -35,14 +36,15 @@ only the Welcome Screen is open. The menus can show your own shortcuts; see
 | [[menu.file.send_to_documents]] | [Printing](../printing/print.md#other) |
 | [[menu.file.send_to_mail]] | [Printing](../printing/print.md#other) |
 | [[menu.file.publish_to_pdf]] | [Publishing to PDF](../file-formats/publish-pdf.md) |
-| [[menu.file.print_merge]] | [Print merge](../printing/print-merge.md) |
-| [[menu.file.print_merge_create]] | [Print merge](../printing/print-merge.md) |
-| [[menu.file.print_merge_edit]] | [Print merge](../printing/print-merge.md) |
-| [[menu.file.print_merge_perform]] | [Print merge](../printing/print-merge.md) |
+| [[menu.file.package]] | [Packaging a drawing](../file-formats/package.md) |
+| [[menu.file.print_merge]] | [Data merge](../printing/print-merge.md) |
+| [[menu.file.print_merge_create]] | [Data merge](../printing/print-merge.md) |
+| [[menu.file.print_merge_edit]] | [Data merge](../printing/print-merge.md) |
+| [[menu.file.print_merge_perform]] | [Data merge](../printing/print-merge.md) |
 | [[menu.file.print]] | [Printing](../printing/print.md) |
 | [[menu.file.print_preview]] | [Printing](../printing/print.md) |
 | [[menu.file.preflight]] | [Preflight](../printing/preflight.md) |
-| [[menu.file.document_properties]] | [Document properties](../pages-layout/document-properties.md) |
+| [[menu.file.document_properties]] | [Document info](../pages-layout/document-properties.md) |
 | [[menu.file.exit]] | [Opening and saving](../get-started/open-and-save.md) |
 
 ## [[menu.edit]] {#edit}
@@ -66,8 +68,14 @@ only the Welcome Screen is open. The menus can show your own shortcuts; see
 | [[menu.edit.select_all_text]] | [Selecting](../objects/selecting.md) |
 | [[menu.edit.select_all_guidelines]] | [Selecting](../objects/selecting.md) |
 | [[menu.edit.select_all_nodes]] | [Selecting](../objects/selecting.md) |
+| [[menu.edit.invert_selection]] | [Selecting](../objects/selecting.md#select-similar) |
+| [[menu.edit.select_similar]] | [Selecting](../objects/selecting.md#select-similar) |
+| [[menu.edit.similar_fill]] | [Selecting](../objects/selecting.md#select-similar) |
+| [[menu.edit.similar_outline]] | [Selecting](../objects/selecting.md#select-similar) |
+| [[menu.edit.similar_text_format]] | [Selecting](../objects/selecting.md#select-similar) |
+| [[menu.edit.similar_kind]] | [Selecting](../objects/selecting.md#select-similar) |
 | [[menu.edit.find_and_replace]] | [Find and replace](../objects/find-replace.md) |
-| [[menu.edit.step_and_repeat]] | [Step and Repeat](../objects/step-and-repeat.md) |
+| [[menu.edit.step_and_repeat]] | [Repeat copies](../objects/step-and-repeat.md) |
 
 ## [[menu.view]] {#view}
 
@@ -81,10 +89,12 @@ only the Welcome Screen is open. The menus can show your own shortcuts; see
 | [[menu.view.preview_selected_only]] | [Views](../get-started/undo-and-views.md#views) |
 | [[menu.view.page_sorter]] | [Multipage view](../pages-layout/multipage-view.md) |
 | [[menu.view.multipage]] | [Multipage view](../pages-layout/multipage-view.md) |
+| [[menu.view.multipage_pages]] | [Multipage view](../pages-layout/multipage-view.md#choose-pages) |
 | [[menu.view.draw_in_perspective]] | [Perspective](../effects/perspective.md#draw) |
 | [[menu.view.zoom_in]] | [Views](../get-started/undo-and-views.md#views) |
 | [[menu.view.zoom_out]] | [Views](../get-started/undo-and-views.md#views) |
 | [[menu.view.zoom_to_fit]] | [Views](../get-started/undo-and-views.md#views) |
+| [[menu.view.navigator]] | [Views](../get-started/undo-and-views.md#views) |
 | [[menu.view.proof_colors]] | [Color management](../color/color-management.md#proof) |
 | [[menu.view.simulate_overprints]] | [Color management](../color/color-management.md#proof) |
 | [[menu.view.rasterize_complex_effects]] | [Rulers, grids and guidelines](../pages-layout/guidelines-and-grid.md) |
@@ -97,6 +107,7 @@ only the Welcome Screen is open. The menus can show your own shortcuts; see
 | [[menu.view.pixel_grid]] | [Rulers, grids and guidelines](../pages-layout/guidelines-and-grid.md) |
 | [[menu.view.baseline_grid]] | [Rulers, grids and guidelines](../pages-layout/guidelines-and-grid.md) |
 | [[menu.view.rulers]] | [Rulers, grids and guidelines](../pages-layout/guidelines-and-grid.md) |
+| [[menu.view.scrollbars]] | [The workspace](../get-started/workspace.md#drawing-window) |
 | [[menu.view.guidelines]] | [Rulers, grids and guidelines](../pages-layout/guidelines-and-grid.md) |
 | [[menu.view.alignment_guides]] | [Snapping](../pages-layout/snapping.md) |
 | [[menu.view.dynamic_guides]] | [Snapping](../pages-layout/snapping.md) |
@@ -108,27 +119,6 @@ only the Welcome Screen is open. The menus can show your own shortcuts; see
 | [[menu.view.snap_objects]] | [Snapping](../pages-layout/snapping.md) |
 | [[menu.view.snap_page]] | [Snapping](../pages-layout/snapping.md) |
 | [[menu.view.snap_off]] | [Snapping](../pages-layout/snapping.md) |
-
-## [[menu.layout]] {#layout}
-
-| Command | See |
-|---|---|
-| [[menu.layout.insert_page]] | [Working with pages](../pages-layout/pages.md) |
-| [[menu.layout.duplicate_page]] | [Working with pages](../pages-layout/pages.md) |
-| [[menu.layout.rename_page]] | [Working with pages](../pages-layout/pages.md) |
-| [[menu.layout.delete_page]] | [Working with pages](../pages-layout/pages.md) |
-| [[menu.layout.go_to_page]] | [Working with pages](../pages-layout/pages.md) |
-| [[menu.layout.insert_page_number]] | [Working with pages](../pages-layout/pages.md) |
-| [[menu.layout.page_number_active]] | [Working with pages](../pages-layout/pages.md) |
-| [[menu.layout.page_number_all]] | [Working with pages](../pages-layout/pages.md) |
-| [[menu.layout.page_number_odd]] | [Working with pages](../pages-layout/pages.md) |
-| [[menu.layout.page_number_even]] | [Working with pages](../pages-layout/pages.md) |
-| [[menu.layout.page_number_settings]] | [Working with pages](../pages-layout/pages.md) |
-| [[menu.layout.switch_orientation]] | [Working with pages](../pages-layout/pages.md) |
-| [[menu.layout.document_options]] | [Document options](../pages-layout/document-options.md) |
-| [[menu.layout.page_size]] | [Working with pages](../pages-layout/pages.md) |
-| [[menu.layout.page_layout]] | [Document options](../pages-layout/document-options.md) |
-| [[menu.layout.page_background]] | [Document options](../pages-layout/document-options.md) |
 
 ## [[menu.object]] {#object}
 
@@ -143,16 +133,23 @@ only the Welcome Screen is open. The menus can show your own shortcuts; see
 | [[menu.object.create]] | [Objects](../objects/index.md) |
 | [[menu.object.create_arrowhead]] | [Outlines](../lines-shapes/outlines.md#outline-pen) |
 | [[menu.object.create_pattern]] | [Pattern fills](../color/patterns.md) |
+| [[menu.object.add_common_shape]] | [Common Shapes](../lines-shapes/polygons-stars-spirals.md#common-shapes) |
 | [[menu.object.insert]] | [Barcodes and QR codes](../objects/barcodes.md) |
 | [[menu.object.insert_barcode]] | [Barcodes and QR codes](../objects/barcodes.md) |
 | [[menu.object.insert_qr]] | [Barcodes and QR codes](../objects/barcodes.md) |
 | [[menu.object.insert_page_number]] | [Page numbers](../pages-layout/pages.md#page-numbers) |
+| [[menu.object.add_dimensions]] | [Dimension lines and callouts](../lines-shapes/dimensions.md#add-dimensions) |
+| [[menu.object.add_dimensions_each]] | [Dimension lines and callouts](../lines-shapes/dimensions.md#add-dimensions) |
 | [[menu.object.clip_frame]] | [Clip frames](../objects/clip-frames.md) |
 | [[menu.object.clip_frame_place_inside]] | [Clip frames](../objects/clip-frames.md) |
 | [[menu.object.clip_frame_extract]] | [Clip frames](../objects/clip-frames.md) |
 | [[menu.object.clip_frame_finish]] | [Clip frames](../objects/clip-frames.md) |
 | [[menu.object.clip_frame_edit]] | [Clip frames](../objects/clip-frames.md) |
 | [[menu.object.clip_frame_lock]] | [Clip frames](../objects/clip-frames.md) |
+| [[menu.object.clip_frame_fit_center]] | [Clip frames](../objects/clip-frames.md) |
+| [[menu.object.clip_frame_fit_proportional]] | [Clip frames](../objects/clip-frames.md) |
+| [[menu.object.clip_frame_fill_proportional]] | [Clip frames](../objects/clip-frames.md) |
+| [[menu.object.clip_frame_stretch]] | [Clip frames](../objects/clip-frames.md) |
 | [[menu.object.clip_frame_opacity_mask]] | [Clip frames](../objects/clip-frames.md) |
 | [[menu.object.clip_frame_invert_mask]] | [Clip frames](../objects/clip-frames.md) |
 | [[menu.object.symmetry]] | [Symmetry](../objects/symmetry.md) |
@@ -197,7 +194,7 @@ only the Welcome Screen is open. The menus can show your own shortcuts; see
 | [[menu.object.distribute_spacing_v]] | [Aligning](../objects/align-distribute.md) |
 | [[menu.object.distribute_bottom]] | [Aligning](../objects/align-distribute.md) |
 | [[menu.object.align_distribute_docker]] | [Aligning](../objects/align-distribute.md) |
-| [[menu.object.fit_objects_to_path]] | [Text on a path](../text/adding-text.md#text-on-path) |
+| [[menu.object.fit_objects_to_path]] | [Fitting objects to a path](../objects/fit-objects-to-path.md) |
 | [[menu.object.order]] | [Objects and layers](../objects/objects-and-layers.md) |
 | [[menu.object.to_front_of_page]] | [Objects and layers](../objects/objects-and-layers.md) |
 | [[menu.object.to_back_of_page]] | [Objects and layers](../objects/objects-and-layers.md) |
@@ -242,60 +239,6 @@ only the Welcome Screen is open. The menus can show your own shortcuts; see
 | [[menu.object.properties]] | [Properties](../objects/properties-docker.md) |
 | [[menu.object.objects]] | [Objects and layers](../objects/objects-and-layers.md) |
 
-## [[menu.effects]] {#effects}
-
-| Command | See |
-|---|---|
-| [[menu.effects.flatten]] | [Bitmap effects](../effects/bitmap-effects.md) |
-| [[menu.effects.brush_strokes]] | [Brush strokes](../lines-shapes/artistic-media.md) |
-| [[menu.effects.bevel]] | [Bevels](../effects/bevel.md) |
-| [[menu.effects.blend]] | [Blends](../effects/blend.md) |
-| [[menu.effects.contour]] | [Contours](../effects/contour.md) |
-| [[menu.effects.envelope]] | [Envelopes](../effects/envelope.md) |
-| [[menu.effects.extrude]] | [Extrusions](../effects/extrude.md) |
-| [[menu.effects.lens]] | [Lenses](../effects/lens.md) |
-| [[menu.effects.picture_mosaic]] | [Mosaics](../effects/mosaics.md) |
-| [[menu.effects.vector_mosaic]] | [Mosaics](../effects/mosaics.md) |
-
-## [[menu.bitmaps]] {#bitmaps}
-
-| Command | See |
-|---|---|
-| [[menu.bitmaps.convert_to_bitmap]] | [Converting to bitmaps](../bitmaps/convert-to-bitmap.md) |
-| [[menu.bitmaps.straighten_image]] | [Resampling](../bitmaps/resample-and-straighten.md) |
-| [[menu.bitmaps.edit_bitmap]] | [Resampling](../bitmaps/resample-and-straighten.md) |
-| [[menu.bitmaps.crop_bitmap]] | [Resampling](../bitmaps/resample-and-straighten.md) |
-| [[menu.bitmaps.resample]] | [Resampling](../bitmaps/resample-and-straighten.md) |
-| [[menu.bitmaps.remove_background_local]] | [Remove Background](../bitmaps/remove-background.md) |
-| [[menu.bitmaps.remove_background]] | [AI](../customize/ai.md) |
-| [[menu.bitmaps.ai_art_styles]] | [AI](../customize/ai.md) |
-| [[menu.bitmaps.mode]] | [Color modes](../bitmaps/color-modes.md) |
-| [[menu.bitmaps.mode_bw]] | [Color modes](../bitmaps/color-modes.md) |
-| [[menu.bitmaps.mode_grayscale]] | [Color modes](../bitmaps/color-modes.md) |
-| [[menu.bitmaps.mode_duotone]] | [Color modes](../bitmaps/color-modes.md) |
-| [[menu.bitmaps.mode_paletted]] | [Color modes](../bitmaps/color-modes.md) |
-| [[menu.bitmaps.mode_rgb]] | [Color modes](../bitmaps/color-modes.md) |
-| [[menu.bitmaps.mode_lab]] | [Color modes](../bitmaps/color-modes.md) |
-| [[menu.bitmaps.mode_cmyk]] | [Color modes](../bitmaps/color-modes.md) |
-| [[menu.bitmaps.inflate]] | [Resampling](../bitmaps/resample-and-straighten.md) |
-| [[menu.bitmaps.inflate_auto]] | [Resampling](../bitmaps/resample-and-straighten.md) |
-| [[menu.bitmaps.inflate_manual]] | [Resampling](../bitmaps/resample-and-straighten.md) |
-| [[menu.bitmaps.break_link]] | [Resampling](../bitmaps/resample-and-straighten.md) |
-| [[menu.bitmaps.update_from_link]] | [Resampling](../bitmaps/resample-and-straighten.md) |
-| [[menu.bitmaps.quick_trace]] | [Tracing](../bitmaps/tracing.md) |
-| [[menu.bitmaps.centerline_trace]] | [Tracing](../bitmaps/tracing.md) |
-| [[menu.bitmaps.trace_technical]] | [Tracing](../bitmaps/tracing.md) |
-| [[menu.bitmaps.trace_line_drawing]] | [Tracing](../bitmaps/tracing.md) |
-| [[menu.bitmaps.outline_trace]] | [Tracing](../bitmaps/tracing.md) |
-| [[menu.bitmaps.trace_line_art]] | [Tracing](../bitmaps/tracing.md) |
-| [[menu.bitmaps.trace_logo]] | [Tracing](../bitmaps/tracing.md) |
-| [[menu.bitmaps.trace_detailed_logo]] | [Tracing](../bitmaps/tracing.md) |
-| [[menu.bitmaps.trace_clipart]] | [Tracing](../bitmaps/tracing.md) |
-| [[menu.bitmaps.trace_low_quality]] | [Tracing](../bitmaps/tracing.md) |
-| [[menu.bitmaps.trace_high_quality]] | [Tracing](../bitmaps/tracing.md) |
-| [[menu.bitmaps.plugins]] | [Bitmaps](../bitmaps/index.md) |
-| [[menu.bitmaps.bitmap_mask]] | [Bitmap mask](../bitmaps/bitmap-mask.md) |
-
 ## [[menu.text]] {#text}
 
 | Command | See |
@@ -304,7 +247,7 @@ only the Welcome Screen is open. The menus can show your own shortcuts; see
 | [[menu.text.columns]] | [Paragraphs](../text/paragraphs.md) |
 | [[menu.text.bullets]] | [Paragraphs](../text/paragraphs.md) |
 | [[menu.text.drop_cap]] | [Paragraphs](../text/paragraphs.md) |
-| [[menu.text.text_statistics]] | [Writing tools](../text/writing-tools.md) |
+| [[menu.text.text_statistics]] | [Proofing](../text/writing-tools.md) |
 | [[menu.text.font_sampler]] | [Fonts and glyphs](../text/fonts.md) |
 | [[menu.text.edit_text]] | [Adding text](../text/adding-text.md) |
 | [[menu.text.insert_placeholder_text]] | [Adding text](../text/adding-text.md) |
@@ -328,19 +271,19 @@ only the Welcome Screen is open. The menus can show your own shortcuts; see
 | [[menu.text.align_to_baseline]] | [Adding text](../text/adding-text.md) |
 | [[menu.text.align_to_baseline_grid]] | [Adding text](../text/adding-text.md) |
 | [[menu.text.use_hyphenation]] | [Paragraphs](../text/paragraphs.md) |
-| [[menu.text.custom_hyphens]] | [Writing tools](../text/writing-tools.md) |
-| [[menu.text.writing_tools]] | [Writing tools](../text/writing-tools.md) |
-| [[menu.text.spell_check]] | [Writing tools](../text/writing-tools.md) |
-| [[menu.text.grammatik]] | [Writing tools](../text/writing-tools.md) |
-| [[menu.text.thesaurus]] | [Writing tools](../text/writing-tools.md) |
-| [[menu.text.autocorrect]] | [Writing tools](../text/writing-tools.md) |
-| [[menu.text.change_case]] | [Writing tools](../text/writing-tools.md) |
-| [[menu.text.make_web_compatible]] | [Writing tools](../text/writing-tools.md) |
-| [[menu.text.encode]] | [Writing tools](../text/writing-tools.md) |
+| [[menu.text.custom_hyphens]] | [Proofing](../text/writing-tools.md) |
+| [[menu.text.writing_tools]] | [Proofing](../text/writing-tools.md) |
+| [[menu.text.spell_check]] | [Proofing](../text/writing-tools.md) |
+| [[menu.text.grammar]] | [Proofing](../text/writing-tools.md) |
+| [[menu.text.thesaurus]] | [Proofing](../text/writing-tools.md) |
+| [[menu.text.autocorrect]] | [Proofing](../text/writing-tools.md) |
+| [[menu.text.change_case]] | [Proofing](../text/writing-tools.md) |
+| [[menu.text.make_web_compatible]] | [Proofing](../text/writing-tools.md) |
+| [[menu.text.encode]] | [Proofing](../text/writing-tools.md) |
 | [[menu.text.text_docker]] | [Adding text](../text/adding-text.md) |
 | [[menu.text.glyphs]] | [Fonts and glyphs](../text/fonts.md) |
 
-## [[menu.table]] {#table}
+### [[menu.table]] {#table}
 
 | Command | See |
 |---|---|
@@ -369,6 +312,92 @@ only the Welcome Screen is open. The menus can show your own shortcuts; see
 | [[menu.table.split_into_rows]] | [Tables](../objects/tables.md) |
 | [[menu.table.split_into_columns]] | [Tables](../objects/tables.md) |
 
+## [[menu.bitmaps]] {#bitmaps}
+
+| Command | See |
+|---|---|
+| [[menu.bitmaps.convert_to_bitmap]] | [Converting to bitmaps](../bitmaps/convert-to-bitmap.md) |
+| [[menu.bitmaps.straighten_image]] | [Resampling](../bitmaps/resample-and-straighten.md) |
+| [[menu.bitmaps.edit_bitmap]] | [Resampling](../bitmaps/resample-and-straighten.md) |
+| [[menu.bitmaps.crop_bitmap]] | [Resampling](../bitmaps/resample-and-straighten.md) |
+| [[menu.bitmaps.resample]] | [Resampling](../bitmaps/resample-and-straighten.md) |
+| [[menu.bitmaps.remove_background_local]] | [Remove Background](../bitmaps/remove-background.md) |
+| [[menu.bitmaps.remove_background]] | [AI](../customize/ai.md) |
+| [[menu.bitmaps.ai_art_styles]] | [AI](../customize/ai.md) |
+| [[menu.bitmaps.mode]] | [Color modes](../bitmaps/color-modes.md) |
+| [[menu.bitmaps.mode_bw]] | [Color modes](../bitmaps/color-modes.md) |
+| [[menu.bitmaps.mode_grayscale]] | [Color modes](../bitmaps/color-modes.md) |
+| [[menu.bitmaps.mode_duotone]] | [Color modes](../bitmaps/color-modes.md) |
+| [[menu.bitmaps.mode_paletted]] | [Color modes](../bitmaps/color-modes.md) |
+| [[menu.bitmaps.mode_rgb]] | [Color modes](../bitmaps/color-modes.md) |
+| [[menu.bitmaps.mode_lab]] | [Color modes](../bitmaps/color-modes.md) |
+| [[menu.bitmaps.mode_cmyk]] | [Color modes](../bitmaps/color-modes.md) |
+| [[menu.bitmaps.inflate]] | [Resampling](../bitmaps/resample-and-straighten.md) |
+| [[menu.bitmaps.inflate_auto]] | [Resampling](../bitmaps/resample-and-straighten.md) |
+| [[menu.bitmaps.inflate_manual]] | [Resampling](../bitmaps/resample-and-straighten.md) |
+| [[menu.bitmaps.break_link]] | [Resampling](../bitmaps/resample-and-straighten.md) |
+| [[menu.bitmaps.update_from_link]] | [Resampling](../bitmaps/resample-and-straighten.md) |
+| [[menu.bitmaps.trace]] | [Tracing](../bitmaps/tracing.md) |
+| [[menu.bitmaps.quick_trace]] | [Tracing](../bitmaps/tracing.md) |
+| [[menu.bitmaps.centerline_trace]] | [Tracing](../bitmaps/tracing.md) |
+| [[menu.bitmaps.trace_technical]] | [Tracing](../bitmaps/tracing.md) |
+| [[menu.bitmaps.trace_line_drawing]] | [Tracing](../bitmaps/tracing.md) |
+| [[menu.bitmaps.outline_trace]] | [Tracing](../bitmaps/tracing.md) |
+| [[menu.bitmaps.trace_line_art]] | [Tracing](../bitmaps/tracing.md) |
+| [[menu.bitmaps.trace_logo]] | [Tracing](../bitmaps/tracing.md) |
+| [[menu.bitmaps.trace_detailed_logo]] | [Tracing](../bitmaps/tracing.md) |
+| [[menu.bitmaps.trace_clipart]] | [Tracing](../bitmaps/tracing.md) |
+| [[menu.bitmaps.trace_low_quality]] | [Tracing](../bitmaps/tracing.md) |
+| [[menu.bitmaps.trace_high_quality]] | [Tracing](../bitmaps/tracing.md) |
+| [[menu.bitmaps.trace_optimized]] | [Tracing](../bitmaps/tracing.md) |
+| [[menu.bitmaps.plugins]] | [Bitmaps](../bitmaps/index.md) |
+| [[menu.bitmaps.bitmap_mask]] | [Color mask](../bitmaps/bitmap-mask.md) |
+
+## [[menu.effects]] {#effects}
+
+| Command | See |
+|---|---|
+| [[menu.effects.flatten]] | [Bitmap effects](../effects/bitmap-effects.md) |
+| [[menu.effects.all_pages]] | [Bitmap effects](../effects/bitmap-effects.md) |
+| [[menu.effects.brush_strokes]] | [Brush strokes](../lines-shapes/artistic-media.md) |
+| [[menu.effects.bevel]] | [Bevels](../effects/bevel.md) |
+| [[menu.effects.blend]] | [Blends](../effects/blend.md) |
+| [[menu.effects.contour]] | [Contours](../effects/contour.md) |
+| [[menu.effects.envelope]] | [Envelopes](../effects/envelope.md) |
+| [[menu.effects.extrude]] | [Extrusions](../effects/extrude.md) |
+| [[menu.effects.lens]] | [Lenses](../effects/lens.md) |
+| [[menu.effects.picture_mosaic]] | [Mosaics](../effects/mosaics.md) |
+| [[menu.effects.vector_mosaic]] | [Mosaics](../effects/mosaics.md) |
+
+## [[menu.layout]] {#layout}
+
+| Command | See |
+|---|---|
+| [[menu.layout.insert_page]] | [Working with pages](../pages-layout/pages.md) |
+| [[menu.layout.duplicate_page]] | [Working with pages](../pages-layout/pages.md) |
+| [[menu.layout.rename_page]] | [Working with pages](../pages-layout/pages.md) |
+| [[menu.layout.delete_page]] | [Working with pages](../pages-layout/pages.md) |
+| [[menu.layout.go_to_page]] | [Working with pages](../pages-layout/pages.md) |
+| [[menu.layout.insert_page_number]] | [Working with pages](../pages-layout/pages.md) |
+| [[menu.layout.page_number_active]] | [Working with pages](../pages-layout/pages.md) |
+| [[menu.layout.page_number_all]] | [Working with pages](../pages-layout/pages.md) |
+| [[menu.layout.page_number_odd]] | [Working with pages](../pages-layout/pages.md) |
+| [[menu.layout.page_number_even]] | [Working with pages](../pages-layout/pages.md) |
+| [[menu.layout.page_number_settings]] | [Working with pages](../pages-layout/pages.md) |
+| [[menu.layout.switch_orientation]] | [Working with pages](../pages-layout/pages.md) |
+| [[menu.layout.document_options]] | [Document options](../pages-layout/document-options.md) |
+| [[menu.layout.page_size]] | [Working with pages](../pages-layout/pages.md) |
+| [[menu.layout.page_layout]] | [Document options](../pages-layout/document-options.md) |
+| [[menu.layout.page_spacing]] | [Multipage view](../pages-layout/multipage-view.md#page-spacing) |
+| [[menu.layout.page_spacing_0]] | [Multipage view](../pages-layout/multipage-view.md#page-spacing) |
+| [[menu.layout.page_spacing_5]] | [Multipage view](../pages-layout/multipage-view.md#page-spacing) |
+| [[menu.layout.page_spacing_10]] | [Multipage view](../pages-layout/multipage-view.md#page-spacing) |
+| [[menu.layout.page_spacing_20]] | [Multipage view](../pages-layout/multipage-view.md#page-spacing) |
+| [[menu.layout.page_spacing_30]] | [Multipage view](../pages-layout/multipage-view.md#page-spacing) |
+| [[menu.layout.page_spacing_50]] | [Multipage view](../pages-layout/multipage-view.md#page-spacing) |
+| [[menu.layout.page_spacing_custom]] | [Multipage view](../pages-layout/multipage-view.md#page-spacing) |
+| [[menu.layout.page_background]] | [Document options](../pages-layout/document-options.md) |
+
 ## [[menu.tools]] {#tools}
 
 | Command | See |
@@ -376,6 +405,7 @@ only the Welcome Screen is open. The menus can show your own shortcuts; see
 | [[menu.tools.options]] | [Options](../customize/index.md) |
 | [[menu.tools.save_settings_as_default]] | [Options](../customize/index.md) |
 | [[menu.tools.color_management]] | [Color management](../color/color-management.md) |
+| [[menu.tools.convert_colors]] | [Converting colors to CMYK or RGB](../color/convert-colors.md) |
 | [[menu.tools.scripts]] | [Scripts](../customize/scripts.md) |
 | [[menu.tools.scripts_docker]] | [Scripts](../customize/scripts.md) |
 | [[menu.tools.scripts_run]] | [Scripts](../customize/scripts.md) |
@@ -442,6 +472,7 @@ only the Welcome Screen is open. The menus can show your own shortcuts; see
 | [[menu.help.whats_new]] | [What is new](../welcome/whats-new.md) |
 | [[menu.help.highlight_whats_new]] | [What is new](../welcome/whats-new.md) |
 | [[menu.help.updates]] | [About and updates](../welcome/about-and-updates.md) |
+| [[menu.help.benchmark]] | [TraceDraw options](../customize/options-app.md#benchmark) |
 | [[menu.help.message_settings]] | [About and updates](../welcome/about-and-updates.md) |
 | [[menu.help.community]] | [About and updates](../welcome/about-and-updates.md) |
 | [[menu.help.support]] | [About and updates](../welcome/about-and-updates.md) |

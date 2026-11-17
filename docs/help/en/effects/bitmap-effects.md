@@ -13,10 +13,17 @@ back.
 
 1. Select one or more objects.
 2. Choose a group in the [[menu.effects]] menu and an effect.
-3. Effects without settings apply at once. The others open a dialog box with
-   **before** and **after** previews of the first selected object: set the
-   values and click [[dialog.ok]]. **Reset** puts every setting back to its
-   default.
+3. Effects without settings apply at once. The others open a dialog box you
+   can size, with the first selected object before and after in the
+   [Before and After preview](../bitmaps/before-after-preview.md) and the
+   settings on the right. The effect also shows on the drawing and follows
+   every value as it changes (untick **Preview** to switch that off); the
+   work is done in the background, so the window keeps answering on large
+   pictures. Click [[dialog.ok]] to keep what the drawing shows as one undo
+   step; **Cancel** or <kbd>Esc</kbd> put the drawing back exactly as it was.
+   The settings sit in a panel at the right; under it **Reset** puts every
+   setting back to its default, and the two arrows undo and redo the changes
+   made in the dialog box.
 
 ![A bitmap effect dialog box](../../img/effects-bitmap-effects.png)
 
@@ -71,6 +78,17 @@ groups.
 
 [[menu.effects > menu.effects.flatten]] makes the effects permanent: a bitmap
 keeps what it shows, and a vector object becomes a bitmap.
+
+### On all pages
+
+In a drawing of several pages, the dialog box of an effect shows an
+[[dialog.fx_all_pages]] box while a picture is selected. With it ticked, OK
+gives the effect to every picture on every page as well, in one undo step.
+Locked pictures, and pictures on locked layers, stay as they are.
+
+[[menu.effects > menu.effects.all_pages]] does the same with the effects the
+selected picture already has, effects without a dialog box included: every
+other picture takes the same list of effects, in one undo step.
 
 ## The Effect Picker {#effect-picker}
 

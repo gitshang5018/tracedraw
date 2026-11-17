@@ -18,34 +18,205 @@ use crate::ui::tips::RichTip;
 use egui::{pos2, vec2, Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, Ui};
 use tracedraw_core::{Color, Command, Fill};
 
-/// Height of a palette row: a separator line, the swatches in their frame
-/// and a pixel of space on each side.
+/// Height of a palette row at the default swatch size: a separator line,
+/// the swatches in their frame and a pixel of space on each side.
 pub const ROW_H: f32 = 25.0;
+/// The side of a swatch at first, and the distance between two (the
+/// frame line between them).
 const SWATCH: f32 = 20.0;
+#[cfg(test)]
 const STRIDE: f32 = 21.0;
+/// What a row holds besides its swatches across: the line, the frame
+/// and a pixel of space on each side.
+const ROW_PAD: f32 = ROW_H - SWATCH;
 
-/// The side of a swatch: 20 px, and 34 on a phone, where a colour is
-/// picked with a finger rather than a mouse.
-pub fn swatch_side() -> f32 {
-    if crate::ui::mobile::phone() {
-        34.0
-    } else {
-        SWATCH
+/// The side of a swatch of the default palette: Options, Customization,
+/// Color Palette; the palette menu's Swatch Size; or Ctrl+wheel over a
+/// palette (20 px at first).
+pub fn swatch_side(app: &App) -> f32 {
+    app.settings.palette.swatch_size()
+}
+
+/// From one swatch to the next: the side and the frame line between.
+pub fn stride(app: &App) -> f32 {
+    swatch_side(app) + 1.0
+}
+
+/// The height of a palette row of one line of swatches.
+pub fn row_h(app: &App) -> f32 {
+    swatch_side(app) + ROW_PAD
+}
+
+/// What a strip follows: the default palette's settings for the default
+/// palette (and the document palette row under it, but for its own
+/// swatch size), a palette bar's own for a further one.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StripPrefs {
+    pub dock: crate::ui::bars::Dock,
+    pub rows: u8,
+    pub swatch: u8,
+    pub float_size: [f32; 2],
+}
+
+/// The settings `which` follows.
+pub fn strip_prefs(app: &App, which: Row) -> StripPrefs {
+    let p = &app.settings.palette;
+    let main = StripPrefs {
+        dock: app.settings.bars.dock(crate::ui::bars::Bar::Palette),
+        rows: p.rows,
+        swatch: p.swatch_size,
+        float_size: p.float_size,
+    };
+    match which {
+        Row::Main => main,
+        // A row under the drawing, one line, of its own swatch size.
+        Row::Document => StripPrefs {
+            dock: crate::ui::bars::Dock::Bottom,
+            rows: 1,
+            swatch: p.document_swatch(),
+            ..main
+        },
+        Row::Extra(k) => match app.settings.palette_bars.get(k) {
+            Some(b) => StripPrefs {
+                dock: b.dock,
+                rows: b.rows,
+                swatch: b.swatch_size,
+                float_size: b.float_size,
+            },
+            None => main,
+        },
     }
 }
 
-/// From one swatch's left edge to the next.
-pub fn stride_len() -> f32 {
-    if crate::ui::mobile::phone() {
-        swatch_side() + 1.0
-    } else {
-        STRIDE
+/// The side of a swatch of `which`.
+pub fn swatch_side_of(app: &App, which: Row) -> f32 {
+    let s = strip_prefs(app, which).swatch;
+    f32::from(s.clamp(crate::settings::SWATCH_MIN, crate::settings::SWATCH_MAX))
+}
+
+/// From one swatch of `which` to the next.
+pub fn stride_of(app: &App, which: Row) -> f32 {
+    swatch_side_of(app, which) + 1.0
+}
+
+/// The most rows (or columns) a floating palette flows into.
+pub const MAX_FLOAT_LINES: usize = 24;
+
+/// How a floating palette lays its swatches in the room asked for
+/// (`asked`, points, the title left out): a strip along the longer side,
+/// as many lines across as whole swatches fit in the shorter one, never
+/// shorter than the buttons and two swatches.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Flow {
+    /// Columns: the strip runs down.
+    pub vertical: bool,
+    /// Rows (columns when vertical) of swatches.
+    pub lines: usize,
+    /// The strip's length.
+    pub len: f32,
+}
+
+/// See [`Flow`]; `side` is the swatch side.
+pub fn floating_flow(asked: [f32; 2], side: f32) -> Flow {
+    let ok = |v: f32| if v.is_finite() { v.max(1.0) } else { 1.0 };
+    let (w, h) = (ok(asked[0]), ok(asked[1]));
+    let st = side + 1.0;
+    let vertical = h > w;
+    let (along, across) = if vertical { (h, w) } else { (w, h) };
+    let lines = (((across - side - ROW_PAD) / st).floor() + 1.0).clamp(1.0, MAX_FLOAT_LINES as f32)
+        as usize;
+    Flow {
+        vertical,
+        lines,
+        len: along.max(min_len(side)),
     }
 }
 
-/// The height of a palette row, its swatches and the space round them.
-pub fn row_h() -> f32 {
-    swatch_side() + 5.0
+/// The shortest a strip is: its buttons and two swatches.
+pub fn min_len(side: f32) -> f32 {
+    LEAD + TAIL + 1.0 + 2.0 * (side + 1.0)
+}
+
+/// How thick a strip of `lines` rows of swatches `side` wide is.
+pub fn thickness_for(side: f32, lines: usize) -> f32 {
+    side + ROW_PAD + lines.saturating_sub(1) as f32 * (side + 1.0)
+}
+
+/// The size of a floating strip's swatches and buttons (its window less
+/// the title and the border): [`floating_flow`] made whole.
+pub fn floating_body(app: &App, which: Row) -> (Flow, egui::Vec2) {
+    let side = swatch_side_of(app, which);
+    let flow = floating_flow(strip_prefs(app, which).float_size, side);
+    let thick = thickness_for(side, flow.lines);
+    let size = if flow.vertical {
+        vec2(thick, flow.len)
+    } else {
+        vec2(flow.len, thick)
+    };
+    (flow, size)
+}
+
+/// The room a floating strip asks for to show `lines` lines, keeping its
+/// length and its direction.
+pub fn float_size_for_lines(app: &App, which: Row, lines: usize) -> [f32; 2] {
+    let side = swatch_side_of(app, which);
+    let (flow, _) = floating_body(app, which);
+    let thick = thickness_for(side, lines.max(1));
+    if flow.vertical {
+        [thick, flow.len.max(thick + 1.0)]
+    } else {
+        [flow.len.max(thick + 1.0), thick]
+    }
+}
+
+/// Whether `which` shows the document palette (its row, or a bar of it).
+pub fn shows_document(app: &App, which: Row) -> bool {
+    match which {
+        Row::Document => true,
+        Row::Extra(k) => app.extra_palettes.get(k).is_some_and(|r| r.document),
+        Row::Main => false,
+    }
+}
+
+/// The user's own palette `which` shows (a bar of its own, not the
+/// document palette), when it takes colours dropped on it.
+pub fn user_palette_of(app: &App, which: Row) -> Option<usize> {
+    let Row::Extra(k) = which else {
+        return None;
+    };
+    let r = app.extra_palettes.get(k).filter(|r| !r.document)?;
+    app.palette_takes_colors(r.index).then_some(r.index)
+}
+
+/// The palette of [`App::palettes`] `which` shows (none for the
+/// document palette).
+pub fn palette_index_of(app: &App, which: Row) -> Option<usize> {
+    match which {
+        Row::Main => app.visible_palettes.first().copied(),
+        Row::Document => None,
+        Row::Extra(k) => app
+            .extra_palettes
+            .get(k)
+            .filter(|r| !r.document && r.index < app.palettes.len())
+            .map(|r| r.index),
+    }
+}
+
+/// How many swatches `which` holds, the No Color well included.
+pub fn swatch_count(app: &App, which: Row) -> usize {
+    let n = if shows_document(app, which) {
+        if app.has_document() {
+            app.doc().palette.len()
+        } else {
+            0
+        }
+    } else {
+        match which {
+            Row::Extra(k) => app.extra_palettes.get(k).map_or(0, |r| r.colors.len()),
+            _ => app.palette.len(),
+        }
+    };
+    n + usize::from(app.settings.palette.show_no_color)
 }
 /// From a row's left edge to the frame of the first swatch.
 const LEAD: f32 = 77.0;
@@ -84,25 +255,14 @@ impl Row {
 /// palettes change), and how far the strip is scrolled.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ExtraRow {
+    /// The palette in [`App::palettes`] (nothing for the document
+    /// palette).
     pub index: usize,
+    /// The bar shows the document palette.
+    pub document: bool,
     pub colors: Vec<(String, Color)>,
     pub rgb: Vec<(String, Color)>,
     pub scroll: usize,
-}
-
-/// The strips of the further palettes shown, in order.
-pub fn extra_rows(app: &App) -> Vec<Row> {
-    (0..app.extra_palettes.len()).map(Row::Extra).collect()
-}
-
-/// A further palette as a row.
-pub fn extra_palette_row(app: &mut App, ui: &mut Ui, which: Row) {
-    row(app, ui, which, false);
-}
-
-/// A further palette as a column.
-pub fn extra_palette_column(app: &mut App, ui: &mut Ui, which: Row) {
-    row(app, ui, which, true);
 }
 
 /// The default palette row.
@@ -128,7 +288,11 @@ pub fn grid(app: &mut App, ui: &mut Ui, which: Row) {
     let colors = colors_of(app, which);
     let no_color = app.settings.palette.show_no_color;
     let count = colors.len() + usize::from(no_color);
-    let side = swatch_side();
+    let side = if crate::ui::mobile::phone() {
+        34.0
+    } else {
+        swatch_side(app)
+    };
     let gap = 6.0;
     let width = ui.available_width();
     let cols = (((width + gap) / (side + gap)).floor() as usize).max(1);
@@ -156,7 +320,7 @@ pub fn grid(app: &mut App, ui: &mut Ui, which: Row) {
             Some(index)
         };
         let entry = color_index.and_then(|i| colors.get(i));
-        swatch(app, ui, &painter, cell, entry, which, index, color_index, false);
+        swatch(app, ui, &painter, cell, entry, which, index, color_index);
     }
     // A colour carried out of the grid: the chip follows the finger, and
     // letting go over an object fills it.
@@ -179,6 +343,11 @@ pub fn grid(app: &mut App, ui: &mut Ui, which: Row) {
             Tokens::text_dim(),
         );
     }
+}
+
+/// The strip of `which`, a row or (`vertical`) a column.
+pub fn strip(app: &mut App, ui: &mut Ui, which: Row, vertical: bool) {
+    row(app, ui, which, vertical);
 }
 
 /// The default palette as a column (docked on the left or the right).
@@ -227,12 +396,16 @@ impl Axis {
 }
 
 fn colors_of(app: &App, which: Row) -> Vec<(String, Color)> {
+    if which != Row::Document && shows_document(app, which) {
+        return colors_of(app, Row::Document);
+    }
     match which {
         // An RGB drawing gets the palette's colours as RGB, so what it
         // applies is RGB too; spot inks and registration stay (#483).
         // Worked out when the palette changes, not every frame (#620).
         Row::Main if rgb_drawing(app) => app.palette_rgb.clone(),
         Row::Main => app.palette.clone(),
+        Row::Document if !app.has_document() => Vec::new(),
         Row::Document => app
             .doc()
             .palette
@@ -295,15 +468,96 @@ fn in_rgb(c: Color) -> Color {
     }
 }
 
-/// The name of `c` in the default palette or the palettes shown; empty
-/// when it has none.
+/// The name of `c`: a spot ink's of the drawing, else its name in the
+/// default palette or the palettes shown; empty when it has none.
 pub fn name_of(app: &App, c: Color) -> String {
+    // A spot colour of the drawing goes by its ink's name, such as the
+    // CutContour ink TraceCut adds (#2186).
+    if let Color::Spot { ink, .. } = c {
+        if let Some(i) = app.has_document().then(|| app.doc().ink(ink)).flatten() {
+            if !i.name.is_empty() {
+                return i.name.clone();
+            }
+        }
+    }
+    // A name given to it in the document palette (#2187).
+    if let Some(n) = app
+        .has_document()
+        .then(|| app.doc().palette_name_of(c))
+        .flatten()
+    {
+        return n.to_string();
+    }
+    palette_name_of(app, c)
+}
+
+/// The name a palette (the default one, then the others) gives colour
+/// `c`, or an empty one.
+pub fn palette_name_of(app: &App, c: Color) -> String {
     app.palette
         .iter()
         .chain(app.palettes.iter().flat_map(|p| p.colors.iter()))
         .find(|(_, pc)| *pc == c)
         .map(|(n, _)| n.clone())
         .unwrap_or_default()
+}
+
+/// The mark of a spot colour's swatch: a small dot in its lower right
+/// corner, white on a dark colour and black on a light one, so a spot
+/// ink stands out from the process colours beside it (#2321).
+pub fn spot_mark(painter: &egui::Painter, cell: Rect, c: tracedraw_core::Color) {
+    let side = cell.width().min(cell.height());
+    if side < 6.0 {
+        return;
+    }
+    let r = (side * 0.14).clamp(1.5, 3.0);
+    let at = cell.right_bottom() - vec2(r + 2.0, r + 2.0);
+    let (dot, ring) = mark_colors(c);
+    painter.circle(at, r, dot, Stroke::new(0.5, ring));
+}
+
+/// The colours of a mark on a swatch of `c`: the mark itself and its thin
+/// edge, black on a light colour and white on a dark one.
+fn mark_colors(c: tracedraw_core::Color) -> (Color32, Color32) {
+    let [red, green, blue] = c.to_rgb8();
+    let light = 0.299 * red as f32 + 0.587 * green as f32 + 0.114 * blue as f32 > 140.0;
+    if light {
+        (Color32::BLACK, Color32::WHITE)
+    } else {
+        (Color32::WHITE, Color32::BLACK)
+    }
+}
+
+/// The mark of an overprinting fill or outline on a swatch: a small ring
+/// in its lower left corner (the spot colour's dot sits in the lower
+/// right), so a colour that prints over the inks beneath it is told from
+/// one that knocks them out (#2455).
+pub fn overprint_mark(painter: &egui::Painter, cell: Rect, c: tracedraw_core::Color) {
+    let side = cell.width().min(cell.height());
+    if side < 6.0 {
+        return;
+    }
+    let r = (side * 0.14).clamp(1.5, 3.0);
+    let at = cell.left_bottom() + vec2(r + 2.0, -(r + 2.0));
+    let (ring, edge) = mark_colors(c);
+    painter.circle_stroke(at, r + 0.5, Stroke::new(0.5, edge));
+    painter.circle_stroke(at, r, Stroke::new(1.0, ring));
+}
+
+/// The marks a fill or outline swatch of `c` carries: the spot colour's
+/// dot, and the ring when the colour overprints.
+pub fn swatch_marks(
+    painter: &egui::Painter,
+    cell: Rect,
+    c: tracedraw_core::Color,
+    overprint: bool,
+) {
+    if matches!(c, tracedraw_core::Color::Spot { .. }) {
+        spot_mark(painter, cell, c);
+    }
+    if overprint {
+        overprint_mark(painter, cell, c);
+    }
 }
 
 /// Tooltip of a swatch: the colour's name, then its values.
@@ -351,6 +605,18 @@ pub fn color_values(c: Color) -> String {
         }
         Color::Rgb { r, g, b } => format!("R: {} G: {} B: {}", byte(r), byte(g), byte(b)),
         Color::Gray { v } => crate::i18n::trf("palette.gray_value", &[("v", &byte(v).to_string())]),
+        // A spot colour: its tint and the process colour it stands for;
+        // its name (the ink's) goes above, not its number (#2186).
+        Color::Spot {
+            tint, c, m, y, k, ..
+        } => {
+            let t = if tint.is_finite() { tint } else { 1.0 };
+            format!(
+                "{}% {}",
+                pct(t.clamp(0.0, 1.0)),
+                color_values(Color::Cmyk { c, m, y, k })
+            )
+        }
         other => crate::app::color_description(other),
     }
 }
@@ -365,30 +631,52 @@ fn scroll_of(app: &mut App, which: Row) -> &mut usize {
     }
 }
 
-/// How thick the strip of `which` is: one row of swatches, and for the
-/// default palette one more swatch for each further row (#610).
+/// How thick the strip of `which` is: one row of swatches, and one more
+/// swatch for each further row (#610).
 pub fn thickness(app: &App, which: Row) -> f32 {
-    row_h() + (lines_of(app, which) - 1) as f32 * stride_len()
+    thickness_for(swatch_side_of(app, which), lines_of(app, which))
 }
 
-/// Rows of swatches in the strip of `which` (the document palette and
-/// the further palettes have one).
-fn lines_of(app: &App, which: Row) -> usize {
-    match which {
-        Row::Main => app.settings.palette.rows(),
-        Row::Document | Row::Extra(_) => 1,
+/// Rows of swatches in the strip of `which` (the document palette row
+/// has one): a floating strip's flow from its size, a docked one's
+/// setting, "Fit" as many as show every colour in the length it had
+/// last, at most [`crate::settings::MAX_ROWS`].
+pub fn lines_of(app: &App, which: Row) -> usize {
+    if which == Row::Document {
+        return 1;
     }
+    let prefs = strip_prefs(app, which);
+    let side = swatch_side_of(app, which);
+    if prefs.dock == crate::ui::bars::Dock::Floating {
+        return floating_flow(prefs.float_size, side).lines;
+    }
+    crate::settings::rows_of(prefs.rows).unwrap_or_else(|| fit_lines(app, which))
 }
 
-/// How many swatches fit in a row of this width (the No Color well
-/// counts as one).
-pub fn visible_slots(width: f32) -> usize {
-    ((width - LEAD - TAIL - 1.0) / stride_len()).floor().max(1.0) as usize
+/// The rows "Fit" gives `which`: every colour in the length it had
+/// last.
+pub fn fit_lines(app: &App, which: Row) -> usize {
+    let len = app.palette_lens.get(&which.key()).copied().unwrap_or(800.0);
+    let cols = visible_slots(len, stride_of(app, which));
+    swatch_count(app, which)
+        .div_ceil(cols.max(1))
+        .clamp(1, usize::from(crate::settings::MAX_ROWS))
+}
+
+/// How many swatches `stride` apart fit in a row of this width (the No
+/// Color well counts as one).
+pub fn visible_slots(width: f32, stride: f32) -> usize {
+    ((width - LEAD - TAIL - 1.0) / stride.max(1.0))
+        .floor()
+        .max(1.0) as usize
 }
 
 fn row(app: &mut App, ui: &mut Ui, which: Row, vertical: bool) {
     let lines = lines_of(app, which);
     let thick = thickness(app, which);
+    let sw = swatch_side_of(app, which);
+    let st = stride_of(app, which);
+    let is_doc = shows_document(app, which);
     let size = if vertical {
         vec2(thick, ui.available_height())
     } else {
@@ -398,6 +686,18 @@ fn row(app: &mut App, ui: &mut Ui, which: Row, vertical: bool) {
     if which == Row::Document {
         app.doc_palette_rect = Some(rect);
     }
+    app.palette_strip_rects.push((which, rect));
+    // A palette of the user's takes colours dropped on its bar.
+    let own = user_palette_of(app, which);
+    if let Some(i) = own {
+        app.palette_drop_rects.retain(|(k, _)| *k != i);
+        app.palette_drop_rects.push((i, rect));
+    }
+    let hint = if is_doc {
+        Some("palette.document_hint")
+    } else {
+        own.map(|_| "palette.user_empty_hint")
+    };
     let painter = ui.painter_at(rect);
     let ax = Axis {
         vertical,
@@ -409,14 +709,20 @@ fn row(app: &mut App, ui: &mut Ui, which: Row, vertical: bool) {
         rect.width()
     }
     .round();
+    // The length kept for "Fit", which counts the swatches a line holds.
+    if app.palette_lens.get(&which.key()) != Some(&len) {
+        app.palette_lens.insert(which.key(), len);
+        if crate::settings::rows_of(strip_prefs(app, which).rows).is_none() {
+            ui.ctx().request_repaint();
+        }
+    }
     let mut px = Pixels::default();
     px.rect(ax.rect(0.0, 0.0, len, 1.0), crate::theme::Tokens::border());
     // Swatch frames start 2 px from the strip's edge.
     const EDGE: f32 = 2.0;
     // Grip: dots in a zigzag; dragging it moves the palette. Locked bars
     // show no grip, and a floating palette moves by its title.
-    let floating =
-        app.settings.bars.dock(crate::ui::bars::Bar::Palette) == crate::ui::bars::Dock::Floating;
+    let floating = strip_prefs(app, which).dock == crate::ui::bars::Dock::Floating;
     if !app.settings.bars.locked && !floating {
         for i in 0..5 {
             let c = EDGE + 1.0 + 4.0 * i as f32;
@@ -429,20 +735,36 @@ fn row(app: &mut App, ui: &mut Ui, which: Row, vertical: bool) {
         }
     }
     px.paint(&painter);
-    crate::ui::bars::grip_zone(
-        app,
-        ui,
-        crate::ui::bars::Bar::Palette,
-        ax.rect(0.0, 0.0, 11.0, thick),
-        which.key(),
-    );
+    let grip_rect = ax.rect(0.0, 0.0, 11.0, thick);
+    match which {
+        // A palette bar of its own moves by itself.
+        Row::Extra(k) if !floating => {
+            crate::ui::palette_bars::grip_zone(app, ui, k, grip_rect);
+        }
+        Row::Extra(_) => {}
+        // The document palette row moves by itself too (as a bar of its
+        // own), never the default palette above it.
+        Row::Document if !floating => {
+            crate::ui::palette_bars::document_grip_zone(app, ui, grip_rect);
+        }
+        Row::Main if !floating => {
+            crate::ui::bars::grip_zone(
+                app,
+                ui,
+                crate::ui::bars::Bar::Palette,
+                grip_rect,
+                which.key(),
+            );
+        }
+        _ => {}
+    }
 
     let colors = colors_of(app, which);
     let no_color = app.settings.palette.show_no_color;
     let count = colors.len() + usize::from(no_color);
     // Several rows fill line by line: each line holds the next run of the
     // palette, and the strip scrolls a swatch at a time (#610).
-    let cols = visible_slots(len);
+    let cols = visible_slots(len, st);
     let slots = cols * lines;
     let max_scroll = count.saturating_sub(slots);
     let scroll = (*scroll_of(app, which)).min(max_scroll);
@@ -469,16 +791,25 @@ fn row(app: &mut App, ui: &mut Ui, which: Row, vertical: bool) {
     egui::Popup::menu(&menu_resp)
         .id(egui::Id::new(("palette_menu_popup", which.key())))
         .style(crate::ui::menus::menu_popup_style)
-        .show(|ui| crate::ui::menus::body(ui, |ui| palette_menu(app, ui, which)));
+        .show(|ui| crate::ui::menus::body(ui, |ui| menu(app, ui, which)));
+    // A double click on the row outside the swatches edits its palette
+    // (#2138).
+    if bg.double_clicked() {
+        if let Some(i) = palette_index_of(app, which) {
+            app.open_palette_editor(i);
+        } else if shows_document(app, which) {
+            app.open_palette_editor(crate::ui::palette_editor::DOCUMENT);
+        }
+    }
     // A right click on the row outside the swatches opens the same menu.
     egui::Popup::context_menu(&bg)
         .id(egui::Id::new(("palette_context_popup", which.key())))
         .style(crate::ui::menus::menu_popup_style)
-        .show(|ui| crate::ui::menus::body(ui, |ui| palette_menu(app, ui, which)));
+        .show(|ui| crate::ui::menus::body(ui, |ui| menu(app, ui, which)));
 
     // The eyedropper: only the document palette takes new colours.
     let drop_rect = ax.rect(34.0, EDGE + 2.0, 18.0, 18.0);
-    let can_sample = which == Row::Document && app.drawing_shown();
+    let can_sample = is_doc && app.drawing_shown();
     let drop_resp = ui.interact(
         drop_rect,
         ui.id().with(("palette_dropper", which.key())),
@@ -488,7 +819,7 @@ fn row(app: &mut App, ui: &mut Ui, which: Row, vertical: bool) {
             Sense::hover()
         },
     );
-    let active = which == Row::Document && app.pending_palette_sample;
+    let active = is_doc && app.pending_palette_sample;
     if active || (can_sample && drop_resp.hovered()) {
         painter.rect(
             drop_rect.expand(1.0),
@@ -570,11 +901,11 @@ fn row(app: &mut App, ui: &mut Ui, which: Row, vertical: bool) {
     });
     let shown = slots.min(count.saturating_sub(scroll));
     if shown == 0 {
-        if which == Row::Document && !vertical {
+        if let Some(hint) = hint.filter(|_| !vertical) {
             painter.text(
                 ax.point(LEAD + 8.0, EDGE + 11.0),
                 Align2::LEFT_CENTER,
-                tr("palette.document_hint"),
+                tr(hint),
                 FontId::proportional(11.0),
                 Tokens::text_dim(),
             );
@@ -586,48 +917,83 @@ fn row(app: &mut App, ui: &mut Ui, which: Row, vertical: bool) {
     for line in 0..shown.div_ceil(cols) {
         let n = cols.min(shown - line * cols);
         px.rect(
-            ax.rect(
-                LEAD,
-                EDGE + line as f32 * stride_len(),
-                n as f32 * stride_len() + 1.0,
-                stride_len() + 1.0,
-            ),
+            ax.rect(LEAD, EDGE + line as f32 * st, n as f32 * st + 1.0, st + 1.0),
             FRAME,
         );
     }
     px.paint(&painter);
-    let notch: f32 = if ui.rect_contains_pointer(rect) {
-        ui.input(|i| {
-            i.events
-                .iter()
-                .map(|e| match e {
-                    egui::Event::MouseWheel { unit, delta, .. } => {
-                        let d = delta.y + delta.x;
-                        match unit {
-                            egui::MouseWheelUnit::Line => d,
-                            egui::MouseWheelUnit::Point => d / 50.0,
-                            egui::MouseWheelUnit::Page => d * 10.0,
-                        }
-                    }
-                    _ => 0.0,
-                })
-                .sum()
-        })
+    // Ctrl+wheel over the strip sizes its swatches, no other palette's
+    // (#2900); the plain wheel scrolls it.
+    if let Some(steps) = crate::ui::bars::ctrl_wheel_steps(
+        ui,
+        rect,
+        ui.id().with(("palette_size_wheel", which.key())),
+    ) {
+        let now = strip_prefs(app, which).swatch;
+        crate::ui::palette_bars::set_swatch(
+            app,
+            which,
+            crate::settings::swatch_resized(now, steps),
+        );
+    }
+    // The plain wheel: a swatch a notch, on the desktop and in the
+    // browser alike (#1406).
+    let steps = if ui.rect_contains_pointer(rect) {
+        crate::ui::field::wheel_steps_with(
+            ui,
+            ui.id().with(("palette_scroll_wheel", which.key())),
+            |m| !(m.ctrl || m.command),
+            true,
+        )
+        .unwrap_or(0)
     } else {
-        0.0
+        0
     };
-    if notch < -0.5 {
-        *scroll_of(app, which) = (scroll + 1).min(max_scroll);
-    } else if notch > 0.5 {
-        *scroll_of(app, which) = scroll.saturating_sub(1);
+    let by = steps.unsigned_abs() as usize;
+    if steps < 0 {
+        *scroll_of(app, which) = (scroll + by).min(max_scroll);
+    } else if steps > 0 {
+        *scroll_of(app, which) = scroll.saturating_sub(by);
+    }
+    // A finger dragged along a strip longer than its room scrolls it with
+    // the finger, a swatch for every swatch's width; one dragged off the
+    // strip drags a colour as before (#1997). Known before the swatches
+    // are drawn, so the one under the finger drags and fills nothing.
+    if ui.input(|i| i.has_touch_screen()) {
+        let key = egui::Id::new(("palette_finger", which.key()));
+        let before: Option<crate::ui::overflow::Grab> = ui.ctx().data(|d| d.get_temp(key));
+        let mut grab = before;
+        if max_scroll > 0 {
+            let room = ax.rect(LEAD, 0.0, (len - LEAD - TAIL).max(0.0), thick);
+            let was = scroll as f32 * st;
+            if let Some(pos) =
+                crate::ui::overflow::finger_slide(ui, key, &mut grab, room, !vertical, was)
+            {
+                let to = (pos / st).round().max(0.0) as usize;
+                *scroll_of(app, which) = to.min(max_scroll);
+                app.palette_drag = None;
+            }
+        } else {
+            grab = None;
+        }
+        if grab != before {
+            ui.ctx().data_mut(|d| match grab {
+                Some(g) => {
+                    d.insert_temp(key, g);
+                }
+                None => {
+                    d.remove::<crate::ui::overflow::Grab>(key);
+                }
+            });
+        }
     }
     for slot in 0..shown {
         let index = scroll + slot;
         let cell = ax.rect(
-            LEAD + 1.0 + (slot % cols) as f32 * stride_len(),
-            EDGE + 1.0 + (slot / cols) as f32 * stride_len(),
-            swatch_side(),
-            swatch_side(),
+            LEAD + 1.0 + (slot % cols) as f32 * st,
+            EDGE + 1.0 + (slot / cols) as f32 * st,
+            sw,
+            sw,
         );
         let color_index = if no_color {
             index.checked_sub(1)
@@ -635,13 +1001,13 @@ fn row(app: &mut App, ui: &mut Ui, which: Row, vertical: bool) {
             Some(index)
         };
         let entry = color_index.and_then(|i| colors.get(i));
-        swatch(app, ui, &painter, cell, entry, which, index, color_index, true);
+        swatch(app, ui, &painter, cell, entry, which, index, color_index);
     }
-    if which == Row::Document && shown < slots && colors.is_empty() && !vertical {
+    if let Some(hint) = hint.filter(|_| shown < slots && colors.is_empty() && !vertical) {
         painter.text(
-            ax.point(LEAD + shown as f32 * stride_len() + 9.0, EDGE + 11.0),
+            ax.point(LEAD + shown as f32 * st + 9.0, EDGE + 11.0),
             Align2::LEFT_CENTER,
-            tr("palette.document_hint"),
+            tr(hint),
             FontId::proportional(11.0),
             Tokens::text_dim(),
         );
@@ -659,20 +1025,15 @@ fn swatch(
     which: Row,
     index: usize,
     color_index: Option<usize>,
-    drag: bool,
 ) {
     let id = ui.id().with(("swatch", which.key(), index));
-    // Nothing to colour on the Welcome Screen or with no drawing open: the
-    // swatches keep their colours and their tooltips but take no clicks or
-    // drags (#482, #1082). A swatch of a phone's grid takes a tap only: a
-    // drag over it scrolls the grid, which is how the colours under the
-    // finger are reached.
-    let sense = if !app.drawing_shown() {
-        Sense::hover()
-    } else if drag {
+    // Nothing to colour on the Welcome Screen or with no drawing open:
+    // the swatches keep their colours and their tooltips but take no
+    // clicks or drags (#482, #1082).
+    let sense = if app.drawing_shown() {
         Sense::click_and_drag()
     } else {
-        Sense::click()
+        Sense::hover()
     };
     let resp = ui.interact(cell, id, sense);
     match entry {
@@ -688,10 +1049,14 @@ fn swatch(
         }
         Some((_, c)) => {
             painter.rect_filled(cell, 0.0, crate::canvas::to_color32(*c));
+            if matches!(c, tracedraw_core::Color::Spot { .. }) {
+                spot_mark(painter, cell, *c);
+            }
         }
     }
-    let current =
-        which == Row::Document && color_index.is_some() && app.doc_palette_current == color_index;
+    let current = shows_document(app, which)
+        && color_index.is_some()
+        && app.doc_palette_current == color_index;
     if resp.hovered() || resp.is_pointer_button_down_on() || current {
         // A white frame around the swatch under the pointer.
         let mut px = Pixels::default();
@@ -720,56 +1085,64 @@ fn swatch(
     };
 
     // Dragging the colour: inside an object it fills it, on its outline
-    // it colours the outline, on the document palette it joins it.
-    if drag && resp.drag_started() && app.palette_shades.is_none() {
+    // it colours the outline, on the document palette it joins it. A
+    // finger sliding the strip along drags no colour, and the swatch it
+    // lifts from takes no click (#1997).
+    let sliding = || crate::ui::overflow::finger_sliding(ui.ctx());
+    if resp.drag_started_by(egui::PointerButton::Primary)
+        && app.palette_shades.is_none()
+        && !sliding()
+    {
         app.palette_drag = Some(entry.map(|(_, c)| *c));
     }
-    if drag && app.palette_drag.is_some() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+    if app.palette_drag.is_some() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
         app.palette_drag = None;
     }
-    if drag && resp.dragged() {
+    if resp.dragged() {
         if let (Some(color), Some(pos)) = (app.palette_drag, ui.ctx().pointer_latest_pos()) {
             drag_chip(app, ui.ctx(), color, pos);
         }
     }
-    if drag && resp.drag_stopped() {
-        if let (Some(color), Some(pos)) = (app.palette_drag.take(), ui.ctx().pointer_latest_pos()) {
-            app.drop_color(color, pos);
+    // A press that slipped a few pixels but was let go on the swatch it
+    // began on is a click, not a drag: egui counts any move past its
+    // click distance as a drag, and the colour went nowhere (#1336).
+    // The same for the right button, which sets the outline.
+    let on_cell = ui
+        .ctx()
+        .pointer_latest_pos()
+        .is_some_and(|pos| cell.contains(pos));
+    let slipped_click = resp.drag_stopped_by(egui::PointerButton::Primary) && on_cell && !sliding();
+    let slipped_right = resp.drag_stopped_by(egui::PointerButton::Secondary) && on_cell;
+    if resp.drag_stopped() {
+        let dragged = app.palette_drag.take();
+        if !slipped_click && !slipped_right {
+            if let (Some(color), Some(pos)) = (dragged, ui.ctx().pointer_latest_pos()) {
+                app.drop_color(color, pos);
+            }
         }
     }
 
-    // Click and hold: the colour's shades — or, on a phone, the colour
-    // picked up: the finger moving after the hold carries it to an object
-    // to fill, so the shades there wait a little longer.
+    // A finger has no right button: held on the swatch and let go, it
+    // sets the outline; held for a second, the shades (#1611, #1707).
+    let touch_outline = touch_hold(app, ui, &resp, cell, entry, id);
+
+    // Click and hold: the colour's shades (a finger's are above).
     if let Some((_, c)) = entry {
         if resp.is_pointer_button_down_on()
-            && ui.input(|i| i.pointer.primary_down())
+            && ui.input(|i| i.pointer.primary_down() && !i.any_touches())
             && app.palette_shades.is_none()
-            && app.palette_drag.is_none()
         {
-            let (held, moved) = ui.input(|i| {
-                let held = i
-                    .pointer
+            let held = ui.input(|i| {
+                i.pointer
                     .press_start_time()
                     .map(|t| i.time - t)
-                    .unwrap_or(0.0);
-                let moved = match (i.pointer.press_origin(), i.pointer.latest_pos()) {
-                    (Some(from), Some(to)) => (to - from).length(),
-                    _ => 0.0,
-                };
-                (held, moved)
+                    .unwrap_or(0.0)
             });
-            if !drag && held >= HOLD && moved > 10.0 {
-                // Carried: the chip follows the finger, and letting go
-                // over an object fills it (see `grid`).
-                app.palette_drag = Some(Some(*c));
-            }
-            let shades_at = if drag { HOLD } else { HOLD * 2.0 };
-            if held >= shades_at && moved <= 10.0 && !resp.dragged() {
+            if held >= HOLD && !resp.dragged() {
                 app.palette_shades = Some((*c, cell.center_top()));
                 ui.ctx()
                     .data_mut(|d| d.insert_temp(shades_fired_id(), true));
-            } else if held < shades_at {
+            } else {
                 ui.ctx().request_repaint();
             }
         }
@@ -783,12 +1156,15 @@ fn swatch(
         ui.ctx().data_mut(|d| d.remove::<bool>(shades_fired_id()));
         return;
     }
+    // Only that release: once the button is up (the hold ended over the
+    // shades, or held past a click's time), the mark goes, or it took the
+    // next click on any swatch and the colour was not applied (#1336).
+    if fired && ui.input(|i| !i.pointer.any_down() && !i.pointer.any_released()) {
+        ui.ctx().data_mut(|d| d.remove::<bool>(shades_fired_id()));
+    }
 
-    // A tap is not applied while a colour is being carried: the release
-    // that ends the carry is not a tap.
-    let carried = app.palette_drag.is_some();
-    if resp.clicked() && !carried {
-        if which == Row::Document {
+    if (resp.clicked() || slipped_click) && !touch_outline {
+        if shows_document(app, which) {
             app.doc_palette_current = color_index;
         }
         match entry {
@@ -799,6 +1175,18 @@ fn swatch(
                 } else {
                     app.palette_fill(*c);
                 }
+            }
+        }
+    }
+    // A double click on a colour edits it in the Palette Editor: its
+    // name, value and whether it is a spot ink (#2580). The first click
+    // has applied it, as in the reference program.
+    if resp.double_clicked() && !touch_outline {
+        if let Some(ci) = color_index.filter(|_| entry.is_some()) {
+            if shows_document(app, which) {
+                app.open_palette_editor_at(crate::ui::palette_editor::DOCUMENT, ci);
+            } else if let Some(i) = palette_index_of(app, which) {
+                app.open_palette_editor_at(i, ci);
             }
         }
     }
@@ -824,22 +1212,116 @@ fn swatch(
             .ctx()
             .data_mut(|d| d.remove_temp::<bool>(menu_id))
             .unwrap_or(false);
-        // Not a right click that makes a copy during a drag on the canvas.
-        if resp.secondary_clicked() && !hold_open && !app.transforming() {
-            app.apply_outline_color(entry.map(|(_, c)| *c));
+        // Not a right click that makes a copy during a drag on the canvas,
+        // nor egui's long press of a finger (the hold above sets it).
+        if (resp.secondary_clicked() || slipped_right)
+            && !resp.long_touched()
+            && !hold_open
+            && !app.transforming()
+        {
+            right_click_outline(app, ui, entry);
         }
         egui::Popup::menu(&resp)
             .id(menu_id)
             .open_memory(hold_open.then_some(egui::SetOpenCommand::Bool(true)))
             .at_pointer_fixed()
             .style(crate::ui::menus::menu_popup_style)
-            .show(|ui| crate::ui::menus::body(ui, |ui| palette_menu(app, ui, which)));
+            .show(|ui| crate::ui::menus::body(ui, |ui| swatch_menu(app, ui, which, color_index)));
     } else {
+        // With the menu on a right click, Ctrl or Alt held sets the
+        // outline instead, without the menu (#2132).
+        let keyed = ui.input(|i| i.modifiers.ctrl || i.modifiers.alt || i.modifiers.command);
+        if keyed && resp.secondary_clicked() && !app.transforming() {
+            right_click_outline(app, ui, entry);
+            return;
+        }
         egui::Popup::context_menu(&resp)
             .id(menu_id)
             .style(crate::ui::menus::menu_popup_style)
-            .show(|ui| crate::ui::menus::body(ui, |ui| palette_menu(app, ui, which)));
+            .show(|ui| crate::ui::menus::body(ui, |ui| swatch_menu(app, ui, which, color_index)));
     }
+}
+
+/// A right click on a swatch that sets the outline: Ctrl held mixes a
+/// tenth of the colour into the outline, as Ctrl+click mixes into the
+/// fill; otherwise the outline takes the colour (#2132).
+fn right_click_outline(app: &mut App, ui: &Ui, entry: Option<&(String, Color)>) {
+    match entry {
+        Some((_, c)) if ui.input(|i| i.modifiers.ctrl) => app.mix_into_outline(*c),
+        _ => app.apply_outline_color(entry.map(|(_, c)| *c)),
+    }
+}
+
+/// A finger on a swatch (a touch screen, where a press comes with a
+/// touch): let go after [`HOLD`] it sets the outline, as a right click
+/// does, when Options say a right click sets it; held [`RIGHT_HOLD`] it
+/// shows the shades, and the release then does nothing. A tap stays a
+/// click (the fill), a slide a drag. The press is followed by hand, as
+/// egui hands a finger held past its click time to its own long press
+/// (the right click, and the menu when a right click opens it).
+/// True on the release that set the outline: that release fills nothing.
+fn touch_hold(
+    app: &mut App,
+    ui: &Ui,
+    resp: &egui::Response,
+    cell: Rect,
+    entry: Option<&(String, Color)>,
+    id: egui::Id,
+) -> bool {
+    let key = id.with("touch_hold");
+    let (now, touched, down, start, origin, latest) = ui.input(|i| {
+        (
+            i.time,
+            i.any_touches(),
+            i.pointer.primary_down(),
+            i.pointer.press_start_time(),
+            i.pointer.press_origin(),
+            i.pointer.latest_pos(),
+        )
+    });
+    let mut since = ui.ctx().data(|d| d.get_temp::<f64>(key));
+    if since.is_none()
+        && touched
+        && down
+        && resp.is_pointer_button_down_on()
+        && origin.is_some_and(|o| cell.contains(o))
+    {
+        since = start;
+        if let Some(t) = since {
+            ui.ctx().data_mut(|d| d.insert_temp(key, t));
+        }
+    }
+    let Some(since) = since else {
+        return false;
+    };
+    let slid = match (origin, latest) {
+        (Some(o), Some(p)) => o.distance(p) > ui.ctx().options(|o| o.input_options.max_click_dist),
+        _ => false,
+    };
+    if slid || resp.dragged() || app.palette_drag.is_some() {
+        ui.ctx().data_mut(|d| d.remove::<f64>(key));
+        return false;
+    }
+    let held = now - since;
+    if down {
+        if held >= RIGHT_HOLD {
+            ui.ctx().data_mut(|d| d.remove::<f64>(key));
+            if let Some((_, c)) = entry {
+                if app.palette_shades.is_none() {
+                    app.palette_shades = Some((*c, cell.center_top()));
+                }
+            }
+        } else {
+            ui.ctx().request_repaint();
+        }
+        return false;
+    }
+    ui.ctx().data_mut(|d| d.remove::<f64>(key));
+    if held < HOLD || !app.settings.palette.right_click_outline || app.transforming() {
+        return false;
+    }
+    app.apply_outline_color(entry.map(|(_, c)| *c));
+    true
 }
 
 /// The colour under the pointer while it is dragged: a filled chip over
@@ -972,121 +1454,206 @@ fn double_chevron(painter: &egui::Painter, c: Pos2, color: Color32, vertical: bo
 }
 
 /// The palette menu (the arrow button, or a right click on the row).
-fn palette_menu(app: &mut App, ui: &mut Ui, which: Row) {
-    use crate::ui::menus::{check, item, radio, sep, sub};
+pub fn menu(app: &mut App, ui: &mut Ui, which: Row) {
+    menu_of(app, ui, which, false);
+}
+
+/// The palette menu; under a swatch's own Delete Color (`swatch`), the
+/// document palette's Delete Color of the current colour is left out.
+fn menu_of(app: &mut App, ui: &mut Ui, which: Row, swatch: bool) {
+    use crate::ui::menus::{check, item, sep};
     ui.set_min_width(220.0);
-    match which {
-        Row::Main => {
-            if item(ui, "menu.window.palette_open", "", true) {
-                app.open_palette_file();
-            }
-            if item(ui, "menu.window.palette_editor", "", true) {
-                app.dialog = crate::ui::dialogs::Dialog::PaletteEditor(Default::default());
-            }
-            if item(ui, "menu.window.palette_manager", "", true) {
-                app.show_dockers = true;
-                app.docker_tab = crate::app::DockerTab::Palettes;
-            }
-            sep(ui);
-            if check(
-                ui,
-                "palette.show_document",
-                "",
-                app.settings.palette.show_document,
-            ) {
-                app.settings.palette.show_document = !app.settings.palette.show_document;
-                app.settings.save();
-            }
-            // Rows of swatches, as in Options > Customization > Color
-            // Palette (#610).
-            sub(ui, "palette.rows", |ui| {
-                let rows = app.settings.palette.rows();
-                for (n, key) in [
-                    (1, "palette.rows_1"),
-                    (2, "palette.rows_2"),
-                    (3, "palette.rows_3"),
-                ] {
-                    if radio(ui, key, "", rows == n) {
-                        app.settings.palette.rows = n as u8;
-                        app.settings.save();
-                    }
-                }
-            });
+    let document = shows_document(app, which);
+    if which == Row::Main || !document {
+        if which == Row::Main && item(ui, "menu.window.palette_open", "", true) {
+            app.open_palette_file();
         }
-        Row::Document => {
-            let doc = app.has_document();
-            if check(
-                ui,
-                "palette.auto_update",
-                "",
-                app.settings.palette.auto_update_document,
-            ) {
-                app.settings.palette.auto_update_document =
-                    !app.settings.palette.auto_update_document;
-                app.settings.save();
+        // Edit Palette...: the Palette Editor on this bar's palette
+        // (#2138).
+        if let Some(i) = palette_index_of(app, which) {
+            if item(ui, "palette.edit", "", true) {
+                app.open_palette_editor(i);
             }
-            sep(ui);
-            if item(
-                ui,
-                "palette.add_from_selection",
-                "",
-                doc && !app.selection.is_empty(),
-            ) {
-                app.palette_from_selection();
-            }
-            if item(ui, "palette.add_from_document", "", doc) {
-                app.add_document_colors_to_palette();
-            }
-            let current = app
-                .doc_palette_current
-                .filter(|i| *i < app.doc().palette.len());
-            if item(ui, "palette.delete_color", "", doc && current.is_some()) {
-                if let Some(i) = current {
-                    let mut colors = app.doc().palette.clone();
-                    colors.remove(i);
-                    app.run(Command::SetDocumentPalette { colors });
-                    app.doc_palette_current = None;
-                }
-            }
-            sep(ui);
-            sub(ui, "palette.palette", |ui| {
-                if item(ui, "palette.reset", "", doc) {
-                    app.reset_document_palette();
-                }
-            });
         }
-        Row::Extra(k) => {
-            let index = app.extra_palettes.get(k).map(|r| r.index);
-            if item(ui, "menu.window.palette_editor", "", true) {
-                app.dialog = crate::ui::dialogs::Dialog::PaletteEditor(Default::default());
-            }
-            if item(ui, "menu.window.palette_manager", "", true) {
-                app.show_dockers = true;
-                app.docker_tab = crate::app::DockerTab::Palettes;
+        if item(ui, "menu.window.palette_manager", "", true) {
+            app.show_dockers = true;
+            app.docker_tab = crate::app::DockerTab::Palettes;
+        }
+        sep(ui);
+    }
+    if document {
+        // Edit Palette...: the Palette Editor on the document palette
+        // (#2321).
+        if item(ui, "palette.edit", "", app.has_document()) {
+            app.open_palette_editor(crate::ui::palette_editor::DOCUMENT);
+        }
+        document_items(app, ui, swatch);
+        sep(ui);
+    }
+    if which == Row::Main
+        && check(
+            ui,
+            "palette.show_document",
+            "",
+            app.settings.palette.show_document,
+        )
+    {
+        app.settings.palette.show_document = !app.settings.palette.show_document;
+        app.settings.save();
+    }
+    if which != Row::Document {
+        crate::ui::palette_bars::strip_items(app, ui, which);
+    }
+    crate::ui::palette_bars::open_bar_items(app, ui);
+    if item(ui, "palette.new", "", true) {
+        crate::ui::palette_bars::start_new_palette(app);
+    }
+    if let Some(i) = user_palette_of(app, which) {
+        let sel = app.has_document() && !app.selection.is_empty();
+        if item(ui, "palette.add_selection_to_palette", "", sel) {
+            app.add_selection_colors_to_palette(i);
+        }
+        bitmap_colors_items(app, ui, Some(i));
+    }
+    if let Row::Extra(k) = which {
+        sep(ui);
+        if item(ui, "palette.rename", "", true) {
+            crate::ui::palette_bars::start_rename(app, which);
+        }
+        if item(ui, "palette.close", "", k < app.settings.palette_bars.len()) {
+            crate::ui::palette_bars::close_bar(app, k);
+        }
+    } else if which == Row::Main && item(ui, "palette.rename", "", true) {
+        crate::ui::palette_bars::start_rename(app, which);
+    }
+}
+
+/// A swatch's menu: Delete Color for that colour (#2138), then the
+/// palette's menu. A built-in or locked palette shows Delete Color
+/// greyed, its tooltip saying why.
+pub fn swatch_menu(app: &mut App, ui: &mut Ui, which: Row, color_index: Option<usize>) {
+    use crate::ui::menus::{item, item_tip, sep};
+    if let Some(ci) = color_index {
+        if shows_document(app, which) {
+            let doc = app.has_document() && ci < app.doc().palette.len();
+            if item(ui, "palette.delete_color", "", doc) {
+                delete_document_color(app, ci);
             }
             sep(ui);
-            if item(ui, "palette.close", "", index.is_some()) {
-                if let Some(i) = index {
-                    app.toggle_palette(i);
-                }
+        } else if let Some(i) = palette_index_of(app, which) {
+            let takes = app.palette_takes_colors(i);
+            let why = if app.palettes.get(i).is_some_and(|p| p.builtin) {
+                tr("dialog.builtin_palette_hint")
+            } else {
+                tr("dialog.locked_palette_hint")
+            };
+            if item_tip(ui, "palette.delete_color", "", takes, Some(&why)) {
+                app.delete_palette_color(i, ci);
             }
+            sep(ui);
         }
     }
+    menu_of(app, ui, which, color_index.is_some());
+}
+
+/// Colour `i` leaves the document palette (one undo step).
+fn delete_document_color(app: &mut App, i: usize) {
+    if !app.has_document() || i >= app.doc().palette.len() {
+        return;
+    }
+    let mut colors = app.doc().palette.clone();
+    colors.remove(i);
+    app.run(Command::SetDocumentPalette { colors });
+    if app.doc_palette_current == Some(i) {
+        app.doc_palette_current = None;
+    }
+}
+
+/// How many colours Add Colors from Bitmap offers to take.
+pub const BITMAP_COLOR_COUNTS: [u32; 4] = [8, 16, 32, 64];
+
+/// Add Colors from Bitmap (#1840): a submenu of how many colours of the
+/// selected picture join the user's palette `palette`, or the document
+/// palette when None; greyed without a picture selected.
+fn bitmap_colors_items(app: &mut App, ui: &mut Ui, palette: Option<usize>) {
+    use crate::ui::menus::{item_label, sub_if};
+    let picture = app.has_document() && app.selected_bitmap().is_some();
+    sub_if(ui, "palette.add_from_bitmap", picture, |ui| {
+        for n in BITMAP_COLOR_COUNTS {
+            let label = crate::i18n::trf("palette.count", &[("n", &n.to_string())]);
+            if item_label(ui, &label, "", picture) {
+                app.add_bitmap_colors_to_palette(palette, n);
+            }
+        }
+    });
+}
+
+/// The document palette's own items.
+fn document_items(app: &mut App, ui: &mut Ui, swatch: bool) {
+    use crate::ui::menus::{check, item, sep, sub};
+    let doc = app.has_document();
+    if check(
+        ui,
+        "palette.auto_update",
+        "",
+        app.settings.palette.auto_update_document,
+    ) {
+        app.settings.palette.auto_update_document = !app.settings.palette.auto_update_document;
+        app.settings.save();
+    }
+    sep(ui);
+    if item(
+        ui,
+        "palette.add_from_selection",
+        "",
+        doc && !app.selection.is_empty(),
+    ) {
+        app.palette_from_selection();
+    }
+    if item(ui, "palette.add_from_document", "", doc) {
+        app.add_document_colors_to_palette();
+    }
+    bitmap_colors_items(app, ui, None);
+    let current = if doc {
+        app.doc_palette_current
+            .filter(|i| *i < app.doc().palette.len())
+    } else {
+        None
+    };
+    if !swatch && item(ui, "palette.delete_color", "", doc && current.is_some()) {
+        if let Some(i) = current {
+            delete_document_color(app, i);
+            app.doc_palette_current = None;
+        }
+    }
+    sep(ui);
+    sub(ui, "palette.palette", |ui| {
+        // Reset Palette takes every colour the drawing does not use out:
+        // asked first, apart from deleting a colour (#2138).
+        if item(ui, "palette.reset", "", doc) {
+            app.dialog = crate::ui::dialogs::Dialog::ConfirmResetPalette;
+        }
+        if item(ui, "palette.rename", "", true) {
+            crate::ui::palette_bars::start_rename(app, Row::Document);
+        }
+    });
 }
 
 /// Pop-ups drawn over the window: a colour's shades and the expanded
 /// palette. Called once per frame after the rows.
 pub fn popups(app: &mut App, ctx: &egui::Context) {
+    let sw = swatch_side(app);
+    let st = stride(app);
     if let Some((color, anchor)) = app.palette_shades {
         let id = egui::Id::new("palette_shades");
         let grid = shades(color);
-        let side = 5.0 * stride_len() + 1.0;
+        let side = 5.0 * st + 1.0;
         let screen = ctx.content_rect();
         // Above the swatch, kept on the screen (a palette docked at the
         // top or on a side has no room above some swatches).
         let mut pos = pos2(anchor.x - side / 2.0, anchor.y - side - 6.0);
         if pos.y < screen.top() {
-            pos.y = anchor.y + swatch_side() + 6.0;
+            pos.y = anchor.y + sw + 6.0;
         }
         pos.x = pos.x.clamp(
             screen.left(),
@@ -1103,8 +1670,8 @@ pub fn popups(app: &mut App, ctx: &egui::Context) {
                 for (i, c) in grid.iter().enumerate() {
                     let (col, row) = ((i % 5) as f32, (i / 5) as f32);
                     let cell = Rect::from_min_size(
-                        r.min + vec2(1.0 + col * stride_len(), 1.0 + row * stride_len()),
-                        vec2(swatch_side(), swatch_side()),
+                        r.min + vec2(1.0 + col * st, 1.0 + row * st),
+                        vec2(sw, sw),
                     );
                     painter.rect_filled(cell, 0.0, crate::canvas::to_color32(*c));
                     let resp = ui
@@ -1144,7 +1711,10 @@ pub fn popups(app: &mut App, ctx: &egui::Context) {
         // Above the row, from its first swatch.
         let strip = ctx
             .data(|d| d.get_temp::<Pos2>(egui::Id::new(("palette_strip", which.key()))))
-            .unwrap_or(pos2(screen.left() + LEAD, screen.bottom() - 3.0 * row_h()));
+            .unwrap_or(pos2(
+                screen.left() + LEAD,
+                screen.bottom() - 3.0 * row_h(app),
+            ));
         // Clear of every row of the strip.
         let thick = thickness(app, which);
         let vertical = ctx
@@ -1154,7 +1724,7 @@ pub fn popups(app: &mut App, ctx: &egui::Context) {
             // Beside a column: towards the middle of the window.
             let cols = 12usize;
             let rows = colors.len().div_ceil(cols).max(1);
-            let size = vec2(cols as f32 * stride_len() + 1.0, rows as f32 * stride_len() + 1.0);
+            let size = vec2(cols as f32 * st + 1.0, rows as f32 * st + 1.0);
             let x = if strip.x > screen.center().x {
                 strip.x - size.x - 24.0
             } else {
@@ -1166,9 +1736,9 @@ pub fn popups(app: &mut App, ctx: &egui::Context) {
                 .max(screen.top());
             (cols, size, pos2(x, y))
         } else {
-            let cols = (((screen.right() - strip.x - 24.0) / stride_len()).floor() as usize).clamp(1, 33);
+            let cols = (((screen.right() - strip.x - 24.0) / st).floor() as usize).clamp(1, 33);
             let rows = colors.len().div_ceil(cols).max(1);
-            let size = vec2(cols as f32 * stride_len() + 1.0, rows as f32 * stride_len() + 1.0);
+            let size = vec2(cols as f32 * st + 1.0, rows as f32 * st + 1.0);
             // Above the row, or below it when it is docked at the top.
             let above = strip.y - size.y - 16.0;
             let y = if above < screen.top() {
@@ -1190,8 +1760,8 @@ pub fn popups(app: &mut App, ctx: &egui::Context) {
                     for (i, (name, c)) in colors.iter().enumerate() {
                         let (col, row) = ((i % cols) as f32, (i / cols) as f32);
                         let cell = Rect::from_min_size(
-                            r.min + vec2(1.0 + col * stride_len(), 1.0 + row * stride_len()),
-                            vec2(swatch_side(), swatch_side()),
+                            r.min + vec2(1.0 + col * st, 1.0 + row * st),
+                            vec2(sw, sw),
                         );
                         painter.rect_filled(cell, 0.0, crate::canvas::to_color32(*c));
                         let resp = ui
@@ -1229,6 +1799,8 @@ pub fn popups(app: &mut App, ctx: &egui::Context) {
     if ctx.input(|i| i.pointer.any_released()) {
         ctx.data_mut(|d| d.remove::<bool>(shades_fired_id()));
     }
+    crate::ui::palette_bars::rename_window(app, ctx);
+    crate::ui::palette_bars::new_palette_window(app, ctx);
 }
 
 /// The expand button toggles the pop-up itself.
@@ -1342,6 +1914,299 @@ pub fn mix(a: Color, b: Color, share: f32) -> Color {
 mod tests {
     use super::*;
 
+    /// How many circles `paint` draws: each mark of a swatch is made of them.
+    fn circles_painted(paint: impl Fn(&egui::Painter)) -> usize {
+        let ctx = crate::theme::ui_context();
+        let mut out = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(200.0, 200.0))),
+                ..Default::default()
+            },
+            |ui| paint(ui.painter()),
+        );
+        out.textures_delta.clear();
+        out.shapes
+            .iter()
+            .filter(|s| matches!(s.shape, egui::Shape::Circle(_)))
+            .count()
+    }
+
+    /// A spot colour's swatch carries its dot and an overprinting one its
+    /// ring; a process colour carries neither unless it overprints, and a
+    /// swatch too small to hold a mark carries none (#2455).
+    #[test]
+    fn swatches_carry_the_spot_and_overprint_marks() {
+        let cell = Rect::from_min_size(pos2(10.0, 10.0), vec2(24.0, 24.0));
+        let spot = crate::palette::spot_color("Gold 871", Color::cmyk_pct(0.0, 20.0, 80.0, 10.0));
+        let plain = Color::cmyk_pct(0.0, 100.0, 100.0, 0.0);
+        let marks = |c, over| circles_painted(|p| swatch_marks(p, cell, c, over));
+        assert_eq!(marks(plain, false), 0);
+        assert_eq!(marks(spot, false), 1, "the dot");
+        assert_eq!(marks(plain, true), 2, "the ring");
+        assert_eq!(marks(spot, true), 3, "the dot and the ring");
+        let tiny = Rect::from_min_size(pos2(10.0, 10.0), vec2(4.0, 4.0));
+        assert_eq!(circles_painted(|p| swatch_marks(p, tiny, spot, true)), 0);
+    }
+
+    /// The ring sits in the lower left corner and the dot in the lower
+    /// right, so the two never cover each other; both stay in the swatch.
+    #[test]
+    fn the_overprint_ring_and_the_spot_dot_keep_apart() {
+        let cell = Rect::from_min_size(pos2(0.0, 0.0), vec2(24.0, 24.0));
+        let spot = crate::palette::spot_color("Gold 871", Color::BLACK);
+        let ctx = crate::theme::ui_context();
+        let mut out = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(200.0, 200.0))),
+                ..Default::default()
+            },
+            |ui| swatch_marks(ui.painter(), cell, spot, true),
+        );
+        out.textures_delta.clear();
+        let circles: Vec<_> = out
+            .shapes
+            .iter()
+            .filter_map(|s| match &s.shape {
+                egui::Shape::Circle(c) => Some(c.clone()),
+                _ => None,
+            })
+            .collect();
+        let dot = circles.first().expect("dot");
+        let ring = circles.last().expect("ring");
+        assert!(dot.center.x > cell.center().x, "{dot:?}");
+        assert!(ring.center.x < cell.center().x, "{ring:?}");
+        for c in [dot, ring] {
+            assert!(cell.contains(c.center), "{c:?}");
+            assert!(c.center.y > cell.center().y, "{c:?}");
+        }
+    }
+
+    /// A drawing with a picture of four colours (red, green, blue and
+    /// white quarters), selected when `select`.
+    fn app_with_picture(select: bool) -> App {
+        let mut app = App::headless();
+        app.show_welcome = false;
+        let img = image::RgbaImage::from_fn(40, 40, |x, y| match (x < 20, y < 20) {
+            (true, true) => image::Rgba([220, 20, 30, 255]),
+            (false, true) => image::Rgba([20, 160, 40, 255]),
+            (true, false) => image::Rgba([30, 40, 200, 255]),
+            (false, false) => image::Rgba([255, 255, 255, 255]),
+        });
+        let id = app.place_image(img, None).expect("picture");
+        if select {
+            app.select(vec![id]);
+        } else {
+            app.select(Vec::new());
+        }
+        app
+    }
+
+    /// Click the row labelled `label` of the palette menu of `which`, if
+    /// it is there and enabled. Says whether it was.
+    fn click_label(app: &mut App, make: impl Fn() -> App, which: Row, label: &str) -> bool {
+        use crate::ui::menus::replay;
+        let ctx = crate::theme::ui_context();
+        for target in 0..300 {
+            let mut probe = make();
+            replay::start(target);
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| menu(&mut probe, ui, which));
+            out.textures_delta.clear();
+            let (hit, seen) = replay::finish();
+            if hit.as_deref() == Some(label) {
+                replay::start(target);
+                let mut out = ctx.run_ui(egui::RawInput::default(), |ui| menu(app, ui, which));
+                out.textures_delta.clear();
+                replay::finish();
+                return true;
+            }
+            if target >= seen {
+                break;
+            }
+        }
+        false
+    }
+
+    /// Add Colors from Bitmap (#1840): the palette menu takes the colours
+    /// that stand for the selected picture into the document palette
+    /// (one undo step) or into a palette of the user's; without a
+    /// picture selected the rows are greyed.
+    #[test]
+    fn colours_come_from_the_selected_picture() {
+        let sixteen = crate::i18n::trf("palette.count", &[("n", "16")]);
+        let want = [
+            Color::rgb8(220, 20, 30),
+            Color::rgb8(20, 160, 40),
+            Color::rgb8(30, 40, 200),
+            Color::rgb8(255, 255, 255),
+        ];
+        // The document palette.
+        let mut app = app_with_picture(true);
+        let before = app.doc().palette.clone();
+        assert!(click_label(
+            &mut app,
+            || app_with_picture(true),
+            Row::Document,
+            &sixteen
+        ));
+        let after = app.doc().palette.clone();
+        assert!(after.starts_with(&before), "the colours there stay first");
+        for c in want {
+            assert!(after.contains(&c), "{c:?} in {after:?}");
+        }
+        assert_eq!(after.len(), before.len() + 4, "{after:?}");
+        app.undo();
+        assert_eq!(app.doc().palette, before, "one undo step");
+        // Nothing selected: greyed.
+        let mut app = app_with_picture(false);
+        assert!(!click_label(
+            &mut app,
+            || app_with_picture(false),
+            Row::Document,
+            &sixteen
+        ));
+        // A palette of the user's, from its own bar's menu.
+        let make = || {
+            let mut app = app_with_picture(true);
+            app.new_palette("Mine").expect("palette");
+            app
+        };
+        let mut app = make();
+        let i = app.palettes.len() - 1;
+        let k = app
+            .extra_palettes
+            .iter()
+            .position(|r| !r.document && r.index == i)
+            .expect("its bar");
+        assert!(click_label(&mut app, make, Row::Extra(k), &sixteen));
+        let got: Vec<Color> = app.palettes[i].colors.iter().map(|(_, c)| *c).collect();
+        assert_eq!(got.len(), 4, "{got:?}");
+        for c in want {
+            assert!(got.contains(&c), "{c:?} in {got:?}");
+        }
+    }
+
+    /// Click the row `key` of the menu of swatch `color` of `which`, if it
+    /// is there and enabled. Says whether it was.
+    fn click_swatch_item(
+        app: &mut App,
+        make: impl Fn() -> App,
+        which: Row,
+        color: usize,
+        key: &str,
+    ) -> bool {
+        use crate::ui::menus::replay;
+        let ctx = crate::theme::ui_context();
+        for target in 0..300 {
+            let mut probe = make();
+            replay::start(target);
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                swatch_menu(&mut probe, ui, which, Some(color))
+            });
+            out.textures_delta.clear();
+            let (hit, seen) = replay::finish();
+            if hit.as_deref() == Some(key) {
+                replay::start(target);
+                let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                    swatch_menu(app, ui, which, Some(color))
+                });
+                out.textures_delta.clear();
+                replay::finish();
+                return true;
+            }
+            if target >= seen {
+                break;
+            }
+        }
+        false
+    }
+
+    /// Delete Color on a swatch's menu takes that colour out (of the
+    /// user's palette; of the document palette as one undo step) and is
+    /// greyed on a built-in palette; Edit Palette... opens the editor on
+    /// the bar's palette; Reset Palette asks first (#2138).
+    #[test]
+    fn delete_color_and_edit_palette_in_the_palette_menus() {
+        let make = || {
+            let mut app = app_with_picture(false);
+            let i = app.new_palette("Mine").expect("palette");
+            app.palettes[i].colors = vec![
+                ("A".into(), Color::rgb8(10, 0, 0)),
+                ("B".into(), Color::rgb8(20, 0, 0)),
+                ("C".into(), Color::rgb8(30, 0, 0)),
+            ];
+            app.rebuild_palette();
+            app.run(Command::SetDocumentPalette {
+                colors: vec![Color::rgb8(1, 2, 3), Color::rgb8(4, 5, 6)],
+            });
+            app
+        };
+        let mut app = make();
+        let i = app.palettes.len() - 1;
+        let k = app
+            .extra_palettes
+            .iter()
+            .position(|r| !r.document && r.index == i)
+            .expect("its bar");
+        assert!(click_swatch_item(
+            &mut app,
+            make,
+            Row::Extra(k),
+            1,
+            "palette.delete_color"
+        ));
+        let names: Vec<&str> = app.palettes[i]
+            .colors
+            .iter()
+            .map(|(n, _)| n.as_str())
+            .collect();
+        assert_eq!(names, ["A", "C"]);
+        // The document palette: one undo step.
+        let mut app = make();
+        assert!(click_swatch_item(
+            &mut app,
+            make,
+            Row::Document,
+            0,
+            "palette.delete_color"
+        ));
+        assert_eq!(app.doc().palette, vec![Color::rgb8(4, 5, 6)]);
+        app.undo();
+        assert_eq!(app.doc().palette.len(), 2);
+        // The default palette is built in: greyed, nothing goes.
+        let mut app = make();
+        let main = app.visible_palettes[0];
+        let before = app.palettes[main].colors.len();
+        assert!(!click_swatch_item(
+            &mut app,
+            make,
+            Row::Main,
+            0,
+            "palette.delete_color"
+        ));
+        assert_eq!(app.palettes[main].colors.len(), before);
+        // Edit Palette... on the bar's palette.
+        let mut app = make();
+        assert!(click_label(&mut app, make, Row::Extra(k), "palette.edit"));
+        match &app.dialog {
+            crate::ui::dialogs::Dialog::PaletteEditor(st) => assert_eq!(st.palette, i),
+            d => panic!("{d:?}"),
+        }
+        let mut app = make();
+        assert!(click_label(&mut app, make, Row::Main, "palette.edit"));
+        match &app.dialog {
+            crate::ui::dialogs::Dialog::PaletteEditor(st) => assert_eq!(st.palette, main),
+            d => panic!("{d:?}"),
+        }
+        // Reset Palette asks first; nothing is reset yet.
+        let mut app = make();
+        assert!(click_label(&mut app, make, Row::Document, "palette.reset"));
+        assert!(matches!(
+            app.dialog,
+            crate::ui::dialogs::Dialog::ConfirmResetPalette
+        ));
+        assert_eq!(app.doc().palette.len(), 2);
+    }
+
     #[test]
     fn tooltips_name_the_colour_and_its_values() {
         let c = Color::cmyk_pct(60.0, 0.0, 40.0, 20.0);
@@ -1360,7 +2225,7 @@ mod tests {
     #[test]
     fn the_default_palette_has_greys_process_colours_and_tints() {
         let app = App::headless();
-        assert_eq!(app.palette.len(), 99);
+        assert_eq!(app.palette.len(), 94);
         let names: Vec<&str> = app.palette.iter().map(|(n, _)| n.as_str()).collect();
         assert_eq!(&names[..3], &["Black", "90% Black", "80% Black"]);
         assert_eq!(names[10], "White");
@@ -1368,12 +2233,18 @@ mod tests {
             &names[11..17],
             &["Blue", "Cyan", "Green", "Yellow", "Red", "Magenta"]
         );
-        let (_, mint) = app
+        let (_, peach) = app
             .palette
             .iter()
-            .find(|(n, _)| n == "Mint Green")
-            .expect("mint");
-        assert_eq!(*mint, Color::cmyk_pct(40.0, 0.0, 40.0, 0.0));
+            .find(|(n, _)| n == "Peach")
+            .expect("peach tint");
+        assert_eq!(*peach, Color::cmyk_pct(0.0, 40.0, 60.0, 0.0));
+        let dark = app
+            .palette
+            .iter()
+            .find(|(n, _)| n == "Dark Green")
+            .map(|(_, c)| *c);
+        assert_eq!(dark, Some(Color::cmyk_pct(20.0, 0.0, 0.0, 80.0)));
     }
 
     #[test]
@@ -1443,6 +2314,162 @@ mod tests {
         app.settings.palette.auto_update_document = false;
         app.apply_fill(Fill::Solid(Color::cmyk_pct(0.0, 100.0, 0.0, 0.0)));
         assert_eq!(app.doc().palette, vec![green]);
+    }
+
+    /// A colour applied any other way than from a palette or the colour
+    /// panel joins the document palette too, in the step that applied it:
+    /// the Color Eyedropper, the Object Properties outline and fill
+    /// commands, an outline colour copied over. A colour being dragged in
+    /// a picker joins only when it is let go (#2378).
+    #[test]
+    fn every_colour_applied_joins_the_document_palette() {
+        use tracedraw_core::{geometry::Point, geometry::Rect as R, Command, ShapeKind, Stroke};
+        let mut app = App::headless();
+        let id = app
+            .new_shape(ShapeKind::Rect {
+                rect: R::new(0.0, 0.0, 10.0, 10.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("shape");
+        app.select(vec![id]);
+        assert!(app.doc().palette.is_empty());
+        let steps = app.engine.history_labels().0.len();
+        // The Color Eyedropper's colour put on the object.
+        let picked = Color::rgb8(12, 34, 56);
+        assert!(app.apply_color_at(Point::new(5.0, 5.0), picked, false));
+        assert_eq!(app.doc().palette, vec![picked]);
+        assert_eq!(app.engine.history_labels().0.len(), steps + 1, "one step");
+        app.undo();
+        assert!(app.doc().palette.is_empty(), "undone with the fill");
+        app.redo();
+        // An outline given by a command, as the dockers give it.
+        let pen = Color::rgb8(200, 100, 0);
+        app.run(Command::SetStroke {
+            shapes: vec![id],
+            stroke: Some(Stroke::new(pen, 0.5)),
+        });
+        assert_eq!(app.doc().palette, vec![picked, pen]);
+        // Only the width copied over: no colour joins.
+        let other = Color::rgb8(1, 2, 3);
+        app.run(Command::PatchStroke {
+            shapes: vec![id],
+            stroke: Stroke::new(other, 2.0),
+            fields: vec![tracedraw_core::patch::StrokeField::Width],
+        });
+        assert_eq!(app.doc().palette, vec![picked, pen]);
+        // A drag in a colour picker: only the colour let go on joins.
+        app.apply_fill_live(Fill::Solid(Color::rgb8(0, 255, 0)));
+        app.apply_fill_live(Fill::Solid(Color::rgb8(0, 0, 255)));
+        assert_eq!(app.doc().palette, vec![picked, pen]);
+        app.end_live_fill();
+        assert_eq!(app.doc().palette, vec![picked, pen, Color::rgb8(0, 0, 255)]);
+        // Off in the options: nothing joins.
+        app.settings.palette.auto_update_document = false;
+        app.run(Command::SetFill {
+            shapes: vec![id],
+            fill: Fill::Solid(other),
+        });
+        assert_eq!(app.doc().palette.len(), 3);
+    }
+
+    /// A right click with Ctrl held on a palette colour mixes a tenth of
+    /// it into the outline, as Ctrl+click mixes into the fill; with the
+    /// menu set for a right click, Ctrl or Alt held sets the outline
+    /// without the menu (#2132).
+    #[test]
+    fn ctrl_or_alt_right_click_sets_the_outline_without_the_menu() {
+        use tracedraw_core::{geometry::Rect as R, ShapeKind, Stroke};
+        let mut app = App::headless();
+        let id = app
+            .new_shape(ShapeKind::Rect {
+                rect: R::new(0.0, 0.0, 10.0, 10.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("shape");
+        let white = Color::rgb8(255, 255, 255);
+        app.run(tracedraw_core::Command::SetStroke {
+            shapes: vec![id],
+            stroke: Some(Stroke::new(white, 0.5)),
+        });
+        app.select(vec![id]);
+        let ctx = crate::theme::ui_context();
+        let clock = std::cell::Cell::new(0.0);
+        let right_click = |app: &mut App, x: f32, modifiers: egui::Modifiers| {
+            clock.set(clock.get() + 1.0);
+            for (i, pressed) in [(0, false), (1, true), (2, false), (3, false)] {
+                let mut events = vec![
+                    egui::Event::ModifiersChanged(modifiers),
+                    egui::Event::PointerMoved(egui::pos2(x, 10.0)),
+                ];
+                if i == 1 || i == 2 {
+                    events.push(egui::Event::PointerButton {
+                        pos: egui::pos2(x, 10.0),
+                        button: egui::PointerButton::Secondary,
+                        pressed,
+                        modifiers,
+                    });
+                }
+                let input = egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(800.0, 100.0),
+                    )),
+                    events,
+                    time: Some({
+                        clock.set(clock.get() + 0.05);
+                        clock.get()
+                    }),
+                    ..Default::default()
+                };
+                let mut out = ctx.run_ui(input, |ui| palette_row(app, ui));
+                out.textures_delta.clear();
+            }
+        };
+        let pen = |app: &App| {
+            app.doc()
+                .find_shape(id)
+                .expect("shape")
+                .stroke
+                .as_ref()
+                .map(|s| s.color)
+        };
+        // A swatch whose right click sets the outline to a colour.
+        let (x, swatch) = (0..30)
+            .map(|k| 30.0 + k as f32 * 21.0)
+            .find_map(|x| {
+                right_click(&mut app, x, egui::Modifiers::NONE);
+                let now = pen(&app);
+                if now != Some(white) {
+                    app.undo();
+                }
+                now.filter(|c| *c != white).map(|c| (x, c))
+            })
+            .expect("a coloured swatch");
+        assert_eq!(pen(&app), Some(white));
+        // Ctrl: a tenth of the colour mixes into the outline.
+        right_click(&mut app, x, egui::Modifiers::CTRL);
+        let mixed = pen(&app).expect("an outline");
+        assert_eq!(mixed, mix(white, swatch, 0.1));
+        assert_ne!(mixed, swatch);
+        assert!(!egui::Popup::is_any_open(&ctx), "no menu");
+        app.undo();
+        // The menu on a right click: Alt sets the outline, Ctrl mixes,
+        // and neither opens the menu.
+        app.settings.palette.right_click_outline = false;
+        right_click(&mut app, x, egui::Modifiers::ALT);
+        assert_eq!(pen(&app), Some(swatch));
+        assert!(!egui::Popup::is_any_open(&ctx), "no menu with Alt");
+        app.undo();
+        right_click(&mut app, x, egui::Modifiers::CTRL);
+        assert_eq!(pen(&app), Some(mix(white, swatch, 0.1)));
+        assert!(!egui::Popup::is_any_open(&ctx), "no menu with Ctrl");
+        app.undo();
+        // Without keys the menu opens and the outline stays.
+        right_click(&mut app, x, egui::Modifiers::NONE);
+        assert_eq!(pen(&app), Some(white));
+        assert!(egui::Popup::is_any_open(&ctx), "the menu");
     }
 
     /// On the Welcome Screen the palette takes no clicks: a click on a
@@ -1627,14 +2654,14 @@ mod tests {
         let fill = |app: &App| app.doc().find_shape(id).expect("shape").fill.clone();
         let before = fill(&app);
         // The first column, one swatch down.
-        let x = LEAD + 1.0 + swatch_side() / 2.0;
-        let second_line = egui::pos2(x, 3.0 + stride_len() + swatch_side() / 2.0);
+        let x = LEAD + 1.0 + SWATCH / 2.0;
+        let second_line = egui::pos2(x, 3.0 + STRIDE + SWATCH / 2.0);
         click(&mut app, second_line);
         assert_eq!(fill(&app), before, "one row: nothing there");
-        assert_eq!(thickness(&app, Row::Main), row_h());
+        assert_eq!(thickness(&app, Row::Main), ROW_H);
         app.settings.palette.rows = 2;
-        assert_eq!(thickness(&app, Row::Main), row_h() + stride_len());
-        assert_eq!(thickness(&app, Row::Document), row_h());
+        assert_eq!(thickness(&app, Row::Main), ROW_H + STRIDE);
+        assert_eq!(thickness(&app, Row::Document), ROW_H);
         click(&mut app, second_line);
         let solid = |app: &App| match fill(app) {
             Fill::Solid(c) => c,
@@ -1642,22 +2669,24 @@ mod tests {
         };
         // The second line starts with the swatch after the first line's
         // last (the No Color well takes the first slot).
-        let cols = visible_slots(800.0);
+        let cols = visible_slots(800.0, STRIDE);
         assert_eq!(solid(&app), app.palette[cols - 1].1);
-        assert!(height.get() >= row_h() + stride_len(), "{}", height.get());
-        click(&mut app, egui::pos2(x + stride_len(), 3.0 + swatch_side() / 2.0));
+        assert!(height.get() >= ROW_H + STRIDE, "{}", height.get());
+        click(&mut app, egui::pos2(x + STRIDE, 3.0 + SWATCH / 2.0));
         assert_eq!(solid(&app), Color::cmyk_pct(0.0, 0.0, 0.0, 100.0));
-        click(&mut app, egui::pos2(x + 2.0 * stride_len(), 3.0 + swatch_side() / 2.0));
+        click(&mut app, egui::pos2(x + 2.0 * STRIDE, 3.0 + SWATCH / 2.0));
         assert_eq!(solid(&app), Color::cmyk_pct(0.0, 0.0, 0.0, 90.0));
         // The scroll arrow moves one swatch: Black comes under the pointer
         // of the first swatch.
         click(&mut app, egui::pos2(800.0 - 49.0 + 8.0, 12.0));
         assert_eq!(app.palette_scroll, 1);
-        click(&mut app, egui::pos2(x, 3.0 + swatch_side() / 2.0));
+        click(&mut app, egui::pos2(x, 3.0 + SWATCH / 2.0));
         assert_eq!(solid(&app), Color::cmyk_pct(0.0, 0.0, 0.0, 100.0));
-        // More than three rows is not kept.
+        // Up to eight rows; more is not kept.
+        app.settings.palette.rows = 5;
+        assert_eq!(thickness(&app, Row::Main), ROW_H + 4.0 * STRIDE);
         app.settings.palette.rows = 9;
-        assert_eq!(thickness(&app, Row::Main), row_h() + 2.0 * stride_len());
+        assert_eq!(thickness(&app, Row::Main), ROW_H + 7.0 * STRIDE);
     }
 
     /// The palette's own menu has Rows > 1 Row, 2 Rows, 3 Rows: picking
@@ -1740,7 +2769,7 @@ mod tests {
         let two = at(&texts, "palette.rows_2").expect("2 Rows in the submenu");
         assert!(at(&texts, "palette.rows_1").is_some());
         assert!(at(&texts, "palette.rows_3").is_some());
-        assert_eq!(app.settings.palette.rows(), 1);
+        assert_eq!(crate::settings::rows_of(app.settings.palette.rows), Some(1));
         frame(
             &mut app,
             vec![egui::Event::PointerMoved(egui::pos2(two.x, rows.y))],
@@ -1749,8 +2778,8 @@ mod tests {
         frame(&mut app, press(two));
         frame(&mut app, release(two));
         frame(&mut app, Vec::new());
-        assert_eq!(app.settings.palette.rows(), 2);
-        assert_eq!(thickness(&app, Row::Main), row_h() + stride_len());
+        assert_eq!(crate::settings::rows_of(app.settings.palette.rows), Some(2));
+        assert_eq!(thickness(&app, Row::Main), ROW_H + STRIDE);
     }
 
     /// An RGB drawing's palette holds the palette's colours as RGB (named
@@ -1792,7 +2821,7 @@ mod tests {
                 .map(|(_, c)| *c)
                 .expect(name)
         };
-        assert_eq!(rgb.len(), 99);
+        assert_eq!(rgb.len(), 94);
         assert_eq!(of("Black"), Color::rgb8(0, 0, 0));
         assert_eq!(of("White"), Color::rgb8(255, 255, 255));
         assert_eq!(of("50% Black"), Color::rgb8(128, 128, 128));
@@ -1803,25 +2832,21 @@ mod tests {
         assert_eq!(of("Magenta"), Color::rgb8(255, 0, 255));
         assert_eq!(of("Orange"), Color::rgb8(255, 102, 0));
         assert!(rgb.iter().all(|(_, c)| c.model_name() == "RGB"));
-        // Swatches of the reference RGB palette (#620): the colours with
-        // black in them are clean RGB values too.
-        assert_eq!(of("Navy Blue"), Color::rgb8(0, 51, 153));
+        // The colours with black in them are clean RGB
+        // values too (#620).
         assert_eq!(of("Purple"), Color::rgb8(153, 0, 204));
+        assert_eq!(of("Dusty Blue"), Color::rgb8(102, 102, 204));
+        assert_eq!(of("Sky Blue"), Color::rgb8(0, 204, 255));
+        assert_eq!(of("Dark Green"), Color::rgb8(0, 51, 51));
+        assert_eq!(of("Powder Blue"), Color::rgb8(204, 204, 255));
         assert_eq!(of("Dark Brown"), Color::rgb8(102, 51, 51));
-        assert_eq!(of("Ruby Red"), Color::rgb8(153, 0, 0));
-        assert_eq!(of("Twilight Blue"), Color::rgb8(102, 102, 204));
-        assert_eq!(of("Forest Green"), Color::rgb8(0, 102, 51));
-        assert_eq!(of("Walnut"), Color::rgb8(102, 51, 0));
         assert_eq!(of("90% Black"), Color::rgb8(26, 26, 26));
-        assert_eq!(of("Crimson"), Color::rgb8(153, 51, 102));
-        assert_eq!(of("Plum"), Color::rgb8(102, 0, 102));
-        assert_eq!(of("Deep Blue"), Color::rgb8(51, 0, 204));
-        // Every channel is a multiple of 51 or a 10% grey.
+        // Every channel is a multiple of 17 or a 10% grey.
         for (n, c) in &rgb {
             let [r, g, b] = c.to_rgb8();
             let grey = r == g && g == b;
             assert!(
-                grey || [r, g, b].iter().all(|v| v % 51 == 0),
+                grey || [r, g, b].iter().all(|v| v % 17 == 0),
                 "{n}: {r} {g} {b}"
             );
         }
@@ -1837,11 +2862,14 @@ mod tests {
         palette.retain(|(n, _)| n != "Black");
         let rgb = as_rgb(&palette);
         let of = |name: &str| rgb.iter().find(|(n, _)| n == name).map(|(_, c)| *c);
-        assert_eq!(of("Crimson"), Some(Color::rgb8(0x99, 0x33, 0x66)));
-        assert_eq!(of("Navy Blue"), Some(Color::rgb8(0, 51, 153)));
+        assert_eq!(of("Hot Pink"), Some(Color::rgb8(255, 51, 153)));
+        assert_eq!(of("Dark Green"), Some(Color::rgb8(0, 51, 51)));
         assert_eq!(of("Mine"), Some(Color::rgb8(230, 255, 255)));
         // A default name with another colour is converted from its inks.
-        let changed = vec![("Crimson".to_string(), Color::cmyk_pct(0.0, 100.0, 0.0, 0.0))];
+        let changed = vec![(
+            "Hot Pink".to_string(),
+            Color::cmyk_pct(0.0, 100.0, 0.0, 0.0),
+        )];
         assert_eq!(as_rgb(&changed)[0].1, Color::rgb8(255, 0, 255));
         let builtin = crate::palette::builtin_palettes()
             .into_iter()
@@ -1868,9 +2896,481 @@ mod tests {
         );
     }
 
+    /// Ctrl+wheel over a palette sizes that palette's swatches alone: the
+    /// document palette row kept the default palette's size and changed
+    /// with it, both ways (#2900).
+    #[test]
+    fn ctrl_wheel_sizes_only_the_palette_under_the_pointer() {
+        let mut app = App::headless();
+        let ctx = crate::theme::ui_context();
+        let clock = std::cell::Cell::new(0.0);
+        let frame = |app: &mut App, which: Row, events: Vec<egui::Event>| {
+            clock.set(clock.get() + 0.1);
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(800.0, 100.0),
+                )),
+                events,
+                time: Some(clock.get()),
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| row(app, ui, which, false));
+            out.textures_delta.clear();
+        };
+        let over = egui::pos2(LEAD + 60.0, 12.0);
+        let wheel = |dy: f32| {
+            vec![
+                egui::Event::PointerMoved(over),
+                egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Line,
+                    delta: egui::vec2(0.0, dy),
+                    phase: egui::TouchPhase::Move,
+                    modifiers: egui::Modifiers::CTRL,
+                },
+            ]
+        };
+        assert_eq!(swatch_side_of(&app, Row::Document), 20.0);
+        // Over the default palette: it grows, the document row stays.
+        frame(&mut app, Row::Main, vec![egui::Event::PointerMoved(over)]);
+        frame(&mut app, Row::Main, wheel(1.0));
+        assert_eq!(swatch_side_of(&app, Row::Main), 22.0);
+        assert_eq!(swatch_side_of(&app, Row::Document), 20.0);
+        assert_eq!(app.doc_palette_scroll, 0);
+        // Over the document row: it shrinks, the default palette stays.
+        frame(
+            &mut app,
+            Row::Document,
+            vec![egui::Event::PointerMoved(over)],
+        );
+        frame(&mut app, Row::Document, wheel(-1.0));
+        assert_eq!(swatch_side_of(&app, Row::Document), 18.0);
+        assert_eq!(swatch_side_of(&app, Row::Main), 22.0);
+        assert_eq!(app.palette_scroll, 0);
+        // Preferences written before the document row had a size of its
+        // own: it shows the default palette's until either is sized.
+        let mut old = crate::settings::PalettePrefs {
+            swatch_size: 24,
+            document_swatch_size: 0,
+            ..Default::default()
+        };
+        assert_eq!(old.document_swatch(), 24);
+        old.document_swatch_size = 30;
+        assert_eq!(old.document_swatch(), 30);
+    }
+
+    /// Ctrl+wheel over a palette row sizes its swatches (up larger, down
+    /// smaller, 2 px a notch, 8 to 48 px) and scrolls nothing; the
+    /// plain wheel scrolls it and sizes nothing.
+    #[test]
+    fn ctrl_wheel_sizes_the_swatches_and_the_plain_wheel_scrolls() {
+        let mut app = App::headless();
+        let ctx = crate::theme::ui_context();
+        let clock = std::cell::Cell::new(0.0);
+        let frame = |app: &mut App, events: Vec<egui::Event>| {
+            clock.set(clock.get() + 0.1);
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(800.0, 100.0),
+                )),
+                events,
+                time: Some(clock.get()),
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| palette_row(app, ui));
+            out.textures_delta.clear();
+        };
+        let over = egui::pos2(LEAD + 60.0, 12.0);
+        let wheel = |dy: f32, modifiers: egui::Modifiers| {
+            vec![
+                egui::Event::PointerMoved(over),
+                egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Line,
+                    delta: egui::vec2(0.0, dy),
+                    phase: egui::TouchPhase::Move,
+                    modifiers,
+                },
+            ]
+        };
+        frame(&mut app, Vec::new());
+        frame(&mut app, vec![egui::Event::PointerMoved(over)]);
+        assert_eq!(swatch_side(&app), 20.0);
+        frame(&mut app, wheel(-1.0, egui::Modifiers::CTRL));
+        assert_eq!(app.settings.palette.swatch_size, 18);
+        assert_eq!(app.palette_scroll, 0, "Ctrl+wheel scrolls nothing");
+        frame(&mut app, Vec::new());
+        assert_eq!(thickness(&app, Row::Main), 23.0);
+        frame(&mut app, wheel(1.0, egui::Modifiers::CTRL));
+        frame(&mut app, wheel(1.0, egui::Modifiers::CTRL));
+        assert_eq!(app.settings.palette.swatch_size, 22);
+        for _ in 0..40 {
+            frame(&mut app, wheel(1.0, egui::Modifiers::CTRL));
+        }
+        assert_eq!(
+            app.settings.palette.swatch_size,
+            crate::settings::SWATCH_MAX
+        );
+        frame(&mut app, Vec::new());
+        assert_eq!(thickness(&app, Row::Main), 48.0 + 5.0);
+        assert_eq!(app.palette_scroll, 0);
+        // The plain wheel scrolls, a swatch a notch, and sizes nothing.
+        frame(&mut app, wheel(-1.0, egui::Modifiers::NONE));
+        assert_eq!(app.palette_scroll, 1);
+        frame(&mut app, wheel(-1.0, egui::Modifiers::NONE));
+        assert_eq!(app.palette_scroll, 2);
+        frame(&mut app, wheel(1.0, egui::Modifiers::NONE));
+        assert_eq!(app.palette_scroll, 1);
+        assert_eq!(
+            app.settings.palette.swatch_size,
+            crate::settings::SWATCH_MAX
+        );
+    }
+
+    /// In the browser a wheel notch comes as three lines (Firefox) or as
+    /// 100 pixels (Chromium): the plain wheel scrolls a palette row one
+    /// swatch a notch and Ctrl+wheel sizes its swatches one size a notch,
+    /// as on the desktop (#1406). Parts of a notch from a touchpad add
+    /// up to one step; each half of a browser notch scrolled a whole one.
+    #[test]
+    fn a_browser_wheel_notch_steps_a_palette_row_once() {
+        let mut app = App::headless();
+        let ctx = crate::theme::ui_context();
+        let clock = std::cell::Cell::new(0.0);
+        let frame = |app: &mut App, events: Vec<egui::Event>| {
+            clock.set(clock.get() + 0.1);
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(800.0, 100.0),
+                )),
+                events,
+                time: Some(clock.get()),
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| palette_row(app, ui));
+            out.textures_delta.clear();
+        };
+        let over = egui::pos2(LEAD + 60.0, 12.0);
+        let turn = |unit, dy: f32, modifiers| {
+            vec![
+                egui::Event::PointerMoved(over),
+                egui::Event::MouseWheel {
+                    unit,
+                    delta: egui::vec2(0.0, dy),
+                    phase: egui::TouchPhase::Move,
+                    modifiers,
+                },
+            ]
+        };
+        use egui::MouseWheelUnit::{Line, Point};
+        let none = egui::Modifiers::NONE;
+        frame(&mut app, Vec::new());
+        frame(&mut app, vec![egui::Event::PointerMoved(over)]);
+        crate::ui::field::set_web_wheel(true);
+        let mut scroll = 0i64;
+        for (unit, dy, step) in [
+            (Line, -3.0, 1),
+            (Point, -100.0, 1),
+            (Line, 3.0, -1),
+            (Point, -50.0, 0),
+            (Point, -50.0, 1),
+            (Point, -40.0, 0),
+            (Point, 40.0, 0),
+        ] {
+            frame(&mut app, turn(unit, dy, none));
+            scroll += step;
+            assert_eq!(app.palette_scroll as i64, scroll, "{unit:?} {dy}");
+        }
+        assert_eq!(swatch_side(&app), 20.0);
+        frame(&mut app, turn(Line, 3.0, egui::Modifiers::CTRL));
+        assert_eq!(app.settings.palette.swatch_size, 22);
+        frame(&mut app, turn(Point, -100.0, egui::Modifiers::CTRL));
+        assert_eq!(app.settings.palette.swatch_size, 20);
+        assert_eq!(
+            app.palette_scroll as i64, scroll,
+            "Ctrl+wheel scrolls nothing"
+        );
+        crate::ui::field::set_web_wheel(false);
+    }
+
     #[test]
     fn rows_fit_whole_swatches() {
-        assert_eq!(visible_slots(LEAD + TAIL + 1.0 + 21.0 * 10.0), 10);
-        assert_eq!(visible_slots(10.0), 1);
+        assert_eq!(visible_slots(LEAD + TAIL + 1.0 + 21.0 * 10.0, STRIDE), 10);
+        assert_eq!(visible_slots(10.0, STRIDE), 1);
+    }
+
+    /// What a finger on a swatch does, with the events a touch screen
+    /// sends (a touch and the pointer it moves): a tap fills, a hold of
+    /// half a second let go sets the outline, a hold of a second shows
+    /// the shades and the release then changes nothing (#1611, #1707).
+    /// The mouse keeps its own: a held left button shows the shades.
+    #[test]
+    fn a_finger_held_on_a_swatch_sets_the_outline() {
+        use tracedraw_core::{geometry::Rect as R, ShapeKind};
+        let ctx = crate::theme::ui_context();
+        let clock = std::cell::Cell::new(0.0);
+        let frame = |app: &mut App, events: Vec<egui::Event>, dt: f64| {
+            clock.set(clock.get() + dt);
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(800.0, 100.0),
+                )),
+                events,
+                time: Some(clock.get()),
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| palette_row(app, ui));
+            out.textures_delta.clear();
+        };
+        let at = egui::pos2(LEAD + 6.5 * STRIDE, 12.0);
+        let touch = |phase: egui::TouchPhase| egui::Event::Touch {
+            device_id: egui::TouchDeviceId(1),
+            id: egui::TouchId(7),
+            phase,
+            pos: at,
+            force: None,
+        };
+        let press = |pressed: bool| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        // A finger down for `secs`, then lifted; frames every 50 ms.
+        let finger = |app: &mut App, secs: f64| {
+            frame(
+                app,
+                vec![
+                    touch(egui::TouchPhase::Start),
+                    egui::Event::PointerMoved(at),
+                    press(true),
+                ],
+                0.05,
+            );
+            let mut held = 0.0;
+            while held + 0.05 < secs {
+                frame(app, Vec::new(), 0.05);
+                held += 0.05;
+            }
+            frame(
+                app,
+                vec![
+                    touch(egui::TouchPhase::End),
+                    press(false),
+                    egui::Event::PointerGone,
+                ],
+                0.05,
+            );
+            frame(app, Vec::new(), 0.05);
+        };
+        let mut app = App::headless();
+        app.show_welcome = false;
+        let id = app
+            .new_shape(ShapeKind::Rect {
+                rect: R::new(0.0, 0.0, 10.0, 10.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("shape");
+        app.select(vec![id]);
+        let look = |app: &App| {
+            let s = app.doc().find_shape(id).expect("rect");
+            (s.fill.clone(), s.stroke.as_ref().map(|k| k.color))
+        };
+        frame(&mut app, Vec::new(), 0.05);
+        let (fill0, outline0) = look(&app);
+        // A tap fills.
+        finger(&mut app, 0.1);
+        let (fill, outline) = look(&app);
+        assert_ne!(fill, fill0, "a tap fills");
+        assert_eq!(outline, outline0, "a tap leaves the outline");
+        let Fill::Solid(color) = fill.clone() else {
+            panic!("a solid fill: {fill:?}");
+        };
+        app.undo();
+        assert_eq!(look(&app), (fill0.clone(), outline0));
+        // Held, let go: the outline takes the colour, the fill stays.
+        finger(&mut app, 0.6);
+        assert_eq!(
+            look(&app),
+            (fill0.clone(), Some(color)),
+            "a hold sets the outline"
+        );
+        assert!(app.palette_shades.is_none());
+        app.undo();
+        assert_eq!(look(&app), (fill0.clone(), outline0));
+        // Held for a second: the shades, and the release changes nothing.
+        finger(&mut app, 1.2);
+        assert_eq!(
+            look(&app),
+            (fill0.clone(), outline0),
+            "the long hold shows the shades"
+        );
+        assert!(app.palette_shades.is_some());
+        app.palette_shades = None;
+        frame(&mut app, Vec::new(), 0.05);
+        // The mouse: the left button held shows the shades at once.
+        frame(
+            &mut app,
+            vec![egui::Event::PointerMoved(at), press(true)],
+            0.05,
+        );
+        for _ in 0..12 {
+            frame(&mut app, Vec::new(), 0.05);
+        }
+        assert!(
+            app.palette_shades.is_some(),
+            "a held button shows the shades"
+        );
+        frame(&mut app, vec![press(false)], 0.05);
+        assert_eq!(look(&app), (fill0, outline0));
+    }
+
+    /// A finger dragged along a palette row longer than its room scrolls
+    /// the row with the finger, a swatch for every swatch's width, and
+    /// fills nothing when it lifts; a finger dragged off the row drags
+    /// its colour as before; the mouse dragged along the row scrolls
+    /// nothing (#1997).
+    #[test]
+    fn a_finger_dragged_along_the_palette_scrolls_it() {
+        use tracedraw_core::{geometry::Rect as R, ShapeKind};
+        let ctx = crate::theme::ui_context();
+        let clock = std::cell::Cell::new(0.0);
+        let frame = |app: &mut App, events: Vec<egui::Event>| {
+            clock.set(clock.get() + 0.02);
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(300.0, 40.0),
+                )),
+                events,
+                time: Some(clock.get()),
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| palette_row(app, ui));
+            out.textures_delta.clear();
+        };
+
+        let touch = |phase, pos| egui::Event::Touch {
+            device_id: egui::TouchDeviceId(1),
+            id: egui::TouchId(2),
+            phase,
+            pos,
+            force: None,
+        };
+        let press = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        // A finger (or, without `finger`, the mouse) down at `from`, moved
+        // to `to` in `steps`; `lift` lets go there, else it stays down.
+        let drag = |app: &mut App,
+                    from: egui::Pos2,
+                    to: egui::Pos2,
+                    steps: usize,
+                    finger: bool,
+                    lift: bool| {
+            let mut events = vec![egui::Event::PointerMoved(from), press(from, true)];
+            if finger {
+                events.insert(0, touch(egui::TouchPhase::Start, from));
+            }
+            frame(app, events);
+            for k in 1..=steps {
+                let p = from + (to - from) * (k as f32 / steps as f32);
+                let mut events = vec![egui::Event::PointerMoved(p)];
+                if finger {
+                    events.insert(0, touch(egui::TouchPhase::Move, p));
+                }
+                frame(app, events);
+            }
+            if lift {
+                let mut events = vec![press(to, false), egui::Event::PointerGone];
+                if finger {
+                    events.insert(0, touch(egui::TouchPhase::End, to));
+                }
+                frame(app, events);
+                frame(app, Vec::new());
+            }
+        };
+
+        let mut app = App::headless();
+        app.show_welcome = false;
+        let id = app
+            .new_shape(ShapeKind::Rect {
+                rect: R::new(0.0, 0.0, 10.0, 10.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("shape");
+        app.select(vec![id]);
+        let fill = |app: &App| app.doc().find_shape(id).expect("rect").fill.clone();
+        for _ in 0..3 {
+            frame(&mut app, Vec::new());
+        }
+        assert_eq!(app.palette_scroll, 0);
+        assert!(
+            swatch_count(&app, Row::Main) > visible_slots(300.0, STRIDE),
+            "the row is longer than its room"
+        );
+        let fill0 = fill(&app);
+        // The fifth swatch, dragged 80 px along the row: the first 10
+        // decide the slide, the 70 after it scroll three swatches.
+        let at = egui::pos2(LEAD + 1.0 + 4.0 * STRIDE + 10.0, 13.0);
+        drag(&mut app, at, at - egui::vec2(80.0, 0.0), 8, true, true);
+        assert_eq!(app.palette_scroll, 3);
+        assert_eq!(fill(&app), fill0, "the slide filled nothing");
+        assert_eq!(app.palette_drag, None);
+        // Off the row: the colour comes along.
+        drag(&mut app, at, at - egui::vec2(0.0, 30.0), 3, true, false);
+        assert!(
+            app.palette_drag.is_some(),
+            "a finger dragged off the row drags the colour"
+        );
+        assert_eq!(app.palette_scroll, 3);
+        frame(
+            &mut app,
+            vec![egui::Event::Key {
+                key: egui::Key::Escape,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        frame(
+            &mut app,
+            vec![
+                touch(egui::TouchPhase::End, at - egui::vec2(0.0, 30.0)),
+                press(at - egui::vec2(0.0, 30.0), false),
+                egui::Event::PointerGone,
+            ],
+        );
+        frame(&mut app, Vec::new());
+        // The mouse along the row scrolls nothing (it drags the colour).
+        drag(&mut app, at, at - egui::vec2(80.0, 0.0), 8, false, false);
+        assert_eq!(app.palette_scroll, 3, "the mouse scrolls nothing");
+        frame(
+            &mut app,
+            vec![egui::Event::Key {
+                key: egui::Key::Escape,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        frame(
+            &mut app,
+            vec![
+                press(at - egui::vec2(80.0, 0.0), false),
+                egui::Event::PointerGone,
+            ],
+        );
+        assert_eq!(app.palette_scroll, 3);
+        assert_eq!(fill(&app), fill0);
     }
 }

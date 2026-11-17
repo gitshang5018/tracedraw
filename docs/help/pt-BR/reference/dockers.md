@@ -13,7 +13,7 @@ página lista cada painel e a página que o explica.
 | [[docker.hints]] |  | [→](../get-started/hints.md) |
 | [[docker.transformations]] | <kbd>Alt+F7</kbd> | [→](../objects/transforming.md#transformations-docker) |
 | [[docker.undo]] |  | [→](../get-started/undo-and-views.md#undo-docker) |
-| [[docker.align_distribute]] | <kbd>Ctrl+Shift+A</kbd> | [→](../objects/align-distribute.md) |
+| [[docker.align_distribute]] |  | [→](../objects/align-distribute.md) |
 | [[docker.shaping]] |  | [→](../lines-shapes/shaping.md) |
 | [[docker.step_and_repeat]] | <kbd>Ctrl+Shift+D</kbd> | [→](../objects/step-and-repeat.md) |
 | [[docker.text]] | <kbd>Ctrl+T</kbd> | [→](../text/adding-text.md#text-docker) |
@@ -55,7 +55,9 @@ página lista cada painel e a página que o explica.
 - Clique em uma aba para trazer o painel para a frente; clique na aba da frente
   para recolher os painéis.
 - O botão de fechar na barra de título de um painel o tira das abas; o botão de
-  recolher dobra a área dos painéis.
+  recolher dobra a área dos painéis;
+  as setas dele apontam para o lado da janela para onde ela se dobra (para a
+  esquerda nos painéis encaixados à esquerda).
 - Os painéis que você deixa abertos voltam na próxima vez que o TraceDraw
   inicia.
 - Os atalhos dos painéis alternam: pressionar um quando o painel dele está na

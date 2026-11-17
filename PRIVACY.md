@@ -35,10 +35,13 @@ you save to your own GitHub repository (see below).
 
 ## When TraceDraw uses the network
 
-Only when you ask it to, plus one update check a day that you can turn
-off:
+Only when you ask it to, plus one update check a day that you choose
+at first start and can turn off at any time:
 
-- Update check (desktop): once a day at start, and when you choose
+- Update check (desktop): the first time TraceDraw starts, it asks
+  whether to check for updates (Always check / Never check) and makes
+  no connection on its own before you answer. With Always check, once
+  a day at start, and whenever you choose
   Help > Updates, TraceDraw asks GitHub's public API
   (`api.github.com`) for the project's latest release. The request
   carries only TraceDraw's version in its User-Agent header; no
@@ -47,6 +50,8 @@ off:
   downloaded or installed unless you press Download (or, for the Linux
   AppImage, Install), and downloads come from the project's GitHub
   releases. GitHub sees these requests under its own privacy policy.
+  The copy installed from the Microsoft Store makes no update check:
+  the Store updates it, and Help > Updates opens its Store page.
 
 - Help, the project's pages and links you click open in your web
   browser, which then follows its own privacy policy.
@@ -69,6 +74,10 @@ off:
 - AI images (making, remixing or cutting out pictures with the same
   service), only when you ask: it sends your request and, for a remix or
   cut-out, the picture you chose, to that service the same way.
+- Trace Bitmap's AI model, only when you press Download AI model: the
+  enlarging model is downloaded once from its project's GitHub release
+  page and kept in TraceDraw's own folder. The enlargement runs on your
+  computer; the picture is not sent anywhere.
 - File > GitHub, only when you use it: opening, saving and listing the
   history of a drawing in a GitHub repository you name goes to GitHub's
   API with the access token you provide (none for public repositories).
@@ -77,7 +86,7 @@ off:
 
 ## The browser version
 
-The browser version at <https://igtoth.github.io/tracedraw/> is a set of static
+The browser version at <https://tracedraw.github.io/tracedraw/> is a set of static
 files served by GitHub Pages. TraceDraw itself sends nothing (AI Drawing
 aside, as above, from your browser to the service you set up). When a
 drawing's text needs a font of the page's font catalog, or the pointer
@@ -87,9 +96,17 @@ of both, may log visits as described in the
 [GitHub Privacy Statement](https://docs.github.com/site-policy/privacy-policies/github-general-privacy-statement).
 Files you open in it stay in your browser.
 
+## Independence and trademarks
+
+TraceDraw is an independent open-source project, not affiliated with,
+endorsed by or sponsored by Corel Corporation, Alludo or any other
+software vendor. CorelDRAW is a registered trademark of Corel Corporation.
+`.cdr` support is implemented independently, for interoperability. Other
+trademarks and product names belong to their owners.
+
 ## Contact
 
 Questions about this policy: open an issue at
-<https://github.com/igtoth/tracedraw/issues>.
+<https://github.com/tracedraw/tracedraw/issues>.
 
-Last updated: 2026-10-28.
+Last updated: 2026-11-01.

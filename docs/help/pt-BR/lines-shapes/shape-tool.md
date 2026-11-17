@@ -1,5 +1,7 @@
 # Moldar curvas com a ferramenta Forma
 
+> *Tradução automática: esta página pode estar atrasada em relação à versão em inglês.*
+
 A ferramenta [[tool.shape]] (<kbd>F10</kbd>) edita os nós e segmentos de uma
 curva: você move nós, curva segmentos, acrescenta e exclui nós e muda como cada
 nó une seus segmentos.
@@ -27,7 +29,9 @@ ponto sobre uma alça de controle, uma onda sobre um segmento.
 - <kbd>Shift</kbd>+clique seleciona todos os nós desde o último selecionado até
   o que você clicar.
 - Arraste uma área em volta dos nós. O modo de seleção da barra de
-  propriedades escolhe uma área retangular ou à mão livre.
+  propriedades escolhe uma área retangular ou à mão livre; <kbd>Alt</kbd>+arraste
+  sempre desenha uma à mão livre, e <kbd>Alt+Shift</kbd>+arraste soma os nós dela
+  aos selecionados.
 - <kbd>Tab</kbd> e <kbd>Shift+Tab</kbd> selecionam o próximo ou o anterior;
   <kbd>Home</kbd> e <kbd>End</kbd> o primeiro ou o último.
 - <kbd>Ctrl+A</kbd>, o botão de selecionar todos os nós ou um clique duplo no
@@ -37,24 +41,54 @@ ponto sobre uma alça de controle, uma onda sobre um segmento.
 
 - Arraste um nó para mover os nós selecionados. Mantenha <kbd>Ctrl</kbd>
   pressionado para mover só na horizontal ou na vertical. Os nós se encaixam
-  como pontos de desenho.
+  como pontos de desenho, também nos outros nós e segmentos da própria curva.
 - Arraste um segmento para curvá-lo: o ponto que você pega segue o ponteiro
-  enquanto os nós das pontas ficam parados. Um segmento reto fica curvo.
+  enquanto os nós das pontas ficam parados. Um segmento reto fica curvo. Nós
+  cúspide nas pontas continuam cúspide, e as outras alças deles ficam onde
+  estão.
 - Arraste uma alça de controle para mudar a curvatura.
 - As setas do teclado deslocam os nós selecionados (<kbd>Shift</kbd> para um
   passo maior, <kbd>Ctrl</kbd> para um menor).
+- Clique numa alça de controle para escolhê-la (um anel aparece em volta da
+  ponta): as setas do teclado passam a mover essa alça em vez dos nós.
+  Clique em qualquer outro lugar para soltá-la.
 - Clique duas vezes em um segmento para acrescentar um nó ali, ou em um nó para
   excluí-lo. Clique em um segmento para marcar um ponto e pressione
   <kbd>+</kbd> para acrescentar um nó ali.
 - <kbd>Delete</kbd> ou <kbd>-</kbd> exclui os nós selecionados; <kbd>+</kbd>
-  acrescenta um nó no meio de cada segmento que termina neles.
-- Com nós selecionados, <kbd>C</kbd> alterna entre cúspide e suave,
-  <kbd>S</kbd> entre suave e simétrico, e <kbd>Y</kbd> os torna simétricos.
+  acrescenta um nó no meio de cada segmento que termina neles. Nós vizinhos
+  excluídos juntos deixam uma curva ajustada ao contorno antigo, então a forma
+  mantém o desenho geral.
+- Com nós selecionados, <kbd>C</kbd> os torna cúspide, <kbd>S</kbd> suaves
+  e <kbd>Y</kbd> simétricos.
 - Com nós selecionados, <kbd>Ctrl+C</kbd> copia os segmentos entre eles como
   novas curvas, <kbd>Ctrl+X</kbd> os recorta e <kbd>Ctrl+D</kbd> os duplica.
 
 Clique com o botão direito em um nó ou segmento para um menu com os comandos
 abaixo.
+
+Com vários objetos selecionados, o objeto escolhido por último mostra o
+contorno na cor dos nós (azul) e os outros na cor secundária dos nós
+(vermelho), também enquanto um nó é arrastado, para você distingui-los. Nós de
+ponta de dois objetos diferentes não se unem, nem com **Unir nós** nem
+soltando um sobre o outro: combine os objetos primeiro
+([[menu.object > menu.object.combine]], <kbd>Ctrl+L</kbd>) e depois una as
+pontas.
+
+## Arredondar cantos de curvas {#corner-rings}
+
+Anéis dentro dos cantos de uma curva permitem arredondar um canto arrastando.
+Eles vêm desligados, para não atrapalhar a edição de nós; ligue
+[[options.corner_widgets]] na página [[options.nodes_and_handles]] de
+[[menu.tools > menu.tools.options > menu.tools.options_app]] para usá-los.
+
+- Arraste o anel de um canto entre dois lados retos para arredondá-lo. Um
+  canto arredondado mantém o anel: arraste-o de novo para mudar o raio, mais
+  para dentro ou de volta a um canto vivo. Isso também funciona em cantos
+  arredondados em desenhos salvos e com o painel [[docker.corners]].
+- Numa curva esticada, os cantos ficam redondos na página, não ovais.
+  Retângulos arredondam os cantos pelos próprios nós, seja qual for esta
+  opção.
 
 ## A barra de propriedades {#property-bar}
 

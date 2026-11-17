@@ -113,60 +113,85 @@ pub fn link_color() -> Color32 {
     }
 }
 
-static CONTRAST: std::sync::OnceLock<Palette> = std::sync::OnceLock::new();
+/// The high contrast palettes made so far, by the colours they were made
+/// from: the system's colours can change while the editor runs (#1412),
+/// and each set is made once (there are few).
+static CONTRAST: std::sync::Mutex<Vec<(crate::system_prefs::ContrastColors, &'static Palette)>> =
+    std::sync::Mutex::new(Vec::new());
 
 /// The high contrast theme's palette, made from [`contrast_colors`].
 fn contrast_palette() -> &'static Palette {
-    CONTRAST.get_or_init(|| {
-        let c = contrast_colors();
-        let col = |v: [u8; 3]| Color32::from_rgb(v[0], v[1], v[2]);
-        let (win, text, hi, face, btn_text, gray, hot) = (
-            col(c.window),
-            col(c.window_text),
-            col(c.highlight),
-            col(c.button_face),
-            col(c.button_text),
-            col(c.gray_text),
-            col(c.hot_light),
-        );
-        Palette {
-            panel: face,
-            menu_bar: face,
-            panel_dark: win,
-            border: text,
-            icon_off: gray,
-            text: btn_text,
-            text_dim: gray,
-            page_shadow: gray,
-            page_border: text,
-            ruler_bg: face,
-            tool_active: hi,
-            tool_hover: hi.gamma_multiply(0.6),
-            icon: btn_text,
-            button: face,
-            control_border: text,
-            slider_rail: gray,
-            field: win,
-            menu: win,
-            menu_gutter: win,
-            menu_hover: hi,
-            menu_hover_line: hi,
-            menu_text_off: gray,
-            title_bar: hi,
-            window_border: hi,
-            selected_row: hi,
-            hovered_row: hi.gamma_multiply(0.5),
-            selected_row_line: hot,
-            control_fill: win,
-            tab_strip: face,
-            tab: face,
-            tab_active: win,
-            ruler_tick: text,
-            ruler_label: text,
-            ruler_marker: hot,
-            desktop: win,
-        }
-    })
+    let c = contrast_colors();
+    let mut made = CONTRAST.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((_, p)) = made.iter().find(|(k, _)| *k == c) {
+        return p;
+    }
+    let p: &'static Palette = Box::leak(Box::new(contrast_palette_of(c)));
+    made.push((c, p));
+    p
+}
+
+/// The colours of the high contrast palette seen last, so that the
+/// interface's look is set again when the system's change.
+static CONTRAST_SEEN: std::sync::Mutex<Option<crate::system_prefs::ContrastColors>> =
+    std::sync::Mutex::new(None);
+
+/// Whether the high contrast colours changed since the last call.
+pub fn contrast_changed() -> bool {
+    let c = contrast_colors();
+    let mut seen = CONTRAST_SEEN.lock().unwrap_or_else(|e| e.into_inner());
+    seen.replace(c).is_some_and(|before| before != c)
+}
+
+/// The high contrast palette of the colours `c`.
+fn contrast_palette_of(c: crate::system_prefs::ContrastColors) -> Palette {
+    let col = |v: [u8; 3]| Color32::from_rgb(v[0], v[1], v[2]);
+    let (win, text, hi, face, btn_text, gray, hot) = (
+        col(c.window),
+        col(c.window_text),
+        col(c.highlight),
+        col(c.button_face),
+        col(c.button_text),
+        col(c.gray_text),
+        col(c.hot_light),
+    );
+    Palette {
+        panel: face,
+        menu_bar: face,
+        panel_dark: win,
+        border: text,
+        icon_off: gray,
+        text: btn_text,
+        text_dim: gray,
+        page_shadow: gray,
+        page_border: text,
+        ruler_bg: face,
+        tool_active: hi,
+        tool_hover: hi.gamma_multiply(0.6),
+        icon: btn_text,
+        button: face,
+        control_border: text,
+        slider_rail: gray,
+        field: win,
+        menu: win,
+        menu_gutter: win,
+        menu_hover: hi,
+        menu_hover_line: hi,
+        menu_text_off: gray,
+        title_bar: hi,
+        window_border: hi,
+        selected_row: hi,
+        hovered_row: hi.gamma_multiply(0.5),
+        selected_row_line: hot,
+        control_fill: win,
+        tab_strip: face,
+        tab: face,
+        tab_active: win,
+        ruler_tick: text,
+        ruler_label: text,
+        ruler_marker: hot,
+        desktop: win,
+    }
 }
 
 /// The status bar's light / dark button: a light theme goes to Dark, a
@@ -179,13 +204,26 @@ pub fn toggled(t: Theme) -> Theme {
     }
 }
 
+/// The theme in use, as an index into [`Theme::ALL`]. Tests run on
+/// threads of their own and each keeps its own theme (Light until it sets
+/// another), as with the button sizes: a test that switches the theme
+/// never changes the colours, or the pointer bitmaps kept by theme,
+/// another test is checking.
+#[cfg(not(test))]
 static CURRENT: AtomicU8 = AtomicU8::new(0);
+#[cfg(test)]
+thread_local! {
+    static CURRENT: AtomicU8 = const { AtomicU8::new(0) };
+}
 
 /// Use `theme` for the interface from now on (the tokens and
 /// [`visuals`]).
 pub fn set_theme(theme: Theme) {
     let i = Theme::ALL.iter().position(|t| *t == theme).unwrap_or(0);
+    #[cfg(not(test))]
     CURRENT.store(i as u8, Ordering::Relaxed);
+    #[cfg(test)]
+    CURRENT.with(|c| c.store(i as u8, Ordering::Relaxed));
 }
 
 static SHADOWS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
@@ -211,10 +249,11 @@ pub fn shadow(s: egui::epaint::Shadow) -> egui::epaint::Shadow {
 
 /// The theme in use.
 pub fn theme() -> Theme {
-    Theme::ALL
-        .get(CURRENT.load(Ordering::Relaxed) as usize)
-        .copied()
-        .unwrap_or(Theme::Light)
+    #[cfg(not(test))]
+    let i = CURRENT.load(Ordering::Relaxed);
+    #[cfg(test)]
+    let i = CURRENT.with(|c| c.load(Ordering::Relaxed));
+    Theme::ALL.get(i as usize).copied().unwrap_or(Theme::Light)
 }
 
 const fn rgb(v: u32) -> Color32 {
@@ -334,7 +373,7 @@ const MEDIUM_LIGHT: Palette = Palette {
     ruler_tick: rgb(0x707070),
     ruler_label: rgb(0x5A5A5A),
     ruler_marker: rgb(0x0B0B0B),
-    desktop: rgb(0xDCDCDC),
+    desktop: rgb(0xFFFFFF),
 };
 
 const MEDIUM_DARK: Palette = Palette {
@@ -498,47 +537,195 @@ impl Tokens {
 
     pub const RULER: f32 = 18.0;
 
-    /// The side of a toolbox button: 32 px at the medium size, scaled by
-    /// the toolbox's button size (the bars' menu > Customize).
+    /// The side of a toolbox button at the toolbox's button size (the
+    /// bars' menu > Customize): 32 px at Medium.
     pub fn tool_button() -> f32 {
-        (32.0 * button_scale(&TOOLBOX_SCALE)).round()
+        toolbox_size().metrics().button
     }
 
-    /// The side of a standard toolbar button: 32 px at the medium size,
-    /// scaled by the default button size.
+    /// The side of a toolbox icon's box (its 24 unit grid) in a button
+    /// of the full side: 24 px at Medium.
+    pub fn tool_icon() -> f32 {
+        toolbox_size().metrics().icon
+    }
+
+    /// The side of a standard toolbar button at the default button size:
+    /// 32 px at Medium.
     pub fn bar_button() -> f32 {
-        (32.0 * button_scale(&BAR_SCALE)).round()
+        bar_size().metrics().button
     }
 
-    /// The side of a property bar button: 28 px at the medium size,
-    /// scaled by the default button size.
+    /// The side of a standard toolbar icon's box: 24 px at Medium, 28
+    /// and 34 px at Large and Extra Large (smaller than the toolbox's,
+    /// see `ButtonMetrics`).
+    pub fn bar_icon() -> f32 {
+        bar_size().metrics().bar_icon
+    }
+
+    /// The side of a property bar button at the default button size:
+    /// 28 px at Medium.
     pub fn prop_button() -> f32 {
-        (28.0 * button_scale(&BAR_SCALE)).round()
+        bar_size().metrics().prop_button
+    }
+
+    /// The side of a property bar icon's box: 22 px at Medium, 24 and
+    /// 28 px at Large and Extra Large.
+    pub fn prop_icon() -> f32 {
+        bar_size().metrics().prop_icon
+    }
+
+    /// The fill and frame of an icon button (toolbox, standard toolbar,
+    /// property bar toggles) in each of its states, or None when it is
+    /// plain. Hovering tints it blue with a blue frame; a button that is
+    /// on (the active tool, a toggle pressed in) stands out from the panel
+    /// with a sharp accent frame, on the field colour when light and on
+    /// the picked row's blue when dark; hovering it too deepens the fill.
+    pub fn icon_button(hovered: bool, on: bool) -> Option<(Color32, egui::Stroke)> {
+        icon_button_in(theme(), hovered, on)
     }
 }
 
-/// The default button size's scale and the toolbox's, as f32 bits.
-static BAR_SCALE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-static TOOLBOX_SCALE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-
-fn button_scale(cell: &std::sync::atomic::AtomicU32) -> f32 {
-    let bits = cell.load(Ordering::Relaxed);
-    if bits == 0 {
-        1.0
+/// [`Tokens::icon_button`] under theme `t`.
+fn icon_button_in(t: Theme, hovered: bool, on: bool) -> Option<(Color32, egui::Stroke)> {
+    let p = t.palette();
+    let stroke = |c: Color32| egui::Stroke::new(1.0, c);
+    if t == Theme::HighContrast {
+        let [r, g, b] = contrast_colors().hot_light;
+        let hot = Color32::from_rgb(r, g, b);
+        return match (hovered, on) {
+            (false, false) => None,
+            (true, false) => Some((p.hovered_row, stroke(p.selected_row))),
+            (false, true) => Some((p.selected_row, egui::Stroke::new(2.0, hot))),
+            (true, true) => Some((p.hovered_row, egui::Stroke::new(2.0, hot))),
+        };
+    }
+    let dark = t.is_dark();
+    // The frame of a button that is on: the accent, a lighter blue
+    // where the accent would not read on a dark panel.
+    let on_line = if dark {
+        Color32::from_rgb(0x5C, 0xB2, 0xFF)
     } else {
-        f32::from_bits(bits)
+        Tokens::ACCENT
+    };
+    let hover_fill = if dark {
+        p.panel.lerp_to_gamma(p.selected_row, 0.6)
+    } else {
+        p.selected_row
+    };
+    match (hovered, on) {
+        (false, false) => None,
+        (true, false) => Some((hover_fill, stroke(p.selected_row_line))),
+        (false, true) if dark => Some((p.selected_row, stroke(on_line))),
+        (false, true) => Some((p.field, stroke(on_line))),
+        (true, true) if dark => Some((
+            p.selected_row.lerp_to_gamma(Color32::WHITE, 0.15),
+            stroke(on_line),
+        )),
+        (true, true) => Some((p.selected_row, stroke(on_line))),
     }
 }
 
-/// Size the bars' buttons from now on: `bars` for every bar, `toolbox`
-/// for the toolbox (the bars' menu > Customize > Default Button Size and
-/// Toolbox Toolbar > Button Size).
+/// Paint an icon button's background and frame for its state (see
+/// [`Tokens::icon_button`]) under the icon.
+pub fn paint_icon_button(painter: &egui::Painter, rect: egui::Rect, hovered: bool, on: bool) {
+    if let Some((fill, line)) = Tokens::icon_button(hovered, on) {
+        painter.rect_filled(rect, 2.0, fill);
+        painter.rect_stroke(rect, 2.0, line, egui::StrokeKind::Inside);
+    }
+}
+
+/// The icon box for a button of side `side` whose full size is `button`
+/// with an icon box `icon`: the full icon in a full button, shrunk in the
+/// same proportion (to whole pixels) in a button squeezed to fit, as the
+/// docked toolbox's column does on a short window.
+pub fn icon_in(side: f32, button: f32, icon: f32) -> f32 {
+    if side >= button || button <= 0.0 {
+        icon
+    } else {
+        (side * icon / button).round().max(1.0)
+    }
+}
+
+/// The default button size and the toolbox's, as an index into
+/// `ButtonSize::ALL` plus one (0: not set yet, Medium). Tests run on
+/// threads of their own and each keeps its own sizes, so a test that sizes
+/// the buttons never changes the layout another test is checking.
+#[cfg(not(test))]
+static BAR_SIZE: AtomicU8 = AtomicU8::new(0);
+#[cfg(not(test))]
+static TOOLBOX_SIZE: AtomicU8 = AtomicU8::new(0);
+#[cfg(test)]
+thread_local! {
+    static BAR_SIZE: AtomicU8 = const { AtomicU8::new(0) };
+    static TOOLBOX_SIZE: AtomicU8 = const { AtomicU8::new(0) };
+}
+
+fn size_of_index(n: u8) -> crate::settings::ButtonSize {
+    use crate::settings::ButtonSize;
+    match n {
+        0 => ButtonSize::Medium,
+        n => ButtonSize::ALL
+            .get(usize::from(n) - 1)
+            .copied()
+            .unwrap_or(ButtonSize::Medium),
+    }
+}
+
+#[cfg(not(test))]
+fn stored_size(cell: &AtomicU8) -> crate::settings::ButtonSize {
+    size_of_index(cell.load(Ordering::Relaxed))
+}
+
+#[cfg(test)]
+fn stored_size(cell: &'static std::thread::LocalKey<AtomicU8>) -> crate::settings::ButtonSize {
+    size_of_index(cell.with(|c| c.load(Ordering::Relaxed)))
+}
+
+#[cfg(not(test))]
+fn store_size(cell: &AtomicU8, n: u8) {
+    cell.store(n, Ordering::Relaxed);
+}
+
+#[cfg(test)]
+fn store_size(cell: &'static std::thread::LocalKey<AtomicU8>, n: u8) {
+    cell.with(|c| c.store(n, Ordering::Relaxed));
+}
+
+fn size_index(size: crate::settings::ButtonSize) -> u8 {
+    crate::settings::ButtonSize::ALL
+        .iter()
+        .position(|s| *s == size)
+        .map_or(0, |i| i as u8 + 1)
+}
+
+/// The default button size the bars draw at now.
+pub fn bar_size() -> crate::settings::ButtonSize {
+    stored_size(&BAR_SIZE)
+}
+
+/// The button size the toolbox draws at now.
+pub fn toolbox_size() -> crate::settings::ButtonSize {
+    stored_size(&TOOLBOX_SIZE)
+}
+
+/// Held by the tests that set the button sizes in force to another size
+/// than the default, or that count on them: the sizes are shared by the
+/// whole process.
+#[cfg(test)]
+pub(crate) fn button_sizes_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Size the bars' buttons and icons from now on: `bars` for every bar,
+/// `toolbox` for the toolbox (the bars' menu > Customize > Default Button
+/// Size and Toolbox Toolbar > Button Size).
 pub fn set_button_sizes(
     bars: crate::settings::ButtonSize,
     toolbox: Option<crate::settings::ButtonSize>,
 ) {
-    BAR_SCALE.store(bars.scale().to_bits(), Ordering::Relaxed);
-    TOOLBOX_SCALE.store(toolbox.unwrap_or(bars).scale().to_bits(), Ordering::Relaxed);
+    store_size(&BAR_SIZE, size_index(bars));
+    store_size(&TOOLBOX_SIZE, size_index(toolbox.unwrap_or(bars)));
 }
 
 pub fn visuals() -> Visuals {
@@ -674,6 +861,14 @@ impl FontLoad {
         self.handle.as_ref().is_none_or(|h| h.is_finished())
     }
 
+    /// A load of a thread of the test's own.
+    #[cfg(test)]
+    pub fn from_thread(handle: std::thread::JoinHandle<egui::FontDefinitions>) -> Self {
+        FontLoad {
+            handle: Some(handle),
+        }
+    }
+
     /// Whether a load is still under way.
     #[cfg(test)]
     pub fn pending(&self) -> bool {
@@ -769,7 +964,7 @@ pub fn bundled_font_definitions() -> egui::FontDefinitions {
 /// script (the bundled one covers Latin, Greek and Cyrillic).
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub fn needs_system_font(code: &str) -> bool {
-    matches!(code, "zh-CN" | "zh-TW" | "ja" | "ar" | "hi" | "bn")
+    matches!(code, "zh-CN" | "zh-TW" | "ja" | "ar" | "hi" | "bn" | "lo")
 }
 
 /// The family of the font folder (browser build) that covers the script
@@ -780,6 +975,7 @@ pub fn ui_script_family(code: &str) -> Option<&'static str> {
         "zh-CN" => Some("Noto Sans SC"),
         "zh-TW" => Some("Noto Sans TC"),
         "ja" => Some("Noto Sans JP"),
+        "lo" => Some("Noto Sans Lao"),
         _ => None,
     }
 }
@@ -793,64 +989,142 @@ pub fn ui_context() -> egui::Context {
     ctx
 }
 
+/// Per script, the system font families the interface tries in order
+/// (the first installed one wins): the scripts of the interface
+/// languages and those people write their file and drawing names in,
+/// which the bundled font (Latin, Greek, Cyrillic) does not cover.
+const UI_SCRIPT_FONTS: &[&[&str]] = &[
+    // Arabic (also covered by many Latin system fonts).
+    &[
+        "Noto Sans Arabic",
+        "Noto Naskh Arabic",
+        "Segoe UI",
+        "Arial",
+        "DejaVu Sans",
+        "Geeza Pro",
+    ],
+    // Hebrew: file names, layer and page names typed in it.
+    &[
+        "Noto Sans Hebrew",
+        "Arial Hebrew",
+        "Segoe UI",
+        "Arial",
+        "DejaVu Sans",
+        "Liberation Sans",
+        "FreeSans",
+    ],
+    // Devanagari (Hindi).
+    &[
+        "Noto Sans Devanagari",
+        "Nirmala UI",
+        "Mangal",
+        "Kohinoor Devanagari",
+        "Lohit Devanagari",
+    ],
+    // Bengali.
+    &[
+        "Noto Sans Bengali",
+        "Nirmala UI",
+        "Vrinda",
+        "Kohinoor Bangla",
+        "Lohit Bengali",
+    ],
+    // Simplified Chinese and Japanese.
+    &[
+        "Noto Sans CJK SC",
+        "Noto Sans SC",
+        "Microsoft YaHei",
+        "PingFang SC",
+        "Source Han Sans SC",
+        "WenQuanYi Micro Hei",
+        "Noto Sans CJK JP",
+    ],
+    // Traditional Chinese.
+    &[
+        "Noto Sans CJK TC",
+        "Noto Sans TC",
+        "Microsoft JhengHei",
+        "PingFang TC",
+        "Source Han Sans TC",
+    ],
+    &[
+        "Noto Sans CJK JP",
+        "Noto Sans JP",
+        "Meiryo",
+        "Yu Gothic UI",
+        "Hiragino Sans",
+        "Source Han Sans",
+    ],
+    // Lao.
+    &[
+        "Noto Sans Lao",
+        "Lao Sangam MN",
+        "Leelawadee UI",
+        "Saysettha OT",
+    ],
+    // Thai: file names, layer and page names typed in it (#2168).
+    &[
+        "Noto Sans Thai",
+        "Noto Sans Thai UI",
+        "Leelawadee UI",
+        "Leelawadee",
+        "Tahoma",
+        "Thonburi",
+        "Sukhumvit Set",
+        "Loma",
+        "Garuda",
+        "Waree",
+        "Norasi",
+        "FreeSerif",
+    ],
+];
+
+/// The first family of the CJK group the interface language `code` reads
+/// its Han characters with, when that is not the Simplified Chinese one.
+fn cjk_lead(code: &str) -> Option<&'static str> {
+    match code {
+        "ja" => Some("Noto Sans CJK JP"),
+        "zh-TW" => Some("Noto Sans CJK TC"),
+        _ => None,
+    }
+}
+
+/// [`UI_SCRIPT_FONTS`] in the order the interface language `code` wants
+/// them. Chinese and Japanese share the Han characters, which take the
+/// shapes of the first CJK font installed, so a Japanese interface puts
+/// its own font before the Chinese ones (it showed Chinese shapes of the
+/// kanji, #2634), as Traditional Chinese does.
+fn script_groups_for(code: &str) -> Vec<&'static [&'static str]> {
+    let mut groups: Vec<&'static [&'static str]> = UI_SCRIPT_FONTS.to_vec();
+    let Some(lead) = cjk_lead(code) else {
+        return groups;
+    };
+    let Some(i) = groups.iter().position(|g| g.first() == Some(&lead)) else {
+        return groups;
+    };
+    let group = groups.remove(i);
+    let at = groups
+        .iter()
+        .position(|g| g.first() == Some(&"Noto Sans CJK SC"))
+        .unwrap_or(0);
+    groups.insert(at, group);
+    groups
+}
+
+/// After the interface language changed from `old` to `new`: read the
+/// system fonts again in the new order when the two languages want the
+/// Han characters from different fonts (see [`script_groups_for`]).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn language_changed(ctx: &egui::Context, old: &str, new: &str) {
+    if cjk_lead(old) != cjk_lead(new) {
+        install_fonts(ctx);
+    }
+}
+
 /// Add the system fonts covering the non-Latin UI languages to `defs`;
 /// returns their keys.
 fn fallback_fonts(defs: &mut egui::FontDefinitions) -> Vec<String> {
-    // Per script, the families to try in order; the first installed one wins.
-    let groups: &[&[&str]] = &[
-        // Arabic (also covered by many Latin system fonts).
-        &[
-            "Noto Sans Arabic",
-            "Noto Naskh Arabic",
-            "Segoe UI",
-            "Arial",
-            "DejaVu Sans",
-            "Geeza Pro",
-        ],
-        // Devanagari (Hindi).
-        &[
-            "Noto Sans Devanagari",
-            "Nirmala UI",
-            "Mangal",
-            "Kohinoor Devanagari",
-            "Lohit Devanagari",
-        ],
-        // Bengali.
-        &[
-            "Noto Sans Bengali",
-            "Nirmala UI",
-            "Vrinda",
-            "Kohinoor Bangla",
-            "Lohit Bengali",
-        ],
-        // Simplified Chinese and Japanese.
-        &[
-            "Noto Sans CJK SC",
-            "Noto Sans SC",
-            "Microsoft YaHei",
-            "PingFang SC",
-            "Source Han Sans SC",
-            "WenQuanYi Micro Hei",
-            "Noto Sans CJK JP",
-        ],
-        // Traditional Chinese.
-        &[
-            "Noto Sans CJK TC",
-            "Noto Sans TC",
-            "Microsoft JhengHei",
-            "PingFang TC",
-            "Source Han Sans TC",
-        ],
-        &[
-            "Noto Sans CJK JP",
-            "Noto Sans JP",
-            "Meiryo",
-            "Yu Gothic UI",
-            "Hiragino Sans",
-            "Source Han Sans",
-        ],
-        // Cyrillic is in the bundled font; Latin extended too.
-    ];
+    let groups = script_groups_for(&crate::i18n::language());
     let fs = tracedraw_text::fonts();
     let mut added = Vec::new();
     for group in groups {
@@ -880,6 +1154,85 @@ fn fallback_fonts(defs: &mut egui::FontDefinitions) -> Vec<String> {
 #[cfg(test)]
 mod theme_tests {
     use super::*;
+
+    /// A test that switches the theme leaves the theme of the tests
+    /// running alongside alone: the pointer bitmaps are kept by theme, and
+    /// a switch between drawing one and asking for it again drew it anew.
+    #[test]
+    fn a_theme_switched_in_another_test_is_not_this_ones() {
+        assert_eq!(theme(), Theme::Light);
+        std::thread::spawn(|| {
+            for t in Theme::ALL {
+                set_theme(t);
+                assert_eq!(theme(), t);
+            }
+        })
+        .join()
+        .expect("the other test");
+        assert_eq!(theme(), Theme::Light);
+    }
+
+    /// Names typed in Hebrew show in the interface (the file name field,
+    /// the recent files, the tabs) when the system has a font for it.
+    #[test]
+    fn hebrew_names_have_an_interface_font() {
+        let hebrew = UI_SCRIPT_FONTS
+            .iter()
+            .find(|g| g.first() == Some(&"Noto Sans Hebrew"))
+            .expect("a group of Hebrew fonts");
+        let has_one = tracedraw_text::fonts().first_face_data(hebrew).is_some();
+        if has_one {
+            let ctx = ui_context();
+            let mut out = ctx.run_ui(Default::default(), |_| {});
+            out.textures_delta.clear();
+            let font = egui::FontId::proportional(14.0);
+            for c in "שלום".chars() {
+                assert!(ctx.fonts_mut(|f| f.has_glyph(&font, c)), "{c}");
+            }
+        }
+    }
+
+    /// Names typed in Thai show in the interface (the file name field,
+    /// the file list, the recent files, the tabs) when the system has a
+    /// font for it, consonants and the marks above and below them
+    /// (#2168: a Thai file name showed as boxes).
+    #[test]
+    fn thai_names_have_an_interface_font() {
+        // The fonts Windows, macOS and the common Linux installs bring
+        // for Thai.
+        let thai = [
+            "Noto Sans Thai",
+            "Leelawadee UI",
+            "Tahoma",
+            "Thonburi",
+            "Loma",
+        ];
+        let has_one = tracedraw_text::fonts().first_face_data(&thai).is_some();
+        if has_one {
+            let ctx = ui_context();
+            let mut out = ctx.run_ui(Default::default(), |_| {});
+            out.textures_delta.clear();
+            let font = egui::FontId::proportional(14.0);
+            for c in "สวัสดี ไฟล์งานพิมพ์".chars().filter(|c| *c != ' ')
+            {
+                assert!(ctx.fonts_mut(|f| f.has_glyph(&font, c)), "{c}");
+            }
+        }
+    }
+
+    /// The fonts Windows (Leelawadee UI, Tahoma), macOS (Thonburi) and
+    /// the common Linux installs (Noto Sans Thai, Loma) bring for Thai
+    /// are asked for as one script's, so a Thai name does not depend on
+    /// the font of another script happening to hold Thai letters.
+    #[test]
+    fn the_thai_interface_fonts_cover_every_system() {
+        let thai = UI_SCRIPT_FONTS
+            .iter()
+            .find(|g| g.first() == Some(&"Noto Sans Thai"));
+        for family in ["Leelawadee UI", "Tahoma", "Thonburi", "Loma"] {
+            assert!(thai.is_some_and(|g| g.contains(&family)), "{family}");
+        }
+    }
 
     /// WCAG contrast ratio of two opaque colours.
     fn contrast(a: Color32, b: Color32) -> f32 {
@@ -948,15 +1301,81 @@ mod theme_tests {
         assert_eq!(toggled(Theme::MediumDark), Theme::Light);
     }
 
+    /// A Japanese interface takes the kanji from a Japanese font, not a
+    /// Chinese one (#2634); Traditional Chinese from its own; the others
+    /// keep the list as it is.
+    #[test]
+    fn the_interface_language_picks_its_own_cjk_font_first() {
+        let lead = |code: &str| {
+            script_groups_for(code)
+                .iter()
+                .map(|g| g[0])
+                .find(|f| f.starts_with("Noto Sans CJK"))
+        };
+        assert_eq!(lead("ja"), Some("Noto Sans CJK JP"));
+        assert_eq!(lead("zh-TW"), Some("Noto Sans CJK TC"));
+        assert_eq!(lead("zh-CN"), Some("Noto Sans CJK SC"));
+        assert_eq!(lead("en"), Some("Noto Sans CJK SC"));
+        assert_eq!(script_groups_for("en"), UI_SCRIPT_FONTS.to_vec());
+        for code in ["ja", "zh-TW"] {
+            let mut a = script_groups_for(code);
+            let mut b = UI_SCRIPT_FONTS.to_vec();
+            a.sort();
+            b.sort();
+            assert_eq!(a, b, "{code}: the same groups, reordered");
+        }
+        // The Japanese group holds the fonts Japanese systems have.
+        let ja = script_groups_for("ja");
+        let jp = ja.iter().find(|g| g[0] == "Noto Sans CJK JP").expect("JP");
+        for f in ["Meiryo", "Yu Gothic UI", "Hiragino Sans"] {
+            assert!(jp.contains(&f), "{f}");
+        }
+    }
+
     /// The browser build fetches a font for the interface languages no
-    /// bundled font covers (#561).
+    /// bundled font covers (#561), Lao among them.
     #[test]
     fn cjk_interface_languages_have_a_font_to_fetch() {
-        for code in ["zh-CN", "zh-TW", "ja"] {
+        for code in ["zh-CN", "zh-TW", "ja", "lo"] {
             assert!(needs_system_font(code));
             assert!(ui_script_family(code).is_some(), "{code}");
         }
         assert_eq!(ui_script_family("pt-BR"), None);
+    }
+
+    /// Plain, hovered, on and on while hovered look different from each
+    /// other in every theme, and a button that is on stands out from the
+    /// panel with a frame unlike the hover's.
+    #[test]
+    fn icon_buttons_have_four_distinct_looks() {
+        for t in Theme::ALL {
+            assert_eq!(icon_button_in(t, false, false), None, "{t:?}");
+            let hover = icon_button_in(t, true, false).expect("hover look");
+            let on = icon_button_in(t, false, true).expect("on look");
+            let both = icon_button_in(t, true, true).expect("on and hovered look");
+            assert_ne!(hover, on, "{t:?}");
+            assert_ne!(on, both, "{t:?}");
+            assert_ne!(hover, both, "{t:?}");
+            assert_ne!(on.1.color, hover.1.color, "{t:?}");
+            assert_ne!(on.0, t.palette().panel, "{t:?}");
+            assert_ne!(hover.0, t.palette().panel, "{t:?}");
+        }
+    }
+
+    /// A button that is on has a frame that contrasts with the panel.
+    #[test]
+    fn the_on_frame_contrasts_with_the_panel() {
+        let luma = |c: Color32| 0.299 * c.r() as f32 + 0.587 * c.g() as f32 + 0.114 * c.b() as f32;
+        for t in [
+            Theme::Light,
+            Theme::MediumLight,
+            Theme::MediumDark,
+            Theme::Dark,
+        ] {
+            let (_, line) = icon_button_in(t, false, true).expect("on look");
+            let gap = (luma(line.color) - luma(t.palette().panel)).abs();
+            assert!(gap > 50.0, "{t:?}: {gap}");
+        }
     }
 }
 
@@ -977,5 +1396,154 @@ mod shadow_tests {
         assert_eq!(visuals().window_shadow, egui::epaint::Shadow::NONE);
         set_shadows(true);
         assert_eq!(shadow(s), s);
+    }
+}
+
+#[cfg(test)]
+mod glyph_tests {
+    use super::*;
+
+    /// The symbol characters (`U+2010` to `U+2BFF`: punctuation, arrows,
+    /// shapes, dingbats; and the pictographs from `U+1F000`) in the string
+    /// and character literals of `src`, outside comments and the test
+    /// module, with their line numbers. Letters of other scripts (language
+    /// names, sample text) are left to the system fonts.
+    fn symbols_in(src: &str) -> Vec<(usize, char)> {
+        let code = src.split("#[cfg(test)]").next().unwrap_or(src);
+        let symbol =
+            |c: char| matches!(c as u32, 0x2010..=0x2027 | 0x2030..=0x2BFF | 0x1F000..=0x1FAFF);
+        let mut out = Vec::new();
+        for (n, line) in code.lines().enumerate() {
+            if line.trim_start().starts_with("//") {
+                continue;
+            }
+            let line = line.split(" // ").next().unwrap_or(line);
+            // Literal text: what lies between quotes, escapes decoded.
+            let mut chars = line.chars().peekable();
+            let mut quote: Option<char> = None;
+            while let Some(c) = chars.next() {
+                match quote {
+                    None if c == '"' => quote = Some('"'),
+                    // A character literal, not a lifetime: 'x' or '\u{..}'.
+                    None if c == '\'' => {
+                        let rest: String = chars.clone().take(12).collect();
+                        if rest.chars().nth(1) == Some('\'') || rest.starts_with("\\u{") {
+                            quote = Some('\'');
+                        }
+                    }
+                    None => {}
+                    Some(q) if c == q => quote = None,
+                    Some(_) if c == '\\' => {
+                        if chars.peek() == Some(&'u') {
+                            chars.next();
+                            let hex: String = chars
+                                .by_ref()
+                                .skip_while(|c| *c == '{')
+                                .take_while(|c| *c != '}')
+                                .collect();
+                            if let Some(c) = u32::from_str_radix(&hex, 16)
+                                .ok()
+                                .and_then(char::from_u32)
+                                .filter(|c| symbol(*c))
+                            {
+                                out.push((n + 1, c));
+                            }
+                        } else {
+                            chars.next();
+                        }
+                    }
+                    Some(_) if symbol(c) => out.push((n + 1, c)),
+                    Some(_) => {}
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn symbols_are_found_in_literals_only() {
+        let src = "// \u{25b4} in a comment\nlet a = \"x \\u{25BE}\"; let b = '\u{25b4}';\nfn f<'a>(x: &'a str) {} // \u{2192}\n";
+        assert_eq!(symbols_in(src), [(2, '\u{25BE}'), (2, '\u{25B4}')]);
+    }
+
+    /// Every symbol the interface writes is in the bundled fonts (the UI
+    /// font and egui's own), so no system font is needed to show it: the
+    /// panels' and toolbox's scroll arrows were U+25B4 and U+25BE, which
+    /// none of them has, and Windows showed empty boxes (#1780).
+    #[test]
+    fn every_interface_symbol_is_in_the_bundled_fonts() {
+        // Not interface text: the bullet characters Bullets puts into the
+        // drawing's text (its fonts draw them), and the quote marks a
+        // printer name is escaped for.
+        let in_the_drawing: &[(&str, char)] = &[
+            ("ui/dialogs.rs", '\u{25E6}'),
+            ("ui/dialogs.rs", '\u{25AA}'),
+            ("ui/dialogs.rs", '\u{2713}'),
+            ("ui/dialogs.rs", '\u{27A4}'),
+            ("printers.rs", '\u{2018}'),
+            ("printers.rs", '\u{2019}'),
+            ("printers.rs", '\u{201A}'),
+            ("printers.rs", '\u{201B}'),
+        ];
+        // Each family's faces, read from their character maps (egui's own
+        // `has_glyph` calls every character of the face holding its
+        // replacement mark missing).
+        let defs = bundled_font_definitions();
+        let families = [
+            egui::FontFamily::Proportional,
+            egui::FontFamily::Name(BOLD.into()),
+        ];
+        let has = |family: &egui::FontFamily, c: char| {
+            defs.families.get(family).is_some_and(|names| {
+                names.iter().any(|n| {
+                    defs.font_data.get(n).is_some_and(|d| {
+                        ttf_parser::Face::parse(&d.font, d.index)
+                            .is_ok_and(|f| f.glyph_index(c).is_some())
+                    })
+                })
+            })
+        };
+        assert!(has(&families[0], 'A') && !has(&families[0], '\u{25B4}'));
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = vec![root.clone()];
+        let mut missing = Vec::new();
+        let mut seen = 0;
+        while let Some(path) = files.pop() {
+            if path.is_dir() {
+                for e in std::fs::read_dir(&path).expect("source folder").flatten() {
+                    files.push(e.path());
+                }
+                continue;
+            }
+            let name = path
+                .strip_prefix(&root)
+                .map(|p| p.to_string_lossy().replace('\\', "/"))
+                .unwrap_or_default();
+            // The signs of formulas are drawn in the formula's own font
+            // (#2183), not in the interface's.
+            if !name.ends_with(".rs") || name.ends_with("tests.rs") || name == "formula.rs" {
+                continue;
+            }
+            let src = std::fs::read_to_string(&path).expect("source file");
+            for (line, c) in symbols_in(&src) {
+                seen += 1;
+                if in_the_drawing.contains(&(name.as_str(), c)) {
+                    continue;
+                }
+                for f in &families {
+                    if !has(f, c) {
+                        missing.push(format!("{name}:{line}: U+{:04X} {c} ({f:?})", c as u32));
+                    }
+                }
+            }
+        }
+        assert!(seen > 20, "the scan found the interface's symbols");
+        missing.sort();
+        missing.dedup();
+        assert!(
+            missing.is_empty(),
+            "symbols no bundled font has:\n{}",
+            missing.join("\n")
+        );
     }
 }

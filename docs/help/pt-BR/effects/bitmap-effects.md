@@ -1,5 +1,7 @@
 # Efeitos de bitmap
 
+> *Tradução automática: esta página pode estar atrasada em relação à versão em inglês.*
+
 Os efeitos de bitmap mudam pixels: desfocam, aumentam a nitidez, ajustam cores,
 acrescentam texturas e traços artísticos. Funcionam em bitmaps e também em
 objetos vetoriais, que passam a ser desenhados como a imagem que os efeitos
@@ -13,9 +15,16 @@ reordenar ou remover qualquer um depois, e remover o último devolve o original.
 1. Selecione um ou mais objetos.
 2. Escolha um grupo no menu [[menu.effects]] e um efeito.
 3. Efeitos sem configurações são aplicados na hora. Os outros abrem uma caixa
-   de diálogo com prévias de **antes** e **depois** do primeiro objeto
-   selecionado: defina os valores e clique em [[dialog.ok]]. **Redefinir**
-   devolve todas as configurações ao padrão.
+   de diálogo redimensionável, com o primeiro objeto selecionado antes e
+   depois na [Prévia de antes e depois](../bitmaps/before-after-preview.md) e
+   as configurações à direita. O efeito também aparece no desenho e acompanha
+   cada valor que muda (desmarque **Prévia** para desligar isso); o trabalho é
+   feito em segundo plano, então a janela continua respondendo com imagens
+   grandes. Clique em [[dialog.ok]] para guardar o que o desenho mostra em um
+   passo de desfazer; **Cancelar** ou <kbd>Esc</kbd> devolvem o desenho
+   exatamente como estava. As configurações ficam em um painel à direita;
+   abaixo dele, **Redefinir** devolve todas as configurações ao padrão e as
+   duas setas desfazem e refazem as mudanças feitas na caixa de diálogo.
 
 ![Uma caixa de diálogo de efeito de bitmap](../../img/effects-bitmap-effects.png)
 
@@ -71,6 +80,17 @@ efeito** abre os grupos de efeitos.
 
 [[menu.effects > menu.effects.flatten]] torna os efeitos permanentes: um bitmap
 fica com o que mostra, e um objeto vetorial vira bitmap.
+
+### Em todas as páginas
+
+Num desenho de várias páginas, a caixa de diálogo de um efeito mostra a caixa
+[[dialog.fx_all_pages]] enquanto há uma imagem selecionada. Marcada, OK também
+aplica o efeito a todas as imagens de todas as páginas, em um só passo de
+desfazer. Imagens bloqueadas e imagens em camadas bloqueadas ficam como estão.
+
+[[menu.effects > menu.effects.all_pages]] faz o mesmo com os efeitos que a
+imagem selecionada já tem, incluindo os que não têm caixa de diálogo: todas as
+outras imagens recebem a mesma lista de efeitos, em um só passo de desfazer.
 
 ## O seletor de efeitos {#effect-picker}
 

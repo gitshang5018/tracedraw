@@ -1,7 +1,8 @@
 # Finding and replacing
 
 The [[docker.find_replace]] panel (<kbd>Ctrl+F</kbd>) finds text in the
-drawing, and replaces it, or finds objects by name. Open it with
+drawing, and replaces it, finds objects by name, or finds objects by their
+fill, outline, outline width, font or type and replaces those. Open it with
 [[menu.edit > menu.edit.find_and_replace]].
 
 ![The Find and Replace panel](../../img/objects-find-replace.png)
@@ -26,3 +27,31 @@ Choose [[dialog.find_objects]], type part of a name, or a kind of object such
 as "Rectangle", and click [[dialog.find_next]] or [[dialog.find_all]]. The
 search covers the current page. To name objects, see
 [Renaming objects and layers](objects-and-layers.md#rename).
+
+## Finding and replacing by properties {#properties}
+
+1. Choose [[find.properties]].
+2. In [[find.look_in]], choose [[find.this_page]] or [[find.whole_drawing]].
+3. Under [[find.find_objects_with]], tick what to look for: [[find.object_type]],
+   [[find.fill]], [[find.outline]] (a colour, or [[find.none]]),
+   [[find.outline_width]] or [[find.font]]. An object is found when it has
+   everything ticked. [[find.from_selection]] takes these from the selected
+   object, for example to find every object filled with its colour.
+4. Click [[find.previous]] or [[dialog.find_next]] to select the objects one
+   by one (on other pages too), or [[dialog.find_all]] to select those on
+   this page.
+5. To change them, tick under [[find.replace_with]] the new fill colour,
+   outline colour, outline width or font, and click [[dialog.replace_all]].
+   All the changes undo in one step.
+
+A fill colour looked for is replaced wherever it is used, in gradients
+too. Locked objects are left as they are.
+
+A new font can go to every character, or with **Numbers only** only
+to the numbers (to set the digits of a text in another font) or with
+**Letters only** only to the letters. **Digits to 0-9** writes
+the digits of other scripts, such as Arabic-Indic or Devanagari digits,
+as 0 to 9 and leaves the letters alone.
+
+For every option, how colors are compared and what each replacement does,
+see [Finding and replacing by properties](find-by-properties.md).

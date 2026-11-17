@@ -1,5 +1,7 @@
 # Opciones de personalización
 
+> *Traducción automática: esta página puede ir por detrás de la versión en inglés.*
+
 [[menu.tools > menu.tools.options > menu.tools.options_customization]] ajusta
 el aspecto de la interfaz, sus propios atajos de teclado, qué barras se
 muestran y cómo se comporta la paleta de colores.
@@ -13,6 +15,10 @@ muestran y cómo se comporta la paleta de colores.
 - [[options.ui_shadows]] (menos sombras ayudan con gráficos más lentos).
 - [[options.colored_icons]]: cada grupo de herramientas recibe un color
   propio.
+- [[options.docker_tabs_icons_only]]: las pestañas de los paneles a los
+  lados de la ventana muestran solo su imagen, con el nombre en la
+  sugerencia. Desactivado, muestran imagen y nombre, y una columna con más
+  pestañas de las que caben se desplaza.
 - [[options.ui_size]]: el tamaño de menús, barras, iconos y paneles, en
   relación con la escala que su sistema da al monitor (100% de forma
   predeterminada). [[options.reset_to_default]] vuelve al 100%. El tamaño de
@@ -45,6 +51,15 @@ valores predeterminados los quita todos. Las teclas de herramienta son una
 letra o <kbd>Shift</kbd> y una letra. Vea
 [Atajos de teclado](../reference/keyboard-shortcuts.md).
 
+Un comando puede tener varios atajos: una tecla nueva se suma a las que ya
+tiene (una tecla predeterminada sigue funcionando a su lado), y cada tecla tiene
+su propio botón para quitarla. Los botones de las barras que ejecutan un
+comando de menú (Nuevo, Abrir, Guardar, Deshacer, Acercar y otros) también
+admiten atajos, las mismas teclas que su comando de menú, igual que las filas
+que los menús muestran solo a veces. Una lista **Botones de las barras de
+herramientas** tiene todos los botones de las barras Estándar y Zoom: arrastre
+desde ahí de vuelta a la barra un botón que haya quitado.
+
 ## Barras de comandos {#command-bars}
 
 ![La página Barras de comandos de las opciones de personalización](../../img/customize-customization-command-bars.png)
@@ -65,6 +80,9 @@ letra o <kbd>Shift</kbd> y una letra. Vea
 
 - [[options.palette_auto_update]] y [[options.palette_show_document]] (ambas
   activadas).
+- [[options.palette_position]] (Arriba, Abajo, Izquierda, Derecha o Flotante)
+  de la paleta predeterminada, como la ajusta su propio menú; no cambia
+  mientras las barras de herramientas están bloqueadas.
 - [[options.palette_swatches]]: [[options.palette_no_color]] (activado), y lo
   que hace el [[options.palette_right_button]]: [[options.palette_set_outline]]
   (opción predeterminada) o abrir el [[options.palette_context_menu]].

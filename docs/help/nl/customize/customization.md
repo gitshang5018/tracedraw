@@ -1,5 +1,7 @@
 # Aanpassingsopties
 
+> *Machinevertaling: deze pagina kan achterlopen op de Engelse versie.*
+
 [[menu.tools > menu.tools.options > menu.tools.options_customization]] stelt
 het uiterlijk van de interface in, uw eigen sneltoetsen, welke balken zichtbaar
 zijn en hoe het kleurenpalet zich gedraagt.
@@ -13,6 +15,10 @@ zijn en hoe het kleurenpalet zich gedraagt.
 - [[options.ui_shadows]] (minder schaduwen helpen bij tragere grafische
   kaarten).
 - [[options.colored_icons]]: elke groep gereedschappen krijgt een eigen kleur.
+- [[options.docker_tabs_icons_only]]: de paneeltabbladen aan de zijkanten
+  van het venster tonen alleen hun afbeelding, met de naam in de tip. Uit
+  tonen ze afbeelding en naam, en een kolom met meer tabbladen dan er passen
+  schuift.
 - [[options.ui_size]]: hoe groot menu's, balken, pictogrammen en panelen zijn,
   ten opzichte van de schaal die uw systeem aan de monitor geeft (in het begin
   100%). [[options.reset_to_default]] gaat terug naar 100%. De grootte van de
@@ -44,6 +50,15 @@ naar de standaardwaarden verwijdert ze allemaal. Gereedschapstoetsen zijn een
 letter of <kbd>Shift</kbd> en een letter. Zie
 [Sneltoetsen](../reference/keyboard-shortcuts.md).
 
+Een opdracht kan meerdere sneltoetsen hebben: een nieuwe toets komt bij de
+toetsen die er al zijn (een ingebouwde toets blijft ernaast werken), en elke
+toets heeft een eigen verwijderknop. Knoppen van de balken die een menuopdracht
+uitvoeren (Nieuw, Openen, Opslaan, Ongedaan maken, Inzoomen en andere) krijgen
+ook sneltoetsen, dezelfde als hun menuopdracht, net als regels die de menu's
+alleen soms tonen. Een lijst **Werkbalkknoppen** bevat alle knoppen van de
+werkbalken Standaard en Zoom: sleep van daaruit een verwijderde knop terug naar
+de balk.
+
 ## Opdrachtbalken {#command-bars}
 
 ![De pagina Opdrachtbalken van de aanpassingsopties](../../img/customize-customization-command-bars.png)
@@ -64,6 +79,9 @@ letter of <kbd>Shift</kbd> en een letter. Zie
 
 - [[options.palette_auto_update]] en [[options.palette_show_document]] (beide
   aan).
+- [[options.palette_position]] (Boven, Onder, Links, Rechts of Zwevend) van
+  het standaardpalet, zoals het eigen menu van het palet die instelt; die
+  verandert niet zolang de werkbalken vergrendeld zijn.
 - [[options.palette_swatches]]: [[options.palette_no_color]] (aan), en wat de
   [[options.palette_right_button]] doet: [[options.palette_set_outline]] (in
   het begin) of het [[options.palette_context_menu]] openen.

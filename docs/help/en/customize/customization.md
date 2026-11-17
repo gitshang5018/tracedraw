@@ -12,6 +12,9 @@ the color palette behaves.
   off, they open where you left them.
 - [[options.ui_shadows]] (fewer shadows help slower graphics).
 - [[options.colored_icons]]: each group of tools gets a color of its own.
+- [[options.docker_tabs_icons_only]]: the panel tabs at the window's sides
+  show their pictures alone, the name in the tip. Off, each tab shows its
+  picture and name, and a column with more tabs than fit slides.
 - [[options.ui_size]]: how large menus, bars, icons and panels are, relative
   to the scaling your system gives the monitor (100% at first).
   [[options.reset_to_default]] goes back to 100%. The interface size never
@@ -40,6 +43,20 @@ shortcut. The **x** beside a shortcut removes it, and resetting to the
 defaults removes them all. Tool keys are a letter or <kbd>Shift</kbd> and a
 letter. See [Keyboard shortcuts](../reference/keyboard-shortcuts.md).
 
+A command can have several shortcuts: a new key joins the ones it has (a
+built-in key keeps working beside it), and each key has its own delete
+button. The buttons of the bars that run a menu command (New, Open, Save,
+Undo, Zoom In and others) take shortcuts too, the same keys as their menu
+command, and so do rows the menus show only at times (such as Finish Editing
+Contents). A **Toolbar buttons** list holds every button of the Standard and
+Zoom toolbars: drag a button you removed from a bar back onto it from there.
+
+A command dragged onto a toolbar shows its picture there, or its name when
+it has none. On the **General** tab, **Icon** shows the command's picture:
+**Choose...** opens the pictures of the other commands and of the tools, and
+a click gives the command that one, in the menus and on the toolbars;
+**Reset to Default** gives it its own back.
+
 ## Command Bars {#command-bars}
 
 ![The Command Bars page of the customization options](../../img/customize-customization-command-bars.png)
@@ -60,6 +77,11 @@ letter. See [Keyboard shortcuts](../reference/keyboard-shortcuts.md).
 
 - [[options.palette_auto_update]] and [[options.palette_show_document]] (both
   on).
+- [[options.palette_position]] (Top, Bottom, Left, Right or Floating),
+  **Rows** (1 to 8, or Fit) and **Swatch size** (Extra Small to Extra Large)
+  of the default palette, as its own menu sets them: a floating palette
+  takes the rows at its length. The position stays while the toolbars are
+  locked.
 - [[options.palette_swatches]]: [[options.palette_no_color]] (on), and what
   the [[options.palette_right_button]] does: [[options.palette_set_outline]]
   (at first) or open the [[options.palette_context_menu]].

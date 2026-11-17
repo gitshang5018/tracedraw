@@ -12,8 +12,8 @@ and layers. Objects higher in the list are drawn in front.
 The panel lists the page with its layers, topmost first, then the
 [[docker.master_page]] with the master layers, the guidelines
 ([[docker.guides]]) and the [[menu.view.document_grid]]. Each object shows a
-swatch of its fill framed in its outline color, and its name, or what it is
-when it has none ("Rectangle", "Curve with 8 nodes").
+thumbnail, the object itself drawn small with its fill and outline, and its
+name, or what it is when it has none ("Rectangle", "Curve with 8 nodes").
 
 - Click an object to select it; <kbd>Shift</kbd>+click adds it to the
   selection. Its layer becomes the active layer.
@@ -21,7 +21,12 @@ when it has none ("Rectangle", "Curve with 8 nodes").
 - Each layer has three buttons: [[docker.show_hide]], [[docker.print_layer]]
   and [[docker.lock_layer]]. A hidden or locked layer cannot be edited. The
   padlock of [[docker.guides]] locks all the guidelines of the page.
-- Hidden objects show their name dimmed.
+- Hidden objects show their name and thumbnail dimmed.
+- To make the thumbnails larger or smaller, drag the slider between the
+  small and the large square at the bottom of the panel, turn the mouse
+  wheel over it, or hold <kbd>Ctrl</kbd> and turn the wheel over the list.
+  The size is remembered. A thumbnail is drawn again only when its object
+  changes, so long lists stay quick.
 
 ## Layers {#layers}
 
@@ -47,6 +52,12 @@ to add one for odd or even pages only. A master layer's menu has
 [[options.scope_even]]. You can select and edit master objects from any page
 they show on.
 
+To put a master layer over the page's own objects, tick
+[[docker.master_in_front]] in its menu, or select one of its objects and
+choose [[menu.object > menu.object.order > menu.object.to_front_of_page]]
+(<kbd>Ctrl</kbd>+<kbd>Home</kbd>); [[menu.object.to_back_of_page]]
+(<kbd>Ctrl</kbd>+<kbd>End</kbd>) puts the layer behind the page's objects again.
+
 ## Renaming objects and layers {#rename}
 
 Double-click a layer or an object in the panel, or choose [[docker.rename]]
@@ -67,6 +78,13 @@ Names help you find objects in the panel and in
 [[menu.object.forward_one]], [[menu.object.back_one]],
 [[menu.object.in_front_of]], [[menu.object.behind]] (click the object to go
 in front of or behind) and [[menu.object.reverse_order]].
+
+In the Objects panel, drag an object's row up or down the list: a line
+shows where it will go. Let go on the upper half of another object's row
+to put it in front of that object, on the lower half to put it behind; an
+object of another layer moves to that layer. Let go on a layer's row to
+put it on top of that layer. When the row is selected, the other selected
+objects come along. Undo puts everything back in one step.
 
 ## Grouping and combining {#combine}
 
@@ -89,6 +107,12 @@ in front of or behind) and [[menu.object.reverse_order]].
   [[menu.object.unlock_object]] and [[menu.object.unlock_all]] release them.
 - [[menu.object > menu.object.hide > menu.object.hide_object]] hides the
   selected objects; [[menu.object.show_all]] shows them again.
+- In the [[docker.objects]] panel every object's row has its own eye and
+  padlock, to hide or show and lock or unlock it from the list, a locked
+  object too.
+
+Selecting an object on the page scrolls the list to its row, so an object far
+down a long list comes into view.
 
 To keep objects out of the way while you work on others, see also
 [Focus mode](focus-mode.md).

@@ -24,6 +24,8 @@ const ERROR: egui::Color32 = egui::Color32::from_rgb(0xC4, 0x2B, 0x1C);
 const WIDTH: f32 = 760.0;
 const LIST_H: f32 = 250.0;
 const PLACES_W: f32 = 150.0;
+/// The folders used lately shown down the left (#1391).
+const RECENT_DIRS: usize = 6;
 /// Letters typed in the list this many seconds apart start a new search.
 const TYPE_AHEAD_PAUSE: f64 = 1.0;
 
@@ -53,11 +55,26 @@ pub struct SaveAsState {
     pub fonts_size: u64,
     /// The fonts go into the file (`.cdr` from version 16).
     pub embed_fonts: bool,
+    /// The families embedding leaves out of a `.cdr` file, with the
+    /// reason, named under the box so the user knows why a font is not
+    /// in the file (#1219).
+    pub fonts_left_out: Vec<(String, tracedraw_cdr::write::LeftOut)>,
     /// What embedding the installed fonts the text uses adds to a
     /// `.tdraw` file, in bytes (0: none may be).
     pub tdraw_fonts_size: u64,
     /// The installed fonts the text uses go into the `.tdraw` file.
     pub tdraw_embed_fonts: bool,
+    /// Package (#852): the `.tdraw` file goes into a folder of its name,
+    /// with its linked pictures, its font files and a report.
+    pub package: bool,
+    /// A PDF of the drawing goes into the package too.
+    pub package_pdf: bool,
+    /// Only the selected objects go into the file, on their pages and
+    /// layers, where they are (#2195); the drawing open stays as it is,
+    /// with its own file.
+    pub selected_only: bool,
+    /// Something is selected (Selected only is offered).
+    pub has_selection: bool,
     pub title: String,
     pub subject: String,
     pub rating: u8,
@@ -79,6 +96,15 @@ pub struct SaveAsState {
     pub typed_at: f64,
     /// The list scrolls to the picked entry (the keys moved it).
     pub scroll_to: bool,
+    /// The shortcuts down the left: the folders, roots and mounted
+    /// drives, read once when the dialog opens (#1391).
+    pub places: Vec<(Place, PathBuf)>,
+    /// The folders bookmarked in the desktop's file manager, with names.
+    pub desktop_bookmarks: Vec<(String, PathBuf)>,
+    /// The folders bookmarked here (kept in the settings).
+    pub bookmarks: Vec<PathBuf>,
+    /// The folders used lately, newest first.
+    pub recent: Vec<PathBuf>,
 }
 
 impl SaveAsState {
@@ -100,6 +126,7 @@ impl SaveAsState {
             .map(Path::to_path_buf)
             .filter(|d| files::is_dir(d))
             .or_else(|| app.settings.last_dir.clone().filter(|d| files::is_dir(d)))
+            .or_else(files::save_dir)
             .or_else(|| {
                 files::places()
                     .into_iter()
@@ -126,6 +153,7 @@ impl SaveAsState {
         let cdr = file.is_some_and(|f| crate::app::is_cdr_path(f))
             || app.cdr_version.is_some()
             || (file.is_none() && app.settings.formats.save_new_as_cdr);
+        let cdr_faces = crate::app::cdr_font_faces(doc);
         let mut st = SaveAsState {
             dir_text: dir.display().to_string(),
             dir: dir.clone(),
@@ -150,14 +178,19 @@ impl SaveAsState {
                 .map(|p| (p.name.clone(), p.data.len()))
                 .or_else(|| app.settings_cmyk_profile().map(|p| (p.name, p.data.len()))),
             embed_profile: app.cdr_embed_profile,
-            fonts_size: tracedraw_cdr::write::embedded_size(&crate::app::cdr_font_faces(doc)),
+            fonts_size: tracedraw_cdr::write::embedded_size(&cdr_faces),
             embed_fonts: app.cdr_embed_fonts,
+            fonts_left_out: tracedraw_cdr::write::left_out(&cdr_faces),
             tdraw_fonts_size: tracedraw_text::fonts()
                 .fonts_to_embed(doc)
                 .iter()
                 .map(|f| f.data.len() as u64)
                 .sum(),
             tdraw_embed_fonts: app.tdraw_embed_fonts,
+            package: false,
+            package_pdf: false,
+            selected_only: false,
+            has_selection: !app.selection.is_empty(),
             title: doc.title.clone(),
             subject: doc.metadata.subject.clone(),
             rating: doc.metadata.rating,
@@ -170,7 +203,20 @@ impl SaveAsState {
             typed: String::new(),
             typed_at: 0.0,
             scroll_to: false,
+            places: Vec::new(),
+            desktop_bookmarks: Vec::new(),
+            bookmarks: app.settings.folder_bookmarks.clone(),
+            recent: Vec::new(),
         };
+        if !files::WEB && !files::ANDROID {
+            st.places = files::places();
+            st.desktop_bookmarks = files::desktop_bookmarks();
+            st.recent = files::recent_dirs(
+                app.settings.last_dir.as_deref(),
+                &app.settings.recent_files,
+                RECENT_DIRS,
+            );
+        }
         st.name = format!("{stem}.{}", st.extension());
         st.open_dir(dir);
         st
@@ -186,9 +232,12 @@ impl SaveAsState {
     }
 
     /// The name with the chosen type's extension (one it already has of
-    /// either type is replaced).
+    /// either type is replaced). Typed in any script: the direction marks
+    /// a right-to-left keyboard leaves and what no file name can hold
+    /// go first ([`files::clean_file_name`]).
     pub fn file_name(&self) -> String {
-        let name = self.name.trim();
+        let clean = files::clean_file_name(&self.name);
+        let name = clean.as_str();
         let lower = name.to_ascii_lowercase();
         let stem = [TDRAW, CDR]
             .iter()
@@ -197,18 +246,34 @@ impl SaveAsState {
                     .strip_suffix(&format!(".{ext}"))
                     .map(|s| &name[..s.len()])
             })
-            .unwrap_or(name);
+            .unwrap_or(name)
+            .trim_end();
         format!("{stem}.{}", self.extension())
     }
 
     /// The file to write: in the folder (desktop) or a download named so
-    /// (browser).
+    /// (browser); packaged, in a folder of its name in the folder.
     pub fn target(&self) -> PathBuf {
         if files::WEB {
             PathBuf::from("/download").join(self.file_name())
+        } else if self.packaged() {
+            let name = self.file_name();
+            let stem = name
+                .strip_suffix(&format!(".{TDRAW}"))
+                .unwrap_or(&name)
+                .to_string();
+            self.dir.join(stem).join(name)
         } else {
             self.dir.join(self.file_name())
         }
+    }
+
+    /// Saved as a package: asked for, a `.tdraw` file, on the desktop.
+    /// The Android app makes packages as zip files with File > Package
+    /// only (#1401): its Save As writes one document where the picker
+    /// says.
+    pub fn packaged(&self) -> bool {
+        self.package && !self.selected_only && !self.cdr && !files::WEB && !files::ANDROID
     }
 
     /// Show `dir` (a folder that cannot be read shows empty).
@@ -387,17 +452,10 @@ impl SaveAsState {
 }
 
 /// "v22 (2020)" for the version lists: the file version and the release
-/// that writes it; versions whose files are not yet known to open in other
-/// programs say they are experimental.
+/// that writes it.
 pub fn version_label(version: u16) -> String {
-    let checked = tracedraw_cdr::write::CHECKED_SINCE..=tracedraw_cdr::write::CHECKED_UNTIL;
-    let key = if !checked.contains(&version) {
-        "dialog.cdr_version_item_experimental"
-    } else {
-        "dialog.cdr_version_item"
-    };
     trf(
-        key,
+        "dialog.cdr_version_item",
         &[("v", &version.to_string()), ("name", release_name(version))],
     )
 }
@@ -438,10 +496,13 @@ pub fn release_name(version: u16) -> &'static str {
     }
 }
 
-/// The versions offered, newest first.
-/// The `.tdraw` versions offered, newest first.
+/// The `.tdraw` versions offered, newest first: the packed ones (#2849).
+/// The plain files of 0.46 and older are not written any more (those
+/// releases do not open the packed ones).
 pub fn tdraw_version_choices() -> Vec<u32> {
-    (0..=TDRAW_FORMAT_VERSION).rev().collect()
+    (tracedraw_core::document::PACKED_VERSION..=TDRAW_FORMAT_VERSION)
+        .rev()
+        .collect()
 }
 
 /// "v2 (TraceDraw 1.0)": the format version and the release that first
@@ -454,10 +515,8 @@ pub fn tdraw_version_label(version: u32) -> String {
     format!("v{version} (TraceDraw {release})")
 }
 
-/// The `.cdr` versions offered, newest first: from the oldest checked to
-/// open in other programs (14; the other program's own list stops at 15).
-/// Older versions are still written by the command line and the MCP
-/// server, and Save keeps the version of a drawing opened from one.
+/// The `.cdr` versions offered, newest first: every version saved, 27
+/// down to 7.
 pub fn version_choices() -> Vec<u16> {
     (tracedraw_cdr::write::CHECKED_SINCE..=tracedraw_cdr::write::NEWEST_VERSION)
         .rev()
@@ -484,7 +543,7 @@ impl App {
         }
         // A folder typed in the path bar counts without Enter: Save
         // writes where the bar says (#900).
-        if !files::WEB {
+        if !files::WEB && !files::ANDROID {
             let typed = PathBuf::from(st.dir_text.trim());
             if st.dir_text.trim() != st.dir.display().to_string() && !st.dir_text.trim().is_empty()
             {
@@ -495,17 +554,75 @@ impl App {
                     return false;
                 }
             }
+            if !files::is_dir(&st.dir) {
+                st.note = Some(tr("dialog.no_such_folder"));
+                return false;
+            }
         }
-        if !files::WEB && !files::is_dir(&st.dir) {
-            st.note = Some(tr("dialog.no_such_folder"));
-            return false;
+        // On Android the system's picker chooses the place (and asks
+        // about replacing): the drawing is written when it answers, on
+        // a later frame, with the name and type chosen here.
+        if files::ANDROID {
+            self.apply_save_as_properties(st);
+            let cdr = st.cdr;
+            let version = st.version;
+            let (embed_profile, embed_fonts) = (st.embed_profile, st.embed_fonts);
+            let (tdraw_embed_fonts, tdraw_version) = (st.tdraw_embed_fonts, st.tdraw_version);
+            let selected_only = st.selected_only && st.has_selection;
+            files::Dialog::new()
+                .add_filter(st.extension().to_uppercase(), &[st.extension()])
+                .set_file_name(st.file_name())
+                .save_file(self, move |app, path| {
+                    if selected_only {
+                        app.cdr_embed_profile = embed_profile;
+                        app.cdr_embed_fonts = embed_fonts;
+                        app.tdraw_embed_fonts = tdraw_embed_fonts;
+                        app.save_selection_to(path, cdr.then_some(version), tdraw_version);
+                    } else if cdr {
+                        app.cdr_embed_profile = embed_profile;
+                        app.cdr_embed_fonts = embed_fonts;
+                        app.save_cdr_to(path, version);
+                    } else {
+                        app.tdraw_embed_fonts = tdraw_embed_fonts;
+                        app.tdraw_version = Some(tdraw_version);
+                        app.save_to(path);
+                    }
+                });
+            return true;
         }
         let path = st.target();
         if files::exists(&path) && st.replace.as_ref() != Some(&path) {
             st.replace = Some(path);
             return false;
         }
-        // The properties go with the file (one undo step each).
+        self.apply_save_as_properties(st);
+        if !files::WEB {
+            self.settings.last_dir = Some(st.dir.clone());
+        }
+        if st.selected_only && st.has_selection {
+            self.cdr_embed_profile = st.embed_profile;
+            self.cdr_embed_fonts = st.embed_fonts;
+            self.tdraw_embed_fonts = st.tdraw_embed_fonts;
+            self.save_selection_to(path, st.cdr.then_some(st.version), st.tdraw_version);
+        } else if st.cdr {
+            self.cdr_embed_profile = st.embed_profile;
+            self.cdr_embed_fonts = st.embed_fonts;
+            self.save_cdr_to(path, st.version);
+        } else {
+            self.tdraw_embed_fonts = st.tdraw_embed_fonts;
+            self.tdraw_version = Some(st.tdraw_version);
+            if st.packaged() {
+                self.save_package(path, st.package_pdf);
+            } else {
+                self.save_to(path);
+            }
+        }
+        true
+    }
+
+    /// The properties of the Save Drawing dialog go with the file (one
+    /// undo step each).
+    fn apply_save_as_properties(&mut self, st: &SaveAsState) {
         if st.title.trim() != self.doc().title {
             self.run(Command::SetTitle {
                 title: st.title.trim().to_string(),
@@ -518,19 +635,119 @@ impl App {
             metadata.rating = st.rating.min(5);
             self.run(Command::SetMetadata { metadata });
         }
-        if !files::WEB {
-            self.settings.last_dir = Some(st.dir.clone());
+    }
+}
+
+/// The drawing with only the objects `selected` names (#2195): each on
+/// its own page and layer, where it is and in its order; an object
+/// selected inside a group comes out of it, where the page has it. Pages
+/// left with nothing are dropped (at least one stays); master layers keep
+/// only what is selected on them. Everything else (styles, symbols,
+/// palette, inks, profile, properties) stays.
+pub fn selection_save_document(
+    doc: &tracedraw_core::Document,
+    selected: &[tracedraw_core::ShapeId],
+) -> tracedraw_core::Document {
+    use std::collections::{HashMap, HashSet};
+    use tracedraw_core::{Layer, ShapeId};
+    let wanted: HashSet<ShapeId> = selected.iter().copied().collect();
+    // Objects selected inside a group, under the group on its layer.
+    let mut inside: HashMap<ShapeId, Vec<ShapeId>> = HashMap::new();
+    for id in selected {
+        let up = doc.ancestors(*id);
+        if up.iter().any(|a| wanted.contains(a)) {
+            continue;
         }
-        if st.cdr {
-            self.cdr_embed_profile = st.embed_profile;
-            self.cdr_embed_fonts = st.embed_fonts;
-            self.save_cdr_to(path, st.version);
-        } else {
-            self.tdraw_embed_fonts = st.tdraw_embed_fonts;
-            self.tdraw_version = Some(st.tdraw_version);
-            self.save_to(path);
+        if let Some(top) = up.first() {
+            inside.entry(*top).or_default().push(*id);
         }
-        true
+    }
+    let keep = |layer: &mut Layer| {
+        let shapes = std::mem::take(&mut layer.shapes);
+        for s in shapes {
+            if wanted.contains(&s.id) {
+                layer.shapes.push(s);
+            } else if let Some(ids) = inside.get(&s.id) {
+                layer
+                    .shapes
+                    .extend(ids.iter().filter_map(|id| doc.shape_on_page(*id)));
+            }
+        }
+    };
+    let mut out = doc.clone();
+    for page in &mut out.pages {
+        page.layers.iter_mut().for_each(keep);
+    }
+    out.master.iter_mut().for_each(keep);
+    let master_has = out.master.iter().any(|l| !l.shapes.is_empty());
+    if !master_has && out.pages.len() > 1 {
+        let first_with = out
+            .pages
+            .iter()
+            .position(|p| p.layers.iter().any(|l| !l.shapes.is_empty()))
+            .unwrap_or(0);
+        let mut i = 0;
+        out.pages.retain(|p| {
+            let k = i == first_with || p.layers.iter().any(|l| !l.shapes.is_empty());
+            i += 1;
+            k
+        });
+    }
+    out.saved_view = None;
+    out.selection_groups.clear();
+    out
+}
+
+impl App {
+    /// Save As with Selected only (#2195): the selected objects go to
+    /// `path` (`.cdr` in `cdr_version` when given, else `.tdraw`), and the
+    /// drawing open keeps its own file and stays unsaved as it was.
+    pub fn save_selection_to(
+        &mut self,
+        path: PathBuf,
+        cdr_version: Option<u16>,
+        tdraw_version: u32,
+    ) {
+        let doc = selection_save_document(self.engine.document(), &self.selection);
+        let result = match cdr_version {
+            Some(version) => {
+                let mut doc = doc;
+                if !self.cdr_embed_profile {
+                    doc.cmyk_profile = None;
+                } else if doc.cmyk_profile.is_none() {
+                    doc.cmyk_profile = self.settings_cmyk_profile();
+                }
+                let mut previews = crate::app::cdr_previews(&doc);
+                previews.embed_fonts = self.cdr_embed_fonts;
+                let bytes = tracedraw_cdr::write::document_to_cdr_version_with(
+                    &doc,
+                    crate::app::writable_cdr_version(version),
+                    &previews,
+                );
+                files::write(&path, bytes).map_err(|e| e.to_string())
+            }
+            None => {
+                let fonts = tracedraw_text::fonts();
+                let carried = fonts.with_carried_fonts(&doc);
+                let doc = if self.tdraw_embed_fonts {
+                    fonts.with_embedded_fonts(&carried)
+                } else {
+                    std::borrow::Cow::Borrowed(&*carried)
+                };
+                files::write_with(&path, |w| {
+                    doc.write_tdraw_version(w, tdraw_version)
+                        .map_err(std::io::Error::other)
+                })
+                .map_err(|e| e.to_string())
+            }
+        };
+        self.status = match result {
+            Ok(()) => trf(
+                "status.saved_selection",
+                &[("p", &path.display().to_string())],
+            ),
+            Err(e) => trf("status.save_failed", &[("e", &e)]),
+        };
     }
 }
 
@@ -543,7 +760,31 @@ fn place_name(place: Place, path: &Path) -> String {
         Place::Downloads => tr("dialog.place_downloads"),
         Place::Pictures => tr("dialog.place_pictures"),
         Place::Root => path.display().to_string(),
+        Place::Drive => files::drive_name(path),
     }
+}
+
+/// The note under Embed fonts naming the families the `.cdr` file will
+/// not carry and why ("Not embedded: Raj 50 (its licence forbids
+/// embedding)"); none when every face may be embedded (#1219).
+pub fn fonts_left_out_text(left_out: &[(String, tracedraw_cdr::write::LeftOut)]) -> Option<String> {
+    if left_out.is_empty() {
+        return None;
+    }
+    let fonts: Vec<String> = left_out
+        .iter()
+        .map(|(family, why)| {
+            let key = match why {
+                tracedraw_cdr::write::LeftOut::Licence => "dialog.embed_font_licence",
+                tracedraw_cdr::write::LeftOut::NoFile => "dialog.embed_font_no_file",
+            };
+            trf(key, &[("font", family)])
+        })
+        .collect();
+    Some(trf(
+        "dialog.embed_fonts_left_out",
+        &[("fonts", &fonts.join(", "))],
+    ))
 }
 
 /// A size as the list shows it: KB from 1 KB, MB from 1 MB.
@@ -560,7 +801,9 @@ pub fn dialog(app: &mut App, ctx: &Context, st: &mut SaveAsState, close: &mut bo
         let mobile = crate::ui::mobile::phone();
         let width = if mobile { ui.available_width() } else { WIDTH };
         ui.set_width(width);
-        if !files::WEB {
+        // No folders in a browser (a download) or on Android (the
+        // system's picker chooses the place when Save is pressed).
+        if !files::WEB && !files::ANDROID {
             folder_bar(ui, st);
             ui.add_space(4.0);
             // The shortcuts and the list keep a fixed height (a vertical
@@ -583,12 +826,19 @@ pub fn dialog(app: &mut App, ctx: &Context, st: &mut SaveAsState, close: &mut bo
             });
             ui.add_space(6.0);
         }
+        // Bookmarks made or removed here are kept at once (#1391).
+        if st.bookmarks != app.settings.folder_bookmarks {
+            app.settings.folder_bookmarks = st.bookmarks.clone();
+        }
         fields(ui, st);
         if let Some(note) = &st.note {
             ui.label(RichText::new(note.as_str()).color(ERROR));
         }
         if files::WEB {
             ui.label(RichText::new(tr("dialog.download_hint")).color(Tokens::text_dim()));
+        }
+        if files::ANDROID {
+            ui.label(RichText::new(tr("dialog.android_save_hint")).color(Tokens::text_dim()));
         }
         ui.add_space(6.0);
         if let Some(path) = st.replace.clone() {
@@ -683,21 +933,90 @@ fn folder_bar(ui: &mut Ui, st: &mut SaveAsState) {
     });
 }
 
-/// The shortcuts down the left.
+/// The shortcuts down the left, scrolling when they are many: the
+/// folders and roots, then Drives (mounted drives, memory cards, network
+/// shares), Bookmarks (the desktop's, then those made here with a right
+/// click on a folder, which a right click removes) and Recent (#1391).
 fn places(ui: &mut Ui, st: &mut SaveAsState) {
+    let mut open: Option<PathBuf> = None;
+    let mut unbookmark: Option<PathBuf> = None;
     ui.vertical(|ui| {
         ui.set_width(PLACES_W);
-        for (place, path) in files::places() {
-            let name = place_name(place, &path);
-            if ui
-                .selectable_label(st.dir == path, name)
-                .rich_tip(path.display().to_string())
-                .clicked()
-            {
-                st.open_dir(path);
-            }
-        }
+        egui::ScrollArea::vertical()
+            .id_salt("save_as_places")
+            .max_height(LIST_H)
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                let row = |ui: &mut Ui, name: String, path: &Path| {
+                    let r = ui
+                        .add(egui::Button::selectable(st.dir == path, name).truncate())
+                        .rich_tip(path.display().to_string());
+                    r
+                };
+                let heading = |ui: &mut Ui, key: &str| {
+                    ui.add_space(6.0);
+                    ui.label(RichText::new(tr(key)).small().weak());
+                };
+                for (place, path) in st.places.iter().filter(|(p, _)| *p != Place::Drive) {
+                    if row(ui, place_name(*place, path), path).clicked() {
+                        open = Some(path.clone());
+                    }
+                }
+                let drives: Vec<&PathBuf> = st
+                    .places
+                    .iter()
+                    .filter(|(p, _)| *p == Place::Drive)
+                    .map(|(_, d)| d)
+                    .collect();
+                if !drives.is_empty() {
+                    heading(ui, "dialog.places_drives");
+                    for path in drives {
+                        if row(ui, files::drive_name(path), path).clicked() {
+                            open = Some(path.clone());
+                        }
+                    }
+                }
+                let own = st.bookmarks.iter().filter(|p| files::is_dir(p));
+                if !st.desktop_bookmarks.is_empty() || own.clone().next().is_some() {
+                    heading(ui, "dialog.places_bookmarks");
+                    for (name, path) in &st.desktop_bookmarks {
+                        if row(ui, name.clone(), path).clicked() {
+                            open = Some(path.clone());
+                        }
+                    }
+                    for path in own {
+                        let r = row(ui, files::drive_name(path), path);
+                        if r.clicked() {
+                            open = Some(path.clone());
+                        }
+                        r.context_menu(|ui| {
+                            if ui.button(tr("dialog.remove_bookmark")).clicked() {
+                                unbookmark = Some(path.clone());
+                                ui.close();
+                            }
+                        });
+                    }
+                }
+                if !st.recent.is_empty() {
+                    heading(ui, "dialog.places_recent");
+                    for path in &st.recent {
+                        let name = path
+                            .file_name()
+                            .map(|n| n.to_string_lossy().to_string())
+                            .unwrap_or_else(|| path.display().to_string());
+                        if row(ui, name, path).clicked() {
+                            open = Some(path.clone());
+                        }
+                    }
+                }
+            });
     });
+    if let Some(path) = unbookmark {
+        st.bookmarks.retain(|p| *p != path);
+    }
+    if let Some(path) = open {
+        st.open_dir(path);
+    }
 }
 
 /// The folder's contents: a click picks an entry (a file's name becomes
@@ -710,6 +1029,7 @@ fn listing(ui: &mut Ui, st: &mut SaveAsState) {
     let mut pick: Option<PathBuf> = None;
     let mut rename: Option<PathBuf> = None;
     let mut rename_done: Option<bool> = None;
+    let mut bookmark: Option<PathBuf> = None;
     list_keys(ui, st, &mut open, &mut rename);
     ui.vertical(|ui| {
         let max_h = if crate::ui::mobile::phone() { 340.0 } else { LIST_H };
@@ -766,7 +1086,9 @@ fn listing(ui: &mut Ui, st: &mut SaveAsState) {
                                     .horizontal(|ui| {
                                         ui.spacing_mut().item_spacing.x = 4.0;
                                         entry_icon(ui, e.is_dir);
-                                        ui.selectable_label(selected, e.name.as_str())
+                                        let shown = tracedraw_text::seen_order(&e.name)
+                                            .unwrap_or_else(|| e.name.clone());
+                                        ui.selectable_label(selected, shown)
                                     })
                                     .inner;
                                 if selected && st.scroll_to {
@@ -784,6 +1106,13 @@ fn listing(ui: &mut Ui, st: &mut SaveAsState) {
                                     }
                                     if ui.button(tr("dialog.rename_entry")).clicked() {
                                         rename = Some(e.path.clone());
+                                        ui.close();
+                                    }
+                                    if e.is_dir
+                                        && !st.bookmarks.contains(&e.path)
+                                        && ui.button(tr("dialog.add_bookmark")).clicked()
+                                    {
+                                        bookmark = Some(e.path.clone());
                                         ui.close();
                                     }
                                 });
@@ -829,6 +1158,9 @@ fn listing(ui: &mut Ui, st: &mut SaveAsState) {
     if let Some(path) = rename {
         st.list_keys = true;
         st.start_rename(path);
+    }
+    if let Some(dir) = bookmark {
+        st.bookmarks.push(dir);
     }
     if let Some(dir) = open {
         st.list_keys = true;
@@ -933,20 +1265,75 @@ fn entry_icon(ui: &mut Ui, folder: bool) {
     }
 }
 
+/// A one-line field for a file name in any script (d#2122). The UI
+/// toolkit lays the letters out in the order they were typed, so a Hebrew
+/// or Arabic name would read with its words left to right; while the
+/// field is not being typed in, it shows the name as it reads (the words
+/// from right to left), and a name that begins with such a letter sits at
+/// the field's right edge.
+pub fn name_edit(ui: &mut Ui, text: &mut String, id: egui::Id, width: f32) -> egui::Response {
+    let typing = ui.memory(|m| m.has_focus(id));
+    let seen = if typing {
+        None
+    } else {
+        tracedraw_text::seen_order(text)
+    };
+    let rtl = begins_right_to_left(text);
+    let font = egui::FontSelection::default().resolve(ui.style());
+    let mut layouter = |ui: &Ui, buf: &dyn egui::TextBuffer, wrap: f32| {
+        let shown = seen.clone().unwrap_or_else(|| buf.as_str().to_string());
+        let color = ui
+            .visuals()
+            .override_text_color
+            .unwrap_or_else(|| ui.visuals().widgets.inactive.text_color());
+        let mut job = egui::text::LayoutJob::simple_singleline(shown, font.clone(), color);
+        job.wrap.max_width = wrap;
+        ui.fonts_mut(|f| f.layout_job(job))
+    };
+    let mut edit = egui::TextEdit::singleline(text).id(id).desired_width(width);
+    if rtl {
+        edit = edit.horizontal_align(egui::Align::RIGHT);
+    }
+    if seen.is_some() {
+        edit = edit.layouter(&mut layouter);
+    }
+    ui.add(edit)
+}
+
+/// Whether the first letter of `text` is written right to left.
+fn begins_right_to_left(text: &str) -> bool {
+    text.chars()
+        .find(|c| c.is_alphabetic())
+        .is_some_and(|c| tracedraw_text::seen_order(&c.to_string()).is_some())
+}
+
 /// File name, type, version and the document's properties.
 fn fields(ui: &mut Ui, st: &mut SaveAsState) {
     grid("save_as_fields").show(ui, |ui| {
         row_label(ui, &tr("dialog.file_name"));
-        let name = ui.add(
-            egui::TextEdit::singleline(&mut st.name)
-                .id(egui::Id::new("save_as_name"))
-                .desired_width(WIDTH - 140.0),
-        );
+        let id = egui::Id::new("save_as_name");
+        let name = name_edit(ui, &mut st.name, id, WIDTH - 140.0);
         if name.changed() {
             st.replace = None;
             st.note = None;
         }
         ui.end_row();
+        // While a right-to-left name is typed, the field keeps the letters
+        // in typed order; the line under it shows how the name reads.
+        let seen = name
+            .has_focus()
+            .then(|| tracedraw_text::seen_order(&st.name))
+            .flatten();
+        if let Some(seen) = seen {
+            ui.label("");
+            ui.horizontal(|ui| {
+                ui.set_width(WIDTH - 140.0);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.weak(seen);
+                });
+            });
+            ui.end_row();
+        }
         row_label(ui, &tr("dialog.save_as_type"));
         let mut cdr = st.cdr;
         if combo(
@@ -996,6 +1383,15 @@ fn fields(ui: &mut Ui, st: &mut SaveAsState) {
             }
         });
         ui.end_row();
+        // Only the selected objects go into the file (#2195).
+        ui.label("");
+        ui.add_enabled(
+            st.has_selection,
+            egui::Checkbox::new(&mut st.selected_only, tr("dialog.save_selected_only")),
+        )
+        .rich_tip(tr("dialog.save_selected_only_tip"))
+        .rich_disabled_tip(tr("dialog.save_selected_only_none"));
+        ui.end_row();
         if st.cdr {
             // Profiles are stored in the package of version 16 and later.
             let can = st.version >= 16;
@@ -1043,6 +1439,11 @@ fn fields(ui: &mut Ui, st: &mut SaveAsState) {
                     {
                         st.embed_fonts = on;
                     }
+                    // The fonts the file will not carry, and why, so a
+                    // box without a size is not a mystery (#1219).
+                    if let Some(note) = fonts_left_out_text(&st.fonts_left_out) {
+                        ui.label(RichText::new(note).small().color(Tokens::text_dim()));
+                    }
                 });
             });
             ui.end_row();
@@ -1071,6 +1472,28 @@ fn fields(ui: &mut Ui, st: &mut SaveAsState) {
                 }
             });
             ui.end_row();
+            // Package (#852): a folder of the drawing's name with its
+            // pictures and fonts; folders are a desktop thing.
+            // On Android it is greyed with the reason: a package there
+            // is one zip file, made by File > Package (#1401).
+            if !files::WEB {
+                ui.label("");
+                ui.horizontal(|ui| {
+                    if files::ANDROID {
+                        st.package = false;
+                    }
+                    ui.add_enabled(
+                        !files::ANDROID && !st.selected_only,
+                        egui::Checkbox::new(&mut st.package, tr("dialog.save_package")),
+                    )
+                    .rich_tip(tr("dialog.save_package_tip"))
+                    .rich_disabled_tip(tr("dialog.save_package_android"));
+                    ui.add_enabled_ui(st.package, |ui| {
+                        ui.checkbox(&mut st.package_pdf, tr("package.pdf"));
+                    });
+                });
+                ui.end_row();
+            }
         }
         row_label(ui, &tr("dialog.title"));
         ui.horizontal(|ui| {
@@ -1166,6 +1589,72 @@ mod tests {
         }
     }
 
+    /// d#2122: a Hebrew file name shows its words from right to left, in
+    /// the name field and in the folder's list; the name saved is the one
+    /// typed, in its own order.
+    #[test]
+    fn hebrew_names_read_right_to_left_in_the_dialog() {
+        // "שלום עולם" and "קובץ ישן" (an old file in the folder).
+        let typed = "\u{5E9}\u{5DC}\u{5D5}\u{5DD} \u{5E2}\u{5D5}\u{5DC}\u{5DD}";
+        let reads = "\u{5DD}\u{5DC}\u{5D5}\u{5E2} \u{5DD}\u{5D5}\u{5DC}\u{5E9}";
+        let dir = temp_dir("save-as-hebrew");
+        let old = "\u{5E7}\u{5D5}\u{5D1}\u{5E5} \u{5D9}\u{5E9}\u{5DF}.tdraw";
+        std::fs::write(dir.join(old), b"x").expect("file");
+        let mut app = drawing();
+        app.save_as_dialog();
+        let st = state(&mut app);
+        st.open_dir(dir.clone());
+        st.name = typed.to_string();
+        let ctx = crate::theme::ui_context();
+        let painted = |app: &mut App, events: Vec<egui::Event>| {
+            fn walk(s: &egui::Shape, out: &mut Vec<String>) {
+                match s {
+                    egui::Shape::Text(t) => out.push(t.galley.text().to_string()),
+                    egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, out)),
+                    _ => {}
+                }
+            }
+            let input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1400.0, 900.0))),
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| crate::ui::dialogs::show(app, ui.ctx()));
+            out.textures_delta.clear();
+            let mut texts = Vec::new();
+            for c in &out.shapes {
+                walk(&c.shape, &mut texts);
+            }
+            texts
+        };
+        // Not typed in: the field shows the name as it reads.
+        ctx.memory_mut(|m| m.surrender_focus(egui::Id::new("save_as_name")));
+        painted(&mut app, Vec::new());
+        let texts = painted(&mut app, Vec::new());
+        assert!(texts.iter().any(|t| t == reads), "{texts:?}");
+        assert!(!texts.iter().any(|t| t == typed), "{texts:?}");
+        // The folder's Hebrew file reads right to left too.
+        let old_reads = tracedraw_text::seen_order(old).expect("Hebrew");
+        // The Latin extension on the left, the first Hebrew letter on the right.
+        assert_eq!(
+            old_reads,
+            "tdraw.\u{5DF}\u{5E9}\u{5D9} \u{5E5}\u{5D1}\u{5D5}\u{5E7}"
+        );
+        assert!(texts.iter().any(|t| *t == old_reads), "{texts:?}");
+        // Typed in: the letters stay in typed order in the field, and the
+        // line under it shows how the name reads.
+        ctx.memory_mut(|m| m.request_focus(egui::Id::new("save_as_name")));
+        painted(&mut app, Vec::new());
+        let texts = painted(&mut app, Vec::new());
+        assert!(texts.iter().any(|t| t == typed), "{texts:?}");
+        assert!(texts.iter().any(|t| t == reads), "{texts:?}");
+        // The name saved is the typed one.
+        let st = state(&mut app);
+        assert_eq!(st.file_name(), format!("{typed}.tdraw"));
+        assert!(begins_right_to_left(typed));
+        assert!(!begins_right_to_left("logo \u{5D0}"));
+    }
+
     #[test]
     fn save_as_chooses_folder_name_type_version_and_properties() {
         let dir = temp_dir("save-as");
@@ -1234,20 +1723,104 @@ mod tests {
         assert_eq!(st.file_name(), "native.tdraw");
         assert_eq!(st.tdraw_version, TDRAW_FORMAT_VERSION);
         assert_eq!(tdraw_version_choices()[0], TDRAW_FORMAT_VERSION);
-        assert_eq!(tdraw_version_choices(), vec![0]);
-        st.tdraw_version = 0;
+        // Only the packed format is offered (#2849): nothing to choose.
+        assert_eq!(tdraw_version_choices(), vec![2]);
+        assert_eq!(tdraw_version_label(2), "v2 (TraceDraw 0.47)");
         let mut st = st.clone();
         assert!(app.finish_save_as(&mut st));
-        let text = std::fs::read_to_string(dir.join("native.tdraw")).unwrap_or_default();
-        assert_eq!(tracedraw_core::document::tdraw_text_version(&text), 0);
-        // Ctrl+S keeps the version; opening the file brings it back.
-        app.engine.mark_saved();
-        app.save(false);
-        let text = std::fs::read_to_string(dir.join("native.tdraw")).unwrap_or_default();
-        assert_eq!(tracedraw_core::document::tdraw_text_version(&text), 0);
+        let packed = |p: &std::path::Path| {
+            let bytes = std::fs::read(p).unwrap_or_default();
+            let text = tracedraw_core::document::tdraw_text(&bytes).unwrap_or_default();
+            (
+                tracedraw_core::document::is_gzip(&bytes),
+                tracedraw_core::document::tdraw_text_version(&text),
+            )
+        };
+        assert_eq!(packed(&dir.join("native.tdraw")), (true, 2));
+        // A plain file of 0.46 opens, and Ctrl+S saves it packed.
+        let old = app.doc().to_json_version(0).expect("plain");
+        std::fs::write(dir.join("old.tdraw"), old).expect("write");
         let mut other = App::headless();
-        other.open_path(dir.join("native.tdraw"));
+        other.open_path(dir.join("old.tdraw"));
         assert_eq!(other.tdraw_version, Some(0));
+        other.save(false);
+        assert_eq!(packed(&dir.join("old.tdraw")), (true, 2));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// "You can't save files with Hebrew name!": names in any script,
+    /// right-to-left ones typed with their direction marks, are saved,
+    /// listed, reopened and exported under the name as typed.
+    #[test]
+    fn names_in_every_script_save_reopen_and_export() {
+        let dir = temp_dir("save-as-scripts");
+        let ctx = crate::theme::ui_context();
+        for name in ["שלום", "café", "文件", "שָׁלוֹם עולם", "مرحبا"] {
+            let mut app = drawing();
+            app.save_as_dialog();
+            let st = state(&mut app);
+            st.open_dir(dir.clone());
+            st.set_cdr(false);
+            // A right-to-left keyboard leaves marks around the name.
+            st.name = format!("\u{200F}{name}.tdraw\u{200F}");
+            assert_eq!(st.file_name(), format!("{name}.tdraw"));
+            frame(&ctx, &mut app, true);
+            assert!(
+                matches!(app.dialog, Dialog::None),
+                "{name}: {:?}",
+                app.dialog
+            );
+            let path = dir.join(format!("{name}.tdraw"));
+            assert!(path.is_file(), "{name} written");
+            assert_eq!(app.file.as_deref(), Some(path.as_path()));
+            assert_eq!(app.settings.recent_files.first(), Some(&path));
+            assert_eq!(app.document_name(), name);
+            assert_eq!(app.document_tab_title(app.active_doc), name);
+            // The next Save As offers the name again, and Save keeps it.
+            assert_eq!(SaveAsState::new(&app).name, format!("{name}.tdraw"));
+            app.save(false);
+            assert_eq!(app.file.as_deref(), Some(path.as_path()));
+            // Opened again under its name.
+            let mut other = App::headless();
+            other.open_path(path.clone());
+            assert_eq!(other.document_name(), name, "{name} reopened");
+            let count = |a: &App| -> usize {
+                a.doc()
+                    .pages
+                    .iter()
+                    .flat_map(|p| &p.layers)
+                    .map(|l| l.shapes.len())
+                    .sum()
+            };
+            assert_eq!(count(&other), count(&app));
+            // As .cdr.
+            app.save_as_dialog();
+            let st = state(&mut app);
+            st.set_cdr(true);
+            st.name = format!("{name}\u{200E}");
+            assert_eq!(st.file_name(), format!("{name}.cdr"));
+            let mut st = st.clone();
+            assert!(app.finish_save_as(&mut st));
+            let cdr = dir.join(format!("{name}.cdr"));
+            assert!(version_of(&cdr).is_some(), "{name}.cdr written");
+            let mut other = App::headless();
+            other.open_path(cdr);
+            assert_eq!(other.document_name(), name);
+            // Exports.
+            for ext in ["svg", "pdf", "png"] {
+                let format = crate::ui::dialogs::EXPORT_FORMATS
+                    .iter()
+                    .position(|(_, e)| *e == ext)
+                    .expect("format");
+                let st = crate::ui::dialogs::ExportState {
+                    format,
+                    ..Default::default()
+                };
+                let out = dir.join(format!("{name}.{ext}"));
+                crate::export::export(&mut app, &out, &st).expect("exported");
+                assert!(out.is_file(), "{name}.{ext}");
+            }
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1493,47 +2066,34 @@ mod tests {
         app.save(false);
         assert!(state(&mut app).cdr);
         app.dialog = Dialog::None;
-        // An older version: Save does not write it, it says so and Save As
-        // opens on the oldest version saved.
+        // Versions 7 to 13 are saved like the others: a version 9 drawing
+        // keeps its version and Save As offers it.
         let old = dir.join("old.cdr");
         std::fs::write(&old, tracedraw_cdr::write::document_to_cdr_version(&doc, 9))
             .expect("written");
         app.open_path(old.clone());
-        assert_eq!(app.cdr_unsaved_version, Some(9));
-        assert_eq!(app.cdr_version, Some(tracedraw_cdr::write::CHECKED_SINCE));
-        assert!(app.status.contains("14"), "{}", app.status);
-        app.save(false);
-        assert!(
-            matches!(app.dialog, Dialog::OldCdrVersion { version: 9 }),
-            "{:?}",
-            app.dialog
-        );
-        assert_eq!(version_of(&old), Some(9), "the file is not written");
-        app.save_as_from_old_cdr();
+        assert_eq!(app.cdr_unsaved_version, None);
+        assert_eq!(app.cdr_version, Some(9));
+        app.save_as_dialog();
         let st = state(&mut app);
-        assert!(st.cdr && st.version == 14, "{st:?}");
+        assert!(st.cdr && st.version == 9, "{st:?}");
         st.open_dir(dir.clone());
         st.name = "copy".into();
         let mut st = st.clone();
         assert!(app.finish_save_as(&mut st));
         app.dialog = Dialog::None;
-        assert_eq!(version_of(&dir.join("copy.cdr")), Some(14));
-        // From then on Save writes that version without asking.
-        assert_eq!(app.cdr_unsaved_version, None);
-        app.engine.mark_unsaved();
-        app.save(false);
-        assert!(matches!(app.dialog, Dialog::None));
+        assert_eq!(version_of(&dir.join("copy.cdr")), Some(9));
         // Versions too old or too new become the nearest saved.
         app.cdr_version = Some(3);
         assert_eq!(app.cdr_save_version(), tracedraw_cdr::write::CHECKED_SINCE);
         app.cdr_version = Some(99);
         assert_eq!(app.cdr_save_version(), tracedraw_cdr::write::CHECKED_UNTIL);
         assert_eq!(version_choices().first(), Some(&27));
-        assert_eq!(version_choices().last(), Some(&14));
+        assert_eq!(version_choices().last(), Some(&7));
         assert!(version_label(15).contains("15"));
         assert!(version_label(13).contains("X3"));
         assert!(version_label(27).contains("2026"));
-        // Versions not yet checked in other programs say so.
+        // Every version is labelled the same way.
         let plain = |v: u16| {
             version_label(21)
                 .replace("21", &v.to_string())
@@ -1543,7 +2103,69 @@ mod tests {
         assert_eq!(version_label(16), plain(16));
         assert_eq!(version_label(15), plain(15));
         assert_eq!(version_label(14), plain(14));
-        assert_ne!(version_label(13), plain(13));
+        assert_eq!(version_label(13), plain(13));
+        assert_eq!(version_label(7), plain(7));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Down the left, under the folders: Drives, Bookmarks (the
+    /// desktop's and those made here) and Recent, each with its folders;
+    /// a folder bookmarked here is kept in the settings (#1391).
+    #[test]
+    fn drives_bookmarks_and_recent_folders_are_listed() {
+        let dir = temp_dir("save-as-places");
+        let (stick, work, last) = (dir.join("STICK"), dir.join("work"), dir.join("last"));
+        for d in [&stick, &work, &last] {
+            std::fs::create_dir_all(d).expect("folder");
+        }
+        let mut app = drawing();
+        app.settings.last_dir = Some(last.clone());
+        app.save_as_dialog();
+        let st = state(&mut app);
+        assert_eq!(st.recent.first(), Some(&last), "the last folder is recent");
+        // This computer's own places would push the rest out of sight.
+        st.places = vec![(Place::Drive, stick.clone())];
+        st.desktop_bookmarks = vec![("Work".into(), work.clone())];
+        // An empty folder shown, so the names come from the left only.
+        let empty = dir.join("empty");
+        std::fs::create_dir_all(&empty).expect("folder");
+        st.open_dir(empty);
+        let ctx = crate::theme::ui_context();
+        let texts = |ctx: &Context, app: &mut App| {
+            let input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1400.0, 900.0))),
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| crate::ui::dialogs::show(app, ui.ctx()));
+            out.textures_delta.clear();
+            out.shapes
+                .iter()
+                .filter_map(|s| match &s.shape {
+                    egui::Shape::Text(t) => Some(t.galley.text().to_string()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        texts(&ctx, &mut app);
+        let shown = texts(&ctx, &mut app);
+        for want in [
+            tr("dialog.places_drives"),
+            "STICK".to_string(),
+            tr("dialog.places_bookmarks"),
+            "Work".to_string(),
+            tr("dialog.places_recent"),
+            "last".to_string(),
+        ] {
+            assert!(shown.contains(&want), "{want} in {shown:?}");
+        }
+        // A folder bookmarked here shows and is kept.
+        state(&mut app).bookmarks.push(stick.clone());
+        texts(&ctx, &mut app);
+        assert_eq!(app.settings.folder_bookmarks, vec![stick.clone()]);
+        let st = state(&mut app);
+        st.bookmarks.clear();
+        texts(&ctx, &mut app);
+        assert!(app.settings.folder_bookmarks.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1677,5 +2299,225 @@ mod tests {
         app.save_as_dialog();
         assert!(!state(&mut app).tdraw_embed_fonts);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+    /// Save As with Package ticked (#852): the drawing goes into a
+    /// folder of its name, its linked picture into Pictures with the
+    /// link pointing to the copy, and a report beside it; the drawing's
+    /// file is the package's from then on.
+    #[test]
+    fn save_as_package_puts_the_drawing_in_a_folder_with_its_pictures() {
+        let dir = temp_dir("save-as-package");
+        let src = dir.join("art.png");
+        image::RgbaImage::from_pixel(2, 2, image::Rgba([9, 9, 9, 255]))
+            .save(&src)
+            .expect("png");
+        let mut app = App::headless();
+        app.show_welcome = false;
+        let id = app
+            .new_shape(ShapeKind::Bitmap {
+                rect: tracedraw_core::geometry::Rect::new(0.0, 0.0, 10.0, 10.0),
+                width_px: 2,
+                height_px: 2,
+                png: Vec::new().into(),
+                fx: None,
+            })
+            .expect("bitmap");
+        app.run(tracedraw_core::Command::SetObjectData {
+            shape: id,
+            data: vec![("bitmap.link".into(), src.display().to_string())],
+        });
+        app.save_as_dialog();
+        let st = state(&mut app);
+        st.open_dir(dir.clone());
+        st.name = "Menu".into();
+        assert!(!st.package, "off by default");
+        // Tick Package in the dialog, as a user would.
+        let ctx = crate::theme::ui_context();
+        let mut at = None;
+        for _ in 0..3 {
+            let input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1400.0, 900.0))),
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| crate::ui::dialogs::show(&mut app, ui.ctx()));
+            out.textures_delta.clear();
+            fn walk(s: &egui::Shape, label: &str, at: &mut Option<Pos2>) {
+                match s {
+                    egui::Shape::Text(t) if t.galley.text() == label => {
+                        *at = Some(t.visual_bounding_rect().center())
+                    }
+                    egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, label, at)),
+                    _ => {}
+                }
+            }
+            let label = tr("dialog.save_package");
+            out.shapes
+                .iter()
+                .for_each(|c| walk(&c.shape, &label, &mut at));
+        }
+        let at = at.expect("Package shown");
+        let press = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        frame_with(&ctx, &mut app, vec![egui::Event::PointerMoved(at)]);
+        frame_with(&ctx, &mut app, vec![press(true)]);
+        frame_with(&ctx, &mut app, vec![press(false)]);
+        let st = state(&mut app);
+        assert!(st.package && st.packaged());
+        let folder = dir.join("Menu");
+        assert_eq!(st.target(), folder.join("Menu.tdraw"));
+        let mut st = st.clone();
+        assert!(app.finish_save_as(&mut st));
+        app.dialog = Dialog::None;
+        assert_eq!(
+            app.file.as_deref(),
+            Some(folder.join("Menu.tdraw").as_path())
+        );
+        assert!(
+            folder.join("Pictures").join("art.png").is_file(),
+            "{}",
+            app.status
+        );
+        let doc = tracedraw_io::load_native(&folder.join("Menu.tdraw")).expect("opens");
+        let link = doc
+            .find_shape(id)
+            .and_then(|s| s.data.iter().find(|(k, _)| k == "bitmap.link").cloned())
+            .map(|(_, v)| v);
+        assert_eq!(link.as_deref(), Some("Pictures/art.png"));
+        assert!(app.reload_linked_bitmap(id), "the relative link is read");
+        assert!(std::fs::read_dir(&folder)
+            .expect("folder")
+            .flatten()
+            .any(|e| e.path().extension().is_some_and(|x| x == "txt")));
+        // A .cdr file is never packaged.
+        st.cdr = true;
+        assert!(!st.packaged());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The note under Embed fonts names each family left out with its
+    /// reason, and is absent when every face may be embedded (#1219).
+    #[test]
+    fn the_fonts_left_out_are_named_with_their_reason() {
+        use tracedraw_cdr::write::LeftOut;
+        assert_eq!(fonts_left_out_text(&[]), None);
+        let note = fonts_left_out_text(&[
+            ("Raj 50".to_string(), LeftOut::Licence),
+            ("Missing Sans".to_string(), LeftOut::NoFile),
+        ])
+        .expect("a note");
+        assert!(
+            note.contains("Raj 50 (its licence forbids embedding)"),
+            "{note}"
+        );
+        assert!(
+            note.contains("Missing Sans (no font file to embed)"),
+            "{note}"
+        );
+        assert!(note.starts_with("Not embedded: "), "{note}");
+    }
+
+    /// Save As with Selected only (#2195): the file holds the selected
+    /// objects alone, where they are, in either type; the drawing open
+    /// keeps all of its objects, its own file and its unsaved state.
+    #[test]
+    fn save_as_selected_only_writes_just_the_selection() {
+        let dir = temp_dir("save-selected");
+        let mut app = drawing();
+        let keep = app
+            .new_shape(ShapeKind::Rect {
+                rect: tracedraw_core::geometry::Rect::new(100.0, 100.0, 130.0, 120.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("a layer");
+        let total = |doc: &tracedraw_core::Document| {
+            doc.pages
+                .iter()
+                .flat_map(|p| &p.layers)
+                .map(|l| l.shapes.len())
+                .sum::<usize>()
+        };
+        let before = total(app.doc());
+        assert_eq!(before, 2);
+        // Nothing selected: not offered.
+        app.select(Vec::new());
+        app.save_as_dialog();
+        assert!(!state(&mut app).has_selection);
+        app.select(vec![keep]);
+        app.save_as_dialog();
+        let st = state(&mut app);
+        assert!(st.has_selection && !st.selected_only);
+        st.open_dir(dir.clone());
+        st.set_cdr(false);
+        st.name = "part".into();
+        st.selected_only = true;
+        let mut st = st.clone();
+        assert!(app.finish_save_as(&mut st));
+        let bytes = std::fs::read(dir.join("part.tdraw")).unwrap_or_default();
+        let saved = tracedraw_core::Document::from_tdraw_bytes(&bytes).expect("a drawing");
+        assert_eq!(total(&saved), 1, "only the selection");
+        let s = &saved.pages[0].layers.iter().flat_map(|l| &l.shapes).next();
+        assert_eq!(s.map(|s| s.id), Some(keep));
+        assert_eq!(total(app.doc()), before, "the drawing keeps everything");
+        assert_eq!(app.file, None, "the drawing keeps no file of the part");
+        assert!(app.status.contains("part.tdraw"), "{}", app.status);
+        // As .cdr too.
+        app.save_as_dialog();
+        let st = state(&mut app);
+        st.open_dir(dir.clone());
+        st.set_cdr(true);
+        st.name = "part".into();
+        st.selected_only = true;
+        let mut st = st.clone();
+        assert!(app.finish_save_as(&mut st));
+        let bytes = std::fs::read(dir.join("part.cdr")).unwrap_or_default();
+        let (doc, _) = tracedraw_cdr::open_bytes(&bytes, "t").expect("a .cdr drawing");
+        assert_eq!(total(&doc), 1, "only the selection");
+        assert_eq!(app.file, None);
+    }
+
+    /// An object selected inside a group comes out alone, where the page
+    /// has it; pages left empty are dropped.
+    #[test]
+    fn selection_document_takes_objects_out_of_groups_and_drops_empty_pages() {
+        use tracedraw_core::geometry::{Affine, Rect as R};
+        let mut doc =
+            tracedraw_core::Document::new("t", tracedraw_core::geometry::Size::new(200.0, 200.0));
+        let a = tracedraw_core::Shape::new(
+            tracedraw_core::ShapeId(9001),
+            ShapeKind::Rect {
+                rect: R::new(0.0, 0.0, 10.0, 10.0),
+                radius: 0.0,
+                corners: None,
+            },
+        );
+        let mut b = a.clone();
+        b.id = tracedraw_core::ShapeId(9002);
+        let mut g = tracedraw_core::Shape::new(
+            tracedraw_core::ShapeId(9003),
+            ShapeKind::Group {
+                children: vec![a.clone(), b],
+            },
+        );
+        g.transform = Affine::translate((50.0, 0.0));
+        let mut page2 = doc.pages[0].clone();
+        page2.id = tracedraw_core::PageId(77);
+        page2.layers[0].shapes.clear();
+        doc.pages[0].layers[0].shapes.push(g);
+        doc.pages.push(page2);
+        let out = selection_save_document(&doc, &[a.id]);
+        assert_eq!(out.pages.len(), 1, "the empty page goes");
+        let shapes = &out.pages[0].layers[0].shapes;
+        assert_eq!(shapes.len(), 1);
+        assert_eq!(shapes[0].id, a.id);
+        assert_eq!(
+            shapes[0].transform,
+            Affine::translate((50.0, 0.0)),
+            "where the page has it"
+        );
     }
 }

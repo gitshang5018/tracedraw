@@ -5,9 +5,39 @@ desktop at once, so you can compare pages and edit them side by side.
 
 ## The layout {#layout}
 
-The pages sit in a grid, in page order: two columns for up to four pages,
-three for up to nine, and so on. Each page shows its number and name below
+The pages sit in a grid of four columns, in page order, so a page you add goes
+at the next place and the pages before it stay where they were. Each page shows its number and name below
 it; the current page's are in the normal text color, the others dimmed.
+
+## Space between pages {#page-spacing}
+
+The pages sit 30 mm apart at first. To change it, choose
+[[menu.layout > menu.layout.page_spacing]] and pick
+[[menu.layout.page_spacing_0]], [[menu.layout.page_spacing_5]],
+[[menu.layout.page_spacing_10]], [[menu.layout.page_spacing_20]],
+[[menu.layout.page_spacing_30]] or [[menu.layout.page_spacing_50]], or
+[[menu.layout.page_spacing_custom]] to type any distance in the drawing's
+units. [[options.page_spacing]] on the Layout page of
+[Document options](document-options.md#layout) sets it too. The spacing is
+saved with the drawing, [[menu.edit.undo]] puts the previous one back, and
+**Save as default** in the document options keeps it for new drawings.
+
+## Choosing the pages {#choose-pages}
+
+With many pages, or to compare a few of them, choose which pages the view
+shows: [[menu.view > menu.view.multipage_pages]], or the button with two
+pages and a tick in the page bar, right after the Multipage View button
+(lit while a range of pages is chosen). In the dialog box pick
+[[dialog.multipage_all_pages]], or [[dialog.multipage_some_pages]] and type
+page numbers and ranges separated by commas, such as `1-3, 7`. The dialog
+box tells how many pages that shows; a range with no page of the drawing in
+it is not taken. **OK** turns the view on with those pages, packed into the
+grid in page order.
+
+The current page always shows, so a page you go to with the page tabs or the
+navigator joins the others while it is current. The pages chosen are saved
+with the drawing, like the page spacing, and [[menu.edit.undo]] puts the
+previous choice back.
 
 ## Working in multipage view {#working}
 

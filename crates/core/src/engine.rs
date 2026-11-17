@@ -191,6 +191,7 @@ impl Engine {
             self.doc = before;
             return Err(e);
         }
+        self.doc.sync_linked_text(&before);
         self.doc.assign_uids(&mut self.uid_state);
         self.doc.refresh_text_flow();
         let id = self.next_step;
@@ -222,6 +223,7 @@ impl Engine {
                 return Err(e);
             }
         }
+        self.doc.sync_linked_text(&before);
         self.doc.assign_uids(&mut self.uid_state);
         self.doc.refresh_text_flow();
         let id = self.next_step;
@@ -254,6 +256,7 @@ impl Engine {
         // The step keeps the drawing from before it; the change joins it.
         let mut doc = self.doc.clone();
         cmd.apply(&mut doc)?;
+        doc.sync_linked_text(&self.doc);
         doc.assign_uids(&mut self.uid_state);
         doc.refresh_text_flow();
         self.doc = doc;
@@ -267,6 +270,23 @@ impl Engine {
     /// [`amend`](Self::amend) joins that step.
     pub fn at_recorded_step(&self) -> bool {
         self.revision == self.step_revision && !self.undo.is_empty()
+    }
+
+    /// Take back the step `id` as if it had never been recorded, with no
+    /// redo of it (a text started and left with no characters). Only the
+    /// step just recorded, with nothing done since, can go: otherwise
+    /// nothing changes and `false` is returned.
+    pub fn withdraw_step(&mut self, id: u64) -> bool {
+        if !self.at_recorded_step() || self.last_step_id() != Some(id) {
+            return false;
+        }
+        let Some(e) = self.undo.pop() else {
+            return false;
+        };
+        let _ = self.swap_in(e.other);
+        self.undone_bytes = None;
+        self.step_revision = u64::MAX;
+        true
     }
 
     /// [`Engine::amend`] for several commands: they join the step just
@@ -283,6 +303,7 @@ impl Engine {
         for c in cmds {
             c.apply(&mut doc)?;
         }
+        doc.sync_linked_text(&self.doc);
         doc.assign_uids(&mut self.uid_state);
         self.doc = doc;
         self.clear_redo();
@@ -306,6 +327,15 @@ impl Engine {
     /// `label`, with the newest one's id; then drop steps past the limits.
     pub fn end_group(&mut self, mark: Option<u64>, label: &'static str) {
         self.groups = self.groups.saturating_sub(1);
+        self.join_group(mark, label);
+        self.trim_history();
+    }
+
+    /// Join the steps recorded since `mark` into one, named `label`, and
+    /// leave the group open: a long action (a drag of many steps) keeps
+    /// one snapshot from before it instead of one a step. Ended as usual
+    /// with [`end_group`](Self::end_group).
+    pub fn join_group(&mut self, mark: Option<u64>, label: &'static str) {
         let first = match mark {
             None => Some(0),
             Some(id) => self.undo.iter().position(|e| e.id == id).map(|i| i + 1),
@@ -318,7 +348,6 @@ impl Engine {
                 e.id = last;
             }
         }
-        self.trim_history();
     }
 
     /// Mint a fresh shape id. Ids never rewind on undo.
@@ -326,16 +355,19 @@ impl Engine {
         self.doc.ids_mut().shape()
     }
 
-    /// Put `snapshot` in place of the drawing, keeping the id counters and
-    /// the time tracker (they never rewind); the drawing it replaced is
+    /// Put `snapshot` in place of the drawing, keeping the id counters, the
+    /// time tracker and the saved view (they never rewind); the drawing it replaced is
     /// returned, for the other stack.
     fn swap_in(&mut self, snapshot: Document) -> Document {
         let ids = self.doc.ids().clone();
         let tracker = std::mem::take(&mut self.doc.time_tracker);
+        let saved_view = self.doc.saved_view.take();
         let mut was = std::mem::replace(&mut self.doc, snapshot);
         self.doc.set_ids(ids);
         self.doc.time_tracker = tracker;
+        self.doc.saved_view = saved_view;
         was.time_tracker = Default::default();
+        was.saved_view = None;
         self.revision += 1;
         was
     }
@@ -476,6 +508,16 @@ impl Engine {
     /// not dropped as too old).
     pub fn step_in_effect(&self, id: u64) -> bool {
         self.undo.iter().any(|e| e.id == id)
+    }
+
+    /// The id of the step just under step `id` on the undo stack (the
+    /// one made right before it and still in effect); `None` when `id`
+    /// is the oldest or not in effect.
+    pub fn step_below(&self, id: u64) -> Option<u64> {
+        let i = self.undo.iter().position(|e| e.id == id)?;
+        i.checked_sub(1)
+            .and_then(|j| self.undo.get(j))
+            .map(|e| e.id)
     }
 
     /// Labels of the undo stack (oldest first) and the redo stack.
@@ -697,6 +739,9 @@ mod tests {
         let (shape, a) = add(&mut eng);
         let (_, b) = add(&mut eng);
         assert_ne!(a, b);
+        // The steps in the order they were made.
+        assert_eq!(eng.step_below(b), Some(a));
+        assert_eq!(eng.step_below(a), None);
         assert!(eng.step_in_effect(a) && eng.step_in_effect(b));
         eng.amend(&Command::SetOpacity {
             shapes: vec![shape],
@@ -713,6 +758,42 @@ mod tests {
         let (_, c) = add(&mut eng);
         assert!(c != a && c != b);
         assert!(!eng.step_in_effect(b));
+    }
+
+    /// A step withdrawn leaves no trace: the drawing is as before it and
+    /// neither Undo nor Redo knows it. Only the last step, with nothing
+    /// done since, can be withdrawn (#1481).
+    #[test]
+    fn a_withdrawn_step_leaves_no_undo_or_redo() {
+        let mut eng = Engine::default();
+        let layer = eng.document().pages[0].layers[0].id;
+        let add = |eng: &mut Engine| {
+            let id = eng.new_shape_id();
+            let shape = Shape::new(
+                id,
+                ShapeKind::Rect {
+                    rect: Rect::new(0.0, 0.0, 10.0, 10.0),
+                    radius: 0.0,
+                    corners: None,
+                },
+            );
+            eng.run(&Command::AddShape { layer, shape }).unwrap();
+            (id, eng.last_step_id().expect("a step"))
+        };
+        let (first, a) = add(&mut eng);
+        let (second, b) = add(&mut eng);
+        assert!(!eng.withdraw_step(a), "not the last step");
+        assert!(eng.withdraw_step(b));
+        assert!(eng.document().find_shape(second).is_none());
+        assert!(eng.document().find_shape(first).is_some());
+        assert_eq!(eng.history_labels().0.len(), 1);
+        assert!(eng.redo().is_err(), "nothing to redo");
+        // Something done since the step: it stays.
+        let (_, c) = add(&mut eng);
+        eng.undo().unwrap();
+        eng.redo().unwrap();
+        assert!(!eng.withdraw_step(c));
+        assert!(eng.step_in_effect(c));
     }
 
     #[test]
@@ -832,6 +913,61 @@ mod tests {
                 .unwrap();
         }
         assert_eq!(eng.history_labels().0.len(), 2);
+    }
+
+    /// The view a drawing is saved with is kept without an undo step,
+    /// without marking the drawing changed, through undo and redo, and
+    /// goes into the file and back (#1134).
+    #[test]
+    fn the_saved_view_stays_out_of_the_history() {
+        let mut eng = Engine::default();
+        let layer = eng.document().pages[0].layers[0].id;
+        let id = eng.new_shape_id();
+        let shape = Shape::new(
+            id,
+            ShapeKind::Ellipse {
+                rect: Rect::new(0.0, 0.0, 10.0, 10.0),
+                arc: None,
+            },
+        );
+        eng.run(&Command::AddShape { layer, shape }).unwrap();
+        eng.mark_saved();
+        let rev = eng.revision();
+        let view = crate::document::SavedView {
+            page: 0,
+            x: 12.5,
+            y: -3.0,
+            zoom_percent: 250.0,
+        };
+        eng.run(&Command::SetSavedView { view: Some(view) })
+            .unwrap();
+        assert_eq!(eng.history_labels().0, vec!["Create Object"]);
+        assert_eq!(eng.revision(), rev);
+        assert!(!eng.is_dirty());
+        eng.undo().unwrap();
+        assert_eq!(eng.document().saved_view, Some(view));
+        eng.redo().unwrap();
+        assert_eq!(eng.document().saved_view, Some(view));
+        let mut json = Vec::new();
+        eng.document()
+            .write_json_version(&mut json, crate::document::TDRAW_FORMAT_VERSION)
+            .unwrap();
+        let back = crate::Document::from_json(std::str::from_utf8(&json).unwrap()).unwrap();
+        assert_eq!(back.saved_view, Some(view));
+        assert!(view.is_valid(1) && !view.is_valid(0));
+        assert!(!crate::document::SavedView {
+            zoom_percent: f64::NAN,
+            ..view
+        }
+        .is_valid(1));
+        // A file without one opens without one.
+        let plain = crate::Document::from_json(
+            &String::from_utf8(json.clone())
+                .unwrap()
+                .replace("\"saved_view\"", "\"unknown_saved_view\""),
+        )
+        .unwrap();
+        assert_eq!(plain.saved_view, None);
     }
 
     #[test]
@@ -988,6 +1124,7 @@ mod tests {
             width_px: 8,
             height_px: 8,
             size_mm: 5.0,
+            placement: Default::default(),
         });
         e.run(&Command::AddShape { layer, shape }).unwrap();
         e.run(&Command::TransformShapes {
@@ -1118,6 +1255,44 @@ mod tests {
         assert_eq!(e.document().pages[0].layers[0].shapes.len(), before);
         let moved = e.document().find_shape(first).map(|s| s.transform);
         assert_eq!(moved, Some(crate::Affine::IDENTITY), "the move went too");
+    }
+
+    /// Joining a group's steps as they come keeps one step (one snapshot)
+    /// however many steps the action runs, and Undo still goes back to
+    /// before the group (#1342).
+    #[test]
+    fn joining_a_group_keeps_one_step_while_it_runs() {
+        use crate::document::{Shape, ShapeKind};
+        use crate::geometry::Rect;
+        let mut e = Engine::default();
+        let layer = e.document().pages[0].layers[0].id;
+        let id = e.new_shape_id();
+        let shape = Shape::new(
+            id,
+            ShapeKind::Rect {
+                rect: Rect::new(0.0, 0.0, 10.0, 10.0),
+                radius: 0.0,
+                corners: None,
+            },
+        );
+        e.run(&Command::AddShape { layer, shape }).unwrap();
+        let steps = e.undo.len();
+        let mark = e.begin_group();
+        for _ in 0..50 {
+            e.run(&Command::TransformShapes {
+                shapes: vec![id],
+                transform: crate::Affine::rotate(0.1),
+            })
+            .unwrap();
+            e.join_group(mark, "Free Transform");
+            assert_eq!(e.undo.len(), steps + 1);
+        }
+        e.end_group(mark, "Free Transform");
+        assert_eq!(e.undo.len(), steps + 1);
+        assert_eq!(e.undo_label(), Some("Free Transform"));
+        e.undo().unwrap();
+        let back = e.document().find_shape(id).map(|s| s.transform);
+        assert_eq!(back, Some(crate::Affine::IDENTITY));
     }
 
     /// A drag that undoes and records a step per pointer move, and steps

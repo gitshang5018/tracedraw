@@ -25,6 +25,8 @@ const __consts = {
   cdrMeshFillShape: 20, cdrCustomShape: 21, cdrCustomEffectGroupShape: 22,
   cdrSymbolShape: 23, cdrHTMLFormObjectShape: 24, cdrHTMLActiveObjectShape: 25,
   cdrPerfectShape: 26, cdrEPSShape: 27,
+  // cdrLinearDimensionType
+  cdrDimensionHorizontal: 0, cdrDimensionVertical: 1, cdrDimensionSlanted: 2,
   // cdrFillType
   cdrNoFill: 0, cdrUniformFill: 1, cdrFountainFill: 2, cdrPostscriptFill: 3,
   cdrTextureFill: 8, cdrPatternFill: 9, cdrHatchFill: 10,
@@ -134,7 +136,7 @@ const __consts = {
   cdrLensTintedGrayscale: 8, cdrLensTransparency: 9, cdrLensWireframe: 10,
   // cdrViewType
   cdrSimpleWireframeView: 0, cdrWireframeView: 1, cdrDraftView: 2, cdrNormalView: 3,
-  cdrEnhancedView: 4, cdrPixelView: 6,
+  cdrEnhancedView: 4, cdrEnhancedViewWithOverprints: 5, cdrPixelView: 6,
   // cdrAntiAliasingType
   cdrNoAntiAliasing: 0, cdrNormalAntiAliasing: 1, cdrSupersampling: 2,
   // cdrTextLanguage (Windows language ids)
@@ -170,6 +172,14 @@ const __mmPer = { 0: 0.0001, 1: 25.4, 2: 304.8, 3: 1, 4: 10, 5: 25.4 / 96, 6: 16
   14: 25.4 / 72, 15: 0.25, 16: 0.25 };
 function __f() { return __mmPer[__vg.unit] || 25.4; }
 function __mm(v) { return Number(v) * __f(); }
+// A point argument in page millimetres: [x, y], {x, y}, or anything
+// with PositionX/PositionY (a snap point, a node, a shape).
+function __pt(p) {
+  if (Array.isArray(p)) return [__mm(p[0]), __mm(p[1])];
+  if (p && p.PositionX !== undefined) return [__mm(p.PositionX), __mm(p.PositionY)];
+  if (p && p.x !== undefined) return [__mm(p.x), __mm(p.y)];
+  throw new Error('a dimension needs points');
+}
 function __un(mm) { return mm / __f(); }
 function __ids(x) {
   if (x === undefined || x === null) return [];
@@ -348,10 +358,18 @@ class Outline {
   get EndArrow() { return null; }
   set EndArrow(v) { }
   SetNoOutline() { this._put(null); }
-  SetProperties(Width, Style, Color) {
+  SetProperties(Width, Style, Color, StartArrow, EndArrow, BehindFill, ScaleWithShape, LineCaps, LineJoin, NibAngle, NibStretch, DashDotLength, PenWidth, MiterLimit, Justification) {
     const s = this._s || __defaultStroke();
     if (Width !== undefined && Width !== null && Width >= 0) s.width = __mm(Width);
+    // A style from OutlineStyles (#1255).
+    if (Style && Array.isArray(Style._dash)) s.dash = Style._dash.slice();
     if (Color && Color.v) s.color = Color.v;
+    if (BehindFill !== undefined && BehindFill !== null) s.behind_fill = !!BehindFill;
+    if (ScaleWithShape !== undefined && ScaleWithShape !== null) s.scale_with_object = !!ScaleWithShape;
+    if (LineCaps !== undefined && LineCaps !== null) s.cap = ['butt', 'round', 'square'][LineCaps] || 'butt';
+    if (LineJoin !== undefined && LineJoin !== null) s.join = ['miter', 'round', 'bevel'][LineJoin] || 'miter';
+    if (NibAngle !== undefined && NibAngle !== null) s.nib_angle = Number(NibAngle);
+    if (NibStretch !== undefined && NibStretch !== null) s.stretch = Math.max(0.01, Math.min(1, Number(NibStretch) / 100));
     this._put(s);
   }
   CopyAssign(SourceOutline) { this._put(SourceOutline._s); }
@@ -393,7 +411,7 @@ class __Geo {
   GetPosition() { return [this.PositionX, this.PositionY]; }
   GetSize() { return [this.SizeWidth, this.SizeHeight]; }
   GetBoundingBox(x, y, Width, Height, UseOutline) {
-    const b = this._b();
+    const b = UseOutline ? __call('vg_bounds', { ids: this._ids(), outline: true }) : this._b();
     return [__un(b.x0), __un(b.y0), __un(b.x1 - b.x0), __un(b.y1 - b.y0)];
   }
   SetPosition(PositionX, PositionY) {
@@ -526,6 +544,8 @@ class Shape extends __Geo {
   set RotationCenterX(v) { __vg.rot.set(this.id, [__mm(v), this._rotCenter()[1]]); }
   set RotationCenterY(v) { __vg.rot.set(this.id, [this._rotCenter()[0], __mm(v)]); }
   Duplicate(OffsetX, OffsetY) { return new Shape(__call('vg_duplicate', { ids: [this.id], dx: __mm(OffsetX || 0), dy: __mm(OffsetY || 0) }).ids[0]); }
+  Copy() { __call('vg_copy', { ids: [this.id] }); }
+  Cut() { __call('vg_cut', { ids: [this.id] }); }
   Clone(OffsetX, OffsetY) { return this.Duplicate(OffsetX, OffsetY); }
   BreakApart() { __call('vg_break_apart', { id: this.id }); }
   BreakApartEx() { return new ShapeRange(__call('vg_break_apart', { id: this.id }).ids); }
@@ -548,7 +568,7 @@ class Shape extends __Geo {
     const p = this._info().parent;
     return p && __call('vg_info', { id: p }).kind === 'group' ? new Shape(p) : null;
   }
-  get PowerClip() {
+  get ClipFrame() {
     const info = this._info();
     if (info.kind !== 'clipframe') return null;
     const id = this.id;
@@ -558,7 +578,7 @@ class Shape extends __Geo {
       // contents through Shapes either way.
       EnterEditMode() { }, LeaveEditMode() { } };
   }
-  get PowerClipParent() {
+  get ClipFrameParent() {
     const p = this._info().parent;
     if (!p) return null;
     const pi = __call('vg_info', { id: p });
@@ -813,19 +833,35 @@ function __matches(id, Name, Type, query) {
 const __typeNames = { rectangle: cdrRectangleShape, ellipse: cdrEllipseShape, curve: cdrCurveShape,
   polygon: cdrPolygonShape, bitmap: cdrBitmapShape, text: cdrTextShape, group: cdrGroupShape,
   symbol: cdrSymbolShape };
-// Queries: comparisons of @name, @type and @fill.type joined by "and" /
-// "or", e.g. "@name = 'Logo' and @type = 'rectangle'".
+// Queries: comparisons of @name, @type and @fill.type, and the string
+// tests StartsWith, EndsWith and Contains on them, joined by "and" /
+// "or", e.g. "@name = 'Logo' and @type = 'rectangle'" or
+// "@name.StartsWith('UNDERLAY_')".
+function __queryValue(info, prop) {
+  switch (prop.toLowerCase()) {
+    case 'name': return info.name || '';
+    case 'type': return Object.keys(__typeNames).find(k => __typeNames[k] === __typeOf(info)) || '';
+    case 'fill.type': return { none: 'none', solid: 'uniform', fountain: 'fountain', pattern: 'pattern', texture: 'texture', mesh: 'mesh' }[info.fill.fill];
+    default: return undefined;
+  }
+}
 function __query(info, q) {
   return String(q).split(/\s+or\s+/i).some(part => part.split(/\s+and\s+/i).every(t => {
-    const m = /^\s*@([\w.]+)\s*(=|<>|!=)\s*'([^']*)'\s*$/.exec(t);
-    if (!m) return false;
-    let v;
-    switch (m[1].toLowerCase()) {
-      case 'name': v = info.name; break;
-      case 'type': v = Object.keys(__typeNames).find(k => __typeNames[k] === __typeOf(info)) || ''; break;
-      case 'fill.type': v = { none: 'none', solid: 'uniform', fountain: 'fountain', pattern: 'pattern', texture: 'texture', mesh: 'mesh' }[info.fill.fill]; break;
-      default: return false;
+    let m = /^\s*@([\w.]+?)\.(StartsWith|EndsWith|Contains)\(\s*'([^']*)'\s*\)\s*$/i.exec(t);
+    if (m) {
+      const v = __queryValue(info, m[1]);
+      if (v === undefined) return false;
+      const s = String(v);
+      switch (m[2].toLowerCase()) {
+        case 'startswith': return s.startsWith(m[3]);
+        case 'endswith': return s.endsWith(m[3]);
+        default: return s.includes(m[3]);
+      }
     }
+    m = /^\s*@([\w.]+)\s*(=|<>|!=)\s*'([^']*)'\s*$/.exec(t);
+    if (!m) return false;
+    const v = __queryValue(info, m[1]);
+    if (v === undefined) return false;
     const eq = String(v).toLowerCase() === m[3].toLowerCase();
     return m[2] === '=' ? eq : !eq;
   }));
@@ -887,6 +923,8 @@ class ShapeRange extends __Geo {
   UngroupEx() { const out = []; this._ids().forEach(id => out.push(...__call('vg_ungroup', { id: id, all: false }).ids)); return new ShapeRange(out); }
   BreakApart() { this._ids().forEach(id => __call('vg_break_apart', { id: id })); }
   Duplicate(OffsetX, OffsetY) { return new ShapeRange(__call('vg_duplicate', { ids: this._ids(), dx: __mm(OffsetX || 0), dy: __mm(OffsetY || 0) }).ids); }
+  Copy() { __call('vg_copy', { ids: this._ids() }); }
+  Cut() { __call('vg_cut', { ids: this._ids() }); }
   Clone(OffsetX, OffsetY) { return this.Duplicate(OffsetX, OffsetY); }
   FindShapes(Name, Type, Recursive, Query) { return new ShapeRange(__find(this._ids(), Name, Type, Recursive === undefined ? true : Recursive, Query)); }
   FindShape(Name, Type, StaticID, Recursive, Query) {
@@ -976,6 +1014,8 @@ class SelectionShape extends __Geo {
   get Shapes() { return new Shapes(() => __call('selection', {}).ids); }
   get Name() { return ''; }
   Duplicate(OffsetX, OffsetY) { return new ShapeRange(__call('vg_duplicate', { ids: this._ids(), dx: __mm(OffsetX || 0), dy: __mm(OffsetY || 0) }).ids); }
+  Copy() { __call('vg_copy', { ids: this._ids() }); }
+  Cut() { __call('vg_cut', { ids: this._ids() }); }
   Group() { return new Shape(__call('vg_group', { ids: this._ids() }).id); }
   Combine() { return new Shape(__call('vg_combine', { ids: this._ids() }).id); }
   UngroupAll() { this._ids().forEach(id => __call('vg_ungroup', { id: id, all: true })); }
@@ -1064,6 +1104,36 @@ class Layer {
   CreateLineSegment(StartX, StartY, EndX, EndY) {
     return new Shape(__call('create_curve', { layer: this.id, points: [[__mm(StartX), __mm(StartY)], [__mm(EndX), __mm(EndY)]], closed: false }).id);
   }
+  // Dimensions (#2348): live, in the Dimension tool's style. A point is
+  // a snap point or shape (PositionX/PositionY), {x, y} or [x, y], in
+  // document units. The dimension line passes through (TextX, TextY);
+  // without it, 10 mm off the measured points.
+  CreateLinearDimension(Type, Point1, Point2, TextCentered, TextX, TextY) {
+    const a = __pt(Point1), b = __pt(Point2);
+    const kind = Type === 0 ? 'horizontal' : Type === 1 ? 'vertical' : 'parallel';
+    let t;
+    if (TextX !== undefined && TextY !== undefined) t = [__mm(TextX), __mm(TextY)];
+    else if (kind === 'horizontal') t = [(a[0] + b[0]) / 2, Math.max(a[1], b[1]) + 10];
+    else if (kind === 'vertical') t = [Math.max(a[0], b[0]) + 10, (a[1] + b[1]) / 2];
+    else {
+      const dx = b[0] - a[0], dy = b[1] - a[1], l = Math.hypot(dx, dy) || 1;
+      t = [(a[0] + b[0]) / 2 - dy / l * 10, (a[1] + b[1]) / 2 + dx / l * 10];
+    }
+    return new Shape(__call('create_dimension', { layer: this.id, kind: kind, x1: a[0], y1: a[1], x2: b[0], y2: b[1], tx: t[0], ty: t[1] }).id);
+  }
+  // The angle at Center from Point1 to Point2, its arc through (TextX,
+  // TextY) (else at three quarters of the shorter arm).
+  CreateAngularDimension(Center, Point1, Point2, TextX, TextY) {
+    const c = __pt(Center), a = __pt(Point1), b = __pt(Point2);
+    let t;
+    if (TextX !== undefined && TextY !== undefined) t = [__mm(TextX), __mm(TextY)];
+    else {
+      const r = 0.75 * Math.min(Math.hypot(a[0] - c[0], a[1] - c[1]), Math.hypot(b[0] - c[0], b[1] - c[1]));
+      const ang = (Math.atan2(a[1] - c[1], a[0] - c[0]) + Math.atan2(b[1] - c[1], b[0] - c[0])) / 2;
+      t = [c[0] + r * Math.cos(ang), c[1] + r * Math.sin(ang)];
+    }
+    return new Shape(__call('create_dimension', { layer: this.id, kind: 'angular', cx: c[0], cy: c[1], x1: a[0], y1: a[1], x2: b[0], y2: b[1], tx: t[0], ty: t[1] }).id);
+  }
   CreateCurveSegment(StartX, StartY, EndX, EndY, StartingControlPointLength, StartingControlPointAngle, EndingControlPointLength, EndingControlPointAngle) {
     const sx = __mm(StartX), sy = __mm(StartY), ex = __mm(EndX), ey = __mm(EndY);
     const pol = (x, y, len, ang) => [x + __mm(len || 0) * Math.cos((ang || 0) * Math.PI / 180), y + __mm(len || 0) * Math.sin((ang || 0) * Math.PI / 180)];
@@ -1096,7 +1166,8 @@ class Layer {
   Import(FileName) { return new Shape(__call('import_bitmap', { layer: this.id, path: String(FileName) }).id); }
   ImportBitmap(FileName) { return this.Import(FileName); }
   CreateBitmap(FileName) { return this.Import(FileName); }
-  Paste() { throw new Error('Paste is not available to macros'); }
+  Paste() { return new ShapeRange(__call('vg_paste', { layer: this.id }).ids); }
+  PasteEx() { return this.Paste(); }
 }
 class Layers {
   constructor(page) { this.page = page; }
@@ -1135,6 +1206,16 @@ class Page {
   set SizeHeight(v) { __call('set_page_size', { page: this.id, w: this._p.w, h: __mm(v) }); }
   SetSize(Width, Height) { __call('set_page_size', { page: this.id, w: __mm(Width), h: __mm(Height) }); }
   GetSize() { return [this.SizeWidth, this.SizeHeight]; }
+  // The paper by name ("A4", "Letter"), "" for a size of its own; set,
+  // the page takes that paper's size in its orientation (#1255).
+  get Paper() { return this._p.paper || ''; }
+  set Paper(name) {
+    const s = __call('vg_paper_size', { name: String(name) });
+    if (s.w === undefined) throw new Error('No paper is called ' + name);
+    const p = this._p;
+    const land = p.w > p.h;
+    __call('set_page_size', { page: this.id, w: land ? s.h : s.w, h: land ? s.w : s.h });
+  }
   get Orientation() { const p = this._p; return p.w > p.h ? cdrLandscape : cdrPortrait; }
   set Orientation(v) {
     const p = this._p;
@@ -1169,6 +1250,9 @@ class ExportFilter {
   ShowDialog() { return true; }
   Reset() { }
 }
+// The page class under a second name, for methods whose argument is
+// named Page as the macros' named arguments need (#2165).
+const __PageClass = Page;
 class Document {
   get _d() { return __call('vg_doc', {}); }
   get Name() { const d = this._d; return d.file ? d.file.split(/[\\/]/).pop() : d.title; }
@@ -1206,8 +1290,19 @@ class Document {
   InsertPages(NumberOfPages, BeforePage, Page) {
     const at = (Page || 1) - (BeforePage ? 1 : 0);
     const ids = __call('vg_insert_pages', { count: NumberOfPages || 1, at: Math.max(0, at) }).ids;
-    return new Page(ids[0]);
+    return new __PageClass(ids[0]);
   }
+  // InsertPages with the new pages' size (#2165).
+  InsertPagesEx(NumberOfPages, BeforePage, Page, Width, Height) {
+    const at = (Page || 1) - (BeforePage ? 1 : 0);
+    const ids = __call('vg_insert_pages', { count: NumberOfPages || 1, at: Math.max(0, at) }).ids;
+    for (const id of ids) __call('set_page_size', { page: id, w: __mm(Width), h: __mm(Height) });
+    return new __PageClass(ids[0]);
+  }
+  // Undo logging of shapes a macro made itself: they are already part
+  // of the macro's one undo step (#2165).
+  LogCreateShapeRange(Range) { return Range; }
+  LogCreateShape(Shape) { return Shape; }
   CreateCurve() { return new Curve(); }
   CreateShapeRangeFromArray(...shapes) { return new ShapeRange(shapes.flatMap(__ids)); }
   Save() { const f = this._d.file; if (!f) throw new Error('The drawing has no file yet: use SaveAs'); __call('vg_save', { path: f }); }
@@ -1229,7 +1324,10 @@ class Document {
     return new ExportFilter({ path: String(FileName), format: __filterExt[Filter] || '', page: this._d.page,
       w: Width || 0, h: Height || 0, dpi: ResolutionX || 0 });
   }
-  PublishToPDF(FileName) { __call('vg_export', { path: String(FileName), format: 'pdf' }); }
+  PublishToPDF(FileName) {
+    const r = (__vg.pdf && __vg.pdf.range) || pdfWholeDocument;
+    __call('vg_export', { path: String(FileName), format: 'pdf', current_page: r === pdfCurrentPage });
+  }
 }
 
 // ----- Application and globals --------------------------------------------
@@ -1244,6 +1342,30 @@ class __Window {
   Refresh() { }
   Activate() { }
 }
+const __dashes = [[], [4, 2], [1, 1], [6, 2, 1, 2]];
+function __styleOf(i) {
+  const d = __dashes[Number(i) || 0];
+  if (d === undefined) throw new Error('The index is out of range: ' + i);
+  return { _dash: d, Index: Number(i) || 0, DashCount: d.length / 2, get Enhanced() { return false; } };
+}
+const __outlineStyles = Object.assign(function (Index) { return __styleOf(Index); },
+  { get Count() { return __dashes.length; }, Item: (Index) => __styleOf(Index) });
+const __arrowHeads = Object.assign(function (Index) { return null; },
+  { get Count() { return 1; }, Item: (Index) => null });
+// Application.FontList: a collection of family names, from 1, that
+// For Each walks.
+function __fontList() {
+  const names = __call('vg_fonts', {}).families;
+  const list = function (Index) { return list.Item(Index); };
+  list.Count = names.length;
+  list.Item = function (Index) {
+    const i = Number(Index);
+    if (!(i >= 1 && i <= names.length)) throw new Error('The index is out of range: ' + Index);
+    return names[i - 1];
+  };
+  list[Symbol.iterator] = function () { return names[Symbol.iterator](); };
+  return list;
+}
 const Application = {
   get ActiveDocument() { return new Document(); },
   get ActivePage() { return new Document().ActivePage; },
@@ -1251,7 +1373,11 @@ const Application = {
   get ActiveSelection() { return new SelectionShape(); },
   get ActiveSelectionRange() { return new ShapeRange(__call('selection', {}).ids); },
   get ActiveShape() { return new Document().ActiveShape; },
+  // The layer new objects go on; there is no virtual layer apart (#2165).
+  get ActiveVirtualLayer() { return new Document().ActiveLayer; },
   get ActiveWindow() { return new __Window(); },
+  // The installed font families, by name (#2165).
+  get FontList() { return __fontList(); },
   get Documents() { return new __Documents(); },
   get Version() { return '27.0'; },
   get VersionMajor() { return 27; },
@@ -1269,6 +1395,11 @@ const Application = {
   CreateGrayColor(GrayValue) { const c = new Color(); c.GrayAssign(GrayValue); return c; },
   CreateHSBColor(Hue, Saturation, Brightness) { const c = new Color(); c.HSBAssign(Hue, Saturation, Brightness); return c; },
   CreateShapeRange() { return new ShapeRange([]); },
+  // The outline styles by number, 0 the solid line, then the dashes the
+  // Outline Pen dialog offers, in outline widths (#1255).
+  get OutlineStyles() { return __outlineStyles; },
+  // Arrowheads by number; 0 (the only one kept) is none.
+  get ArrowHeads() { return __arrowHeads; },
   CreateCurve(Document) { return new Curve(); },
   CreateDocument() { throw new Error('A macro works on the active drawing only'); },
   OpenDocument(FileName) { throw new Error('A macro works on the active drawing only'); },
@@ -1343,8 +1474,10 @@ class __View {
   get OriginY() { return __un(__call('vg_doc', {}).view[1]); }
   get Zoom() { return 100; }
   set Zoom(v) { }
-  get Type() { return cdrEnhancedView; }
-  set Type(v) { }
+  // The view type: overprints are simulated in the enhanced view with
+  // overprints, as View > Simulate Overprints shows them.
+  get Type() { return __call('vg_doc', {}).simulate_overprints ? cdrEnhancedViewWithOverprints : cdrEnhancedView; }
+  set Type(v) { __call('vg_view', { simulate_overprints: v === cdrEnhancedViewWithOverprints }); }
   SetViewPoint() { }
   SetViewArea() { }
   ToFitPage() { }
@@ -1385,7 +1518,6 @@ __def(Page, 'Guides', function () {
 __def(Layer, 'IsGuidesLayer', function () { return false; });
 __def(Layer, 'IsGridLayer', function () { return false; });
 __def(Layer, 'IsDesktopLayer', function () { return false; });
-Layer.prototype.Paste = function () { return __no('Layer.Paste', 'the clipboard is not open to macros'); };
 Layer.prototype.CreateGuide = function (x1, y1, x2, y2) {
   const ax = __mm(x1), ay = __mm(y1), bx = __mm(x2), by = __mm(y2);
   const angle = Math.atan2(by - ay, bx - ax) * 180 / Math.PI;
@@ -1649,8 +1781,43 @@ Shape.prototype.OrderIsInFrontOf = function (Shape) {
   const a = __call('vg_zorder', { id: this.id }).rank, b = __call('vg_zorder', { id: __ids(Shape)[0] }).rank;
   return a > b;
 };
-Shape.prototype.AddToPowerClip = function (Shape) { __call('vg_place_inside', { ids: [this.id], frame: __ids(Shape)[0] }); };
-ShapeRange.prototype.AddToPowerClip = function (Shape) { __call('vg_place_inside', { ids: this._ids(), frame: __ids(Shape)[0] }); };
+// Into a clip frame: `Shape` becomes the frame (or takes more contents);
+// CenterInContainer true centres the contents on it first, otherwise they
+// stay where they are.
+function __toClipFrame(ids, Shape, CenterInContainer) {
+  const frame = __ids(Shape)[0];
+  if (frame === undefined) throw new Error('AddToClipFrame needs a shape to be the frame');
+  if (ids.length && (CenterInContainer === true || CenterInContainer === cdrTrue)) {
+    const b = __call('vg_bounds', { ids: ids }), f = __call('vg_bounds', { ids: [frame] });
+    const dx = (f.x0 + f.x1) / 2 - (b.x0 + b.x1) / 2, dy = (f.y0 + f.y1) / 2 - (b.y0 + b.y1) / 2;
+    if (dx || dy) __xf(ids, __M.move(dx, dy));
+  }
+  __call('vg_place_inside', { ids: ids, frame: frame });
+}
+Shape.prototype.AddToClipFrame = function (Shape, CenterInContainer) { __toClipFrame([this.id], Shape, CenterInContainer); };
+ShapeRange.prototype.AddToClipFrame = function (Shape, CenterInContainer) { __toClipFrame(this._ids(), Shape, CenterInContainer); };
+
+// Other names macros call members by (#2968: a macro that puts each
+// object into its own clip frame stopped with error 438). The names are
+// other programs' own, which this repository does not write (AGENTS.md
+// rule 3), so they are known by the FNV-1a hash of their lowercase
+// spelling: a member the object lacks, whose name hashes to an entry
+// here, is the member the entry names.
+function __nameHash(name) {
+  let h = 0x811c9dc5;
+  const s = String(name).toLowerCase();
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i) & 0xff;
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h;
+}
+const __memberAliases = new Map([
+  [2263586344, 'AddToClipFrame'],
+  [2726451344, 'ClipFrame'],
+  [3631069424, 'ClipFrameParent'],
+]);
+globalThis.__member_alias = function (name) { return __memberAliases.get(__nameHash(name)); };
 for (const cls of [Shapes, ShapeRange]) {
   cls.prototype.FindAnyOfType = function (...Types) {
     const list = cls === Shapes ? this._list : this._ids();
@@ -1682,3 +1849,97 @@ Layer.prototype.PasteSpecial = function () { return __no('Layer.PasteSpecial', '
 __def(Fill, 'Pattern', function () { return { get Type() { return __no('Fill.Pattern'); } }; });
 __def(Shape, 'StartShape', function () { return __no('Shape.StartShape', 'connectors are not objects of their own'); });
 __Bitmap.prototype.GetPixelColor = function () { return __no('Bitmap.GetPixelColor'); };
+
+// ----- Palettes -----------------------------------------------------------
+// Application.Palettes: the Palette Manager's palettes, each a 1-based list
+// of named colours; Document.Palette: the drawing's own palette. A spot
+// colour's Name is its ink's name, so macros find inks by name.
+
+class Palette {
+  constructor(p) { this._p = p; }
+  get Name() { return this._p.name; }
+  get ColorCount() { return this._p.colors.length; }
+  Color(Index) {
+    const e = this._p.colors[Index - 1];
+    if (!e) throw new Error('The index is out of range: ' + Index);
+    const c = new Color(JSON.parse(JSON.stringify(e.color)));
+    c._name = e.name;
+    return c;
+  }
+  get Colors() {
+    const n = this._p.colors.length;
+    return { Count: n, Item: (i) => this.Color(i),
+      [Symbol.iterator]: () => __iter(Array.from({ length: n }, (_, i) => this.Color(i + 1))) };
+  }
+  FindColor(Name) {
+    const i = this._p.colors.findIndex(e => e.name.toLowerCase() === String(Name).toLowerCase());
+    return i < 0 ? null : this.Color(i + 1);
+  }
+}
+class __Palettes {
+  constructor() { this._list = __call('vg_palettes', {}).palettes; }
+  get Count() { return this._list.length; }
+  Item(IndexOrName) {
+    const p = typeof IndexOrName === 'number' ? this._list[IndexOrName - 1]
+      : this._list.find(q => q.name.toLowerCase() === String(IndexOrName).toLowerCase());
+    if (!p) throw new Error('No palette ' + IndexOrName);
+    return new Palette(p);
+  }
+  [Symbol.iterator]() { return __iter(this._list.map(p => new Palette(p))); }
+}
+Object.defineProperty(Application, 'Palettes', { get() { return new __Palettes(); }, configurable: true });
+Object.defineProperty(globalThis, 'Palettes', { get() { return new __Palettes(); }, configurable: true });
+__def(Document, 'Palette', function () { return new Palette(__call('vg_doc_palette', {})); });
+__def(Color, 'Name', function () {
+  if (this._name) return this._name;
+  if (this.v.model === 'spot') return __call('vg_ink_name', { ink: this.v.ink }).name;
+  return '';
+});
+
+// ----- Contours, outlines as objects, copies on another layer --------------
+// cdrContourDirection, as the published reference numbers it.
+const cdrContourToCenter = 0, cdrContourInside = 1, cdrContourOutside = 2;
+globalThis.cdrContourToCenter = cdrContourToCenter;
+globalThis.cdrContourInside = cdrContourInside;
+globalThis.cdrContourOutside = cdrContourOutside;
+// Shape.CreateContour(Direction, Offset, Steps, BlendType, OutlineColor,
+// FillColor, ...): a contour effect on the object; the effect it gives
+// back separates into plain objects.
+Shape.prototype.CreateContour = function (Direction, Offset, Steps, BlendType, OutlineColor, FillColor) {
+  const args = { id: this.id, direction: Direction === undefined ? cdrContourOutside : Direction,
+    offset: __mm(Offset === undefined ? 1 : Offset), steps: Steps === undefined ? 1 : Steps };
+  if (FillColor && FillColor.v) args.fill = FillColor.v;
+  const r = __call('vg_add_contour', args);
+  return new __Effect(this.id, { kind: 'contour', index: r.index });
+};
+Outline.prototype.ConvertToObject = function () {
+  const ids = this.o._ids();
+  let last = null;
+  for (const id of ids) last = new Shape(__call('vg_outline_to_object', { id: id }).id);
+  return last;
+};
+for (const cls of [Shape, ShapeRange, SelectionShape]) {
+  cls.prototype.CopyToLayer = function (Layer) {
+    return new ShapeRange(__call('vg_copy_to_layer', { ids: this._ids(), layer: Layer.id }).ids);
+  };
+}
+
+// ----- PDF settings ---------------------------------------------------------
+// Document.PDFSettings: the range PublishToPDF writes (the whole drawing or
+// the current page). TraceDraw's PDF always keeps spot inks and overprint,
+// so a named settings style loads and saves without changing anything.
+const pdfWholeDocument = 0, pdfCurrentPage = 1, pdfDocuments = 2, pdfPageRange = 3, pdfSelection = 4;
+Object.assign(globalThis, { pdfWholeDocument, pdfCurrentPage, pdfDocuments, pdfPageRange, pdfSelection });
+class __PdfSettings {
+  get _s() { if (!__vg.pdf) __vg.pdf = { range: pdfWholeDocument }; return __vg.pdf; }
+  get PublishRange() { return this._s.range; }
+  set PublishRange(v) {
+    if (v !== pdfWholeDocument && v !== pdfCurrentPage) __no('PDFSettings.PublishRange', 'the whole drawing or the current page');
+    this._s.range = v;
+  }
+  Load(Name) { return true; }
+  Save(Name) { }
+  ShowDialog() { return true; }
+  Reset() { this._s.range = pdfWholeDocument; }
+}
+__def(Document, 'PDFSettings', function () { return new __PdfSettings(); });

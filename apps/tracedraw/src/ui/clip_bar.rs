@@ -94,7 +94,7 @@ pub fn show(app: &mut App, ctx: &Context) {
                             app.select_clip_contents(clip);
                         }
                         if button(ui, "clip.extract") {
-                            app.run(tracedraw_core::Command::ExtractContents { clip });
+                            app.extract_keeping_frame(clip);
                             app.select(vec![clip]);
                         }
                         let locked = app.clip_frame_locked(clip);
@@ -111,7 +111,7 @@ pub fn show(app: &mut App, ctx: &Context) {
                         ui.separator();
                         let resp = ui.add(
                             egui::Button::new(
-                                RichText::new(format!("{} \u{25BE}", tr("clip.fit_contents")))
+                                RichText::new(format!("{} \u{23F7}", tr("clip.fit_contents")))
                                     .color(Tokens::text()),
                             )
                             .frame(false),
@@ -142,7 +142,11 @@ fn finish_button(app: &mut App, ui: &mut egui::Ui) {
             )
             .frame(false),
         )
-        .rich_tip(tr("menu.object.clip_frame_finish"));
+        .rich_tip(tr(if app.symbol_edit_index().is_some() {
+            "menu.object.symbol_finish"
+        } else {
+            "menu.object.clip_frame_finish"
+        }));
     let r = finish.rect;
     ui.painter().text(
         egui::pos2(r.left() + 2.0, r.center().y),

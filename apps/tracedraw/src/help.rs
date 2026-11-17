@@ -14,7 +14,7 @@ use crate::ui::dialogs::{Dialog, OptionsPage};
 
 /// Where the Help is published (`web/help_site.py` builds it into
 /// `site/help/`, the project's page).
-pub const BASE: &str = "https://igtoth.github.io/tracedraw/help/";
+pub const BASE: &str = "https://tracedraw.github.io/tracedraw/help/";
 
 /// The first page of the Help.
 pub const HOME: &str = "index";
@@ -55,17 +55,23 @@ pub fn dialog_topic(d: &Dialog, options: OptionsPage) -> &'static str {
         Dialog::NodeAlign { .. } => "lines-shapes/shape-tool#align-nodes",
         Dialog::RenamePage { .. } => "pages-layout/pages#rename-page",
         Dialog::GoToPage { .. } => "pages-layout/pages#go-to-page",
+        Dialog::PageSpacing { .. } => "pages-layout/multipage-view#page-spacing",
+        Dialog::OutlineOffset { .. } => "lines-shapes/shaping#outline-offset",
+        Dialog::GatherPages { .. } => "pages-layout/pages",
+        Dialog::MultipagePages { .. } => "pages-layout/multipage-view#choose-pages",
         Dialog::InsertPage { .. } => "pages-layout/pages#insert-page",
         Dialog::DeletePage { .. } => "pages-layout/pages#delete-page",
         Dialog::DuplicatePage { .. } => "pages-layout/pages#duplicate-page",
         Dialog::PageSize { .. } => "pages-layout/pages#page-size",
         Dialog::Options => options_topic(options),
         Dialog::PageNumberSettings => "pages-layout/pages#page-numbers",
-        Dialog::LineStyle(_) | Dialog::OutlinePen(_) => "lines-shapes/outlines#outline-pen",
+        Dialog::LineStyle(_) | Dialog::OutlinePen(_) | Dialog::ArrowheadEditor(_) => {
+            "lines-shapes/outlines#outline-pen"
+        }
         Dialog::EditFill(_) => "color/fills#edit-fill",
         Dialog::TableCount(_) => "objects/tables",
         Dialog::OldCdrVersion { .. } => "get-started/open-and-save#save-as",
-        Dialog::RenameLayer { .. } | Dialog::RenameObject { .. } => {
+        Dialog::RenameLayer { .. } | Dialog::LayerProperties(_) | Dialog::RenameObject { .. } => {
             "objects/objects-and-layers#rename"
         }
         Dialog::DocumentProperties(_) => "pages-layout/document-properties",
@@ -73,22 +79,31 @@ pub fn dialog_topic(d: &Dialog, options: OptionsPage) -> &'static str {
         Dialog::ConfirmResetSettings => "customize/reset-settings",
         Dialog::Recover(_) => "get-started/open-and-save#recovery",
         Dialog::Updates => "welcome/about-and-updates#updates",
-        Dialog::OpenNotes(_) => "get-started/open-and-save#open-notes",
+        Dialog::UpdatePolicy => "welcome/about-and-updates#automatic-check",
+        Dialog::OpenNotes(_) | Dialog::MissingFonts(_) => "get-started/open-and-save#open-notes",
         Dialog::ConfirmShelfRemove { .. } => "objects/shelf#remove",
+        Dialog::HardwareAccelerationHint { .. } => "customize/options-app#general",
+        Dialog::Benchmark => "customize/options-app#benchmark",
+        Dialog::Plugins => "customize/plugins#manager",
+        Dialog::SizesAreas(_) => "lines-shapes/dimensions#sizes-areas",
         Dialog::Export(_) => "file-formats/export",
         Dialog::Print(_) => "printing/print",
         Dialog::PrintMerge(_) => "printing/print-merge",
         Dialog::CreatePattern { .. } => "color/patterns#create-pattern",
         Dialog::CreateTable { .. } => "objects/tables#create-table",
+        Dialog::TextToTable(_) => "objects/tables#convert",
         Dialog::PasteSpecial(_) => "objects/paste-special",
         Dialog::Barcode(_) => "objects/barcodes",
+        Dialog::Formula(_) => "objects/formulas",
         Dialog::ConvertToBitmap(_) => "bitmaps/convert-to-bitmap",
+        Dialog::PictureCaptions(_) => "bitmaps/picture-captions",
         Dialog::StraightenImage(_) => "bitmaps/resample-and-straighten#straighten",
         Dialog::Resample(_) => "bitmaps/resample-and-straighten#resample",
         Dialog::InflateBitmap(_) => "bitmaps/resample-and-straighten#inflate",
-        Dialog::Trace(_) => "bitmaps/tracing",
+        Dialog::Trace(_) | Dialog::Tracing => "bitmaps/tracing",
         Dialog::Effect(_) => "effects/bitmap-effects",
         Dialog::TextDefaults { .. } => "text/fonts",
+        Dialog::CopyProperties(_) => "effects/copy-and-clone#clone",
         Dialog::EditText { .. } => "text/adding-text#edit",
         Dialog::TextTabs => "text/paragraphs#tabs",
         Dialog::TextColumns => "text/paragraphs#columns",
@@ -100,9 +115,14 @@ pub fn dialog_topic(d: &Dialog, options: OptionsPage) -> &'static str {
         Dialog::CustomHyphens(_) => "text/writing-tools#custom-hyphens",
         Dialog::Encode(_) => "text/writing-tools#encode",
         Dialog::BorderGrommet(_) => "printing/border-and-grommet",
-        Dialog::ColorManagement(_) => "color/color-management",
+        Dialog::ColorManagement(_) | Dialog::ConvertColors(_) | Dialog::Recolor(_) => {
+            "color/color-management"
+        }
         Dialog::FontManager(_) => "text/fonts#font-manager",
+        Dialog::TraceCut(_) => "objects/tracecut",
         Dialog::PaletteEditor(_) => "color/palettes#palette-editor",
+        Dialog::PictureColors(_) => "color/palettes#using",
+        Dialog::ConfirmResetPalette => "color/palettes#document-palette",
         Dialog::NewDocument(_) => "get-started/new-document",
         Dialog::About => "welcome/about-and-updates#about",
         Dialog::GithubOpen(_) => "get-started/github#open",
@@ -110,13 +130,15 @@ pub fn dialog_topic(d: &Dialog, options: OptionsPage) -> &'static str {
         Dialog::GithubHistory => "get-started/github#history",
         Dialog::WebNotice => "get-started/browser-version",
         Dialog::MacrosDesktopOnly => "get-started/browser-version#differences",
+        Dialog::StorageRefused(_) => "get-started/browser-version",
         Dialog::TimeTracker(_) => "customize/time-tracker",
         Dialog::Preflight(_) => "printing/preflight",
         Dialog::PublishPdf(_) => "file-formats/publish-pdf",
         Dialog::PdfPassword(_) => "file-formats/publish-pdf#password",
         Dialog::PdfText(_) => "file-formats/import#formats",
+        Dialog::PdfPages(_) => "file-formats/import#pdf-pages",
         Dialog::ChangeDefaults(_) => "templates-styles/object-styles#document-defaults",
-        Dialog::SaveAs(_) => "get-started/open-and-save#save-as",
+        Dialog::SaveAs(_) | Dialog::Package(_) => "get-started/open-and-save#save-as",
     }
 }
 
@@ -147,6 +169,11 @@ pub fn options_topic(p: OptionsPage) -> &'static str {
         GraphPaper => "customize/tool-options#graph-paper",
         Table => "customize/tool-options#table",
         Eraser => "customize/tool-options#eraser",
+        ShapeRecognition => "customize/tool-options#shape-recognition",
+        Dimension => "customize/tool-options#dimension",
+        AngularDimension => "customize/tool-options#angular-dimension",
+        Connector => "customize/tool-options#connector",
+        MeshFill => "customize/tool-options#mesh-fill",
         GlobalGeneral => "customize/global-options#general",
         Printing => "customize/global-options#printing",
         FileFormats => "customize/global-options#file-formats",
@@ -224,6 +251,7 @@ pub fn tool_topic(t: Tool) -> &'static str {
         Tool::FreeformPick => "objects/selecting#freehand-pick",
         Tool::FreeTransform => "objects/transforming#free-transform",
         Tool::Shape => "lines-shapes/shape-tool",
+        Tool::Join => "lines-shapes/join-curves#join-tool",
         Tool::Smooth => "lines-shapes/distortion-tools#smooth",
         Tool::Smear => "lines-shapes/distortion-tools#smear",
         Tool::Twirl => "lines-shapes/distortion-tools#twirl",
@@ -235,6 +263,7 @@ pub fn tool_topic(t: Tool) -> &'static str {
         Tool::Knife => "lines-shapes/cut-and-erase#knife",
         Tool::SegmentDelete => "lines-shapes/cut-and-erase#segment-delete",
         Tool::Eraser => "lines-shapes/cut-and-erase#eraser",
+        Tool::ShapeBuilder => "lines-shapes/cut-and-erase#shape-builder",
         Tool::Zoom => "get-started/undo-and-views#zoom",
         Tool::Pan => "get-started/undo-and-views#pan",
         Tool::Freehand => "lines-shapes/lines#freehand",
@@ -257,6 +286,7 @@ pub fn tool_topic(t: Tool) -> &'static str {
         Tool::Spiral => "lines-shapes/polygons-stars-spirals#spiral",
         Tool::CommonShapes => "lines-shapes/polygons-stars-spirals#common-shapes",
         Tool::ActionLines => "lines-shapes/polygons-stars-spirals#action-lines",
+        Tool::Balloon => "lines-shapes/polygons-stars-spirals#speech-balloons",
         Tool::GraphPaper => "lines-shapes/polygons-stars-spirals#graph-paper",
         Tool::Text => "text/adding-text",
         Tool::Table => "objects/tables",
@@ -276,6 +306,7 @@ pub fn tool_topic(t: Tool) -> &'static str {
         Tool::Envelope => "effects/envelope",
         Tool::Extrude => "effects/extrude",
         Tool::BlockShadow => "effects/block-shadow",
+        Tool::InnerShadow => "effects/drop-shadow",
         Tool::Transparency => "color/transparency",
         Tool::ColorEyedropper => "color/eyedroppers#color-eyedropper",
         Tool::AttributesEyedropper => "color/eyedroppers#attributes-eyedropper",
@@ -421,6 +452,9 @@ mod tests {
             Dialog::ConfirmClose,
             Dialog::ConfirmResetSettings,
             Dialog::Updates,
+            Dialog::Benchmark,
+            Dialog::SizesAreas(Default::default()),
+            Dialog::UpdatePolicy,
             Dialog::TextTabs,
             Dialog::TextColumns,
             Dialog::TextBullets,
@@ -469,11 +503,11 @@ mod tests {
     fn urls_carry_the_language_and_fall_back_to_english() {
         assert_eq!(
             url_in("color/fills#mesh-fill", "pt-BR"),
-            "https://igtoth.github.io/tracedraw/help/pt-BR/color/fills.html#mesh-fill"
+            "https://tracedraw.github.io/tracedraw/help/pt-BR/color/fills.html#mesh-fill"
         );
         assert_eq!(
             url_in("printing/print", "xx"),
-            "https://igtoth.github.io/tracedraw/help/en/printing/print.html"
+            "https://tracedraw.github.io/tracedraw/help/en/printing/print.html"
         );
         assert_eq!(url_in("", "ja"), format!("{BASE}ja/index.html"));
     }

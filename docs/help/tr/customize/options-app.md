@@ -27,6 +27,11 @@ bir sayfa seçin.
 - [[options.full_screen_preview]]: [[options.show_page_border]].
 - [[options.wheel_default_action]]: [[options.wheel_zoom]] (başlangıçta)
   veya [[options.wheel_scroll]].
+- [[options.open_view]]: [[options.open_view_page]] (başlangıçta),
+  [[options.open_view_objects]], [[options.open_view_width]],
+  [[options.open_view_height]], [[options.open_view_actual]], [[options.open_view_percent]] veya
+  [[options.open_view_saved]] (her TraceDraw dosyası kaydedilişinde saklanan
+  sayfa, yer ve yakınlaştırma).
 - [[options.ruler_calibration]]: ekrana bir cetvel tutun ve işaretler
   eşleşene kadar [[options.screen_resolution]] değerini değiştirin; böylece
   %100 yakınlaştırma gerçek boyutları gösterir. [[options.reset]] 96 değerine
@@ -106,6 +111,7 @@ Sayfada beş sekme vardır.
 - [[options.paragraph_text]]: [[menu.text.show_text_frames]],
   [[menu.text.use_hyphenation]] ve [[options.hyphenation_patterns]]
   (yerleşik ya da dilinize ait bir heceleme sözlüğü).
+  - [[options.default_tab_spacing]]: kendi sekme durakları olmayan bir paragrafta <kbd>Tab</kbd> tuşunun gittiği yer (12,7 mm, yarım inç).
 - [[docker.fonts]]: yazı tipi listelerinin başında
   [[options.show_recent_fonts]], [[options.recent_font_count]] (5, en çok 20)
   ve [[options.font_sample_size]].
@@ -115,3 +121,13 @@ Sayfada beş sekme vardır.
   [[options.dictionaries]], bkz. [Sözlükler](../text/writing-tools.md#dictionaries).
 - [[dialog.autocorrect]]: yazarken neyin düzeltildiği; bkz.
   [Otomatik Düzelt](../text/writing-tools.md#autocorrect).
+
+## [[benchmark.title]] {#benchmark}
+
+[[menu.help > menu.help.benchmark]]: [[menu.help.benchmark_tip]]
+
+[[benchmark.intro]]
+
+[[benchmark.compare_how]]
+
+[[options.light_zoom]]: [[options.light_zoom_tip]]

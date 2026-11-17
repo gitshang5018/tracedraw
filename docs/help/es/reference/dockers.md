@@ -13,7 +13,7 @@ izquierda). Esta página enumera cada panel y la página que lo explica.
 | [[docker.hints]] |  | [→](../get-started/hints.md) |
 | [[docker.transformations]] | <kbd>Alt+F7</kbd> | [→](../objects/transforming.md#transformations-docker) |
 | [[docker.undo]] |  | [→](../get-started/undo-and-views.md#undo-docker) |
-| [[docker.align_distribute]] | <kbd>Ctrl+Shift+A</kbd> | [→](../objects/align-distribute.md) |
+| [[docker.align_distribute]] |  | [→](../objects/align-distribute.md) |
 | [[docker.shaping]] |  | [→](../lines-shapes/shaping.md) |
 | [[docker.step_and_repeat]] | <kbd>Ctrl+Shift+D</kbd> | [→](../objects/step-and-repeat.md) |
 | [[docker.text]] | <kbd>Ctrl+T</kbd> | [→](../text/adding-text.md#text-docker) |
@@ -55,7 +55,9 @@ izquierda). Esta página enumera cada panel y la página que lo explica.
 - Haga clic en una pestaña para traer su panel al frente; haga clic en la
   pestaña del frente para plegar los paneles.
 - El botón de cerrar de la barra de título de un panel lo quita de las
-  pestañas; el botón de contraer pliega el área de paneles.
+  pestañas; el botón de contraer pliega el área de paneles;
+  sus flechas apuntan al lado de la ventana hacia el que se pliega (a la
+  izquierda para los paneles acoplados a la izquierda).
 - Los paneles que deja abiertos vuelven la próxima vez que se inicia
   TraceDraw.
 - Los atajos de los paneles alternan: pulsar uno cuando su panel está al

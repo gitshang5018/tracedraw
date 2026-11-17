@@ -6,7 +6,7 @@ use crate::app::{App, Drag};
 use crate::i18n::tr;
 use egui::{Modifiers, PointerButton, Response};
 use tracedraw_core::{
-    document::ShapeKind,
+    document::{Shape, ShapeKind},
     geometry::{BezPath, PathEl, Point, Rect, Vec2},
     nodes::{self, NodeType, Which},
     Command, ShapeId,
@@ -40,6 +40,23 @@ pub(crate) fn bitmap_corners(s: &tracedraw_core::Shape) -> Option<[Point; 4]> {
         t * Point::new(rect.x1, rect.y1),
         t * Point::new(rect.x0, rect.y1),
     ])
+}
+
+/// Whether the Shape tool shows only the frame of `s`: an object drawn
+/// through an envelope or a perspective is not where its own nodes are,
+/// so the nodes, their outline in the node colour, the corner widgets
+/// and a picture's corners would stand as a second, unbent copy beside
+/// what is drawn (#2213). The frame is edited instead (`envelope_edit`,
+/// the perspective's corners); the nodes are back once the effect is
+/// cleared, switched off or made part of the curve (Convert to Curves).
+pub(crate) fn frame_only(s: &tracedraw_core::Shape) -> bool {
+    s.effects.iter().any(|e| {
+        matches!(
+            e,
+            tracedraw_core::live::Effect::Envelope { .. }
+                | tracedraw_core::live::Effect::Perspective { .. }
+        )
+    })
 }
 
 /// The objects a double click with the Shape tool turns into curves:
@@ -173,10 +190,12 @@ impl App {
     /// The selected objects as the Shape tool sees them: a clip frame
     /// gives way to its frame, on the page (an old file whose frame shares
     /// the clip frame's id shows the clip frame itself, which has no
-    /// nodes).
+    /// nodes). An object drawn through an envelope or a perspective is
+    /// left out: it shows its frame only (see [`frame_only`]).
     pub(crate) fn shape_tool_shapes(&self) -> Vec<tracedraw_core::Shape> {
         self.selected_shapes()
             .into_iter()
+            .filter(|s| !frame_only(s))
             .map(|s| match &s.kind {
                 ShapeKind::ClipFrame { frame, .. } if frame.id != s.id => {
                     self.doc().shape_on_page(frame.id).unwrap_or(s)
@@ -191,6 +210,9 @@ impl App {
     fn bitmap_corner_at(&self, p: Point) -> Option<(ShapeId, usize)> {
         let tol = self.settings.nodes.pick_px() / self.view.zoom as f64;
         self.selected_shapes().iter().find_map(|s| {
+            if frame_only(s) {
+                return None;
+            }
             bitmap_corners(s)?
                 .iter()
                 .position(|c| (*c - p).hypot() <= tol)
@@ -218,29 +240,55 @@ impl App {
         );
         frame.fill = tracedraw_core::Fill::None;
         frame.stroke = None;
-        let mut inner = s.clone();
-        inner.id = self.engine.new_shape_id();
-        inner.transform = tracedraw_core::geometry::Affine::IDENTITY;
+        let inner = crate::crop_tool::framed_contents(&s, self.engine.new_shape_id());
         let frame_id = frame.id;
-        let _ = self.engine.run_with_label(
-            &Command::SetShapeKind {
-                shape: id,
-                kind: ShapeKind::ClipFrame {
-                    frame: Box::new(frame),
-                    contents: vec![inner],
-                },
+        // The picture inside keeps the transparency; the frame drops it
+        // so it is not laid on twice (#1491).
+        let mut cmds = vec![Command::SetShapeKind {
+            shape: id,
+            kind: ShapeKind::ClipFrame {
+                frame: Box::new(frame),
+                contents: vec![inner],
             },
-            "Crop Bitmap",
-        );
+        }];
+        cmds.extend(crate::crop_tool::frame_drops_transparency(&s));
+        let _ = self.engine.run_batch("Crop Bitmap", &cmds);
         Some(frame_id)
     }
 
-    /// The node targets of the selection (see [`Self::node_target`]).
-    fn node_targets(&self) -> Vec<ShapeId> {
+    /// The node targets of the selection (see [`Self::node_target`]),
+    /// without the objects that show their frame only ([`frame_only`]).
+    pub(crate) fn node_targets(&self) -> Vec<ShapeId> {
         self.selection
             .iter()
+            .filter(|id| !self.doc().find_shape(**id).is_some_and(frame_only))
             .map(|id| self.node_target(*id))
             .collect()
+    }
+
+    /// Nodes chosen on an object that has since taken an envelope or a
+    /// perspective are let go: they no longer show, and a key (Delete,
+    /// an arrow) must not change what cannot be seen.
+    pub(crate) fn drop_hidden_node_choices(&mut self) {
+        if self.node_selection.is_empty() && self.segment_spot.is_none() {
+            return;
+        }
+        let hidden: Vec<ShapeId> = self
+            .selection
+            .iter()
+            .filter(|id| self.doc().find_shape(**id).is_some_and(frame_only))
+            .map(|id| self.node_target(*id))
+            .collect();
+        if hidden.is_empty() {
+            return;
+        }
+        self.node_selection.retain(|(id, _)| !hidden.contains(id));
+        if self
+            .segment_spot
+            .is_some_and(|(id, _, _)| hidden.contains(&id))
+        {
+            self.segment_spot = None;
+        }
     }
 
     fn set_path(&mut self, id: ShapeId, path: BezPath, closed: bool, label: &'static str) {
@@ -329,18 +377,24 @@ impl App {
     /// A selected B-spline whose control polygon lies under the pointer,
     /// with its control points plus one at the pointer.
     pub(crate) fn spline_polygon_at(&self, p: Point) -> Option<(ShapeId, Vec<Point>)> {
+        self.spline_polygon_hit(p).map(|(s, pts)| (s.id, pts))
+    }
+
+    /// [`spline_polygon_at`](Self::spline_polygon_at) with the spline.
+    fn spline_polygon_hit(&self, p: Point) -> Option<(Shape, Vec<Point>)> {
         let tol = (self.settings.nodes.pick_px() + 1.0) / self.view.zoom as f64;
         self.shape_tool_shapes()
             .into_iter()
-            .find_map(|s| crate::kind_nodes::spline_with_point(&s, p, tol).map(|pts| (s.id, pts)))
+            .find_map(|s| crate::kind_nodes::spline_with_point(&s, p, tol).map(|pts| (s, pts)))
     }
 
     /// Control handle under the pointer, for selected nodes only, or one
     /// of the two handles a chosen segment shows (its start node's
     /// outgoing handle and its end node's incoming one).
     pub(crate) fn ctrl_handle_at(&self, p: Point) -> Option<(ShapeId, usize, Which)> {
-        // The nearest handle within the pick distance, on the page.
-        let tol = self.settings.nodes.pick_px() / self.view.zoom as f64;
+        // The nearest handle within the pick distance, on the page; a
+        // press anywhere on its arrow head takes it (#1643).
+        let tol = self.settings.nodes.handle_pick_px() / self.view.zoom as f64;
         let mut best: Option<((ShapeId, usize, Which), f64)> = None;
         let mut take = |key: (ShapeId, usize, Which), c: Option<Point>| {
             let Some(c) = c else { return };
@@ -380,20 +434,36 @@ impl App {
     }
 
     pub fn shape_tool_input(&mut self, response: &Response, p: Point, mods: Modifiers) {
+        self.drop_hidden_node_choices();
         if response.double_clicked_by(PointerButton::Primary) {
+            // A character's node: a second click there within the double
+            // click time and distance chooses it as a click does.
+            // Neighbouring characters' nodes lie a few pixels apart, so a
+            // quick Shift+click on the next one is a double click; it went
+            // on to select the text again below, which let go of the
+            // chosen characters (#1933).
+            if let Some(key) = self.text_node_at(p) {
+                self.click_node(key, mods);
+                return;
+            }
             // A B-spline: a double-click on a control point removes it,
             // one on the control polygon adds one there.
             if let Some((s, crate::kind_nodes::KindNode::Spline { index })) = self.kind_node_at(p) {
                 if let Some(points) = crate::kind_nodes::spline_without(&s, index) {
                     self.run(Command::SetSpline {
                         shape: s.id,
+                        fixed: crate::kind_nodes::spline_fixed_for(&s, &points),
                         points,
                     });
                 }
                 return;
             }
-            if let Some((id, points)) = self.spline_polygon_at(p) {
-                self.run(Command::SetSpline { shape: id, points });
+            if let Some((s, points)) = self.spline_polygon_hit(p) {
+                self.run(Command::SetSpline {
+                    shape: s.id,
+                    fixed: crate::kind_nodes::spline_fixed_for(&s, &points),
+                    points,
+                });
                 return;
             }
             if let Some(hit) = self.node_at(p) {
@@ -405,6 +475,9 @@ impl App {
                 }
                 return;
             }
+            // A polygon or star turns into a curve at the edge clicked, so
+            // the node goes in there (#2451).
+            self.polygon_edge_to_curve(p);
             // Double-click a segment of a selected curve adds a node; on a
             // non-curve object, convert it to curves.
             if let Some((id, index, t)) = self.segment_at(p) {
@@ -447,7 +520,9 @@ impl App {
             }
             if let Some(key) = self.text_node_at(p) {
                 if !self.node_selection.contains(&key) {
-                    if mods.ctrl || mods.command || mods.shift {
+                    // As for a curve's node: Shift adds, Ctrl alone only
+                    // constrains the drag (#1325).
+                    if mods.shift {
                         self.click_node(key, mods);
                     } else {
                         self.node_selection = vec![key];
@@ -525,9 +600,13 @@ impl App {
                     return;
                 }
             }
-            // A corner widget rounds the corners (#635).
+            // A corner widget rounds its own corner, the chosen nodes'
+            // corners when it is one of them, or with Shift every corner
+            // (#635); a Ctrl+click on it chooses it (see the click below).
             if let Some(w) = self.corner_widget_at(p) {
-                if self.start_corner_drag(w, p) {
+                // Ctrl+click chooses the corner, or takes it out.
+                let one_at_a_time = self.settings.nodes.corner_one_at_a_time;
+                if self.start_corner_drag(w, p, one_at_a_time && mods.shift) {
                     return;
                 }
             }
@@ -535,6 +614,7 @@ impl App {
                 // The page's picture is kept from the drag's first step
                 // (#1259); a handle drag has no `begun` of its own.
                 self.node_drag_shown = None;
+                self.choose_handle((shape, index, which));
                 self.drag = Drag::Handle {
                     shape,
                     index,
@@ -545,9 +625,17 @@ impl App {
             if let Some(hit) = self.node_at(p) {
                 let key = (hit.shape, hit.index);
                 if !self.node_selection.contains(&key) {
-                    if mods.ctrl || mods.command || mods.shift {
+                    // Shift adds the node (or a run up to it) to the
+                    // chosen ones, which then drag together. Ctrl alone
+                    // only constrains the drag: the node pressed is the
+                    // one dragged, as with no key held; it used to be
+                    // added to the chosen ones, so Ctrl+drag on a node
+                    // moved the nodes chosen before as well (#1325).
+                    // Ctrl+click still adds or takes out a node.
+                    if mods.shift {
                         self.click_node(key, mods);
                     } else {
+                        self.node_run = None;
                         self.node_selection = vec![key];
                     }
                 }
@@ -566,6 +654,14 @@ impl App {
                 };
                 return;
             }
+            // Alt: a freehand marquee whatever the bar's selection mode,
+            // also over a curve; Shift keeps the nodes chosen already
+            // (#1341).
+            if mods.alt {
+                self.node_lasso_keeps = mods.shift;
+                self.drag = Drag::NodeLasso { points: vec![p] };
+                return;
+            }
             // A segment of a selected curve bends.
             if let Some((shape, index, t)) = self.segment_at(p) {
                 if let Some((path, closed, _)) = self.path_of(shape) {
@@ -582,11 +678,28 @@ impl App {
                     return;
                 }
             }
-            if let Some(id) = self.hit_test(p) {
-                if !self.selection.contains(&id) {
+            // An edge of a selected polygon or star bends once dragged: it
+            // becomes a curve then (#2451).
+            if let Some(shape) = self.polygon_edge_at(p) {
+                self.drag = Drag::PolygonEdge { shape, from: p };
+                return;
+            }
+            // A marquee over the selected objects' nodes. It keeps the
+            // selection, also when it starts over another object (the one
+            // behind the curve, or the group holding it), so the curve
+            // being edited stays the one edited (#1594); only with
+            // nothing selected does the object under the pointer get
+            // selected, so a marquee can start on it right away.
+            if self.selection.is_empty() {
+                if let Some(id) = self.hit_test(p) {
                     self.select(vec![id]);
                 }
             }
+            // Shift keeps the nodes and characters chosen already and adds
+            // the ones inside, as Shift+click does; the marquee used to
+            // replace them, so the first line's characters let go when a
+            // Shift+marquee took the second line's (#2331).
+            self.node_lasso_keeps = mods.shift;
             self.drag = if self.node_lasso {
                 Drag::NodeLasso { points: vec![p] }
             } else {
@@ -638,6 +751,27 @@ impl App {
                     };
                 }
                 Drag::NodeMove { .. } => self.node_move_to(p, mods),
+                Drag::PolygonEdge { from, .. } => {
+                    // The first move: curve first, then the edge bends.
+                    if (p - from).hypot() * self.view.zoom as f64 >= 2.0 {
+                        self.drag = Drag::None;
+                        if self.polygon_edge_to_curve(from) {
+                            if let Some((shape, index, t)) = self.segment_at(from) {
+                                if let Some((path, closed, _)) = self.path_of(shape) {
+                                    self.drag = Drag::SegmentBend {
+                                        shape,
+                                        path,
+                                        closed,
+                                        index,
+                                        t,
+                                        from,
+                                        begun: false,
+                                    };
+                                }
+                            }
+                        }
+                    }
+                }
                 Drag::CornerWidget(d) => self.corner_drag_to(*d, p),
                 Drag::NodeTransform {
                     handle,
@@ -678,6 +812,11 @@ impl App {
                     index,
                     which,
                 } => {
+                    // A handle dragged is not chosen: no ring follows it,
+                    // and none stays once the button is let go. A click
+                    // without a drag chooses it for the arrow keys
+                    // (#2819, #3041, #3042).
+                    self.chosen_handle = None;
                     if let Some((path, closed, t)) = self.path_of(shape) {
                         // The handle snaps like a node does; Ctrl or Shift
                         // keeps it to the constrain angle about its node,
@@ -755,7 +894,13 @@ impl App {
                     begun,
                     mut turn,
                 } => {
+                    // Ctrl as it is held now, not only at the press: one
+                    // corner of a rectangle, an ellipse's angle in steps of
+                    // the constrain angle, a star's points keeping their
+                    // turn, from the first drag on (#1325, #1331, #1340).
+                    let ctrl = mods.ctrl || mods.command;
                     let q = self.snap_point_excluding(p, &[shape]);
+                    let step = self.settings.constrain_angle;
                     let cmd = match node {
                         crate::kind_nodes::KindNode::Spline { index } => {
                             let chosen: Vec<usize> = self
@@ -769,18 +914,26 @@ impl App {
                             } else {
                                 crate::kind_nodes::spline_moved(&start, index, q)
                             }
-                            .map(|points| Command::SetSpline { shape, points })
+                            .map(|points| Command::SetSpline {
+                                shape,
+                                points,
+                                fixed: None,
+                            })
                         }
-                        _ => crate::kind_nodes::drag(&start, node, q, single, chosen, &mut turn)
-                            .map(|kind| Command::SetShapeKind { shape, kind }),
+                        _ => crate::kind_nodes::drag_constrained(
+                            &start, node, q, ctrl, chosen, &mut turn, step,
+                        )
+                        .map(|kind| Command::SetShapeKind { shape, kind }),
                     };
                     if let Some(cmd) = cmd {
                         // One undo step for the whole drag.
                         let _ = if begun {
                             self.engine.amend(&cmd)
                         } else {
-                            self.engine
-                                .run_with_label(&cmd, crate::kind_nodes::label(&start))
+                            self.engine.run_with_label(
+                                &cmd,
+                                crate::kind_nodes::label_for(&start, Some(node)),
+                            )
                         };
                     }
                     self.drag = Drag::KindNode {
@@ -798,6 +951,19 @@ impl App {
         }
 
         if response.clicked_by(PointerButton::Primary) {
+            // A click anywhere but on a handle lets go of the chosen
+            // handle (below, a click on one chooses it again).
+            if self.ctrl_handle_at(p).is_none() {
+                self.chosen_handle = None;
+            }
+            // Ctrl+click on a corner widget chooses its corner, or takes
+            // it out, so one or several corners round together.
+            if self.settings.nodes.corner_one_at_a_time && mods.command && !mods.shift {
+                if let Some(w) = self.corner_widget_at(p) {
+                    self.toggle_corner_widget(w);
+                    return;
+                }
+            }
             if let Some(key) = self.text_node_at(p) {
                 self.click_node(key, mods);
                 return;
@@ -839,11 +1005,20 @@ impl App {
             // handle can be dragged next; the segment under it is not
             // taken instead (#639). A node comes first, so a handle lying
             // on its node never swallows a click on the node.
-            if self.ctrl_handle_at(p).is_some() {
+            // The handle is chosen: the arrow keys then move it, not its
+            // node (#2819).
+            if let Some(key) = self.ctrl_handle_at(p) {
+                self.choose_handle(key);
                 return;
             }
-            // A click on a corner widget keeps the selection.
-            if self.corner_widget_at(p).is_some() {
+            // A plain click on a corner widget chooses its corner alone:
+            // the ring is drawn chosen and the property bar's corner
+            // radius sets it (#2057). With a key held it keeps the
+            // selection.
+            if let Some(w) = self.corner_widget_at(p) {
+                if !(mods.shift || mods.ctrl || mods.command || mods.alt) {
+                    self.choose_corner_widget(w);
+                }
                 return;
             }
             // A click on a segment chooses the segment: it is drawn
@@ -881,10 +1056,24 @@ impl App {
 
     /// Finish a node marquee: select the nodes inside the rectangle.
     pub fn finish_node_marquee(&mut self, start: Point, current: Point) {
+        let keeps = std::mem::take(&mut self.node_lasso_keeps);
         let r = Rect::from_points(start, current);
         if r.width() < 0.05 && r.height() < 0.05 {
             return;
         }
+        // The Mesh Fill tool's box chooses mesh nodes (discussion #2387);
+        // the Shape tool's chooses those of a selected mesh too (#2506).
+        if self.tool == crate::tools::Tool::MeshFill {
+            self.choose_mesh_nodes_in(r, keeps);
+            return;
+        }
+        if self.selected_mesh().is_some() {
+            self.choose_mesh_nodes_in(r, keeps);
+        }
+        let before = (
+            self.node_selection.clone(),
+            self.rect_corners_selected.clone(),
+        );
         let mut sel = Vec::new();
         for id in &self.node_targets() {
             let Some((path, _, t)) = self.path_of(*id) else {
@@ -905,6 +1094,31 @@ impl App {
         self.segment_spot = None;
         // Character nodes of selected texts too.
         self.choose_chars_in(|q| r.contains(q));
+        if keeps {
+            self.keep_earlier_choice(before);
+        }
+    }
+
+    /// Shift+marquee (rectangular or freehand): the nodes, corners and
+    /// characters chosen before the marquee (`before`) stay chosen, the
+    /// ones the marquee chose join them (#1341, #2331).
+    pub(crate) fn keep_earlier_choice(
+        &mut self,
+        before: (Vec<(ShapeId, usize)>, Vec<(ShapeId, usize)>),
+    ) {
+        let (mut nodes, mut corners) = before;
+        for k in std::mem::take(&mut self.node_selection) {
+            if !nodes.contains(&k) {
+                nodes.push(k);
+            }
+        }
+        for k in std::mem::take(&mut self.rect_corners_selected) {
+            if !corners.contains(&k) {
+                corners.push(k);
+            }
+        }
+        self.node_selection = nodes;
+        self.rect_corners_selected = corners;
     }
 
     /// The control points of the selected B-splines (page space) for which
@@ -929,7 +1143,9 @@ impl App {
         out
     }
 
-    /// Nearest segment of a selected curve within a few pixels.
+    /// Nearest segment of a selected curve within a few pixels, or
+    /// anywhere on its outline as drawn: a thick outline takes a press
+    /// out to its edge, not only near the path down its middle (#1935).
     pub(crate) fn segment_at(&self, p: Point) -> Option<(ShapeId, usize, f64)> {
         let tol = (self.settings.nodes.pick_px() + 1.0) / self.view.zoom as f64;
         let mut best: Option<(ShapeId, usize, f64, f64)> = None;
@@ -937,14 +1153,67 @@ impl App {
             let Some((path, _, t)) = self.path_of(*id) else {
                 continue;
             };
+            let reach = self
+                .doc()
+                .find_shape(*id)
+                .map(|s| crate::interaction::outline_reach(s, t))
+                .unwrap_or(0.0);
             // Measured on the page, as the nodes are.
             if let Some((i, tt, d)) = nodes::nearest_segment(&(t * path), p) {
-                if d <= tol && best.map(|b| d < b.3).unwrap_or(true) {
+                if d <= tol + reach && best.map(|b| d < b.3).unwrap_or(true) {
                     best = Some((*id, i, tt, d));
                 }
             }
         }
         best.map(|(id, i, t, _)| (id, i, t))
+    }
+
+    /// The selected polygon or star whose outline lies within the pick
+    /// distance of `p` (an edge, as a curve's segment is found). Nodes
+    /// are looked for first by the callers.
+    fn polygon_edge_at(&self, p: Point) -> Option<ShapeId> {
+        let tol = (self.settings.nodes.pick_px() + 1.0) / self.view.zoom as f64;
+        let mut ids = self.selection.clone();
+        ids.dedup();
+        let mut symbols_free_id = || ShapeId(0);
+        for id in ids {
+            let Some(s) = self.doc().find_shape(id) else {
+                continue;
+            };
+            if frame_only(s) || !matches!(s.kind, ShapeKind::Polygon { .. }) {
+                continue;
+            }
+            let Some(parent) = self.doc().parent_transform(id) else {
+                continue;
+            };
+            let Some(ShapeKind::Path { path, .. }) = s.curves_kind(&[], &mut symbols_free_id)
+            else {
+                continue;
+            };
+            let reach = crate::interaction::outline_reach(s, parent * s.transform);
+            if let Some((_, _, d)) = nodes::nearest_segment(&((parent * s.transform) * path), p) {
+                if d <= tol + reach {
+                    return Some(id);
+                }
+            }
+        }
+        None
+    }
+
+    /// Turns the polygon or star whose edge lies at `p` into a curve (one
+    /// undo step, outline warps staying live), so its edge can take a
+    /// node or bend like a curve's segment (#2451). `true` when it did.
+    fn polygon_edge_to_curve(&mut self, p: Point) -> bool {
+        let Some(id) = self.polygon_edge_at(p) else {
+            return false;
+        };
+        let Some(s) = self.doc().find_shape(id).cloned() else {
+            return false;
+        };
+        self.convert_shapes_to_curves(vec![s], false);
+        self.doc()
+            .find_shape(id)
+            .is_some_and(|s| matches!(s.kind, ShapeKind::Path { .. }))
     }
 
     // ----- property bar actions ---------------------------------------------
@@ -1005,10 +1274,11 @@ impl App {
                 });
             }
         }
+        let spots = self.chosen_node_spots();
         if !cmds.is_empty() {
             let _ = self.engine.run_batch("Reduce Nodes", &cmds);
         }
-        self.node_selection.clear();
+        self.choose_nodes_at(&spots);
     }
 
     /// Align Nodes: move the selected nodes onto a common horizontal and/or vertical.
@@ -1114,6 +1384,67 @@ impl App {
         true
     }
 
+    /// Choose control handle `key`, with the nodes chosen now (#2819).
+    fn choose_handle(&mut self, key: (ShapeId, usize, Which)) {
+        self.chosen_handle = Some((key, self.node_selection.clone()));
+    }
+
+    /// Where control handle `key` is, on the page.
+    fn handle_point(&self, (id, index, which): (ShapeId, usize, Which)) -> Option<Point> {
+        let (path, _, t) = self.path_of(id)?;
+        let n = nodes::nodes(&path).into_iter().find(|n| n.index == index)?;
+        let c = match which {
+            Which::In => n.ctrl_in,
+            Which::Out => n.ctrl_out,
+        }?;
+        Some(t * c)
+    }
+
+    /// The control handle chosen by a click or a drag on it, while the
+    /// Shape tool is on and the nodes chosen then still are (#2819):
+    /// the arrow keys move it.
+    pub(crate) fn chosen_handle(&self) -> Option<(ShapeId, usize, Which)> {
+        let (key, chosen_nodes) = self.chosen_handle.as_ref()?;
+        (self.tool == crate::tools::Tool::Shape && *chosen_nodes == self.node_selection)
+            .then_some(*key)
+            .filter(|k| self.handle_point(*k).is_some())
+    }
+
+    /// The chosen control handle's node and tip, on the page: the ring
+    /// goes round the handle's head, which points from the node to the
+    /// tip (#3041).
+    pub(crate) fn chosen_handle_ends(&self) -> Option<(Point, Point)> {
+        let key = self.chosen_handle()?;
+        let (path, _, t) = self.path_of(key.0)?;
+        let n = nodes::nodes(&path).into_iter().find(|n| n.index == key.1)?;
+        Some((t * n.pos, self.handle_point(key)?))
+    }
+
+    /// Move the chosen control handle by `d` (page millimetres), one undo
+    /// step: the arrow keys with the Shape tool. A smooth or symmetrical
+    /// node's other handle follows, as in a drag. False when no handle
+    /// is chosen (the chosen nodes move instead).
+    pub fn nudge_chosen_handle(&mut self, d: Vec2) -> bool {
+        let Some(key) = self.chosen_handle() else {
+            return false;
+        };
+        let (id, index, which) = key;
+        let (Some((path, closed, t)), Some(at)) = (self.path_of(id), self.handle_point(key)) else {
+            return false;
+        };
+        let lp = t.inverse() * (at + d);
+        let ty = self.node_type_of(id, index);
+        let np = nodes::move_handle(&path, index, which, lp, ty);
+        let _ = self.engine.run_with_label(
+            &Command::SetShapeKind {
+                shape: id,
+                kind: ShapeKind::Path { path: np, closed },
+            },
+            "Nudge Handle",
+        );
+        true
+    }
+
     /// The segment chosen by a click on it, as (curve, element drawing
     /// it): the spot clicked is kept and its end node is the only node
     /// chosen.
@@ -1181,6 +1512,7 @@ impl App {
             cmds.push(match crate::kind_nodes::spline_without_many(&s, &chosen) {
                 Some(points) => Command::SetSpline {
                     shape: s.id,
+                    fixed: crate::kind_nodes::spline_fixed_for(&s, &points),
                     points,
                 },
                 None => Command::DeleteShapes { shapes: vec![s.id] },
@@ -1230,15 +1562,67 @@ impl App {
                 return;
             }
         }
-        // Add a node in the middle of the segment ending at each selected node.
-        self.for_each_selected_node("Add Nodes", |p, i| nodes::add_node(p, i, 0.5));
-        self.node_selection.clear();
+        // Add a node in the middle of the segment ending at each selected
+        // node. The nodes stay chosen with the new ones, so the next press
+        // halves every one of those segments again (#1326).
+        let mut by_shape: std::collections::BTreeMap<ShapeId, Vec<usize>> = Default::default();
+        for (id, i) in self.node_selection.clone() {
+            by_shape.entry(id).or_default().push(i);
+        }
+        let mut cmds = Vec::new();
+        let mut chosen = Vec::new();
+        for (id, mut idxs) in by_shape {
+            let Some((mut path, closed, _)) = self.path_of(id) else {
+                chosen.extend(idxs.into_iter().map(|i| (id, i)));
+                continue;
+            };
+            path = nodes::normalize(&path);
+            idxs.sort_unstable();
+            idxs.dedup();
+            // The segments ending at the nodes (the closing one for the
+            // start of a closed curve), the last first: a node added moves
+            // those after it on.
+            let mut segments: Vec<usize> = idxs
+                .iter()
+                .filter_map(|i| nodes::segment_into(&path, *i))
+                .collect();
+            segments.sort_unstable_by(|a, b| b.cmp(a));
+            segments.dedup();
+            let mut picked = idxs;
+            for k in segments {
+                let before = path.elements().len();
+                path = nodes::add_node(&path, k, 0.5);
+                if path.elements().len() == before + 1 {
+                    for p in picked.iter_mut().filter(|p| **p >= k) {
+                        *p += 1;
+                    }
+                    // The new node takes the segment's place.
+                    picked.push(k);
+                }
+            }
+            picked.sort_unstable();
+            chosen.extend(picked.into_iter().map(|i| (id, i)));
+            cmds.push(Command::SetShapeKind {
+                shape: id,
+                kind: ShapeKind::Path { path, closed },
+            });
+        }
+        if !cmds.is_empty() {
+            let _ = self.engine.run_batch("Add Nodes", &cmds);
+        }
+        self.node_selection = chosen;
     }
 
     /// Make the chosen nodes `ty`: their handles are aligned (and of equal
     /// length) as the type needs, and the type is kept with the curve, so
     /// a cusp node with aligned handles stays cusp. One undo step.
     pub fn set_selected_node_type(&mut self, ty: NodeType) {
+        // A B-spline's chosen control points: Cusp makes them fixed (the
+        // curve passes through them), Smooth and Symmetrical floating
+        // (#1758); its outline stays a B-spline.
+        if self.set_selected_spline_fixed(ty == NodeType::Cusp) {
+            return;
+        }
         let mut by_shape: std::collections::BTreeMap<ShapeId, Vec<usize>> = Default::default();
         for (id, i) in self.node_selection.clone() {
             by_shape.entry(id).or_default().push(i);
@@ -1253,8 +1637,25 @@ impl App {
                 .shape(id)
                 .map(|(_, s)| s.node_types.clone())
                 .unwrap_or_default();
+            // Highest index first: a closing line made a curve puts an
+            // element in before its close (#1618), which moves only the
+            // elements after it, so the nodes still to do keep their
+            // indices; the types and chosen nodes past it move up by one.
+            let mut idxs = idxs;
+            idxs.sort_unstable_by(|a, b| b.cmp(a));
+            idxs.dedup();
             for i in idxs {
+                let before = path.clone();
                 path = nodes::set_node_type(&path, i, ty);
+                if let Some(at) = nodes::curve_put_in_before_close(&before, &path) {
+                    let up = |k: usize| if k >= at { k + 1 } else { k };
+                    types = types.into_iter().map(|(k, t)| (up(k), t)).collect();
+                    for (sid, k) in self.node_selection.iter_mut() {
+                        if *sid == id {
+                            *k = up(*k);
+                        }
+                    }
+                }
                 types.insert(i, ty);
             }
             cmds.push(Command::SetShapeKind {
@@ -1266,6 +1667,68 @@ impl App {
         if !cmds.is_empty() {
             let _ = self.engine.run_batch("Node Type", &cmds);
         }
+    }
+
+    /// The chosen control points of the selected B-splines become fixed
+    /// (the curve passes through them) or floating, as one undo step;
+    /// false when no control point of a B-spline is chosen (#1758).
+    pub fn set_selected_spline_fixed(&mut self, fixed: bool) -> bool {
+        let mut cmds = Vec::new();
+        for s in self.shape_tool_shapes() {
+            let Some(points) = s.spline.clone() else {
+                continue;
+            };
+            let chosen: Vec<usize> = self
+                .node_selection
+                .iter()
+                .filter(|(id, i)| *id == s.id && *i < points.len())
+                .map(|(_, i)| *i)
+                .collect();
+            if chosen.is_empty() {
+                continue;
+            }
+            let mut flags = s.spline_fixed.clone();
+            flags.resize(points.len(), false);
+            for i in chosen {
+                flags[i] = fixed;
+            }
+            cmds.push(Command::SetSpline {
+                shape: s.id,
+                points,
+                fixed: Some(flags),
+            });
+        }
+        if cmds.is_empty() {
+            return false;
+        }
+        let label = if fixed {
+            "Fixed Control Point"
+        } else {
+            "Floating Control Point"
+        };
+        if let Err(e) = self.engine.run_batch(label, &cmds) {
+            self.status = e.to_string();
+        }
+        true
+    }
+
+    /// Whether a control point of a selected B-spline is chosen, and
+    /// whether all chosen ones are fixed.
+    pub fn chosen_spline_points(&self) -> Option<bool> {
+        let mut any = false;
+        let mut all_fixed = true;
+        for s in self.shape_tool_shapes() {
+            if s.spline.is_none() {
+                continue;
+            }
+            for (id, i) in &self.node_selection {
+                if *id == s.id {
+                    any = true;
+                    all_fixed &= s.spline_fixed.get(*i).copied().unwrap_or(false);
+                }
+            }
+        }
+        any.then_some(all_fixed)
     }
 
     /// The type of node `index` of curve `id`: as chosen for it, else as
@@ -1289,8 +1752,30 @@ impl App {
     }
 
     pub fn break_selected_nodes(&mut self) {
-        self.for_each_selected_node("Break Curve", nodes::break_at);
-        self.node_selection.clear();
+        // All of a curve's chosen nodes at once: opening a closed subpath
+        // turns it to start at the break, which moves the other nodes.
+        let mut by_shape: std::collections::BTreeMap<ShapeId, Vec<usize>> = Default::default();
+        for (id, i) in self.node_selection.clone() {
+            by_shape.entry(id).or_default().push(i);
+        }
+        let cmds: Vec<Command> = by_shape
+            .into_iter()
+            .filter_map(|(id, idxs)| {
+                let (path, closed, _) = self.path_of(id)?;
+                Some(Command::SetShapeKind {
+                    shape: id,
+                    kind: ShapeKind::Path {
+                        path: nodes::break_nodes(&path, &idxs),
+                        closed,
+                    },
+                })
+            })
+            .collect();
+        let spots = self.chosen_node_spots();
+        if !cmds.is_empty() {
+            let _ = self.engine.run_batch("Break Curve", &cmds);
+        }
+        self.choose_nodes_at(&spots);
     }
 
     pub fn close_selected_curves(&mut self) {
@@ -1330,10 +1815,11 @@ impl App {
                 });
             }
         }
+        let spots = self.chosen_node_spots();
         if !cmds.is_empty() {
             let _ = self.engine.run_batch("Reverse Direction", &cmds);
         }
-        self.node_selection.clear();
+        self.choose_nodes_at(&spots);
     }
 
     pub fn select_all_nodes(&mut self) {
@@ -1351,6 +1837,14 @@ impl App {
 
     /// Node type of the first selected node, for the property bar.
     pub fn current_node_type(&self) -> Option<NodeType> {
+        // B-spline control points: fixed ones read as cusps (#1758).
+        if let Some(all_fixed) = self.chosen_spline_points() {
+            return Some(if all_fixed {
+                NodeType::Cusp
+            } else {
+                NodeType::Smooth
+            });
+        }
         let (id, i) = *self.node_selection.first()?;
         self.path_of(id)?;
         Some(self.node_type_of(id, i))
@@ -1358,6 +1852,39 @@ impl App {
 }
 
 impl App {
+    /// Where the chosen nodes sit, in their curves' own coordinates, to
+    /// choose them again after an edit with [`App::choose_nodes_at`].
+    pub(crate) fn chosen_node_spots(&self) -> Vec<(ShapeId, Point)> {
+        let mut out = Vec::new();
+        for &(id, i) in &self.node_selection {
+            let Some((path, _, _)) = self.path_of(id) else {
+                continue;
+            };
+            if let Some(n) = nodes::nodes(&path).into_iter().find(|n| n.index == i) {
+                out.push((id, n.pos));
+            }
+        }
+        out
+    }
+
+    /// After a node edit, choose the nodes now sitting at `spots`, so the
+    /// result stays chosen as in CorelDRAW (#2358): the joined node after
+    /// Join, both ends after Break, the nodes left after Reduce Nodes.
+    pub(crate) fn choose_nodes_at(&mut self, spots: &[(ShapeId, Point)]) {
+        let mut sel = Vec::new();
+        for &(id, at) in spots {
+            let Some((path, _, _)) = self.path_of(id) else {
+                continue;
+            };
+            for n in nodes::nodes(&path) {
+                if (n.pos - at).hypot() <= 1e-6 && !sel.contains(&(id, n.index)) {
+                    sel.push((id, n.index));
+                }
+            }
+        }
+        self.node_selection = sel;
+    }
+
     /// Join two selected end nodes of one curve. Nodes of two objects
     /// are not joined: the objects must be combined first (#1007).
     pub fn join_selected_nodes(&mut self) {
@@ -1369,8 +1896,18 @@ impl App {
             self.status = tr("status.join_other_object");
             return;
         }
+        let spots = self.chosen_node_spots();
         if self.join_nodes(a, b) {
-            self.node_selection.clear();
+            self.choose_joined_node(&spots);
+        }
+    }
+
+    /// Choose the node two end nodes at `spots` were joined into: it sits
+    /// halfway between them (#2358).
+    fn choose_joined_node(&mut self, spots: &[(ShapeId, Point)]) {
+        match spots {
+            [(id, a), (_, b)] => self.choose_nodes_at(&[(*id, a.lerp(*b, 0.5))]),
+            _ => self.node_selection.clear(),
         }
     }
 
@@ -1434,8 +1971,12 @@ impl App {
         near.sort_by(|a, b| a.1.total_cmp(&b.1));
         // The nearest end node of an open subpath.
         for (target, _) in near {
+            let Some(other) = nodes::nodes(&path).into_iter().find(|n| n.index == target) else {
+                continue;
+            };
+            let spots = [(id, other.pos), (id, t.inverse() * at)];
             if self.join_nodes((id, target), (id, index)) {
-                self.node_selection.clear();
+                self.choose_joined_node(&spots);
                 return;
             }
         }
@@ -1574,6 +2115,50 @@ impl App {
 // ----- Eraser ----------------------------------------------------------------------
 
 impl App {
+    /// The band the Eraser takes out along `points`: its width all along,
+    /// or, dragged with a pen and the round nib, as wide as the pen's
+    /// pressure gives at each place (#883), from a fifth of the width at
+    /// the lightest touch.
+    pub fn eraser_band(&self, points: &[Point]) -> tracedraw_core::geometry::BezPath {
+        // The hand's shake, about two screen pixels, is smoothed away
+        // so the edge left is smooth and has few nodes (#2831).
+        let steady = 2.0 / f64::from(self.view.zoom.max(1e-3));
+        let even = || {
+            tracedraw_core::shaping::eraser_band(
+                points,
+                self.eraser_width,
+                self.eraser_square,
+                steady,
+            )
+        };
+        if self.eraser_square || points.len() < 2 {
+            return even();
+        }
+        let Some(pen) = self
+            .pen_pressures(points)
+            .and_then(|pr| crate::pen::PressureProfile::new(points, pr))
+        else {
+            return even();
+        };
+        let mut line = tracedraw_core::geometry::BezPath::new();
+        line.move_to(points[0]);
+        for p in &points[1..] {
+            line.line_to(*p);
+        }
+        let mut stroke =
+            tracedraw_core::Stroke::new(tracedraw_core::Color::BLACK, self.eraser_width);
+        stroke.cap = tracedraw_core::style::LineCap::Round;
+        stroke.widths = pen.width_nodes(
+            crate::pen::FREEHAND_NODES,
+            self.eraser_width,
+            crate::brushes::PEN_NIB_FLOOR,
+            &|_| 1.0,
+        );
+        tracedraw_core::shaping::outline_band(&line, &stroke, 1.0)
+            .filter(|b| !b.elements().is_empty())
+            .unwrap_or_else(even)
+    }
+
     /// Eraser: subtract the nib's band along `points` (page space) from
     /// the selected objects, or from the object under the first point.
     /// Objects become curves; what vanishes entirely is deleted.
@@ -1583,8 +2168,7 @@ impl App {
         let Some(first) = points.first().copied() else {
             return;
         };
-        let band =
-            tracedraw_core::shaping::stroke_band(points, self.eraser_width, self.eraser_square);
+        let band = self.eraser_band(points);
         if band.elements().is_empty() {
             return;
         }
@@ -1599,10 +2183,24 @@ impl App {
         let mut cmds = Vec::new();
         let mut deleted = Vec::new();
         for s in targets {
-            if matches!(
-                s.kind,
-                ShapeKind::Bitmap { .. } | ShapeKind::Group { .. } | ShapeKind::ClipFrame { .. }
-            ) {
+            if let ShapeKind::ClipFrame { frame, contents } = &s.kind {
+                // A clip frame is erased through its frame (#1672), as Crop
+                // and the Knife take it: the frame loses the band and the
+                // contents stay inside, clipped by what is left of it.
+                match erase_frame(&s, frame, &band) {
+                    Erased::Keep => {}
+                    Erased::Gone => deleted.push(s.id),
+                    Erased::Into(f) => cmds.push(Command::SetShapeKind {
+                        shape: s.id,
+                        kind: ShapeKind::ClipFrame {
+                            frame: f,
+                            contents: contents.clone(),
+                        },
+                    }),
+                }
+                continue;
+            }
+            if matches!(s.kind, ShapeKind::Bitmap { .. } | ShapeKind::Group { .. }) {
                 continue;
             }
             let page_path = s.page_path();
@@ -1624,6 +2222,17 @@ impl App {
                 deleted.push(s.id);
                 continue;
             }
+            // Auto-reduce nodes (Options > Tools > Eraser, #1436): the
+            // nodes the nib's edge left that the shape does not need go,
+            // the curve staying within 2% of the nib's width.
+            let remaining = if self.settings.eraser_reduce_nodes {
+                tracedraw_core::nodes::reduce_nodes(
+                    &remaining,
+                    (self.eraser_width * 0.02).max(0.005),
+                )
+            } else {
+                remaining
+            };
             let local = s.transform.inverse() * remaining;
             cmds.push(Command::SetShapeKind {
                 shape: s.id,
@@ -1643,6 +2252,61 @@ impl App {
             let _ = self.engine.run_batch("Eraser", &cmds);
         }
     }
+}
+
+/// What the Eraser leaves of a clip frame's frame.
+enum Erased {
+    /// The band misses the frame (or the frame cannot be erased).
+    Keep,
+    /// Nothing of the frame is left.
+    Gone,
+    /// The frame that is left, in the clip frame's space.
+    Into(Box<tracedraw_core::document::Shape>),
+}
+
+/// Subtract `band` (page space) from the frame of the clip frame `clip`:
+/// the frame becomes a closed curve with its own fill, outline and id.
+/// A frame that is a group, a bitmap or a clip frame is left alone.
+fn erase_frame(
+    clip: &tracedraw_core::document::Shape,
+    frame: &tracedraw_core::document::Shape,
+    band: &tracedraw_core::geometry::BezPath,
+) -> Erased {
+    use tracedraw_core::geometry::Shape as _;
+    if matches!(
+        frame.kind,
+        ShapeKind::Bitmap { .. } | ShapeKind::Group { .. } | ShapeKind::ClipFrame { .. }
+    ) {
+        return Erased::Keep;
+    }
+    let to_page = clip.transform * frame.transform;
+    if to_page.determinant().abs() < 1e-12 {
+        return Erased::Keep;
+    }
+    let page_path = to_page * frame.local_path();
+    if page_path
+        .bounding_box()
+        .intersect(band.bounding_box())
+        .area()
+        <= 0.0
+    {
+        return Erased::Keep;
+    }
+    let remaining =
+        tracedraw_core::shaping::overlay(&page_path, band, tracedraw_core::shaping::Op::Trim);
+    if remaining.elements().is_empty() {
+        return Erased::Gone;
+    }
+    let mut f = frame.clone();
+    f.transform = tracedraw_core::geometry::Affine::IDENTITY;
+    f.kind = ShapeKind::Path {
+        path: clip.transform.inverse() * remaining,
+        closed: true,
+    };
+    f.node_types.clear();
+    f.spline = None;
+    f.spline_fixed.clear();
+    Erased::Into(Box::new(f))
 }
 
 #[cfg(test)]
@@ -1775,6 +2439,174 @@ mod eraser_tests {
         app.erase_along(&[Point::new(0.0, 10.0), Point::new(40.0, 10.0)]);
         assert!(app.doc().find_shape(id).is_none());
     }
+
+    /// A shaky drag of the Eraser across an ellipse (#2831): the cut edges
+    /// are smooth and the ellipse keeps few nodes, its own curves outside
+    /// the band untouched.
+    #[test]
+    fn a_shaky_eraser_drag_leaves_a_smooth_edge_with_few_nodes() {
+        let mut app = App::headless();
+        let id = app
+            .new_shape(ShapeKind::Ellipse {
+                rect: Rect::new(0.0, 0.0, 60.0, 40.0),
+                arc: None,
+            })
+            .unwrap();
+        app.select(vec![id]);
+        app.eraser_width = 6.0;
+        app.view.zoom = 4.0;
+        let points: Vec<Point> = (0..=400)
+            .map(|i| {
+                let x = -5.0 + i as f64 * 0.175;
+                Point::new(x, 20.0 + 0.2 * ((i as f64) * 1.9).sin())
+            })
+            .collect();
+        app.erase_along(&points);
+        let s = app.doc().find_shape(id).unwrap();
+        let ShapeKind::Path { path, .. } = &s.kind else {
+            panic!("{:?}", s.kind);
+        };
+        let n = path.elements().len();
+        assert!(n <= 20, "{n} nodes");
+        assert!(path
+            .elements()
+            .iter()
+            .any(|e| matches!(e, tracedraw_core::geometry::PathEl::CurveTo(..))));
+    }
+
+    /// A 40 mm square clip frame holding a 30 mm square, moved 10 mm right.
+    fn clip_frame(app: &mut App) -> ShapeId {
+        let frame = app
+            .new_shape(ShapeKind::Rect {
+                rect: Rect::new(0.0, 0.0, 40.0, 40.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .unwrap();
+        let inner = app
+            .new_shape(ShapeKind::Rect {
+                rect: Rect::new(5.0, 5.0, 35.0, 35.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .unwrap();
+        app.engine
+            .run(&Command::PlaceInside {
+                contents: vec![inner],
+                frame,
+            })
+            .unwrap();
+        app.engine
+            .run(&Command::TransformShapes {
+                shapes: vec![frame],
+                transform: tracedraw_core::geometry::Affine::translate((10.0, 0.0)),
+            })
+            .unwrap();
+        frame
+    }
+
+    #[test]
+    fn a_clip_frame_is_erased_through_its_frame() {
+        use tracedraw_core::geometry::Shape as _;
+        let mut app = App::headless();
+        let id = clip_frame(&mut app);
+        let before = app.doc().find_shape(id).unwrap().clone();
+        let ShapeKind::ClipFrame {
+            frame: old_frame,
+            contents: old_contents,
+        } = &before.kind
+        else {
+            panic!("{:?}", before.kind);
+        };
+        app.select(vec![id]);
+        app.eraser_width = 4.0;
+        // A band down the middle of the frame (page x = 30).
+        app.erase_along(&[Point::new(30.0, -5.0), Point::new(30.0, 45.0)]);
+        let s = app.doc().find_shape(id).unwrap().clone();
+        let ShapeKind::ClipFrame { frame, contents } = &s.kind else {
+            panic!("no longer a clip frame: {:?}", s.kind);
+        };
+        let ShapeKind::Path { path, closed } = &frame.kind else {
+            panic!("the frame was not erased: {:?}", frame.kind);
+        };
+        assert!(closed);
+        assert_eq!(frame.id, old_frame.id, "the frame keeps its id");
+        assert_eq!(frame.fill, old_frame.fill, "the frame keeps its look");
+        assert_eq!(frame.stroke, old_frame.stroke);
+        let subpaths = path
+            .elements()
+            .iter()
+            .filter(|e| matches!(e, tracedraw_core::geometry::PathEl::MoveTo(_)))
+            .count();
+        assert_eq!(subpaths, 2);
+        // On the page the frame keeps its place, with a hole where the
+        // band ran: the contents, clipped by it, are gone there only.
+        let page = s.transform * frame.page_path();
+        let b = page.bounding_box();
+        assert!(
+            (b.x0 - 10.0).abs() < 0.1 && (b.x1 - 50.0).abs() < 0.1,
+            "{b:?}"
+        );
+        assert!(!page.contains(Point::new(30.0, 20.0)));
+        assert!(page.contains(Point::new(20.0, 20.0)));
+        assert!(page.contains(Point::new(40.0, 20.0)));
+        assert_eq!(contents, old_contents, "the contents are untouched");
+        // One undo step brings the frame back whole.
+        app.undo();
+        assert_eq!(app.doc().find_shape(id), Some(&before));
+    }
+
+    #[test]
+    fn a_clip_frame_under_the_pointer_is_erased_and_one_erased_away_goes() {
+        let mut app = App::headless();
+        let id = clip_frame(&mut app);
+        app.select(Vec::new());
+        app.eraser_width = 4.0;
+        app.erase_along(&[Point::new(30.0, 20.0)]);
+        let s = app.doc().find_shape(id).unwrap();
+        let ShapeKind::ClipFrame { frame, .. } = &s.kind else {
+            panic!("{:?}", s.kind);
+        };
+        assert!(matches!(frame.kind, ShapeKind::Path { .. }), "a dot erased");
+        // A dot beside it leaves it alone.
+        let kept = s.clone();
+        app.select(vec![id]);
+        app.erase_along(&[Point::new(200.0, 200.0)]);
+        assert_eq!(app.doc().find_shape(id), Some(&kept));
+        // Erasing the whole frame deletes the clip frame with its contents.
+        app.eraser_width = 100.0;
+        app.erase_along(&[Point::new(10.0, 20.0), Point::new(50.0, 20.0)]);
+        assert!(app.doc().find_shape(id).is_none());
+        assert!(app.selection.is_empty());
+    }
+
+    /// Options > Tools > Eraser, "Auto-reduce nodes": what a round nib
+    /// leaves keeps fewer nodes (#1436).
+    #[test]
+    fn auto_reduce_leaves_fewer_nodes() {
+        let nodes = |reduce: bool| {
+            let mut app = App::headless();
+            app.settings.eraser_reduce_nodes = reduce;
+            let id = app
+                .new_shape(ShapeKind::Rect {
+                    rect: Rect::new(0.0, 0.0, 40.0, 20.0),
+                    radius: 0.0,
+                    corners: None,
+                })
+                .unwrap();
+            app.select(vec![id]);
+            app.eraser_width = 10.0;
+            app.eraser_square = false;
+            let stroke: Vec<Point> = (0..=20)
+                .map(|i| Point::new(f64::from(i) * 2.0, 20.0 + (f64::from(i) * 0.7).sin() * 2.0))
+                .collect();
+            app.erase_along(&stroke);
+            let s = app.doc().find_shape(id).unwrap();
+            s.page_path().elements().len()
+        };
+        let (plain, reduced) = (nodes(false), nodes(true));
+        assert!(reduced < plain, "{reduced} < {plain}");
+    }
 }
 
 #[cfg(test)]
@@ -1865,6 +2697,142 @@ mod bitmap_node_tests {
             assert!(matches!(contents[0].kind, ShapeKind::Bitmap { .. }));
             let b = tracedraw_core::geometry::Shape::bounding_box(&frame.page_path());
             assert!((b.x0 - left).abs() < 0.1, "{op:?}: {b:?}");
+        }
+    }
+
+    /// To Curve and To Line on the start node of a closed curve act on its
+    /// closing segment, the segment ending at that node, as the property
+    /// bar's buttons do on any other node (#1618).
+    #[test]
+    fn to_curve_takes_the_closing_segment_through_the_start_node() {
+        let mut app = App::headless();
+        let id = app
+            .new_shape(ShapeKind::Rect {
+                rect: Rect::new(0.0, 0.0, 40.0, 40.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("rect");
+        app.select(vec![id]);
+        app.convert_to_curves();
+        let path_of = |app: &App| match &app.doc().find_shape(id).expect("curve").kind {
+            ShapeKind::Path { path, .. } => path.clone(),
+            other => panic!("not a curve: {other:?}"),
+        };
+        let curves = |p: &BezPath| {
+            p.elements()
+                .iter()
+                .filter(|e| matches!(e, PathEl::CurveTo(..)))
+                .count()
+        };
+        let before = path_of(&app);
+        assert_eq!(curves(&before), 0);
+        let start = match before.elements()[0] {
+            PathEl::MoveTo(p) => p,
+            _ => Point::ZERO,
+        };
+        app.node_selection = vec![(id, 0)];
+        app.selected_segments_to_curve();
+        let after = path_of(&app);
+        assert_eq!(curves(&after), 1, "{after:?}");
+        // The closing segment is the curve: it ends on the start node, and
+        // the curve keeps its four nodes.
+        assert!(after
+            .elements()
+            .iter()
+            .any(|e| matches!(e, PathEl::CurveTo(_, _, p) if (*p - start).hypot() < 1e-9)));
+        assert_eq!(nodes::nodes(&after).len(), 4);
+        app.selected_segments_to_line();
+        assert_eq!(curves(&path_of(&app)), 0);
+        // The closing segment clicked (the Shape tool chooses the element
+        // drawing it) converts as well.
+        let z = path_of(&app)
+            .elements()
+            .iter()
+            .position(|e| matches!(e, PathEl::ClosePath))
+            .expect("closed");
+        app.node_selection = vec![(id, z)];
+        app.selected_segments_to_curve();
+        assert_eq!(curves(&path_of(&app)), 1);
+    }
+
+    /// Smooth on every node of two rectangles converted to curves and
+    /// combined rounds every corner on both sides, the start nodes and the
+    /// nodes before them too, where the closing lines meet them; the types
+    /// kept and the chosen nodes stay on the nodes although the closing
+    /// lines made curves move the second rectangle's elements (#1618).
+    #[test]
+    fn smooth_rounds_both_sides_where_the_closing_lines_meet() {
+        let mut app = App::headless();
+        let mut ids = Vec::new();
+        for x in [0.0, 60.0] {
+            ids.push(
+                app.new_shape(ShapeKind::Rect {
+                    rect: Rect::new(x, 0.0, x + 40.0, 40.0),
+                    radius: 0.0,
+                    corners: None,
+                })
+                .expect("rect"),
+            );
+        }
+        app.select(ids);
+        app.convert_to_curves();
+        app.combine();
+        let id = app.selection[0];
+        let path_of = |app: &App| match &app.doc().find_shape(id).expect("curve").kind {
+            ShapeKind::Path { path, .. } => path.clone(),
+            other => panic!("not a curve: {other:?}"),
+        };
+        let before = nodes::nodes(&path_of(&app));
+        assert_eq!(before.len(), 8);
+        app.node_selection = before.iter().map(|n| (id, n.index)).collect();
+        app.set_selected_node_type(NodeType::Smooth);
+        let path = path_of(&app);
+        let after = nodes::nodes(&path);
+        assert_eq!(after.len(), 8, "{path:?}");
+        for (a, b) in before.iter().zip(&after) {
+            assert!((a.pos - b.pos).hypot() < 1e-9, "{path:?}");
+            assert!(
+                b.ctrl_in.is_some() && b.ctrl_out.is_some(),
+                "node {} kept a straight side: {path:?}",
+                b.index
+            );
+            assert_ne!(nodes::node_type(&path, b.index), NodeType::Cusp);
+        }
+        let indices: Vec<usize> = after.iter().map(|n| n.index).collect();
+        let s = app.doc().find_shape(id).expect("curve");
+        assert_eq!(s.node_types.keys().copied().collect::<Vec<_>>(), indices);
+        assert!(s.node_types.values().all(|t| *t == NodeType::Smooth));
+        let mut chosen: Vec<usize> = app.node_selection.iter().map(|(_, i)| *i).collect();
+        chosen.sort_unstable();
+        assert_eq!(chosen, indices);
+    }
+
+    /// #1491: a picture with a gradient transparency, cut down by moving
+    /// two of its corner nodes with the Shape tool, keeps its
+    /// transparency where it lay on the page: the ramp is cut, not
+    /// started again across what is left, and not laid on twice.
+    #[test]
+    fn moving_a_see_through_pictures_nodes_keeps_its_look() {
+        use crate::crop_tool::tests::{green_at, see_through_picture};
+        let mut app = App::headless();
+        let id = see_through_picture(&mut app);
+        let before = [green_at(&app, 35.0), green_at(&app, 45.0)];
+        app.select(vec![id]);
+        let frame = app.crop_bitmap_to_frame(id).expect("frame");
+        // The left corners, both selected, moved 20 mm to the right.
+        app.node_selection = vec![(frame, 0), (frame, 3)];
+        let start = app.start_curves();
+        app.move_start_nodes(&start, Vec2::new(20.0, 0.0), Point::new(30.0, 10.0), false);
+        let s = app.doc().find_shape(id).expect("clip frame");
+        let ShapeKind::ClipFrame { frame: f, .. } = &s.kind else {
+            panic!("not a clip frame: {:?}", s.kind);
+        };
+        let b = tracedraw_core::geometry::Shape::bounding_box(&f.page_path());
+        assert!((b.x0 - 30.0).abs() < 1e-9, "{b:?}");
+        let after = [green_at(&app, 35.0), green_at(&app, 45.0)];
+        for (b, a) in before.iter().zip(&after) {
+            assert!(b.abs_diff(*a) <= 2, "before {before:?}, after {after:?}");
         }
     }
 

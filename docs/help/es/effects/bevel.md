@@ -15,9 +15,21 @@ se ajusta en el panel [[docker.bevel]]; ábralo con
      iluminado por un lado y sombreado por el otro;
    - [[docker.emboss]]: el objeto parece estampado en relieve sobre la
      página.
-3. Ajuste la [[docker.distance]] (hasta dónde llega el bisel dentro del
-   objeto), el [[docker.light_angle]], la [[docker.intensity]] de la luz, el
-   [[docker.shadow_color]] y el [[docker.light_color]].
+   - [[docker.bevel_center]]: La banda del bisel mitad dentro y mitad fuera del contorno.
+3. Ajuste el aspecto del bisel:
+   - [[docker.depth]]: hasta dónde llega el bisel desde el borde, hacia
+     dentro del objeto en el borde suave y hacia fuera en el relieve;
+   - [[docker.level]]: en cuántos pasos se dividen la luz y la sombra a lo
+     largo del bisel. 1 da dos tonos planos; más pasos los degradan
+     suavemente desde el borde hacia dentro;
+   - [[docker.light_angle]]: la dirección de la que viene la luz;
+   - [[docker.intensity]]: la fuerza de la luz y de la sombra;
+   - [[docker.bevel_smooth_light]]: La luz cae alrededor del borde según la dirección, cada parte tan iluminada como mira a la luz, en lugar de dos mitades.
+   - [[docker.light_color]] y [[docker.shadow_color]]: los colores del lado
+     iluminado y del lado sombreado;
+   - [[docker.emboss_color]]: el color a partir del cual se tonifica el
+     bisel. Marque la casilla y elija un color propio; desactivado, se usa
+     el relleno del objeto.
 4. Haga clic en [[docker.apply]].
 
 Para copiar un bisel de otro objeto, use

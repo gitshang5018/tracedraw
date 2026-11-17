@@ -139,7 +139,7 @@ pub fn dialog(app: &mut App, ctx: &Context, st: &mut TemplateState, close: &mut 
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
                     let half = ((width - 12.0) * 0.5).max(100.0);
-                    egui::ComboBox::from_id_salt("tpl_source")
+                    crate::ui::keynav::ComboBox::from_id_salt("tpl_source")
                         .width(half)
                         .selected_text(current_source)
                         .show_ui(ui, |ui| {
@@ -147,7 +147,7 @@ pub fn dialog(app: &mut App, ctx: &Context, st: &mut TemplateState, close: &mut 
                                 ui.selectable_value(&mut st.mine, *m, n);
                             }
                         });
-                    egui::ComboBox::from_id_salt("tpl_category")
+                    crate::ui::keynav::ComboBox::from_id_salt("tpl_category")
                         .width(half)
                         .selected_text(current_cat)
                         .show_ui(ui, |ui| {
@@ -164,7 +164,7 @@ pub fn dialog(app: &mut App, ctx: &Context, st: &mut TemplateState, close: &mut 
                     [380.0, 24.0],
                     egui::TextEdit::singleline(&mut st.search).hint_text(tr("tpl.search")),
                 );
-                egui::ComboBox::from_id_salt("tpl_source")
+                crate::ui::keynav::ComboBox::from_id_salt("tpl_source")
                     .width(190.0)
                     .selected_text(current_source)
                     .show_ui(ui, |ui| {
@@ -172,7 +172,7 @@ pub fn dialog(app: &mut App, ctx: &Context, st: &mut TemplateState, close: &mut 
                             ui.selectable_value(&mut st.mine, *m, n);
                         }
                     });
-                egui::ComboBox::from_id_salt("tpl_category")
+                crate::ui::keynav::ComboBox::from_id_salt("tpl_category")
                     .width(190.0)
                     .selected_text(current_cat)
                     .show_ui(ui, |ui| {
@@ -250,7 +250,7 @@ pub fn dialog(app: &mut App, ctx: &Context, st: &mut TemplateState, close: &mut 
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.spacing_mut().slider_width = 120.0;
-                ui.add(egui::Slider::new(&mut st.size, 40.0..=160.0).show_value(false))
+                ui.add(crate::ui::Slider::new(&mut st.size, 40.0..=160.0).show_value(false))
                     .rich_tip(tr("tpl.thumbnail_size"));
             });
         });

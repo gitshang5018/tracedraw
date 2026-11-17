@@ -24,7 +24,9 @@ TraceDraw opens:
 - DXF, EMF, WMF and HPGL (`.plt`);
 - PSD and PSB, with layers as bitmaps;
 - TXT, RTF and DOCX documents, as paragraph text;
-- CMX (partly; see [the CMX notes](../behavior/cmx-import.md)).
+- CMX (partly; see [the CMX notes](../behavior/cmx-import.md));
+- desktop publishing `.pmd`, `.pm6` and `.p65` files, only their text
+  and the pictures stored inside (see [the PMD notes](../behavior/pmd-import.md)).
 
 Bitmaps (PNG, JPEG, BMP, GIF, TIFF and WebP) are not opened as
 drawings: bring them in with **File > Import**, which places them at
@@ -66,7 +68,7 @@ dialog on the first save:
      working files.
    - **CDR files** (`*.cdr`), with a **Version** (see below).
 4. Optionally fill in **Title**, **Subject** and **Rating**. These are
-   also in **File > Document Properties**.
+   also in **File > Document Info**.
 5. Press **Save**. If the file exists, TraceDraw asks before replacing
    it.
 
@@ -98,7 +100,7 @@ TraceDraw reads and writes `.cdr` files independently:
   `.cdr` save updates it.
 
 If a `.cdr` file does not open right and you may share it, please
-[send it in an issue](https://github.com/igtoth/tracedraw/issues/new?template=cdr_file.yml):
+[send it in an issue](https://github.com/tracedraw/tracedraw/issues/new?template=cdr_file.yml):
 sample files are what improves the reader most.
 
 ## Export
@@ -118,7 +120,7 @@ right:
 4. Check the size in pixels and the **estimated file size**, then press
    **OK** and choose where to save.
 
-**File > Export For > Web** and **Office** start the same dialog with
+**File > Export Presets > Web** and **Documents** start the same dialog with
 presets of their own. To have Export remember your last choices, use
 **Tools > Options > Global > File Formats**. See
 [the export notes](../behavior/export.md).
@@ -177,8 +179,10 @@ is one, it offers:
 - **Skip this version**;
 - **Close**.
 
-TraceDraw also checks once a day when it starts and shows only a newer
-release you did not skip. To turn that off: **Tools > Options > Global >
+The first time it starts, TraceDraw asks whether to check for updates
+(**Always check** or **Never check**) and connects to nothing on its own
+before you answer. With Always check, it checks once a day when it starts
+and shows only a newer release you did not skip. To change your answer: **Tools > Options > Global >
 General**, clear **Check for updates at start**. The browser version is
 always the latest; there, Help > Updates opens the releases page. See
 [the update notes](../behavior/updates.md).

@@ -1,8 +1,8 @@
-# Table tool and Table menu
+# Table tool and Table submenu
 
 ## Drawing
 
-- Table > Create New Table (and Object > Create > New Table): Number of
+- Text > Table > Create New Table (and Object > Create > New Table): Number of
   Rows, Number of Columns, Height and Width in the document's units
   (100 x 75 mm at first; the last values are offered again), "?", OK
   and Cancel. OK places the table at the page centre and selects it
@@ -10,9 +10,18 @@
 - Property bar: rows (default 3), columns (default 4), cell fill (off by
   default; a colour when on), border width (hairline by default),
   border colour and style (solid, dashed, dotted), then the hint. With a
-  table selected, the fill and border fields edit that table; otherwise
-  they set the defaults for the next one. With cells selected the bar
-  acts on them (see "Selected cells" below).
+  table selected, the fields edit that table: Rows and Columns show its
+  counts and change them, rows added at the bottom as tall as the last
+  one or taken away there, columns at the right as wide as the last one,
+  the other cells keeping their text and formatting, one "Table Rows" or
+  "Table Columns" undo step each (#1680,
+  `table::tests::the_bar_counts_resize_the_selected_table`); otherwise
+  the fields set the defaults for the next one. With cells selected the
+  bar acts on them (see "Selected cells" below).
+- A table selected with the Pick tool shows the same fields after the
+  object fields (X, Y, W, H), without the hint, so its rows, columns,
+  fill and borders change without a change of tool (#1680,
+  `ui::table_bar::tests::a_table_selected_with_the_pick_tool_shows_the_table_fields`).
 - Drag on empty canvas: a table with equal row heights and column
   widths filling the rectangle (a drag smaller than 1 mm either way
   draws nothing). Cells have a 1 mm margin on every side.
@@ -47,7 +56,7 @@ The reach of its lines and edge pointers is 4 screen points.
   next cell (default) or type a tab character into the cell, where
   Ctrl+Tab still moves on and Shift+Tab moves back.
   (`table_tool::tests::tab_options_insert_a_tab_or_go_down_the_columns`)
-- Table > Select: cell, row, column, table.
+- Text > Table > Select: cell, row, column, table.
 
 ## Moving rows and columns
 
@@ -69,18 +78,25 @@ cell does nothing and says so on the status bar.
   row, and the table's top stays put. No row or column gets smaller
   than 1 mm. A line shows the new place while dragging; the release is
   one "Resize Table" step.
+- Scaling a table with the Pick tool (its handles, or the property bar's
+  size and scale) resizes its rows and columns in proportion and leaves
+  its text alone, as a paragraph text's frame does: the font size,
+  spacing and cell margins stay, and the text flows anew in the cells.
+  Turning, slanting and mirroring act on the whole table as before
+  (#2433,
+  `text_frames::tests::scaling_a_table_resizes_its_cells_and_keeps_the_text`).
 - Property bar W and H (document units, with cells selected): the total
   width of the columns and the total height of the rows the selected
   cells cover; a new value is shared out over them in proportion. The
   table grows or shrinks to the right and downwards.
-- Table > Distribute: Rows Evenly and Columns Evenly share the total of
+- Text > Table > Distribute: Rows Evenly and Columns Evenly share the total of
   the selected rows (columns) equally when the selection covers two or
   more; otherwise every row (column) of the table. The table size is
   kept.
   (`table_tool::tests::dragging_lines_resizes_and_undoes_in_one_step`,
   `table_tool::tests::bar_size_insert_n_and_split_n_follow_the_selection`)
 
-## Table menu
+## Table submenu
 
 - Insert: Row Above, Row Below, Column Left, Column Right insert as many
   rows (columns) as the selected cells cover, above the first or below
@@ -111,7 +127,18 @@ cell does nothing and says so on the status bar.
   alignment and outer borders.
   (`table_bar::tests::the_count_dialog_inserts_and_splits`,
   `tracedraw_core::table::tests::split_a_cell_into_three_rows_and_columns`)
-- Convert Text to Table: lines become rows, tabs separate cells.
+- Convert Text to Table (a dialog, #1276): paragraphs become rows; the
+  cells are cut at commas, tabs, a user-defined separator (an empty one
+  keeps each paragraph whole) or not at all (Paragraphs: one column, a
+  row each). The dialog opens on tabs when the text has one, else on
+  commas when it has one, else on Paragraphs, and shows the rows and
+  columns the table will have. Cells are trimmed of spaces; closing
+  empty paragraphs make no rows. The table takes the text's top left
+  corner, its first style and at least its width (columns at least
+  20 mm and as wide as their widest text on one line with the cell
+  margins, rows 1.6 lines of the text's size).
+  (`table::tests::text_becomes_a_table_by_its_separator`,
+  `ui::dialogs::tests::convert_text_to_table_takes_the_chosen_separator`)
   Convert Table to Text: cells joined by tabs, rows by newlines.
 - Every change is one `SetShapeKind` command after `Table::refit`, so the
   table rectangle always equals the sum of its rows and columns.
@@ -125,7 +152,11 @@ With cells selected (the active cell counts), the property bar shows:
   ticking it gives the selected cells white, unticking makes them
   transparent, the colour button sets their colour. A click on a
   palette colour with the Table tool fills the selected cells, not the
-  table ("Cell Fill" undo step).
+  table ("Cell Fill" undo step); so does one with the Pick tool
+  (Ctrl+click) or the Shape tool for the cells they chose, while the
+  table is the selection. A right click on a palette colour gives every
+  border of those cells that colour, keeping the width and style the
+  bar shows (No Color takes them away; "Cell Borders" undo step) (#2707).
 - Border: which borders of the selected cells to set (All, Outside,
   Inside, Top, Bottom, Left, Right, Inner horizontal, Inner vertical),
   then the width (0 = no border), colour and style. Outside, Top,
@@ -183,8 +214,11 @@ alignment. Empty cells keep no style.
 
 ## Typing in cells
 
-With the Table tool, a click in a cell makes it active and puts the caret
-at the character under the pointer. Typing, Backspace, Delete, Home, End,
+With the Table tool, or the Text tool, a click in a cell makes it active
+and puts the caret at the character under the pointer; the Text tool
+makes no new text over the table, and a click off the table lets the
+cell go (#2438,
+`pick_drag_tests::the_text_tool_types_into_the_table_cell_clicked`). Typing, Backspace, Delete, Home, End,
 Ctrl+Home/End, Ctrl+A and Ctrl+B/I/U work as in text editing (formatting
 applies to the selected characters, or to the whole cell without a
 selection); Enter adds a line, Tab and Shift+Tab move to the next and

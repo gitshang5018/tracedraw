@@ -1,4 +1,4 @@
-//! Bitmap colour mode conversions (Bitmaps > Mode): black and white with seven conversion methods,
+//! Bitmap colour mode conversions (Image > Mode): black and white with seven conversion methods,
 //! duotone (one to four inks, each with a tone curve), paletted (uniform,
 //! standard VGA, adaptive, optimized, grayscale, system or custom
 //! palettes, with ordered or error-diffusion dithering), and Lab. Pixels
@@ -64,7 +64,7 @@ impl ConvertMode {
     }
 }
 
-/// Bitmaps > Convert to Bitmap's settings.
+/// Image > Convert to Bitmap's settings.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ConvertOptions {
     pub dpi: f64,
@@ -250,7 +250,7 @@ impl ToneCurve {
 
 // ----- black and white -------------------------------------------------------
 
-/// Bitmaps > Mode > Black and White (1-bit): the conversion method.
+/// Image > Mode > Black and White (1-bit): the conversion method.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum BwMethod {
     LineArt,
@@ -381,6 +381,56 @@ fn hash01(x: u32, y: u32) -> f32 {
     (h & 0xFFFF) as f32 / 65535.0
 }
 
+/// The spot function of a halftone screen at `(u, v)` in its cell (-1
+/// to 1 across, the centre at 0): higher values darken first. Round
+/// dots grow from the centre as circles, touch as squares at half tone
+/// and leave round white holes beyond it; square dots grow as squares;
+/// lines grow across the cell (#2922).
+fn spot(screen: Screen, u: f32, v: f32) -> f32 {
+    let (x, y) = (u.abs().min(1.0), v.abs().min(1.0));
+    match screen {
+        Screen::Round => {
+            if x + y <= 1.0 {
+                1.0 - (x * x + y * y) / 2.0
+            } else {
+                ((1.0 - x).powi(2) + (1.0 - y).powi(2)) / 2.0
+            }
+        }
+        Screen::Square => 1.0 - x.max(y),
+        Screen::Line => 1.0 - y,
+    }
+}
+
+/// A screen's spot values sampled over a whole cell, highest first, to
+/// turn a spot value into the share of the cell that darkens before it:
+/// with that rank as the threshold a tone covers exactly its share of
+/// each cell, so 20 % black is a fifth of the paper in dots and 60 %
+/// leaves round white holes in black (#2922). The spot values alone
+/// were not even: 60 % came out as a checkerboard.
+struct ScreenRanks {
+    values: Vec<f32>,
+}
+
+impl ScreenRanks {
+    const SAMPLES: usize = 96;
+
+    fn new(screen: Screen) -> ScreenRanks {
+        let n = Self::SAMPLES;
+        let at = |i: usize| ((i as f32 + 0.5) / n as f32 - 0.5) * 2.0;
+        let mut values: Vec<f32> = (0..n * n)
+            .map(|k| spot(screen, at(k % n), at(k / n)))
+            .collect();
+        values.sort_by(|a, b| b.total_cmp(a));
+        ScreenRanks { values }
+    }
+
+    /// The share of the cell (0 to 1) whose spot value is above `value`.
+    fn rank(&self, value: f32) -> f32 {
+        let above = self.values.partition_point(|v| *v > value);
+        above as f32 / self.values.len() as f32
+    }
+}
+
 /// Convert to black and white; `dpi` is the bitmap's resolution (for the
 /// halftone screen).
 pub fn black_and_white(img: &RgbaImage, s: &BwSettings, dpi: f32) -> RgbaImage {
@@ -426,23 +476,20 @@ pub fn black_and_white(img: &RgbaImage, s: &BwSettings, dpi: f32) -> RgbaImage {
         BwMethod::Halftone => {
             let period = (dpi.max(1.0) / s.lpi.clamp(1.0, 2000.0)).max(2.0);
             let (sa, ca) = s.angle.to_radians().sin_cos();
+            let ranks = ScreenRanks::new(s.screen);
             for y in 0..h {
                 for x in 0..w {
                     let (fx, fy) = (x as f32 + 0.5, y as f32 + 0.5);
-                    let u = (fx * ca + fy * sa) / period * std::f32::consts::TAU;
-                    let v = (-fx * sa + fy * ca) / period * std::f32::consts::TAU;
-                    // The screen's threshold field: dots grow as the tone
-                    // darkens.
-                    let t = match s.screen {
-                        Screen::Round => (u.cos() + v.cos()) / 4.0 + 0.5,
-                        Screen::Line => (v.cos() + 1.0) / 2.0,
-                        Screen::Square => {
-                            let a = (u / std::f32::consts::TAU).rem_euclid(1.0);
-                            let b = (v / std::f32::consts::TAU).rem_euclid(1.0);
-                            1.0 - ((a - 0.5).abs().max((b - 0.5).abs()) * 2.0)
-                        }
-                    };
-                    bits[at(x, y)] = gray[at(x, y)] / 255.0 > 1.0 - t;
+                    // Where the pixel falls in its cell of the turned
+                    // screen, -1 to 1 across.
+                    let cell = |t: f32| ((t / period).rem_euclid(1.0) - 0.5) * 2.0;
+                    let u = cell(fx * ca + fy * sa);
+                    let v = cell(-fx * sa + fy * ca);
+                    // Black while the pixel's rank in its cell is below
+                    // the darkness: the dot covers as much of the cell as
+                    // the tone is dark (#2922).
+                    let dark = 1.0 - gray[at(x, y)] / 255.0;
+                    bits[at(x, y)] = ranks.rank(spot(s.screen, u, v)) >= dark;
                 }
             }
         }
@@ -824,30 +871,44 @@ pub fn build_palette(img: &RgbaImage, s: &PalettedSettings) -> Vec<[u8; 3]> {
                 s.custom.iter().take(256).copied().collect()
             }
         }
-        PaletteType::Adaptive | PaletteType::Optimized => {
-            let n = s.colors.clamp(2, 256) as usize;
-            // Sample the image (at most about 64k pixels).
-            let total = (img.width() as usize * img.height() as usize).max(1);
-            let step = (total / 16_384).max(1);
-            let colors: Vec<[u8; 3]> = img
-                .pixels()
-                .step_by(step)
-                .filter(|p| p[3] > 0)
-                .map(|p| [p[0], p[1], p[2]])
-                .collect();
-            let mut unique = colors.clone();
-            unique.sort_unstable();
-            unique.dedup();
-            if unique.len() <= n {
-                return if unique.is_empty() {
-                    vec![[0, 0, 0]]
-                } else {
-                    unique
-                };
-            }
-            median_cut(&colors, n, s.palette == PaletteType::Optimized)
-        }
+        PaletteType::Adaptive | PaletteType::Optimized => palette_from_sample(
+            &palette_sample(img),
+            s.colors,
+            s.palette == PaletteType::Optimized,
+        ),
     }
+}
+
+/// The pixels the adaptive and optimized palettes are chosen from: about
+/// 16k of them spread over the image (every pixel of a small one), the
+/// transparent ones left out. Read once, it gives the palette for any
+/// number of colours ([`palette_from_sample`]) without the image.
+pub fn palette_sample(img: &RgbaImage) -> Vec<[u8; 3]> {
+    let total = (img.width() as usize * img.height() as usize).max(1);
+    let step = (total / 16_384).max(1);
+    img.pixels()
+        .step_by(step)
+        .filter(|p| p[3] > 0)
+        .map(|p| [p[0], p[1], p[2]])
+        .collect()
+}
+
+/// The adaptive (or, with `optimized`, the optimized) palette of `n`
+/// colours (2 to 256) for the pixels of [`palette_sample`]: every colour
+/// there when it has no more than `n`.
+pub fn palette_from_sample(colors: &[[u8; 3]], n: u32, optimized: bool) -> Vec<[u8; 3]> {
+    let n = n.clamp(2, 256) as usize;
+    let mut unique = colors.to_vec();
+    unique.sort_unstable();
+    unique.dedup();
+    if unique.len() <= n {
+        return if unique.is_empty() {
+            vec![[0, 0, 0]]
+        } else {
+            unique
+        };
+    }
+    median_cut(colors, n, optimized)
 }
 
 /// Nearest palette entry, through a 32 x 32 x 32 cache.
@@ -1035,6 +1096,32 @@ pub fn mono_colors(img: &RgbaImage) -> Option<([u8; 3], [u8; 3])> {
     Some(if l(a) <= l(b) { (a, b) } else { (b, a) })
 }
 
+/// The one colour of a bitmap whose visible pixels are all that colour
+/// at different densities, such as a drop shadow broken apart; `None`
+/// otherwise. A faint pixel may be a little off the colour, as undoing
+/// premultiplied alpha leaves it (shadows broken apart before #2677): the
+/// fainter, the further it may be.
+pub fn single_color(img: &RgbaImage) -> Option<[u8; 3]> {
+    let densest = img.pixels().max_by_key(|p| p[3]).filter(|p| p[3] > 0)?;
+    let c = [densest[0], densest[1], densest[2]];
+    let fits = img.pixels().filter(|p| p[3] > 0).all(|p| {
+        let slack = 255 / u32::from(p[3]) + 1;
+        (0..3).all(|i| u32::from(p[i].abs_diff(c[i])) <= slack)
+    });
+    fits.then_some(c)
+}
+
+/// A bitmap of one colour (see [`single_color`]) in `to`, each pixel
+/// keeping its density; `None` when it has more colours.
+pub fn recolor_single(img: &RgbaImage, to: [u8; 3]) -> Option<RgbaImage> {
+    single_color(img)?;
+    let mut out = img.clone();
+    for p in out.pixels_mut().filter(|p| p[3] > 0) {
+        *p = Rgba([to[0], to[1], to[2], p[3]]);
+    }
+    Some(out)
+}
+
 /// A monochrome bitmap with its foreground (or background) pixels in
 /// `to`; `None` when it is not monochrome.
 pub fn recolor_mono(img: &RgbaImage, foreground: bool, to: [u8; 3]) -> Option<RgbaImage> {
@@ -1051,9 +1138,9 @@ pub fn recolor_mono(img: &RgbaImage, foreground: bool, to: [u8; 3]) -> Option<Rg
 
 impl crate::app::App {
     /// Colour the selected monochrome bitmaps from the palette: the background (white) pixels with a click, the
-    /// foreground (black) ones with a right-click. False (nothing done)
-    /// unless every selected object is a monochrome bitmap without
-    /// effects.
+    /// foreground (black) ones with a right-click; a bitmap of one colour
+    /// (a shadow broken apart) all of it with either. False (nothing done)
+    /// unless every selected object is such a bitmap without effects.
     pub fn recolor_mono_bitmaps(&mut self, foreground: bool, c: tracedraw_core::Color) -> bool {
         use tracedraw_core::document::ShapeKind;
         let shapes = self.selected_shapes();
@@ -1073,9 +1160,11 @@ impl crate::app::App {
             else {
                 return false;
             };
-            let Some(out) =
-                crate::bitmap_fx::decode(png).and_then(|img| recolor_mono(&img, foreground, to))
-            else {
+            // A bitmap of one colour (a drop shadow broken apart) takes
+            // the colour whichever button picks it (#2677).
+            let Some(out) = crate::bitmap_fx::decode(png).and_then(|img| {
+                recolor_single(&img, to).or_else(|| recolor_mono(&img, foreground, to))
+            }) else {
                 return false;
             };
             let Some(png) = crate::bitmap_fx::encode(&out) else {
@@ -1153,6 +1242,42 @@ impl crate::app::App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A shadow broken apart before #2677 kept the colours left by undoing
+    /// premultiplied alpha, a little off in its faint pixels: it still
+    /// reads as one colour and takes the new one, each pixel keeping its
+    /// density. A picture of two colours does not.
+    #[test]
+    fn a_bitmap_of_one_colour_at_many_densities_is_recoloured() {
+        let mut img = RgbaImage::new(64, 1);
+        for (x, p) in img.pixels_mut().enumerate() {
+            let a = (x * 4) as u8;
+            // Premultiplied (30, 60, 90) at density a, undone.
+            let un = |v: u32| -> u8 {
+                if a == 0 {
+                    0
+                } else {
+                    let pre = (v * u32::from(a) + 127) / 255;
+                    ((pre * 255 + u32::from(a) / 2) / u32::from(a)).min(255) as u8
+                }
+            };
+            *p = Rgba([un(30), un(60), un(90), a]);
+        }
+        img.put_pixel(63, 0, Rgba([30, 60, 90, 255]));
+        assert_eq!(single_color(&img), Some([30, 60, 90]));
+        let out = recolor_single(&img, [200, 0, 0]).expect("one colour");
+        for (a, b) in img.pixels().zip(out.pixels()) {
+            assert_eq!(a[3], b[3]);
+            if b[3] > 0 {
+                assert_eq!([b[0], b[1], b[2]], [200, 0, 0]);
+            }
+        }
+        let mut two = RgbaImage::from_pixel(2, 1, Rgba([0, 0, 0, 255]));
+        two.put_pixel(1, 0, Rgba([255, 255, 255, 255]));
+        assert_eq!(single_color(&two), None);
+        assert!(recolor_single(&two, [1, 2, 3]).is_none());
+        assert_eq!(single_color(&RgbaImage::new(3, 3)), None, "all clear");
+    }
 
     #[test]
     fn monochrome_bitmaps_take_palette_colours() {
@@ -1262,6 +1387,52 @@ mod tests {
         let out = black_and_white(&img, &s, 300.0);
         assert_eq!(out.get_pixel(99, 0)[0], 0);
         assert_eq!(out.get_pixel(100, 0)[0], 255);
+    }
+
+    #[test]
+    fn halftone_dots_cover_as_much_as_the_tone_is_dark() {
+        // #2922: at 300 dpi, 35 lpi and 45 degrees, each grey covers its
+        // share of the paper with black (60 % came out as a 50 %
+        // checkerboard), white stays white and black black.
+        for screen in [Screen::Round, Screen::Square, Screen::Line] {
+            let s = BwSettings {
+                screen,
+                lpi: 35.0,
+                ..Default::default()
+            };
+            for dark in [0.0f32, 0.2, 0.4, 0.6, 0.8, 0.9, 1.0] {
+                let v = (255.0 * (1.0 - dark)).round() as u8;
+                let img = RgbaImage::from_pixel(240, 240, Rgba([v, v, v, 255]));
+                let out = black_and_white(&img, &s, 300.0);
+                let black = out.pixels().filter(|p| p[0] == 0).count() as f32 / (240.0 * 240.0);
+                assert!((black - dark).abs() < 0.03, "{screen:?} {dark}: {black}");
+            }
+        }
+        // Round dots at 20 %: a dot is a solid round blot, as wide as it
+        // is tall, not a square with notches.
+        let s = BwSettings {
+            lpi: 35.0,
+            angle: 0.0,
+            ..Default::default()
+        };
+        let v = (255.0 * 0.8f32).round() as u8;
+        let img = RgbaImage::from_pixel(240, 240, Rgba([v, v, v, 255]));
+        let out = black_and_white(&img, &s, 300.0);
+        // The cell is 300 / 35 = 8.57 pixels; its middle is at 4.29 + k * 8.57.
+        let period = 300.0 / 35.0f32;
+        let (cx, cy) = (period * 10.5, period * 10.5);
+        let row: Vec<bool> = (0..9)
+            .map(|d| out.get_pixel((cx - 4.0 + d as f32) as u32, cy as u32)[0] == 0)
+            .collect();
+        let col: Vec<bool> = (0..9)
+            .map(|d| out.get_pixel(cx as u32, (cy - 4.0 + d as f32) as u32)[0] == 0)
+            .collect();
+        assert!(row[4] && col[4], "the dot's middle is black");
+        assert_eq!(
+            row.iter().filter(|b| **b).count(),
+            col.iter().filter(|b| **b).count(),
+            "round: {row:?} {col:?}"
+        );
     }
 
     #[test]

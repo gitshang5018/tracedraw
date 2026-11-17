@@ -27,6 +27,11 @@ stelt in hoe het programma werkt. Kies een pagina in de lijst links.
 - [[options.full_screen_preview]]: [[options.show_page_border]].
 - [[options.wheel_default_action]]: [[options.wheel_zoom]] (in het begin) of
   [[options.wheel_scroll]].
+- [[options.open_view]]: [[options.open_view_page]] (in het begin),
+  [[options.open_view_objects]], [[options.open_view_width]],
+  [[options.open_view_height]], [[options.open_view_actual]], [[options.open_view_percent]] of
+  [[options.open_view_saved]] (de pagina, plek en zoom die bij elke keer
+  opslaan van een TraceDraw-bestand worden bewaard).
 - [[options.ruler_calibration]]: houd een liniaal tegen het scherm en wijzig de
   [[options.screen_resolution]] totdat de streepjes overeenkomen, zodat zoom
   100% echte maten toont. [[options.reset]] zet 96 terug.
@@ -105,6 +110,7 @@ De pagina heeft vijf tabbladen.
 - [[options.paragraph_text]]: [[menu.text.show_text_frames]],
   [[menu.text.use_hyphenation]] en de [[options.hyphenation_patterns]]
   (ingebouwd, of een afbreekwoordenboek voor uw taal).
+  - [[options.default_tab_spacing]]: waar <kbd>Tab</kbd> naartoe springt in een alinea zonder eigen tabstops (12,7 mm, een halve inch).
 - [[docker.fonts]]: [[options.show_recent_fonts]] bovenaan de
   lettertypelijsten, het [[options.recent_font_count]] (5, tot 20) en de
   [[options.font_sample_size]].
@@ -115,3 +121,13 @@ De pagina heeft vijf tabbladen.
   [Woordenboeken](../text/writing-tools.md#dictionaries).
 - [[dialog.autocorrect]]: wat tijdens het typen wordt verbeterd; zie
   [AutoCorrectie](../text/writing-tools.md#autocorrect).
+
+## [[benchmark.title]] {#benchmark}
+
+[[menu.help > menu.help.benchmark]]: [[menu.help.benchmark_tip]]
+
+[[benchmark.intro]]
+
+[[benchmark.compare_how]]
+
+[[options.light_zoom]]: [[options.light_zoom_tip]]

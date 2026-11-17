@@ -1,7 +1,7 @@
 //! Dockers added with the full workspace: Align and Distribute, Shaping,
-//! Step and Repeat, Text, Glyphs, Color, Color Styles, Object Styles,
+//! Repeat Copies, Text, Glyphs, Color, Color Styles, Object Styles,
 //! Find and Replace, Scripts, Palettes, Lens, Blend, Contour, Envelope,
-//! Extrude, Bevel, Brush Strokes, Bitmap Mask, Object Data, Links,
+//! Extrude, Bevel, Brush Strokes, Color Mask, Object Data, Links,
 //! Symbols, Pages, Guidelines, Fonts.
 
 use crate::app::{App, DockerTab};
@@ -70,220 +70,397 @@ pub fn show(app: &mut App, ui: &mut Ui, tab: DockerTab) {
 }
 
 fn step_and_repeat(app: &mut App, ui: &mut Ui) {
-    app.step_repeat_follow_selection();
     let u = app.units;
     let has = !app.selection.is_empty();
-    // With nothing selected the values stay at their defaults (#1032).
-    ui.add_enabled_ui(has, |ui| {
-        step_and_repeat_fields(&mut app.step_repeat, u, ui)
+    // The panel is worked in while the pointer is on it, one of its fields
+    // has the keys, or the last click (or tap) was in it; a click
+    // anywhere else ends that (#1197).
+    let over = ui.rect_contains_pointer(ui.max_rect());
+    if ui.input(|i| i.pointer.any_pressed()) {
+        app.step_repeat_working = over;
+    }
+    // Copies one after another, or the page filled with them (#1255).
+    ui.horizontal(|ui| {
+        ui.radio_value(
+            &mut app.step_repeat.fill,
+            false,
+            tr("docker.sr_mode_copies"),
+        )
+        .rich_tip(crate::ui::tips::pair(
+            "docker.sr_mode_copies",
+            "docker.sr_mode_copies_desc",
+        ));
+        ui.radio_value(&mut app.step_repeat.fill, true, tr("docker.sr_mode_fill"))
+            .rich_tip(crate::ui::tips::pair(
+                "docker.sr_mode_fill",
+                "docker.sr_mode_fill_desc",
+            ));
     });
+    // With nothing selected the fields wait, keeping their values (#1198).
+    let (focused, can_apply) = if app.step_repeat.fill {
+        let page = app.page_rect();
+        let layout = app.fill_page_layout();
+        let focused = ui
+            .add_enabled_ui(has, |ui| {
+                fill_page_fields(&mut app.step_repeat, u, page, layout.as_ref(), ui)
+            })
+            .inner;
+        let ok = layout.as_ref().is_some_and(|(_, _, g)| !g.cells.is_empty());
+        (focused, ok)
+    } else {
+        let focused = ui
+            .add_enabled_ui(has, |ui| {
+                step_and_repeat_fields(&mut app.step_repeat, u, ui)
+            })
+            .inner;
+        (focused, true)
+    };
+    let desc = if app.step_repeat.fill {
+        "docker.sr_fill_apply_desc"
+    } else {
+        "docker.sr_apply_desc"
+    };
     if ui
         .add_enabled(
-            has,
+            has && can_apply,
             egui::Button::new(tr("docker.apply")).min_size(egui::vec2(
                 ui.available_width(),
                 if crate::ui::mobile::phone() { 40.0 } else { 26.0 },
             )),
         )
-        .rich_tip(crate::ui::tips::pair(
-            "docker.apply",
-            "docker.sr_apply_desc",
-        ))
+        .rich_tip(crate::ui::tips::pair("docker.apply", desc))
         .clicked()
     {
         app.step_and_repeat_apply();
     }
+    // The copies Apply would make, outlined on the canvas (#1197).
+    if has && (over || focused || app.step_repeat_working) {
+        app.step_preview_shown = app.step_and_repeat_preview().is_some();
+    }
 }
 
-fn step_and_repeat_fields(sr: &mut crate::ops2::StepRepeat, u: crate::app::Units, ui: &mut Ui) {
+/// The panel's fields; true when one of them has the keyboard focus.
+fn step_and_repeat_fields(
+    sr: &mut crate::ops2::StepRepeat,
+    u: crate::app::Units,
+    ui: &mut Ui,
+) -> bool {
+    let mut focused = false;
     ui.horizontal(|ui| {
         ui.label(tr("docker.copies"));
-        ui.add(crate::ui::field::NumField::new(&mut sr.copies).range(1..=999))
-            .rich_tip(crate::ui::tips::keyed("docker.sr_copies"));
+        focused |= ui
+            .add(crate::ui::field::NumField::new(&mut sr.copies).range(1..=999))
+            .rich_tip(crate::ui::tips::keyed("docker.sr_copies"))
+            .has_focus();
     });
-    ui.strong(tr("docker.horizontal_settings"));
-    ui.horizontal(|ui| {
-        ui.radio_value(&mut sr.mode_x, 0, tr("docker.offset"))
-            .rich_tip(crate::ui::tips::pair(
-                "docker.offset",
-                "docker.sr_offset_desc",
-            ));
-        ui.radio_value(&mut sr.mode_x, 1, tr("docker.spacing"))
-            .rich_tip(crate::ui::tips::pair(
-                "docker.spacing",
-                "docker.sr_spacing_desc",
-            ));
+    // Each axis can be turned off, so the copies go across only or up
+    // and down only, and each goes one way or the other (#2572).
+    ui.checkbox(
+        &mut sr.use_x,
+        egui::RichText::new(tr("docker.horizontal_settings")).strong(),
+    )
+    .rich_tip(crate::ui::tips::pair(
+        "docker.horizontal_settings",
+        "docker.sr_use_x_desc",
+    ));
+    let on = sr.use_x;
+    ui.add_enabled_ui(on, |ui| {
+        direction(ui, &mut sr.left, ("docker.sr_right", "docker.sr_left"));
     });
-    let mut dx = u.world_from_mm(sr.dx);
-    if ui
-        .add(
-            crate::ui::field::NumField::new(&mut dx)
-                .speed(0.5)
-                .suffix(format!(" {}", u.short())),
-        )
-        .rich_tip(crate::ui::tips::keyed("docker.sr_dx"))
-        .changed()
-    {
-        sr.dx = u.world_to_mm(dx);
-    }
-    ui.strong(tr("docker.vertical_settings"));
-    ui.horizontal(|ui| {
-        ui.radio_value(&mut sr.mode_y, 0, tr("docker.offset"))
-            .rich_tip(crate::ui::tips::pair(
-                "docker.offset",
-                "docker.sr_offset_desc",
-            ));
-        ui.radio_value(&mut sr.mode_y, 1, tr("docker.spacing"))
-            .rich_tip(crate::ui::tips::pair(
-                "docker.spacing",
-                "docker.sr_spacing_desc",
-            ));
+    ui.add_enabled_ui(on, |ui| {
+        ui.horizontal(|ui| {
+            ui.radio_value(&mut sr.mode_x, 0, tr("docker.offset"))
+                .rich_tip(crate::ui::tips::pair(
+                    "docker.offset",
+                    "docker.sr_offset_desc",
+                ));
+            ui.radio_value(&mut sr.mode_x, 1, tr("docker.spacing"))
+                .rich_tip(crate::ui::tips::pair(
+                    "docker.spacing",
+                    "docker.sr_spacing_desc",
+                ));
+        });
+        let mut dx = u.world_from_mm(sr.dx);
+        let r = ui
+            .add(
+                crate::ui::field::NumField::new(&mut dx)
+                    .speed(0.5)
+                    .suffix(format!(" {}", u.short())),
+            )
+            .rich_tip(crate::ui::tips::keyed("docker.sr_dx"));
+        focused |= r.has_focus();
+        if r.changed() {
+            sr.dx = u.world_to_mm(dx);
+        }
     });
-    let mut dy = u.world_from_mm(sr.dy);
-    if ui
-        .add(
-            crate::ui::field::NumField::new(&mut dy)
-                .speed(0.5)
-                .suffix(format!(" {}", u.short())),
-        )
-        .rich_tip(crate::ui::tips::keyed("docker.sr_dy"))
-        .changed()
-    {
-        sr.dy = u.world_to_mm(dy);
-    }
+    ui.checkbox(
+        &mut sr.use_y,
+        egui::RichText::new(tr("docker.vertical_settings")).strong(),
+    )
+    .rich_tip(crate::ui::tips::pair(
+        "docker.vertical_settings",
+        "docker.sr_use_y_desc",
+    ));
+    let on = sr.use_y;
+    ui.add_enabled_ui(on, |ui| {
+        direction(ui, &mut sr.up, ("docker.sr_down", "docker.sr_up"));
+    });
+    ui.add_enabled_ui(on, |ui| {
+        ui.horizontal(|ui| {
+            ui.radio_value(&mut sr.mode_y, 0, tr("docker.offset"))
+                .rich_tip(crate::ui::tips::pair(
+                    "docker.offset",
+                    "docker.sr_offset_desc",
+                ));
+            ui.radio_value(&mut sr.mode_y, 1, tr("docker.spacing"))
+                .rich_tip(crate::ui::tips::pair(
+                    "docker.spacing",
+                    "docker.sr_spacing_desc",
+                ));
+        });
+        let mut dy = u.world_from_mm(sr.dy);
+        let r = ui
+            .add(
+                crate::ui::field::NumField::new(&mut dy)
+                    .speed(0.5)
+                    .suffix(format!(" {}", u.short())),
+            )
+            .rich_tip(crate::ui::tips::keyed("docker.sr_dy"));
+        focused |= r.has_focus();
+        if r.changed() {
+            sr.dy = u.world_to_mm(dy);
+        }
+    });
+    focused
 }
 
-fn color_styles(app: &mut App, ui: &mut Ui) {
-    let styles = app.doc().color_styles.clone();
+/// The way the copies go along one axis: `keys` names the forward way
+/// (right, down) and the back one (left, up); `back` holds the choice.
+fn direction(ui: &mut Ui, back: &mut bool, keys: (&str, &str)) {
     ui.horizontal(|ui| {
-        if ui
-            .button(tr("docker.new_from_selection"))
-            .rich_tip(crate::ui::tips::pair(
-                "docker.new_from_selection",
-                "docker.cs_new_from_selection_desc",
-            ))
-            .clicked()
-        {
-            let mut st = styles.clone();
-            for s in app.selected_shapes() {
-                if let Some(c) = s.fill.preview_color() {
-                    if !st.iter().any(|x| x.color == c) {
-                        st.push(tracedraw_core::ColorStyle {
-                            name: format!("Color {}", st.len() + 1),
-                            color: c,
-                            harmony: None,
-                        });
-                    }
-                }
-            }
-            app.run(Command::SetColorStyles { styles: st });
-        }
-        if ui
-            .button(tr("docker.new_color_style"))
-            .rich_tip(crate::ui::tips::keyed("docker.new_color_style"))
-            .clicked()
-        {
-            let mut st = styles.clone();
-            st.push(tracedraw_core::ColorStyle {
-                name: format!("Color {}", st.len() + 1),
-                color: app.mixer_color,
-                harmony: None,
-            });
-            app.run(Command::SetColorStyles { styles: st });
+        for (value, key) in [(false, keys.0), (true, keys.1)] {
+            ui.radio_value(back, value, tr(key))
+                .rich_tip(crate::ui::tips::pair(key, "docker.sr_direction_desc"));
         }
     });
-    let mut st = styles.clone();
-    let mut changed = false;
-    let mut remove = None;
-    for (i, cs) in st.iter_mut().enumerate() {
+}
+
+/// A length field in the document's unit holding millimetres, at least
+/// `min`; true when it has the keyboard focus.
+fn fill_length(ui: &mut Ui, u: crate::app::Units, mm: &mut f64, min: f64, key: &str) -> bool {
+    let mut v = u.world_from_mm(*mm);
+    let r = ui
+        .add(
+            crate::ui::field::NumField::new(&mut v)
+                .speed(0.5)
+                .suffix(format!(" {}", u.short())),
+        )
+        .rich_tip(crate::ui::tips::keyed(key));
+    if r.changed() {
+        let x = u.world_to_mm(v);
+        *mm = if x.is_finite() { x.max(min) } else { min };
+    }
+    r.has_focus()
+}
+
+/// Fill page's fields (#1255): the page size, the area, the margins, the
+/// gaps, the shift of every second row, which way the copies stand with
+/// the count of each way, the trim marks and the count of the copies
+/// Apply makes; true when one of them has the keyboard focus.
+fn fill_page_fields(
+    sr: &mut crate::ops2::StepRepeat,
+    u: crate::app::Units,
+    page: tracedraw_core::geometry::Rect,
+    layout: Option<&(
+        crate::fill_page::FillGrid,
+        crate::fill_page::FillGrid,
+        crate::fill_page::FillGrid,
+    )>,
+    ui: &mut Ui,
+) -> bool {
+    let mut focused = false;
+    let size = |v: f64| {
+        format!("{:.2}", u.world_from_mm(v))
+            .trim_end_matches('0')
+            .trim_end_matches('.')
+            .to_string()
+    };
+    ui.label(
+        egui::RichText::new(trf(
+            "docker.fillpage_page_size",
+            &[
+                ("w", &size(page.width())),
+                ("h", &size(page.height())),
+                ("unit", u.short()),
+            ],
+        ))
+        .color(crate::theme::Tokens::text_dim()),
+    );
+    ui.horizontal(|ui| {
+        ui.label(tr("docker.fillpage_area"));
+        ui.radio_value(&mut sr.area_custom, false, tr("docker.fillpage_area_page"))
+            .rich_tip(crate::ui::tips::keyed("docker.fillpage_area_page"));
+        if ui
+            .radio(sr.area_custom, tr("docker.fillpage_area_custom"))
+            .rich_tip(crate::ui::tips::keyed("docker.fillpage_area_custom"))
+            .clicked()
+            && !sr.area_custom
+        {
+            sr.area_custom = true;
+            sr.area = page;
+        }
+    });
+    egui::Grid::new("fill_page_grid")
+        .num_columns(2)
+        .spacing([6.0, 4.0])
+        .show(ui, |ui| {
+            if sr.area_custom {
+                let a = sr.area;
+                let (mut x, mut y, mut w, mut h) = (a.x0, a.y0, a.width(), a.height());
+                ui.label(tr("docker.fillpage_area_x"));
+                focused |= fill_length(ui, u, &mut x, f64::MIN, "docker.fillpage_area_x");
+                ui.end_row();
+                ui.label(tr("docker.fillpage_area_y"));
+                focused |= fill_length(ui, u, &mut y, f64::MIN, "docker.fillpage_area_y");
+                ui.end_row();
+                ui.label(tr("docker.fillpage_area_w"));
+                focused |= fill_length(ui, u, &mut w, 1.0, "docker.fillpage_area_w");
+                ui.end_row();
+                ui.label(tr("docker.fillpage_area_h"));
+                focused |= fill_length(ui, u, &mut h, 1.0, "docker.fillpage_area_h");
+                ui.end_row();
+                sr.area = tracedraw_core::geometry::Rect::new(x, y, x + w, y + h);
+            }
+            ui.label(tr("docker.fillpage_margins"));
+            ui.checkbox(&mut sr.margins_same, tr("docker.fillpage_same"))
+                .rich_tip(crate::ui::tips::keyed("docker.fillpage_margins_same"));
+            ui.end_row();
+            if sr.margins_same {
+                ui.label("");
+                focused |= fill_length(ui, u, &mut sr.margins[0], 0.0, "docker.fillpage_margins");
+                ui.end_row();
+            } else {
+                for (i, key) in [
+                    "print.margin_left",
+                    "print.margin_right",
+                    "print.margin_top",
+                    "print.margin_bottom",
+                ]
+                .iter()
+                .enumerate()
+                {
+                    ui.label(tr(key));
+                    focused |=
+                        fill_length(ui, u, &mut sr.margins[i], 0.0, "docker.fillpage_margins");
+                    ui.end_row();
+                }
+            }
+            ui.label(tr("docker.fillpage_gap"));
+            ui.checkbox(&mut sr.gap_same, tr("docker.fillpage_same"))
+                .rich_tip(crate::ui::tips::keyed("docker.fillpage_gap_same"));
+            ui.end_row();
+            if sr.gap_same {
+                ui.label("");
+                focused |= fill_length(ui, u, &mut sr.gap.0, 0.0, "docker.fillpage_gap");
+                ui.end_row();
+            } else {
+                ui.label(tr("docker.fillpage_gap_x"));
+                focused |= fill_length(ui, u, &mut sr.gap.0, 0.0, "docker.fillpage_gap_x");
+                ui.end_row();
+                ui.label(tr("docker.fillpage_gap_y"));
+                focused |= fill_length(ui, u, &mut sr.gap.1, 0.0, "docker.fillpage_gap_y");
+                ui.end_row();
+            }
+            ui.label(tr("docker.fillpage_row_shift"));
+            focused |= fill_length(ui, u, &mut sr.row_shift, 0.0, "docker.fillpage_row_shift");
+            ui.end_row();
+        });
+    // Which way the copies stand, with how many fit each way.
+    ui.strong(tr("docker.fillpage_turn"));
+    let count = |g: Option<&crate::fill_page::FillGrid>| {
+        g.map(|g| {
+            if crate::fill_page::count(g) == 0 {
+                tr("docker.fillpage_none")
+            } else {
+                App::fill_count_text(g)
+            }
+        })
+        .unwrap_or_default()
+    };
+    for (i, key, grid) in [
+        (0u8, "docker.fillpage_as_is", layout.map(|l| &l.0)),
+        (1, "docker.fillpage_turned", layout.map(|l| &l.1)),
+        (2, "docker.fillpage_best", None),
+    ] {
         ui.horizontal(|ui| {
-            changed |= color_button(ui, &mut cs.color);
-            changed |= ui
-                .add(egui::TextEdit::singleline(&mut cs.name).desired_width(90.0))
-                .rich_tip(crate::ui::tips::keyed("docker.cs_name"))
-                .lost_focus();
-            if ui
-                .small_button(tr("docker.fill"))
-                .rich_tip(crate::ui::tips::pair("docker.fill", "docker.cs_fill_desc"))
-                .clicked()
-            {
-                app.apply_fill(Fill::Solid(cs.color));
-            }
-            if ui
-                .small_button(tr("docker.outline"))
-                .rich_tip(crate::ui::tips::pair(
-                    "docker.outline",
-                    "docker.cs_outline_desc",
-                ))
-                .clicked()
-            {
-                app.apply_outline_color(Some(cs.color));
-            }
-            if ui
-                .small_button("x")
-                .rich_tip(crate::ui::tips::keyed("docker.cs_delete"))
-                .clicked()
-            {
-                remove = Some(i);
+            ui.radio_value(&mut sr.turn, i, tr(key))
+                .rich_tip(crate::ui::tips::keyed(key));
+            if grid.is_some() {
+                ui.label(egui::RichText::new(count(grid)).color(crate::theme::Tokens::text_dim()));
             }
         });
     }
-    if let Some(i) = remove {
-        st.remove(i);
-        changed = true;
+    ui.checkbox(&mut sr.marks, tr("docker.fillpage_marks"))
+        .rich_tip(crate::ui::tips::keyed("docker.fillpage_marks"));
+    if sr.marks {
+        egui::Grid::new("fill_page_marks")
+            .num_columns(2)
+            .spacing([6.0, 4.0])
+            .show(ui, |ui| {
+                ui.label(tr("docker.fillpage_mark_length"));
+                focused |= fill_length(
+                    ui,
+                    u,
+                    &mut sr.mark_length,
+                    0.0,
+                    "docker.fillpage_mark_length",
+                );
+                ui.end_row();
+                ui.label(tr("docker.fillpage_mark_offset"));
+                focused |= fill_length(
+                    ui,
+                    u,
+                    &mut sr.mark_offset,
+                    0.0,
+                    "docker.fillpage_mark_offset",
+                );
+                ui.end_row();
+            });
     }
-    if changed {
-        // Objects using the old colour follow the style.
-        let mut cmds = vec![Command::SetColorStyles { styles: st.clone() }];
-        for (old, new) in styles.iter().zip(st.iter()) {
-            if old.color != new.color {
-                let ids: Vec<ShapeId> = app
-                    .doc()
-                    .all_layers()
-                    .flat_map(|l| &l.shapes)
-                    .filter(|s| s.fill == Fill::Solid(old.color))
-                    .map(|s| s.id)
-                    .collect();
-                if !ids.is_empty() {
-                    cmds.push(Command::SetFill {
-                        shapes: ids,
-                        fill: Fill::Solid(new.color),
-                    });
-                }
-            }
+    // The copies Apply makes.
+    if let Some((_, _, g)) = layout {
+        let n = crate::fill_page::count(g);
+        if n == 0 {
+            ui.colored_label(ui.visuals().warn_fg_color, tr("docker.fillpage_none"));
+        } else if g.cells.is_empty() {
+            ui.colored_label(
+                ui.visuals().warn_fg_color,
+                trf(
+                    "status.fill_page_too_many",
+                    &[("max", &crate::fill_page::MAX_COPIES.to_string())],
+                ),
+            );
+        } else {
+            ui.strong(App::fill_count_text(g));
         }
-        let _ = app.engine.run_batch("Color Styles", &cmds);
     }
-    ui.separator();
-    ui.strong(tr("docker.harmony_editor"));
-    ui.horizontal_wrapped(|ui| {
-        for h in crate::palette::Harmony::ALL {
-            if ui
-                .button(tr(h.key()))
-                .rich_tip_with(|| format!("{}\n{}", tr(h.key()), tr(&format!("{}_desc", h.key()))))
-                .clicked()
-            {
-                let base = app.mixer_color;
-                let mut st = app.doc().color_styles.clone();
-                let name = tr(h.key());
-                for (k, c) in h.colors(base).into_iter().enumerate() {
-                    st.push(tracedraw_core::ColorStyle {
-                        name: format!("{name} {}", k + 1),
-                        color: c,
-                        harmony: Some(name.clone()),
-                    });
-                }
-                app.run(Command::SetColorStyles { styles: st });
-            }
-        }
+    focused
+}
+
+/// A colour style of `c`, named after its place in the list (New color
+/// style, and the Colour panel's Add to Color Styles Palette).
+pub(crate) fn add_color_style(app: &mut App, c: Color) {
+    let mut st = app.doc().color_styles.clone();
+    st.push(tracedraw_core::ColorStyle {
+        name: format!("Color {}", st.len() + 1),
+        color: c,
+        harmony: None,
     });
-    ui.horizontal(|ui| {
-        ui.label(tr("docker.base_color"));
-        let mut c = app.mixer_color;
-        if color_button(ui, &mut c) {
-            app.mixer_color = c;
-        }
-    });
+    app.run(Command::SetColorStyles { styles: st });
+}
+
+fn color_styles(app: &mut App, ui: &mut Ui) {
+    crate::ui::color_styles_docker::show(app, ui);
 }
 
 /// Object Styles: the default properties of new objects, then the styles
@@ -349,7 +526,10 @@ fn default_properties(app: &mut App, ui: &mut Ui) {
                     .rich_tip(tr("defaults.reset_hint"))
                     .clicked()
                 {
-                    let fresh = ObjectDefaults::default().get(kind).clone();
+                    // The defaults of the drawing's mode, their black
+                    // following the colour mode again.
+                    let mode = app.doc().metadata.primary_color_mode;
+                    let fresh = ObjectDefaults::for_mode(mode).get(kind).clone();
                     app.set_default_properties(kind, |p| *p = fresh);
                 }
                 let from = ui
@@ -361,9 +541,13 @@ fn default_properties(app: &mut App, ui: &mut Ui) {
                 if from.clicked() {
                     if let Some(s) = &first {
                         let (fill, stroke) = (s.fill.clone(), s.stroke.clone());
+                        // Colours taken from an object are the user's
+                        // own, even a black.
                         app.set_default_properties(kind, |p| {
                             p.fill = fill;
                             p.stroke = stroke;
+                            p.choose_fill(kind);
+                            p.choose_outline(kind);
                         });
                     }
                 }
@@ -408,10 +592,15 @@ fn styles_list(app: &mut App, ui: &mut Ui) {
     for (i, os) in st.iter_mut().enumerate() {
         ui.horizontal(|ui| {
             style_swatches(ui, &os.fill, &os.stroke);
-            changed |= ui
-                .add(egui::TextEdit::singleline(&mut os.name).desired_width(96.0))
-                .rich_tip(crate::ui::tips::keyed("docker.style_name"))
-                .lost_focus();
+            let field = egui::Id::new(("object_style_name", i));
+            let (_, typed) = kept_text(ui, field, os.id, &os.name.clone(), |ui, text| {
+                ui.add(egui::TextEdit::singleline(text).desired_width(96.0))
+                    .rich_tip(crate::ui::tips::keyed("docker.style_name"))
+            });
+            if let Some(name) = typed {
+                os.name = name;
+                changed = true;
+            }
             let n = counts.get(&os.id).copied().unwrap_or(0);
             dim(ui, trf("docker.style_objects", &[("n", &n.to_string())]));
         });
@@ -499,7 +688,17 @@ fn find_replace(app: &mut App, ui: &mut Ui) {
                 "dialog.find_objects",
                 "docker.find_objects_desc",
             ));
+        ui.radio_value(&mut st.kind, 2, tr("find.properties"))
+            .rich_tip(crate::ui::tips::pair(
+                "find.properties",
+                "find.properties_desc",
+            ));
     });
+    if st.kind == 2 {
+        find_properties(app, ui, &mut st);
+        app.find_state = st;
+        return;
+    }
     ui.horizontal(|ui| {
         ui.label(tr("dialog.find"));
         ui.text_edit_singleline(&mut st.find)
@@ -601,6 +800,273 @@ fn find_replace(app: &mut App, ui: &mut Ui) {
     app.find_state = st;
 }
 
+/// Find and Replace by properties: fill, outline, outline width, font and
+/// object type, on the page or in the whole drawing (#1071).
+fn find_properties(app: &mut App, ui: &mut Ui, st: &mut crate::ui::dialogs::FindReplaceState) {
+    use crate::ui::color_picker::color_button;
+    use tracedraw_core::find::ObjectType;
+    let units = app.outline_units();
+    let width_field = |ui: &mut Ui, mm: &mut f64| {
+        let mut v = units.from_mm(*mm);
+        if ui
+            .add(
+                crate::ui::field::NumField::new(&mut v)
+                    .speed(0.05)
+                    .suffix(format!(" {}", units.short())),
+            )
+            .changed()
+        {
+            *mm = units.to_mm(v).max(0.0);
+        }
+    };
+    let pf = &mut st.props;
+    ui.horizontal(|ui| {
+        ui.label(tr("find.look_in"));
+        ui.radio_value(&mut pf.whole_drawing, false, tr("find.this_page"))
+            .rich_tip(crate::ui::tips::pair(
+                "find.this_page",
+                "find.this_page_desc",
+            ));
+        ui.radio_value(&mut pf.whole_drawing, true, tr("find.whole_drawing"))
+            .rich_tip(crate::ui::tips::pair(
+                "find.whole_drawing",
+                "find.whole_drawing_desc",
+            ));
+    });
+    ui.add_space(4.0);
+    ui.label(egui::RichText::new(tr("find.find_objects_with")).strong());
+    egui::Grid::new("find_props_grid")
+        .num_columns(2)
+        .spacing([6.0, 4.0])
+        .show(ui, |ui| {
+            ui.checkbox(&mut pf.use_type, tr("find.object_type"))
+                .rich_tip(crate::ui::tips::keyed("find.object_type"));
+            ui.add_enabled_ui(pf.use_type, |ui| {
+                let cur = ObjectType::ALL
+                    .get(pf.object_type)
+                    .map(|t| tr(&format!("find.type.{}", t.key())))
+                    .unwrap_or_default();
+                crate::ui::keynav::ComboBox::from_id_salt("find_props_type")
+                    .selected_text(cur)
+                    .show_ui(ui, |ui| {
+                        for (i, t) in ObjectType::ALL.iter().enumerate() {
+                            ui.selectable_value(
+                                &mut pf.object_type,
+                                i,
+                                tr(&format!("find.type.{}", t.key())),
+                            );
+                        }
+                    });
+            });
+            ui.end_row();
+
+            ui.checkbox(&mut pf.use_fill, tr("find.fill"))
+                .rich_tip(crate::ui::tips::keyed("find.fill"));
+            ui.add_enabled_ui(pf.use_fill, |ui| {
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut pf.fill_none, tr("find.none"))
+                        .rich_tip(crate::ui::tips::pair("find.none", "find.no_fill_desc"));
+                    ui.add_enabled_ui(!pf.fill_none, |ui| color_button(ui, &mut pf.fill));
+                });
+            });
+            ui.end_row();
+
+            ui.checkbox(&mut pf.use_outline, tr("find.outline"))
+                .rich_tip(crate::ui::tips::keyed("find.outline"));
+            ui.add_enabled_ui(pf.use_outline, |ui| {
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut pf.outline_none, tr("find.none"))
+                        .rich_tip(crate::ui::tips::pair("find.none", "find.no_outline_desc"));
+                    ui.add_enabled_ui(!pf.outline_none, |ui| color_button(ui, &mut pf.outline));
+                });
+            });
+            ui.end_row();
+
+            ui.checkbox(&mut pf.use_width, tr("find.outline_width"))
+                .rich_tip(crate::ui::tips::keyed("find.outline_width"));
+            ui.add_enabled_ui(pf.use_width, |ui| width_field(ui, &mut pf.width));
+            ui.end_row();
+
+            ui.checkbox(&mut pf.use_font, tr("find.font"))
+                .rich_tip(crate::ui::tips::keyed("find.font"));
+            // Every font the drawing's text uses, not only the clicked
+            // word's (#2485).
+            ui.add_enabled_ui(pf.use_font, |ui| {
+                let used = app.doc().font_families_used();
+                let shown = if pf.font.trim().is_empty() {
+                    tr("find.pick_font")
+                } else {
+                    pf.font.clone()
+                };
+                crate::ui::keynav::ComboBox::from_id_salt("find_props_font")
+                    .selected_text(shown)
+                    .width(160.0)
+                    .show_ui(ui, |ui| {
+                        if used.is_empty() {
+                            ui.weak(tr("find.no_fonts_used"));
+                        }
+                        for f in &used {
+                            if ui.selectable_label(pf.font == *f, f).clicked() {
+                                pf.font = f.clone();
+                            }
+                        }
+                    })
+                    .response
+                    .rich_tip(crate::ui::tips::pair("find.font", "find.font_used_desc"));
+            });
+            ui.end_row();
+        });
+    ui.horizontal(|ui| {
+        let first = app
+            .selection
+            .first()
+            .and_then(|id| app.doc().find_shape(*id))
+            .cloned();
+        if ui
+            .add_enabled(
+                first.is_some(),
+                egui::Button::new(tr("find.from_selection")),
+            )
+            .rich_tip(crate::ui::tips::pair(
+                "find.from_selection",
+                "find.from_selection_desc",
+            ))
+            .clicked()
+        {
+            if let Some(s) = &first {
+                pf.take_from(s);
+            }
+        }
+        if ui
+            .button(tr("find.reset"))
+            .rich_tip(crate::ui::tips::pair("find.reset", "find.reset_desc"))
+            .clicked()
+        {
+            let whole = pf.whole_drawing;
+            *pf = Default::default();
+            pf.whole_drawing = whole;
+        }
+    });
+    ui.add_space(4.0);
+    ui.label(egui::RichText::new(tr("find.replace_with")).strong());
+    egui::Grid::new("find_props_replace")
+        .num_columns(2)
+        .spacing([6.0, 4.0])
+        .show(ui, |ui| {
+            ui.checkbox(&mut pf.set_fill, tr("find.fill"))
+                .rich_tip(crate::ui::tips::pair("find.fill", "find.set_fill_desc"));
+            ui.add_enabled_ui(pf.set_fill, |ui| color_button(ui, &mut pf.new_fill));
+            ui.end_row();
+            ui.checkbox(&mut pf.set_outline, tr("find.outline"))
+                .rich_tip(crate::ui::tips::pair(
+                    "find.outline",
+                    "find.set_outline_desc",
+                ));
+            ui.add_enabled_ui(pf.set_outline, |ui| color_button(ui, &mut pf.new_outline));
+            ui.end_row();
+            ui.checkbox(&mut pf.set_width, tr("find.outline_width"))
+                .rich_tip(crate::ui::tips::pair(
+                    "find.outline_width",
+                    "find.set_width_desc",
+                ));
+            ui.add_enabled_ui(pf.set_width, |ui| width_field(ui, &mut pf.new_width));
+            ui.end_row();
+            ui.checkbox(&mut pf.set_font, tr("find.font"))
+                .rich_tip(crate::ui::tips::pair("find.font", "find.set_font_desc"));
+            // The font list, to browse for the new font (#2485).
+            ui.add_enabled_ui(pf.set_font, |ui| {
+                let (pick, _) = crate::ui::font_list::font_list_live(
+                    app,
+                    ui,
+                    "find_replace_font",
+                    &pf.new_font,
+                    160.0,
+                );
+                if let Some(p) = pick {
+                    pf.new_font = p.family;
+                }
+            });
+            ui.end_row();
+            // Which characters take the new font (#2585).
+            ui.label("");
+            ui.add_enabled_ui(pf.set_font, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    use tracedraw_core::find::CharClass;
+                    for c in CharClass::ALL {
+                        let key = format!("find.chars_{}", c.key());
+                        ui.radio_value(&mut pf.font_chars, c, tr(&key))
+                            .rich_tip(crate::ui::tips::pair(&key, "find.chars_desc"));
+                    }
+                });
+            });
+            ui.end_row();
+            ui.checkbox(&mut pf.western_digits, tr("find.western_digits"))
+                .rich_tip(crate::ui::tips::pair(
+                    "find.western_digits",
+                    "find.western_digits_desc",
+                ));
+            ui.end_row();
+        });
+    let can_find = !pf.query().is_empty();
+    let can_replace = can_find && !pf.replacement().is_empty();
+    ui.add_space(4.0);
+    ui.horizontal_wrapped(|ui| {
+        if ui
+            .add_enabled(can_find, egui::Button::new(tr("find.previous")))
+            .rich_tip(crate::ui::tips::pair("find.previous", "find.previous_desc"))
+            .clicked()
+        {
+            crate::export::step_found(app, st, false);
+            st.results = st.props.hits.iter().map(|h| h.id).collect();
+        }
+        if ui
+            .add_enabled(can_find, egui::Button::new(tr("dialog.find_next")))
+            .rich_tip(crate::ui::tips::pair(
+                "dialog.find_next",
+                "docker.find_next_desc",
+            ))
+            .clicked()
+        {
+            crate::export::step_found(app, st, true);
+            st.results = st.props.hits.iter().map(|h| h.id).collect();
+        }
+        if ui
+            .add_enabled(can_find, egui::Button::new(tr("dialog.find_all")))
+            .rich_tip(crate::ui::tips::pair(
+                "dialog.find_all",
+                "docker.find_all_desc",
+            ))
+            .clicked()
+        {
+            let here = crate::export::select_found(app, st);
+            st.results = st.props.hits.iter().map(|h| h.id).collect();
+            app.status = trf(
+                "find.status_found",
+                &[
+                    ("n", &st.props.hits.len().to_string()),
+                    ("here", &here.to_string()),
+                ],
+            );
+        }
+        if ui
+            .add_enabled(can_replace, egui::Button::new(tr("dialog.replace_all")))
+            .rich_tip(crate::ui::tips::pair(
+                "dialog.replace_all",
+                "find.replace_all_desc",
+            ))
+            .clicked()
+        {
+            let n = crate::export::replace_properties(app, st);
+            st.results = st.props.hits.iter().map(|h| h.id).collect();
+            app.status = trf("find.status_replaced", &[("n", &n.to_string())]);
+        }
+    });
+    ui.label(trf(
+        "dialog.found_n",
+        &[("n", &st.props.hits.len().to_string())],
+    ));
+}
+
 fn scripts(app: &mut App, ui: &mut Ui) {
     let debugging = app.script_debug.is_some() || app.macros.run.is_some();
     // The language of the snippet: JavaScript, or VBA (run as a macro).
@@ -611,7 +1077,9 @@ fn scripts(app: &mut App, ui: &mut Ui) {
             .rich_tip_with(|| format!("JavaScript\n{}", tr("docker.js_desc")));
         let vba_r = ui
             .add_enabled(!crate::files::WEB, egui::Button::selectable(vba, "VBA"))
-            .rich_tip(tr("docker.vba_hint"));
+            .rich_tip(tr("docker.vba_hint"))
+            // Greyed in the browser with the reason (#1416).
+            .rich_disabled_tip(tr("macros.desktop_only"));
         if (js_r.clicked() && vba) || (vba_r.clicked() && !vba) {
             std::mem::swap(&mut app.script_source, &mut app.macros.other_source);
             app.macros.scripts_vba = !vba;
@@ -648,11 +1116,19 @@ fn scripts(app: &mut App, ui: &mut Ui) {
         {
             app.stop_macro();
         }
-        if !crate::files::WEB
-            && !vba
+        // In the browser the button stays, greyed with the reason (#1416).
+        if !vba
             && ui
-                .add_enabled(!debugging, egui::Button::new(tr("docker.debug")))
+                .add_enabled(
+                    !debugging && !crate::files::WEB,
+                    egui::Button::new(tr("docker.debug")),
+                )
                 .rich_tip(tr("docker.debug_hint"))
+                .rich_disabled_tip(if crate::files::WEB {
+                    tr("docker.debug_web")
+                } else {
+                    tr("docker.debug_hint")
+                })
                 .clicked()
         {
             app.start_script_debug();
@@ -693,13 +1169,13 @@ fn scripts(app: &mut App, ui: &mut Ui) {
             ))
             .clicked()
         {
-            if let Some(p) = crate::files::Dialog::new()
+            // The save dialog, a download, or the system's save picker on
+            // Android (#1402).
+            let source = app.script_source.clone();
+            crate::files::Dialog::new()
                 .add_filter(lang, &[ext])
                 .set_file_name(format!("macro.{ext}"))
-                .save_path()
-            {
-                let _ = crate::files::write(p, &app.script_source);
-            }
+                .save_bytes(app, source);
         }
         if ui
             .button(tr("docker.clear"))
@@ -719,6 +1195,17 @@ fn scripts(app: &mut App, ui: &mut Ui) {
         {
             let src = app.script_source.clone();
             app.install_script_filter(&src);
+        }
+        // A script that defines TraceDrawPlugin: its commands go to
+        // Tools > Plugins (#1802).
+        if !vba
+            && ui
+                .button(tr("docker.install_plugin"))
+                .rich_tip(crate::ui::tips::keyed("docker.install_plugin"))
+                .clicked()
+        {
+            let src = app.script_source.clone();
+            app.install_plugin(&src);
         }
     });
     if !app.settings.script_filters.is_empty() {
@@ -911,88 +1398,7 @@ fn script_editor(app: &mut App, ui: &mut Ui) {
 }
 
 fn palettes(app: &mut App, ui: &mut Ui) {
-    let n = app.palettes.len();
-    for i in 0..n {
-        let name = app.palettes[i].display_name();
-        let count = app.palettes[i].colors.len();
-        let on = app.visible_palettes.contains(&i);
-        ui.horizontal(|ui| {
-            let mut v = on;
-            if ui
-                .checkbox(&mut v, format!("{name} ({count})"))
-                .rich_tip_with(|| format!("{name}\n{}", tr("docker.palette_show_desc")))
-                .changed()
-            {
-                app.toggle_palette(i);
-            }
-            if ui
-                .small_button(tr("docker.edit"))
-                .rich_tip(crate::ui::tips::pair(
-                    "docker.edit",
-                    "docker.palette_edit_desc",
-                ))
-                .clicked()
-            {
-                app.dialog = crate::ui::dialogs::Dialog::PaletteEditor(
-                    crate::ui::dialogs::PaletteEditorState {
-                        palette: i,
-                        ..Default::default()
-                    },
-                );
-            }
-        });
-    }
-    ui.separator();
-    ui.horizontal_wrapped(|ui| {
-        if ui
-            .button(tr("menu.window.palette_open"))
-            .rich_tip(crate::ui::tips::keyed("menu.window.palette_open"))
-            .clicked()
-        {
-            app.open_palette_file();
-        }
-        if ui
-            .button(tr("menu.window.palette_from_document"))
-            .rich_tip(crate::ui::tips::keyed("menu.window.palette_from_document"))
-            .clicked()
-        {
-            app.palette_from_document();
-        }
-        if ui
-            .button(tr("menu.window.palette_from_selection"))
-            .rich_tip(crate::ui::tips::keyed("menu.window.palette_from_selection"))
-            .clicked()
-        {
-            app.palette_from_selection();
-        }
-    });
-    let dp = app.doc().palette.clone();
-    ui.label(trf(
-        "docker.document_palette_n",
-        &[("n", &dp.len().to_string())],
-    ));
-    ui.horizontal_wrapped(|ui| {
-        ui.spacing_mut().item_spacing = egui::vec2(1.0, 1.0);
-        for c in dp {
-            let [r, g, b] = c.to_rgb8();
-            let (rect, resp) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::click());
-            let resp = resp.rich_tip_with(|| {
-                format!(
-                    "{}\n{}",
-                    crate::app::color_description(c),
-                    tr("docker.palette_chip_desc")
-                )
-            });
-            ui.painter()
-                .rect_filled(rect, 1.0, egui::Color32::from_rgb(r, g, b));
-            if resp.clicked() {
-                app.apply_fill(Fill::Solid(c));
-            }
-            if resp.secondary_clicked() {
-                app.apply_outline_color(Some(c));
-            }
-        }
-    });
+    crate::ui::palette_manager::show(app, ui);
 }
 
 fn current_effect<F: Fn(&Effect) -> bool>(app: &App, f: F) -> Option<Effect> {
@@ -1009,12 +1415,16 @@ fn lens(app: &mut App, ui: &mut Ui) {
         }
     }
     let keys = crate::lens::LENS_KEYS;
-    egui::ComboBox::from_id_salt("lens_kind")
+    crate::ui::keynav::ComboBox::from_id_salt("lens_kind")
         .selected_text(tr(keys[app.lens.kind]))
         .show_ui(ui, |ui| {
             for (i, k) in keys.iter().enumerate() {
                 if ui.selectable_label(app.lens.kind == i, tr(k)).clicked() {
                     app.lens.kind = i;
+                    // Tinted grayscale starts black: plain grays (#2800).
+                    if i == 9 && app.lens.color == tracedraw_core::Color::WHITE {
+                        app.lens.color = tracedraw_core::Color::BLACK;
+                    }
                 }
             }
         })
@@ -1023,22 +1433,18 @@ fn lens(app: &mut App, ui: &mut Ui) {
     let l = &mut app.lens;
     match l.kind {
         1 => {
-            ui.add(crate::ui::Rail(
-                egui::Slider::new(&mut l.rate, -100.0..=100.0).text(tr("docker.rate")),
-            ))
-            .rich_tip(crate::ui::tips::pair(
-                "docker.rate",
-                "docker.lens_rate_desc",
-            ));
+            ui.add(crate::ui::Slider::new(&mut l.rate, -100.0..=100.0).text(tr("docker.rate")))
+                .rich_tip(crate::ui::tips::pair(
+                    "docker.rate",
+                    "docker.lens_rate_desc",
+                ));
         }
         2 | 3 | 10 => {
-            ui.add(crate::ui::Rail(
-                egui::Slider::new(&mut l.rate, 0.0..=100.0).text(tr("docker.rate")),
-            ))
-            .rich_tip(crate::ui::tips::pair(
-                "docker.rate",
-                "docker.lens_rate_desc",
-            ));
+            ui.add(crate::ui::Slider::new(&mut l.rate, 0.0..=100.0).text(tr("docker.rate")))
+                .rich_tip(crate::ui::tips::pair(
+                    "docker.rate",
+                    "docker.lens_rate_desc",
+                ));
             ui.horizontal(|ui| {
                 ui.label(tr("docker.color"));
                 color_button(ui, &mut l.color);
@@ -1053,32 +1459,38 @@ fn lens(app: &mut App, ui: &mut Ui) {
             });
         }
         5 => {
-            ui.add(crate::ui::Rail(
-                egui::Slider::new(&mut l.rate, -100.0..=100.0).text(tr("docker.rate")),
-            ))
-            .rich_tip(crate::ui::tips::pair(
-                "docker.rate",
-                "docker.lens_rate_desc",
-            ));
+            ui.add(crate::ui::Slider::new(&mut l.rate, -100.0..=100.0).text(tr("docker.rate")))
+                .rich_tip(crate::ui::tips::pair(
+                    "docker.rate",
+                    "docker.lens_rate_desc",
+                ));
         }
         6 => {
-            ui.add(crate::ui::Rail(
-                egui::Slider::new(&mut l.rate, 0.0..=100.0).text(tr("docker.palette_rotation")),
-            ))
+            ui.add(
+                crate::ui::Slider::new(&mut l.rate, 0.0..=100.0)
+                    .text(tr("docker.palette_rotation")),
+            )
             .rich_tip(crate::ui::tips::keyed("docker.palette_rotation"));
         }
         8 => {
-            ui.add(crate::ui::Rail(
-                egui::Slider::new(&mut l.amount, 1.0..=10.0).text(tr("docker.amount")),
-            ))
-            .rich_tip(crate::ui::tips::pair(
-                "docker.amount",
-                "docker.lens_amount_desc",
-            ));
+            ui.add(crate::ui::Slider::new(&mut l.amount, 1.0..=10.0).text(tr("docker.amount")))
+                .rich_tip(crate::ui::tips::pair(
+                    "docker.amount",
+                    "docker.lens_amount_desc",
+                ));
         }
-        9 | 11 => {
+        9 => {
             ui.horizontal(|ui| {
                 ui.label(tr("docker.color"));
+                color_button(ui, &mut l.color);
+            });
+        }
+        11 => {
+            // The objects beneath: their outlines and their insides (#2800).
+            ui.horizontal(|ui| {
+                ui.label(tr("docker.outline"));
+                color_button(ui, &mut l.color_to);
+                ui.label(tr("docker.fill"));
                 color_button(ui, &mut l.color);
             });
         }
@@ -1101,7 +1513,7 @@ fn lens(app: &mut App, ui: &mut Ui) {
             if let Some(i) = remove {
                 l.effects.remove(i);
             }
-            egui::ComboBox::from_id_salt("lens_fx_add")
+            crate::ui::keynav::ComboBox::from_id_salt("lens_fx_add")
                 .selected_text(tr("lens.add_effect"))
                 .height(360.0)
                 .show_ui(ui, |ui| {
@@ -1368,9 +1780,7 @@ fn blend(app: &mut App, ui: &mut Ui) {
     ui.horizontal(|ui| {
         ui.label(tr("docker.blend_object"));
         if ui
-            .add(crate::ui::Rail(
-                egui::Slider::new(&mut accel_o, -1.0..=1.0).show_value(false),
-            ))
+            .add(crate::ui::Slider::new(&mut accel_o, -1.0..=1.0).show_value(false))
             .rich_tip(crate::ui::tips::pair(
                 "docker.blend_object",
                 "docker.object_acceleration_desc",
@@ -1388,7 +1798,7 @@ fn blend(app: &mut App, ui: &mut Ui) {
         if ui
             .add_enabled(
                 !app.blend_link_accel,
-                crate::ui::Rail(egui::Slider::new(&mut accel_c, -1.0..=1.0).show_value(false)),
+                crate::ui::Slider::new(&mut accel_c, -1.0..=1.0).show_value(false),
             )
             .rich_tip(crate::ui::tips::pair(
                 "docker.blend_color",
@@ -1477,6 +1887,18 @@ fn blend(app: &mut App, ui: &mut Ui) {
             }
         }
     });
+    // A blend between two texts: their characters linked, so the word
+    // changes once in both ends (#1568).
+    if let Some((_, linked)) = app.blend_text_ends() {
+        let mut on = linked;
+        if ui
+            .checkbox(&mut on, tr("docker.blend_link_text"))
+            .rich_tip(crate::ui::tips::keyed("docker.blend_link_text"))
+            .changed()
+        {
+            app.set_blend_text_link(on);
+        }
+    }
     // Apply: two objects selected and no blend yet, a blend between them
     // with these settings (#815).
     let two = cur.is_none() && app.selection.len() == 2;
@@ -1581,58 +2003,133 @@ fn extrude(app: &mut App, ui: &mut Ui) {
 
 fn bevel(app: &mut App, ui: &mut Ui) {
     let cur = current_effect(app, |e| matches!(e, Effect::Bevel { .. }));
+    // The panel shows the selected object's own bevel every frame, so its
+    // sliders edit that bevel (after Undo, or another object picked and
+    // picked back too) instead of the last settings used.
+    if let Some(Effect::Bevel {
+        distance,
+        light_angle,
+        intensity,
+        style,
+        shadow_color,
+        light_color,
+        level,
+        emboss_color,
+        directional,
+    }) = &cur
+    {
+        {
+            app.bevel = crate::effects_ui::BevelSettings {
+                distance: *distance,
+                light_angle: *light_angle,
+                intensity: *intensity,
+                style: *style,
+                shadow_color: *shadow_color,
+                light_color: *light_color,
+                level: *level,
+                emboss_color: *emboss_color,
+                directional: *directional,
+            };
+            app.bevel_synced_to = app.selection.first().copied();
+        }
+    }
+    // The colour an own emboss colour starts from: the object's solid fill.
+    let fill_color = app
+        .selected_shapes()
+        .first()
+        .and_then(|s| match &s.fill {
+            tracedraw_core::Fill::Solid(c) => Some(*c),
+            _ => None,
+        })
+        .unwrap_or(Color::rgb8(128, 128, 128));
+    use crate::ui::docker_form::{row, section};
+    use crate::ui::tips::{keyed, pair};
     let b = &mut app.bevel;
     let mut changed = false;
+    // The style: three equal buttons across the panel.
     ui.horizontal(|ui| {
-        changed |= ui
-            .selectable_label(b.style == 0, tr("docker.soft_edge"))
-            .rich_tip(crate::ui::tips::keyed("docker.soft_edge"))
-            .clicked()
-            .then(|| b.style = 0)
-            .is_some();
-        changed |= ui
-            .selectable_label(b.style == 1, tr("docker.emboss"))
-            .rich_tip(crate::ui::tips::keyed("docker.emboss"))
-            .clicked()
-            .then(|| b.style = 1)
-            .is_some();
+        let w = (ui.available_width() - ui.spacing().item_spacing.x * 2.0) / 3.0;
+        for (style, key) in [
+            (0, "docker.soft_edge"),
+            (1, "docker.emboss"),
+            (2, "docker.bevel_center"),
+        ] {
+            let pick = ui
+                .add_sized(
+                    [w, 26.0],
+                    egui::Button::selectable(b.style == style, tr(key)),
+                )
+                .rich_tip(keyed(key))
+                .clicked();
+            if pick && b.style != style {
+                b.style = style;
+                changed = true;
+            }
+        }
     });
     changed |= ui
-        .add(crate::ui::Rail(
-            egui::Slider::new(&mut b.distance, 0.1..=50.0)
-                .text(tr("docker.distance"))
+        .add(
+            crate::ui::Slider::new(&mut b.distance, 0.1..=50.0)
+                .text(tr("docker.depth"))
                 .logarithmic(true),
-        ))
-        .rich_tip(crate::ui::tips::pair(
-            "docker.distance",
-            "docker.bevel_distance_desc",
-        ))
+        )
+        .rich_tip(pair("docker.depth", "docker.bevel_distance_desc"))
         .changed();
+    let mut level = i32::from(b.level);
+    let top = i32::from(tracedraw_core::live::MAX_BEVEL_LEVEL);
+    if ui
+        .add(
+            crate::ui::Slider::new(&mut level, 1..=top)
+                .text(tr("docker.level"))
+                .integer(),
+        )
+        .rich_tip(keyed("docker.level"))
+        .changed()
+    {
+        b.level = level.clamp(1, top) as u8;
+        changed = true;
+    }
+    section(ui, None);
     changed |= ui
-        .add(crate::ui::Rail(
-            egui::Slider::new(&mut b.light_angle, 0.0..=360.0)
+        .add(
+            crate::ui::Slider::new(&mut b.light_angle, 0.0..=360.0)
                 .text(tr("docker.light_angle"))
                 .suffix("°"),
-        ))
-        .rich_tip(crate::ui::tips::pair(
-            "docker.light_angle",
-            "extrude.light_angle_desc",
-        ))
+        )
+        .rich_tip(pair("docker.light_angle", "extrude.light_angle_desc"))
         .changed();
     changed |= ui
-        .add(crate::ui::Rail(
-            egui::Slider::new(&mut b.intensity, 0.0..=100.0).text(tr("docker.intensity")),
-        ))
-        .rich_tip(crate::ui::tips::pair(
-            "docker.intensity",
-            "extrude.light_intensity_desc",
-        ))
+        .add(crate::ui::Slider::new(&mut b.intensity, 0.0..=100.0).text(tr("docker.intensity")))
+        .rich_tip(pair("docker.intensity", "extrude.light_intensity_desc"))
         .changed();
-    ui.horizontal(|ui| {
-        ui.label(tr("docker.shadow_color"));
-        changed |= color_button(ui, &mut b.shadow_color);
-        ui.label(tr("docker.light_color"));
+    changed |= ui
+        .checkbox(&mut b.directional, tr("docker.bevel_smooth_light"))
+        .rich_tip(keyed("docker.bevel_smooth_light"))
+        .changed();
+    section(ui, None);
+    row(ui, &tr("docker.light_color"), |ui| {
         changed |= color_button(ui, &mut b.light_color);
+    });
+    row(ui, &tr("docker.shadow_color"), |ui| {
+        changed |= color_button(ui, &mut b.shadow_color);
+    });
+    row(ui, &tr("docker.emboss_color"), |ui| {
+        let mut own = b.emboss_color.is_some();
+        if ui
+            .checkbox(&mut own, "")
+            .rich_tip(keyed("docker.emboss_color"))
+            .changed()
+        {
+            // Switched on, it starts from the object's fill, the colour the
+            // band was toned from.
+            b.emboss_color = own.then_some(b.emboss_color.unwrap_or(fill_color));
+            changed = true;
+        }
+        if let Some(c) = &mut b.emboss_color {
+            changed |= color_button(ui, c);
+        } else {
+            dim(ui, tr("docker.emboss_color_off"));
+        }
     });
     let bv = app.bevel.clone();
     let effect = Effect::Bevel {
@@ -1642,9 +2139,14 @@ fn bevel(app: &mut App, ui: &mut Ui) {
         style: bv.style,
         shadow_color: bv.shadow_color,
         light_color: bv.light_color,
+        level: bv.level,
+        emboss_color: bv.emboss_color,
+        directional: bv.directional,
     };
     let has = !app.selection.is_empty();
-    if cur.is_some() && changed {
+    // Live: a change shows on the selection at once, also before Apply
+    // (#1034); Remove takes it away.
+    if has && changed {
         app.push_effect(effect.clone(), true);
     }
     ui.horizontal(|ui| {
@@ -1688,11 +2190,11 @@ fn brush_strokes(app: &mut App, ui: &mut Ui) {
     let u = app.units;
     let mut w = u.from_mm(app.media_width);
     if ui
-        .add(crate::ui::Rail(
-            egui::Slider::new(&mut w, 0.1..=u.from_mm(50.0))
+        .add(
+            crate::ui::Slider::new(&mut w, 0.1..=u.from_mm(50.0))
                 .text(tr("docker.stroke_width"))
                 .logarithmic(true),
-        ))
+        )
         .rich_tip(crate::ui::tips::pair(
             "docker.stroke_width",
             "docker.media_width_desc",
@@ -1703,11 +2205,11 @@ fn brush_strokes(app: &mut App, ui: &mut Ui) {
     }
     match app.media_mode {
         crate::media::MediaMode::Calligraphic => {
-            ui.add(crate::ui::Rail(
-                egui::Slider::new(&mut app.media_angle, 0.0..=180.0)
+            ui.add(
+                crate::ui::Slider::new(&mut app.media_angle, 0.0..=180.0)
                     .text(tr("docker.nib_angle"))
                     .suffix("°"),
-            ))
+            )
             .rich_tip(crate::ui::tips::keyed("docker.nib_angle"));
         }
         crate::media::MediaMode::Preset | crate::media::MediaMode::Brush => {
@@ -1735,18 +2237,20 @@ fn brush_strokes(app: &mut App, ui: &mut Ui) {
                     }
                 }
             });
-            ui.add(crate::ui::Rail(
-                egui::Slider::new(&mut app.media_spacing, 1.0..=50.0).text(tr("docker.spacing")),
-            ))
+            ui.add(
+                crate::ui::Slider::new(&mut app.media_spacing, 1.0..=50.0)
+                    .text(tr("docker.spacing")),
+            )
             .rich_tip(crate::ui::tips::pair(
                 "docker.spacing",
                 "docker.spray_spacing_desc",
             ));
         }
         crate::media::MediaMode::Expression => {
-            ui.add(crate::ui::Rail(
-                egui::Slider::new(&mut app.media_pressure, 0.0..=1.0).text(tr("docker.pressure")),
-            ))
+            ui.add(
+                crate::ui::Slider::new(&mut app.media_pressure, 0.0..=1.0)
+                    .text(tr("docker.pressure")),
+            )
             .rich_tip(crate::ui::tips::pair(
                 "docker.pressure",
                 "docker.pressure_desc",
@@ -1755,10 +2259,10 @@ fn brush_strokes(app: &mut App, ui: &mut Ui) {
     }
     ui.horizontal(|ui| {
         ui.label(tr("docker.smoothing"));
-        ui.add(crate::ui::Rail(egui::Slider::new(
+        ui.add(crate::ui::Slider::new(
             &mut app.media_smoothing,
             0.0..=100.0,
-        )))
+        ))
         .rich_tip(crate::ui::tips::pair(
             "docker.smoothing",
             "docker.smoothing_desc",
@@ -1805,7 +2309,7 @@ fn icon_btn(
     resp.rich_tip(tip)
 }
 
-/// Bitmaps > Bitmap Mask: ten colour slots (in use, colour, tolerance),
+/// Image > Color Mask: ten colour slots (in use, colour, tolerance),
 /// hide or show the colours in use, Apply on the selected bitmaps.
 fn bitmap_mask(app: &mut App, ui: &mut Ui) {
     use crate::bitmap_fx::MASK_SLOTS;
@@ -1813,26 +2317,14 @@ fn bitmap_mask(app: &mut App, ui: &mut Ui) {
         .selected_shapes()
         .iter()
         .any(|s| matches!(s.kind, ShapeKind::Bitmap { .. }));
-    // A colour sampled with the eyedropper goes into the picked slot.
-    if app.mask.picking {
-        if let Some(c) = app.eyedropper_color {
-            if app.mask.seen != Some(c) {
-                let i = app.mask.picked.min(MASK_SLOTS - 1);
-                app.mask.slots[i].color = c;
-                app.mask.slots[i].on = true;
-                app.mask.seen = Some(c);
-            }
-        }
-    }
     ui.horizontal(|ui| {
         if icon_btn(ui, true, &tr("docker.mask_eyedropper"), |p, r, c| {
             crate::ui::icons::draw(p, r, crate::tools::Tool::ColorEyedropper, c)
         })
         .clicked()
         {
-            app.mask.picking = true;
-            app.mask.seen = app.eyedropper_color;
-            app.set_tool(crate::tools::Tool::ColorEyedropper);
+            // The next click on the drawing picks the slot's colour.
+            app.start_mask_color_pick();
         }
         if icon_btn(ui, has_bitmap, &tr("docker.mask_from_bitmap"), |p, r, c| {
             // A bitmap with a grid of samples.
@@ -1909,16 +2401,13 @@ fn bitmap_mask(app: &mut App, ui: &mut Ui) {
         })
         .clicked()
         {
+            // The save dialog, a download, or the system's save picker on
+            // Android (#1402).
             let text = app.mask.to_text();
-            if let Some(path) = crate::files::Dialog::new()
+            crate::files::Dialog::new()
                 .add_filter(tr("docker.mask_file"), &["msk"])
                 .set_file_name("mask.msk".to_string())
-                .save_path()
-            {
-                if let Err(e) = crate::files::write(&path, text) {
-                    app.status = e.to_string();
-                }
-            }
+                .save_bytes(app, text);
         }
         if icon_btn(ui, true, &tr("docker.mask_open"), |p, r, c| {
             crate::ui::icons::draw_action(p, r, crate::ui::icons::Action::Open, c)
@@ -1971,9 +2460,11 @@ fn bitmap_mask(app: &mut App, ui: &mut Ui) {
         let i = app.mask.picked.min(MASK_SLOTS - 1);
         let tol = &mut app.mask.slots[i].tolerance;
         let tip = crate::ui::tips::pair("docker.tolerance", "docker.mask_tolerance_desc");
-        ui.add(crate::ui::Rail(
-            egui::Slider::new(tol, 0..=100).show_value(false),
-        ))
+        ui.add(
+            crate::ui::Slider::new(tol, 0..=100)
+                .show_value(false)
+                .reserve(80.0),
+        )
         .rich_tip(&tip);
         ui.add(
             crate::ui::field::NumField::new(tol)
@@ -2029,20 +2520,30 @@ fn object_data(app: &mut App, ui: &mut Ui) {
         ui.label("");
         ui.end_row();
         for (i, (k, v)) in data.iter_mut().enumerate() {
-            changed |= ui
-                .add(egui::TextEdit::singleline(k).desired_width(90.0))
-                .rich_tip(crate::ui::tips::pair(
-                    "docker.field",
-                    "docker.data_field_desc",
-                ))
-                .lost_focus();
-            changed |= ui
-                .add(egui::TextEdit::singleline(v).desired_width(120.0))
-                .rich_tip(crate::ui::tips::pair(
-                    "docker.value",
-                    "docker.data_value_desc",
-                ))
-                .lost_focus();
+            let field = egui::Id::new(("object_data_field", i));
+            let (_, typed) = kept_text(ui, field, s.id, &k.clone(), |ui, text| {
+                ui.add(egui::TextEdit::singleline(text).desired_width(90.0))
+                    .rich_tip(crate::ui::tips::pair(
+                        "docker.field",
+                        "docker.data_field_desc",
+                    ))
+            });
+            if let Some(name) = typed {
+                *k = name;
+                changed = true;
+            }
+            let field = egui::Id::new(("object_data_value", i));
+            let (_, typed) = kept_text(ui, field, s.id, &v.clone(), |ui, text| {
+                ui.add(egui::TextEdit::singleline(text).desired_width(120.0))
+                    .rich_tip(crate::ui::tips::pair(
+                        "docker.value",
+                        "docker.data_value_desc",
+                    ))
+            });
+            if let Some(value) = typed {
+                *v = value;
+                changed = true;
+            }
             if ui
                 .small_button("x")
                 .rich_tip(crate::ui::tips::keyed("docker.data_remove"))
@@ -2097,23 +2598,71 @@ fn object_data(app: &mut App, ui: &mut Ui) {
     }
 }
 
+/// The Hyperlink field of the Links and Bookmarks docker.
+pub fn hyperlink_field_id() -> egui::Id {
+    egui::Id::new("links.hyperlink")
+}
+
+/// A text field showing `stored` that keeps what is typed into it while
+/// it has the focus: `add` draws it on the text to show. Gives the text
+/// shown and, on the frame the field is left (Enter, Tab, a click
+/// elsewhere), the text typed when it differs from `stored`. `of` names
+/// what the field shows the text of (the object selected), so text typed
+/// for one object is never shown or stored for another.
+pub(crate) fn kept_text(
+    ui: &mut Ui,
+    field: egui::Id,
+    of: impl std::hash::Hash + std::fmt::Debug,
+    stored: &str,
+    add: impl FnOnce(&mut Ui, &mut String) -> egui::Response,
+) -> (String, Option<String>) {
+    // One text kept a field, with what it was typed for: text kept for
+    // another object is dropped, never shown or stored later.
+    let key = field.with("typed");
+    let of = egui::Id::new(of);
+    let kept = ui
+        .data(|d| d.get_temp::<(egui::Id, String)>(key))
+        .filter(|(typed_for, _)| *typed_for == of)
+        .map(|(_, text)| text);
+    let was_typed = kept.is_some();
+    let mut text = kept.unwrap_or_else(|| stored.to_string());
+    let resp = add(ui, &mut text);
+    if resp.has_focus() {
+        ui.data_mut(|d| d.insert_temp(key, (of, text.clone())));
+        return (text, None);
+    }
+    ui.data_mut(|d| d.remove::<(egui::Id, String)>(key));
+    let typed = ((was_typed || resp.lost_focus() || resp.changed()) && text != stored)
+        .then(|| text.clone());
+    (text, typed)
+}
+
 fn links(app: &mut App, ui: &mut Ui) {
     let shapes = app.selected_shapes();
     if shapes.is_empty() {
         dim(ui, tr("docker.select_one_object"));
         return;
     }
-    let mut link = shapes[0].link.clone().unwrap_or_default();
+    let stored = shapes[0].link.clone().unwrap_or_default();
     ui.label(tr("docker.hyperlink"));
-    if ui
-        .text_edit_singleline(&mut link)
-        .rich_tip(crate::ui::tips::keyed("docker.hyperlink_field"))
-        .lost_focus()
-    {
+    // What is typed stays in the field until it is left (#2191): the
+    // field showed the stored link again on every frame, so no key
+    // typed into it ever stayed.
+    let (link, typed) = kept_text(
+        ui,
+        hyperlink_field_id(),
+        shapes[0].id,
+        &stored,
+        |ui, text| {
+            ui.add(egui::TextEdit::singleline(text).id(hyperlink_field_id()))
+                .rich_tip(crate::ui::tips::keyed("docker.hyperlink_field"))
+        },
+    );
+    if let Some(link) = typed {
         let ids = app.selection.clone();
         app.run(Command::SetLink {
             shapes: ids,
-            link: (!link.is_empty()).then_some(link.clone()),
+            link: (!link.is_empty()).then_some(link),
         });
     }
     ui.horizontal(|ui| {
@@ -2196,6 +2745,7 @@ fn symbols(app: &mut App, ui: &mut Ui) {
         .enumerate()
         .map(|(i, s)| (i, s.name.clone()))
         .collect();
+    let editing = app.symbol_edit_index();
     for (i, name) in syms {
         ui.horizontal(|ui| {
             ui.label(&name);
@@ -2208,6 +2758,29 @@ fn symbols(app: &mut App, ui: &mut Ui) {
                 .clicked()
             {
                 app.insert_symbol_instance(i);
+            }
+            // Edit: the symbol's objects edited on the page; Finish while
+            // they are (#1980).
+            if editing == Some(i) {
+                if ui
+                    .small_button(tr("clip.finish"))
+                    .rich_tip(tr("menu.object.symbol_finish"))
+                    .clicked()
+                {
+                    app.finish_clip_frame_edit();
+                }
+            } else if ui
+                .add_enabled(
+                    app.clip_frame_edit.is_none(),
+                    egui::Button::new(tr("docker.edit_symbol")).small(),
+                )
+                .rich_tip(crate::ui::tips::pair(
+                    "docker.edit_symbol",
+                    "docker.edit_symbol_desc",
+                ))
+                .clicked()
+            {
+                app.edit_symbol(i);
             }
             let uses = app
                 .doc()
@@ -2282,7 +2855,7 @@ fn pages(app: &mut App, ui: &mut Ui) {
             );
             if i > 0
                 && ui
-                    .small_button("\u{25B2}")
+                    .small_button("\u{23F6}")
                     .rich_tip(crate::ui::tips::keyed("docker.page_move_up"))
                     .clicked()
             {
@@ -2293,7 +2866,7 @@ fn pages(app: &mut App, ui: &mut Ui) {
             }
             if i + 1 < n
                 && ui
-                    .small_button("\u{25BC}")
+                    .small_button("\u{23F7}")
                     .rich_tip(crate::ui::tips::keyed("docker.page_move_down"))
                     .clicked()
             {
@@ -2451,10 +3024,20 @@ fn corners(app: &mut App, ui: &mut Ui) {
         );
     }
     app.corners = c;
-    // Preview what Apply would do.
+    ui.add_space(6.0);
+    ui.checkbox(&mut app.settings.corners_preview, tr("dialog.preview"))
+        .rich_tip(crate::ui::tips::pair(
+            "dialog.preview",
+            "docker.corners_preview_desc",
+        ));
+    // Preview what Apply would do, unless Preview is off (#1759).
     let preview = app.corner_preview();
     let valid = !preview.is_empty();
-    app.docker_preview = preview;
+    app.docker_preview = if app.settings.corners_preview {
+        preview
+    } else {
+        Vec::new()
+    };
     ui.add_space(8.0);
     if ui
         .add_enabled(valid, egui::Button::new(tr("docker.apply")))
@@ -2489,7 +3072,7 @@ fn join_curves(app: &mut App, ui: &mut Ui) {
     let mut j = app.join_settings;
     ui.horizontal(|ui| {
         ui.label(tr("docker.join_mode"));
-        egui::ComboBox::from_id_salt("join_mode")
+        crate::ui::keynav::ComboBox::from_id_salt("join_mode")
             .selected_text(label(j.mode))
             .width(140.0)
             .show_ui(ui, |ui| {
@@ -2554,12 +3137,17 @@ fn join_curves(app: &mut App, ui: &mut Ui) {
     }
 }
 
-/// Fit Objects to Path: spacing (even or a fixed distance), the start
-/// offset, turning the objects with the path and the direction, with a
-/// preview of where the objects go; the last selected object is the path
-/// (#1027).
+/// Fit Objects to Path: spacing (even or a fixed distance, between
+/// centres or edges), the start and end offsets, copies (a number, or as
+/// many as fit), the placement on, above or below the path, the rotation
+/// (with the path or fixed), the order and the direction, with a preview
+/// of where the objects go; the last selected object is the path (#1027,
+/// #1091, #1196).
 fn fit_to_path(app: &mut App, ui: &mut Ui) {
-    use crate::ops2::FitSpacing;
+    use crate::ops2::{
+        FitAlign, FitCopies, FitMeasure, FitOrder, FitPlace, FitReference, FitRotation, FitSpacing,
+        FitSpin,
+    };
     let u = app.units;
     app.fit_path_follow_selection();
     let mut f = app.fit_path;
@@ -2583,20 +3171,91 @@ fn fit_to_path(app: &mut App, ui: &mut Ui) {
             }
         });
     };
+    let combo = |ui: &mut Ui, key: &str, id: &str, current: &str, add: &mut dyn FnMut(&mut Ui)| {
+        ui.horizontal(|ui| {
+            ui.label(tr(key));
+            let r = crate::ui::keynav::ComboBox::from_id_salt(id)
+                .selected_text(current)
+                .show_ui(ui, |ui| add(ui))
+                .response;
+            let rect = r.rect;
+            r.rich_tip(crate::ui::tips::pair(key, &format!("{key}_desc")));
+            ui.ctx().data_mut(|d| d.insert_temp(fit_combo_id(id), rect));
+        });
+    };
+    let radio = |ui: &mut Ui, on: bool, key: &str| -> bool {
+        ui.radio(on, tr(key))
+            .rich_tip(crate::ui::tips::keyed(key))
+            .clicked()
+    };
     dim(ui, tr("docker.fit_to_path_hint"));
+    let check = |ui: &mut Ui, on: &mut bool, key: &str| {
+        ui.checkbox(on, tr(key))
+            .rich_tip(crate::ui::tips::keyed(key));
+    };
+    let deg =
+        |ui: &mut Ui, key: &str, v: &mut f64, range: std::ops::RangeInclusive<f64>, on: bool| {
+            ui.horizontal(|ui| {
+                ui.add_enabled(on, egui::Label::new(tr(key)));
+                ui.add_enabled(
+                    on,
+                    crate::ui::field::NumField::new(v)
+                        .range(range)
+                        .max_decimals(2)
+                        .suffix("°"),
+                )
+                .rich_tip(crate::ui::tips::keyed(key))
+                .rich_disabled_tip(crate::ui::tips::keyed(key));
+            });
+        };
+
+    // What is fitted: the objects (all but the last selected) and the path.
+    ui.strong(tr("docker.fit_to_path_objects"));
+    let objects = app.selection.len().saturating_sub(1);
+    dim(
+        ui,
+        trf(
+            "docker.fit_to_path_selected",
+            &[("n", &objects.to_string())],
+        ),
+    );
+    check(
+        ui,
+        &mut f.keep_originals,
+        "docker.fit_to_path_keep_originals",
+    );
+    check(ui, &mut f.group, "docker.fit_to_path_group");
+    ui.add_space(4.0);
+    ui.strong(tr("docker.fit_to_path_path"));
+    if app.selection.len() >= 2 {
+        let used = app
+            .selection
+            .last()
+            .and_then(|id| app.doc().find_shape(*id))
+            .map(|s| crate::ui::dockers::kind_name(&s.kind))
+            .unwrap_or_default();
+        dim(
+            ui,
+            trf("docker.fit_to_path_object_used", &[("kind", &used)]),
+        );
+    }
+    check(ui, &mut f.contiguous, "docker.fit_to_path_contiguous");
+    ui.add_space(4.0);
+
     ui.strong(tr("docker.fit_to_path_spacing"));
-    ui.radio_value(
-        &mut f.spacing,
-        FitSpacing::Even,
-        tr("docker.fit_to_path_even"),
-    )
-    .rich_tip(crate::ui::tips::keyed("docker.fit_to_path_even"));
-    ui.radio_value(
-        &mut f.spacing,
-        FitSpacing::Distance,
-        tr("docker.fit_to_path_distance"),
-    )
-    .rich_tip(crate::ui::tips::keyed("docker.fit_to_path_distance"));
+    if radio(ui, f.spacing == FitSpacing::Even, "docker.fit_to_path_even") {
+        f.spacing = FitSpacing::Even;
+        if f.copies == FitCopies::Fill {
+            f.copies = FitCopies::None;
+        }
+    }
+    if radio(
+        ui,
+        f.spacing == FitSpacing::Distance,
+        "docker.fit_to_path_distance",
+    ) {
+        f.spacing = FitSpacing::Distance;
+    }
     if f.spacing == FitSpacing::Distance {
         field(
             ui,
@@ -2605,17 +3264,300 @@ fn fit_to_path(app: &mut App, ui: &mut Ui) {
             0.0,
         );
     }
+    let measures = [
+        (FitMeasure::Centres, "docker.fit_to_path_centres"),
+        (FitMeasure::Edges, "docker.fit_to_path_edges"),
+    ];
+    let cur = measures
+        .iter()
+        .find(|(m, _)| *m == f.measure)
+        .map_or(String::new(), |(_, k)| tr(k));
+    combo(
+        ui,
+        "docker.fit_to_path_measure",
+        "fit_path_measure",
+        &cur,
+        &mut |ui| {
+            for (m, k) in measures {
+                ui.selectable_value(&mut f.measure, m, tr(k));
+            }
+        },
+    );
     field(ui, "docker.fit_to_path_offset", &mut f.offset, -100_000.0);
-    ui.checkbox(&mut f.rotate, tr("docker.fit_to_path_rotate"))
-        .rich_tip(crate::ui::tips::keyed("docker.fit_to_path_rotate"));
+    field(
+        ui,
+        "docker.fit_to_path_end_offset",
+        &mut f.end_offset,
+        -100_000.0,
+    );
+    if f.spacing == FitSpacing::Distance {
+        let aligns = [
+            (FitAlign::Start, "docker.fit_to_path_align_start"),
+            (FitAlign::Middle, "docker.fit_to_path_align_middle"),
+            (FitAlign::End, "docker.fit_to_path_align_end"),
+        ];
+        let cur = aligns
+            .iter()
+            .find(|(a, _)| *a == f.align)
+            .map_or(String::new(), |(_, k)| tr(k));
+        combo(
+            ui,
+            "docker.fit_to_path_align",
+            "fit_path_align",
+            &cur,
+            &mut |ui| {
+                for (a, k) in aligns {
+                    ui.selectable_value(&mut f.align, a, tr(k));
+                }
+            },
+        );
+    }
+
+    ui.add_space(4.0);
+    ui.strong(tr("docker.fit_to_path_copies"));
+    if radio(
+        ui,
+        f.copies == FitCopies::None,
+        "docker.fit_to_path_copies_none",
+    ) {
+        f.copies = FitCopies::None;
+    }
+    ui.horizontal(|ui| {
+        if radio(
+            ui,
+            f.copies == FitCopies::Count,
+            "docker.fit_to_path_copies_count",
+        ) {
+            f.copies = FitCopies::Count;
+        }
+        let mut c = f.count as f64;
+        if ui
+            .add_enabled(
+                f.copies == FitCopies::Count,
+                crate::ui::field::NumField::new(&mut c)
+                    .range(1.0..=crate::fit_path::MAX_PLACED as f64)
+                    .max_decimals(0),
+            )
+            .rich_tip(crate::ui::tips::keyed("docker.fit_to_path_copies_count"))
+            .changed()
+        {
+            f.count = c.round().clamp(1.0, crate::fit_path::MAX_PLACED as f64) as u32;
+        }
+    });
+    let fill_ok = f.spacing == FitSpacing::Distance;
+    if ui
+        .add_enabled(
+            fill_ok,
+            egui::RadioButton::new(
+                f.copies == FitCopies::Fill,
+                tr("docker.fit_to_path_copies_fill"),
+            ),
+        )
+        .rich_tip(crate::ui::tips::keyed("docker.fit_to_path_copies_fill"))
+        .rich_disabled_tip(crate::ui::tips::keyed("docker.fit_to_path_copies_fill"))
+        .clicked()
+    {
+        f.copies = FitCopies::Fill;
+    }
+
+    ui.add_space(4.0);
+    ui.strong(tr("docker.fit_to_path_place"));
+    let places = [
+        (FitPlace::On, "docker.fit_to_path_on"),
+        (FitPlace::Above, "docker.fit_to_path_above"),
+        (FitPlace::Below, "docker.fit_to_path_below"),
+    ];
+    for (p, k) in places {
+        if radio(ui, f.place == p, k) {
+            f.place = p;
+        }
+    }
+    if f.place != FitPlace::On {
+        field(ui, "docker.fit_to_path_side", &mut f.side, -100_000.0);
+    }
+
+    ui.add_space(4.0);
+    let refs = [
+        (
+            FitReference::CenterOfRotation,
+            "docker.fit_to_path_ref_pivot",
+        ),
+        (FitReference::BoundingBox, "docker.fit_to_path_ref_box"),
+        (FitReference::OutlineBox, "docker.fit_to_path_ref_outline"),
+    ];
+    let cur = refs
+        .iter()
+        .find(|(r, _)| *r == f.reference)
+        .map_or(String::new(), |(_, k)| tr(k));
+    combo(
+        ui,
+        "docker.fit_to_path_reference",
+        "fit_path_reference",
+        &cur,
+        &mut |ui| {
+            for (r, k) in refs {
+                ui.selectable_value(&mut f.reference, r, tr(k));
+            }
+        },
+    );
+    ui.horizontal(|ui| {
+        let boxed = f.reference != FitReference::CenterOfRotation;
+        ui.add_enabled(boxed, egui::Label::new(tr("docker.fit_to_path_origin")));
+        origin_grid(ui, &mut f.origin, boxed);
+    });
+
+    ui.add_space(4.0);
+    ui.strong(tr("docker.fit_to_path_rotation"));
+    if radio(
+        ui,
+        f.rotation == FitRotation::Follow,
+        "docker.fit_to_path_rotate",
+    ) {
+        f.rotation = FitRotation::Follow;
+    }
+    if radio(
+        ui,
+        f.rotation == FitRotation::Fixed,
+        "docker.fit_to_path_fixed",
+    ) {
+        f.rotation = FitRotation::Fixed;
+    }
+    ui.horizontal(|ui| {
+        ui.label(tr("docker.fit_to_path_angle"));
+        ui.add_sized(
+            [90.0, 22.0],
+            crate::ui::field::NumField::new(&mut f.angle)
+                .range(-360.0..=360.0)
+                .max_decimals(2)
+                .suffix("°"),
+        )
+        .rich_tip(crate::ui::tips::keyed("docker.fit_to_path_angle"));
+    });
+
+    check(
+        ui,
+        &mut f.ignore_rotation,
+        "docker.fit_to_path_ignore_rotation",
+    );
+
+    ui.add_space(4.0);
+    ui.strong(tr("docker.fit_to_path_modify_rotation"));
+    let styles = [
+        (FitSpin::None, "docker.fit_to_path_spin_none"),
+        (FitSpin::Uniform, "docker.fit_to_path_spin_uniform"),
+        (FitSpin::Progressive, "docker.fit_to_path_spin_progressive"),
+        (FitSpin::Jitter, "docker.fit_to_path_spin_jitter"),
+        (
+            FitSpin::ProgressiveJitter,
+            "docker.fit_to_path_spin_progressive_jitter",
+        ),
+    ];
+    let cur = styles
+        .iter()
+        .find(|(st, _)| *st == f.spin)
+        .map_or(String::new(), |(_, k)| tr(k));
+    combo(
+        ui,
+        "docker.fit_to_path_spin",
+        "fit_path_spin",
+        &cur,
+        &mut |ui| {
+            for (st, k) in styles {
+                ui.selectable_value(&mut f.spin, st, tr(k));
+            }
+        },
+    );
+    let [start_on, spin_on, revs_on, range_on, dir_on] = f.spin_fields();
+    deg(
+        ui,
+        "docker.fit_to_path_start_angle",
+        &mut f.start_angle,
+        -360.0..=360.0,
+        start_on,
+    );
+    deg(
+        ui,
+        "docker.fit_to_path_spin_angle",
+        &mut f.spin_angle,
+        -3600.0..=3600.0,
+        spin_on,
+    );
+    ui.horizontal(|ui| {
+        ui.add_enabled(
+            revs_on,
+            egui::Label::new(tr("docker.fit_to_path_revolutions")),
+        );
+        ui.add_enabled(
+            revs_on,
+            crate::ui::field::NumField::new(&mut f.revolutions)
+                .range(-100.0..=100.0)
+                .max_decimals(2),
+        )
+        .rich_tip(crate::ui::tips::keyed("docker.fit_to_path_revolutions"))
+        .rich_disabled_tip(crate::ui::tips::keyed("docker.fit_to_path_revolutions"));
+    });
+    deg(
+        ui,
+        "docker.fit_to_path_range",
+        &mut f.range,
+        0.0..=180.0,
+        range_on,
+    );
+    ui.add_enabled(
+        dir_on,
+        egui::Checkbox::new(&mut f.clockwise, tr("docker.fit_to_path_clockwise")),
+    )
+    .rich_tip(crate::ui::tips::keyed("docker.fit_to_path_clockwise"))
+    .rich_disabled_tip(crate::ui::tips::keyed("docker.fit_to_path_clockwise"));
+
+    ui.add_space(4.0);
+    let orders = [
+        (FitOrder::AsSelected, "docker.fit_to_path_order_selected"),
+        (FitOrder::Reversed, "docker.fit_to_path_order_reversed"),
+        (FitOrder::LeftToRight, "docker.fit_to_path_order_ltr"),
+        (FitOrder::RightToLeft, "docker.fit_to_path_order_rtl"),
+        (FitOrder::LargestFirst, "docker.fit_to_path_order_largest"),
+        (FitOrder::SmallestFirst, "docker.fit_to_path_order_smallest"),
+        (FitOrder::Alternate, "docker.fit_to_path_order_alternate"),
+        (FitOrder::TopToBottom, "docker.fit_to_path_order_ttb"),
+        (FitOrder::BottomToTop, "docker.fit_to_path_order_btt"),
+        (FitOrder::TallToShort, "docker.fit_to_path_order_tall"),
+        (FitOrder::ShortToTall, "docker.fit_to_path_order_short"),
+        (FitOrder::WideToNarrow, "docker.fit_to_path_order_wide"),
+        (FitOrder::NarrowToWide, "docker.fit_to_path_order_narrow"),
+        (FitOrder::Random, "docker.fit_to_path_order_random"),
+    ];
+    let cur = orders
+        .iter()
+        .find(|(o, _)| *o == f.order)
+        .map_or(String::new(), |(_, k)| tr(k));
+    // The order sorts the objects fitted: one object (or one group) has
+    // none to change, so the list is greyed and says why (#2740).
+    let sortable = objects >= 2;
+    ui.add_enabled_ui(sortable, |ui| {
+        combo(
+            ui,
+            "docker.fit_to_path_order",
+            "fit_path_order",
+            &cur,
+            &mut |ui| {
+                for (o, k) in orders {
+                    ui.selectable_value(&mut f.order, o, tr(k));
+                }
+            },
+        );
+    });
+    if !sortable {
+        dim(ui, tr("docker.fit_to_path_order_needs_two"));
+    }
     ui.checkbox(&mut f.reverse, tr("docker.fit_to_path_reverse"))
         .rich_tip(crate::ui::tips::keyed("docker.fit_to_path_reverse"));
     if f != app.fit_path {
         app.fit_path_edited = true;
     }
     app.fit_path = f;
-    let preview = app.fit_objects_to_path_preview();
     let valid = app.selection.len() >= 2;
+    let preview = app.fit_objects_to_path_preview().to_vec();
     app.docker_preview.extend(preview);
     ui.add_space(8.0);
     if ui
@@ -2632,6 +3574,66 @@ fn fit_to_path(app: &mut App, ui: &mut Ui) {
     {
         app.fit_objects_to_path();
         app.docker_preview.clear();
+    }
+}
+
+/// Where the Fit Objects to Path panel drew its list `id` (such as
+/// "fit_path_order") last frame, kept in the context's data.
+pub(crate) fn fit_combo_id(id: &str) -> egui::Id {
+    egui::Id::new(("fit_path_combo", id))
+}
+
+/// The id of square `i` (0 to 8, left to right from the top row) of the
+/// Fit Objects to Path panel's Origin grid.
+pub(crate) fn fit_origin_id(i: u8) -> egui::Id {
+    egui::Id::new(("fit_path_origin", i))
+}
+
+/// Nine small squares, three by three, joined by lines: the point of each
+/// object's box that goes on the path. The chosen one is filled.
+fn origin_grid(ui: &mut Ui, origin: &mut u8, enabled: bool) {
+    const CELL: f32 = 12.0;
+    let (rect, _) =
+        ui.allocate_exact_size(egui::vec2(CELL * 3.0, CELL * 3.0), egui::Sense::hover());
+    let color = if enabled {
+        crate::theme::Tokens::text()
+    } else {
+        crate::theme::Tokens::text_dim()
+    };
+    let stroke = egui::Stroke::new(1.0, color);
+    let centre = |i: u8| {
+        rect.min
+            + egui::vec2(
+                (i % 3) as f32 * CELL + CELL / 2.0,
+                (i / 3) as f32 * CELL + CELL / 2.0,
+            )
+    };
+    let p = ui.painter().clone();
+    for row in 0..3u8 {
+        p.line_segment([centre(row * 3), centre(row * 3 + 2)], stroke);
+        p.line_segment([centre(row), centre(row + 6)], stroke);
+    }
+    let tip = crate::ui::tips::keyed("docker.fit_to_path_origin");
+    for i in 0..9u8 {
+        let r = egui::Rect::from_center_size(centre(i), egui::vec2(7.0, 7.0));
+        let sense = if enabled {
+            egui::Sense::click()
+        } else {
+            egui::Sense::hover()
+        };
+        let resp = ui.interact(r.expand(2.0), fit_origin_id(i), sense);
+        let fill = if *origin == i {
+            color
+        } else if resp.hovered() && enabled {
+            crate::theme::Tokens::tool_hover()
+        } else {
+            crate::theme::Tokens::panel()
+        };
+        p.rect_filled(r, 0.0, fill);
+        p.rect_stroke(r, 0.0, stroke, egui::StrokeKind::Inside);
+        if resp.rich_tip(tip.clone()).clicked() && enabled {
+            *origin = i;
+        }
     }
 }
 
@@ -2703,5 +3705,191 @@ mod blend_docker_tests {
             "{:?}",
             s.effects
         );
+    }
+}
+
+#[cfg(test)]
+mod find_properties_tests {
+    use super::*;
+    use tracedraw_core::{Color, Fill};
+
+    /// The Find and Replace panel, Properties: Find All selects the red
+    /// objects of the page, Next goes to the red one on page 2, and
+    /// Replace All turns every red fill green in one undo step (#1071).
+    #[test]
+    fn find_and_replace_by_fill_color_across_pages() {
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        app.show_welcome = false;
+        let red = Color::cmyk_pct(0.0, 100.0, 100.0, 0.0);
+        let green = Color::rgb8(0, 200, 0);
+        let rect = |app: &mut App, x: f64, c: Color| {
+            let id = app
+                .new_shape(tracedraw_core::ShapeKind::Rect {
+                    rect: tracedraw_core::geometry::Rect::new(x, 10.0, x + 20.0, 30.0),
+                    radius: 0.0,
+                    corners: None,
+                })
+                .expect("rect");
+            app.select(vec![id]);
+            app.apply_fill(Fill::Solid(c));
+            id
+        };
+        let a = rect(&mut app, 10.0, red);
+        let b = rect(&mut app, 50.0, Color::rgb8(0, 0, 255));
+        app.add_page();
+        let c = rect(&mut app, 10.0, red);
+        app.goto_page(0);
+        app.select(vec![a]);
+        let run = |app: &mut App, events: Vec<egui::Event>| -> Vec<(String, egui::Rect)> {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(360.0, 900.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| find_replace(app, ui));
+            out.textures_delta.clear();
+            out.shapes
+                .iter()
+                .filter_map(|s| match &s.shape {
+                    egui::Shape::Text(t) => {
+                        Some((t.galley.text().to_string(), t.visual_bounding_rect()))
+                    }
+                    _ => None,
+                })
+                .collect()
+        };
+        let click = |app: &mut App, key: &str| {
+            let texts = run(app, Vec::new());
+            let at = texts
+                .iter()
+                .find(|(t, _)| *t == tr(key))
+                .map(|(_, r)| r.center())
+                .unwrap_or_else(|| panic!("{key} shown"));
+            let button = |pressed| egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            };
+            run(app, vec![egui::Event::PointerMoved(at)]);
+            run(app, vec![button(true)]);
+            run(app, vec![button(false)]);
+        };
+        app.find_state.kind = 2;
+        run(&mut app, Vec::new());
+        // From Selection takes the red fill of `a`.
+        click(&mut app, "find.from_selection");
+        assert!(app.find_state.props.use_fill);
+        assert_eq!(app.find_state.props.fill, red);
+        // Look for the fill only.
+        app.find_state.props.use_outline = false;
+        app.find_state.props.use_font = false;
+        click(&mut app, "dialog.find_all");
+        assert_eq!(app.selection, vec![a], "the red object of this page");
+        app.find_state.props.whole_drawing = true;
+        click(&mut app, "dialog.find_all");
+        assert_eq!(app.find_state.props.hits.len(), 2);
+        click(&mut app, "dialog.find_next");
+        click(&mut app, "dialog.find_next");
+        assert_eq!(app.page_index(), 1, "Next goes to the second page");
+        assert_eq!(app.selection, vec![c]);
+        click(&mut app, "find.previous");
+        assert_eq!(app.page_index(), 0);
+        assert_eq!(app.selection, vec![a]);
+        // Replace red with green everywhere.
+        app.find_state.props.set_fill = true;
+        app.find_state.props.new_fill = green;
+        click(&mut app, "dialog.replace_all");
+        let fill = |app: &App, id| app.doc().find_shape(id).map(|s| s.fill.clone());
+        assert_eq!(fill(&app, a), Some(Fill::Solid(green)));
+        assert_eq!(fill(&app, c), Some(Fill::Solid(green)));
+        assert_eq!(fill(&app, b), Some(Fill::Solid(Color::rgb8(0, 0, 255))));
+        app.undo();
+        assert_eq!(fill(&app, a), Some(Fill::Solid(red)), "one undo step");
+        assert_eq!(fill(&app, c), Some(Fill::Solid(red)));
+    }
+}
+
+#[cfg(test)]
+mod corners_docker_tests {
+    use super::*;
+
+    /// The Corners panel's Preview box hides the dashed result on the
+    /// drawing and brings it back; it is on at first, kept in the
+    /// settings, and Apply still works with it off (#1759).
+    #[test]
+    fn the_corners_preview_can_be_turned_off() {
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        let id = app
+            .new_shape(tracedraw_core::ShapeKind::Rect {
+                rect: tracedraw_core::geometry::Rect::new(10.0, 10.0, 60.0, 40.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("rect");
+        app.select(vec![id]);
+        let run = |app: &mut App, events: Vec<egui::Event>| -> Vec<(String, egui::Rect)> {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(300.0, 600.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| corners(app, ui));
+            out.textures_delta.clear();
+            out.shapes
+                .iter()
+                .filter_map(|s| match &s.shape {
+                    egui::Shape::Text(t) => {
+                        Some((t.galley.text().to_string(), t.visual_bounding_rect()))
+                    }
+                    _ => None,
+                })
+                .collect()
+        };
+        let click = |app: &mut App, key: &str| {
+            let texts = run(app, Vec::new());
+            let at = texts
+                .iter()
+                .find(|(t, _)| *t == tr(key))
+                .map(|(_, r)| r.center())
+                .unwrap_or_else(|| panic!("{key} shown"));
+            let button = |pressed| egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            };
+            run(app, vec![egui::Event::PointerMoved(at)]);
+            run(app, vec![button(true)]);
+            run(app, vec![button(false)]);
+        };
+        assert!(app.settings.corners_preview, "on at first");
+        assert!(crate::settings::Settings::default().corners_preview);
+        run(&mut app, Vec::new());
+        assert_eq!(app.docker_preview.len(), 1, "the preview shows");
+        click(&mut app, "dialog.preview");
+        assert!(!app.settings.corners_preview, "the box turned it off");
+        run(&mut app, Vec::new());
+        assert!(app.docker_preview.is_empty(), "no preview on the drawing");
+        // Kept in the settings file.
+        let json = serde_json::to_string(&app.settings).expect("settings");
+        let back: crate::settings::Settings = serde_json::from_str(&json).expect("read back");
+        assert!(!back.corners_preview);
+        // Apply is still offered and works without the preview.
+        click(&mut app, "docker.apply");
+        assert!(matches!(
+            app.doc().find_shape(id).map(|s| &s.kind),
+            Some(tracedraw_core::ShapeKind::Path { .. })
+        ));
+        click(&mut app, "dialog.preview");
+        assert!(app.settings.corners_preview, "and back on");
     }
 }

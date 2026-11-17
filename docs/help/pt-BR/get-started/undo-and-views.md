@@ -11,7 +11,9 @@ zoom e de qualquer posição. Zoom e deslocamento nunca alteram o desenho.
   os passos. Escolha um passo para desfazer ou refazer todas as alterações até
   ele.
 - [[menu.edit.repeat]] aplica o último comando de novo, por exemplo ao próximo
-  objeto que você selecionar.
+  objeto que você selecionar. Um deslocamento, redimensionamento ou rotação é
+  repetido em torno do centro, lado ou canto do próprio objeto selecionado, que
+  gira ou cresce onde está em vez de sair do lugar.
 
 ### O painel Desfazer {#undo-docker}
 
@@ -57,7 +59,9 @@ objetos.
 - Use as barras de rolagem, que cobrem a página e o tamanho de uma página ao
   redor.
 - Mantenha pressionado o botão Navegador, no canto entre as barras de rolagem,
-  e mova o ponteiro sobre a miniatura da página.
+  ou a tecla <kbd>N</kbd>, e mova o ponteiro sobre a miniatura da página.
+  [[menu.view > menu.view.navigator]] abre a miniatura até um clique: clique
+  nela para ir até lá, em outro lugar ou <kbd>Esc</kbd> para fechá-la.
 - <kbd>PgUp</kbd> e <kbd>PgDn</kbd> vão para a página anterior e a próxima.
 
 Para que a roda role em vez de mudar o zoom, mude a ação da roda do mouse na

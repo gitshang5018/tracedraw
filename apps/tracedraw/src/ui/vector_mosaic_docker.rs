@@ -78,17 +78,15 @@ pub fn vector_mosaic(app: &mut App, ui: &mut Ui) {
     {
         let s = &mut app.vector_mosaic;
         row(ui, &tr("docker.vector_mosaic_density"), |ui| {
-            ui.add(crate::ui::Rail(
-                egui::Slider::new(&mut s.density, 1.0..=100.0).max_decimals(1),
-            ))
-            .rich_tip(crate::ui::tips::keyed("docker.vector_mosaic_density"));
+            ui.add(crate::ui::Slider::new(&mut s.density, 1.0..=100.0).max_decimals(1))
+                .rich_tip(crate::ui::tips::keyed("docker.vector_mosaic_density"));
         });
         row(ui, &tr("docker.vector_mosaic_scale"), |ui| {
-            ui.add(crate::ui::Rail(
-                egui::Slider::new(&mut s.scale, 0.1..=5.0)
+            ui.add(
+                crate::ui::Slider::new(&mut s.scale, 0.1..=5.0)
                     .step_by(0.05)
                     .max_decimals(2),
-            ))
+            )
             .rich_tip(crate::ui::tips::keyed("docker.vector_mosaic_scale"));
         });
         row(ui, &tr("docker.vector_mosaic_angle"), |ui| {
@@ -127,7 +125,7 @@ pub fn vector_mosaic(app: &mut App, ui: &mut Ui) {
         });
         section(ui, Some(&tr("docker.vector_mosaic_tracking")));
         row(ui, &tr("docker.vector_mosaic_method"), |ui| {
-            egui::ComboBox::from_id_salt("vector_mosaic_method")
+            crate::ui::keynav::ComboBox::from_id_salt("vector_mosaic_method")
                 .selected_text(tr(s.method.key()))
                 .width(ui.available_width().clamp(120.0, 190.0))
                 .show_ui(ui, |ui| {
@@ -151,7 +149,7 @@ pub fn vector_mosaic(app: &mut App, ui: &mut Ui) {
     let mut select = false;
     row(ui, &tr("docker.vector_mosaic_shape"), |ui| {
         let s = &mut app.vector_mosaic;
-        egui::ComboBox::from_id_salt("vector_mosaic_shape")
+        crate::ui::keynav::ComboBox::from_id_salt("vector_mosaic_shape")
             .selected_text(tr(s.shape.key()))
             .width(110.0)
             .show_ui(ui, |ui| {

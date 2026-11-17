@@ -1,5 +1,7 @@
 # Ombre esterne
 
+> *Traduzione automatica: questa pagina può essere meno aggiornata della versione inglese.*
+
 Un'ombra esterna è un'ombra morbida sotto un oggetto, come se fluttuasse sopra
 la pagina. È una copia della sagoma dell'oggetto nel colore dell'ombra,
 spostata e sfocata.
@@ -8,6 +10,22 @@ spostata e sfocata.
 
 1. Scegli lo strumento [[tool.drop_shadow]] dal menu a comparsa Effetti.
 2. Trascina da un oggetto fino al punto in cui deve cadere l'ombra.
+
+Anche le cornici di ritaglio e i gruppi possono avere ombre: una cornice
+proietta l'ombra di ciò che mostra (il riempimento e il contenuto al suo
+interno), un gruppo l'ombra di ciascun oggetto. Un clic su un'ombra con lo
+strumento [[tool.pick]] seleziona il suo oggetto; con lo strumento
+[[tool.drop_shadow]] mostra le maniglie dell'ombra, e trascinare l'ombra la
+sposta. Le ombre compaiono nei PDF esportati e stampati, con colore, opacità e
+sfumatura.
+
+Un doppio clic su un'ombra con lo strumento [[tool.pick]] sceglie lo strumento
+[[tool.drop_shadow]] per il suo oggetto, con le maniglie dell'ombra sulla pagina
+e le sue impostazioni nella barra delle proprietà. Lo stesso si ottiene con un
+clic destro su un oggetto con ombra e [[context.edit_shadow]], oppure con lo
+stesso pulsante nella sezione dell'ombra del pannello Proprietà. Un oggetto con
+un'ombra propria si seleziona sempre con un clic su di esso, anche dove vi cade
+sopra l'ombra di un altro oggetto.
 
 ## Impostazioni {#settings}
 

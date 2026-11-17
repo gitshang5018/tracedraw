@@ -26,6 +26,11 @@ define como o programa funciona. Escolha uma página na lista à esquerda.
 - [[options.full_screen_preview]]: [[options.show_page_border]].
 - [[options.wheel_default_action]]: [[options.wheel_zoom]] (de início) ou
   [[options.wheel_scroll]].
+- [[options.open_view]]: [[options.open_view_page]] (de início),
+  [[options.open_view_objects]], [[options.open_view_width]],
+  [[options.open_view_height]], [[options.open_view_actual]], [[options.open_view_percent]] ou
+  [[options.open_view_saved]] (a página, o lugar e o zoom guardados a cada
+  vez que um arquivo do TraceDraw é salvo).
 - [[options.ruler_calibration]]: segure uma régua contra a tela e mude a
   [[options.screen_resolution]] até as marcas coincidirem, para que o zoom de
   100% mostre tamanhos reais. [[options.reset]] devolve 96.
@@ -104,6 +109,7 @@ A página tem cinco abas.
 - [[options.paragraph_text]]: [[menu.text.show_text_frames]],
   [[menu.text.use_hyphenation]] e os [[options.hyphenation_patterns]]
   (incluídos, ou um dicionário de hifenização do seu idioma).
+  - [[options.default_tab_spacing]]: para onde salta <kbd>Tab</kbd> num parágrafo sem paradas de tabulação próprias (12,7 mm, meia polegada).
 - [[docker.fonts]]: [[options.show_recent_fonts]] no topo das listas de fontes,
   o [[options.recent_font_count]] (5, até 20) e o
   [[options.font_sample_size]].
@@ -114,3 +120,13 @@ A página tem cinco abas.
   [Dicionários](../text/writing-tools.md#dictionaries).
 - [[dialog.autocorrect]]: o que é corrigido ao digitar; veja
   [Correção automática](../text/writing-tools.md#autocorrect).
+
+## [[benchmark.title]] {#benchmark}
+
+[[menu.help > menu.help.benchmark]]: [[menu.help.benchmark_tip]]
+
+[[benchmark.intro]]
+
+[[benchmark.compare_how]]
+
+[[options.light_zoom]]: [[options.light_zoom_tip]]

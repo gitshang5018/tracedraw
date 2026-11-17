@@ -10,35 +10,40 @@
 //! with the origin at the page centre.
 //!
 //! What is written: pages (after a master page with the guide, desktop and
-//! grid layers files carry), layers with names, rectangles, ellipses (with
+//! grid layers files carry, and before version 14 the drawing's own
+//! layers too, which pages then list in the master's order), layers with
+//! names, rectangles, ellipses (with
 //! arcs), curves for every other outline (polygons, paths, tables, symbols,
 //! expanded effects), groups, artistic text with one font, size and style
 //! per run, bitmaps (24-bit), solid and fountain fills, outlines (width,
 //! caps, joins, dashes, nib, "scale with object", "behind fill") and
-//! uniform transparency. A clip frame holding one bitmap becomes that
-//! bitmap with the frame as its crop path; other clip frames a group of
-//! the frame outline and the contents. Rectangles of versions 15 and later
+//! uniform transparency. From version 11 a clip frame is a clip
+//! container: the frame object names, in argument 8005, a group of the
+//! document's `LIST clpt` that holds the contents (#1222). Before 11 a
+//! clip frame holding one bitmap becomes that bitmap with the frame as
+//! its crop path, other clip frames a group of the frame outline and
+//! the contents. Rectangles of versions 15 and later
 //! are written as the curve they draw (their corner records are not
 //! understood well enough to write).
 
 use crate::parse::{
-    ARG_COORDS, ARG_FILL, ARG_NAME, ARG_OPACITY, ARG_OUTLINE, ARG_STYLE, ARG_STYLE_STRING,
-    OBJ_ARTISTIC_TEXT, OBJ_BITMAP, OBJ_CURVE, OBJ_ELLIPSE, OBJ_RECT,
+    ARG_CLIP_CONTENTS, ARG_COORDS, ARG_FILL, ARG_GUIDE_LINE, ARG_NAME, ARG_OPACITY, ARG_OUTLINE,
+    ARG_STYLE, ARG_STYLE_STRING, OBJ_ARTISTIC_TEXT, OBJ_BITMAP, OBJ_CURVE, OBJ_ELLIPSE, OBJ_GUIDE,
+    OBJ_PARAGRAPH_TEXT, OBJ_RECT,
 };
 use std::collections::HashMap;
 use std::io::Write as _;
 use tracedraw_core::{
     document::{Shape, ShapeKind, Symbol, TextSpan},
-    geometry::{Affine, BezPath, PathEl, Point, Rect, Shape as _},
+    geometry::{Affine, BezPath, PathEl, Point, Rect, Shape as _, Size},
     style::{FountainKind, LineCap, LineJoin},
     Color, Document, Fill, Pattern, SharedBytes, Stroke, TextAlign,
 };
 
-/// The oldest version whose files written here are known to open in the
-/// program that wrote the samples (by a user's tests: text from 16 in
-/// files of versions 7 to 22, and every object and text look of files
-/// of versions 14 and 15); older ones are offered as experimental.
-pub const CHECKED_SINCE: u16 = 14;
+/// The oldest version saved: every version the writer produces, from 7.
+/// Versions 7 to 13 are written as the files of those versions saved by
+/// the program that reads them are (#1139).
+pub const CHECKED_SINCE: u16 = OLDEST_VERSION;
 /// The newest version known to open there (versions 23 to 27, written
 /// with the records of version 22, opened with their images in that
 /// program's 2026 release, a user's test of 2026-10-18).
@@ -50,9 +55,7 @@ pub const NEWEST_VERSION: u16 = 27;
 /// The version [`document_to_cdr`] writes: the newest.
 pub const DEFAULT_VERSION: u16 = NEWEST_VERSION;
 
-/// The versions the app and the command line save in: those checked to
-/// open in other programs. The older ones the writer can produce stay
-/// for testing (`TRACEDRAW_CDR_EXPERIMENTAL=1` on the command line).
+/// The versions the app, the command line and the MCP server save in.
 pub fn checked_versions() -> std::ops::RangeInclusive<u16> {
     CHECKED_SINCE..=CHECKED_UNTIL
 }
@@ -85,6 +88,22 @@ pub struct Previews {
     pub fonts: Vec<FontFace>,
     /// Embed the faces whose licence allows it.
     pub embed_fonts: bool,
+    /// The drop shadows of the drawing's objects as pictures, rendered
+    /// by the caller. Each is written as a bitmap object beneath its
+    /// object, which any reader shows; for a visible object whose shadow
+    /// has no picture here the writer draws one from the object's outline
+    /// at [`SHADOW_DPI`] ([`crate::shadow_image`]), so a drawing written
+    /// without previews keeps its shadows too.
+    pub shadows: Vec<ShadowPicture>,
+    /// Write paragraph text as paragraph text, its frame and the text
+    /// flowing in it (#1226), where the files can hold it as TraceDraw
+    /// draws it. Off by default: the other program's 27.2 release hangs
+    /// or closes on opening every file TraceDraw wrote so (versions 20
+    /// and 27, #1698), while the same drawings with the text as artistic
+    /// text open; so paragraph text goes out as one artistic text per
+    /// line, as before 0.33, until a layout of the frame records is
+    /// confirmed in that program.
+    pub paragraph_frames: bool,
 }
 
 /// A PNG file and its size in pixels.
@@ -95,12 +114,44 @@ pub struct Png {
     pub height: u32,
 }
 
+/// Dots per inch of the shadow pictures the writer draws itself when the
+/// caller passed none (the resolution `tracedraw_io::SHADOW_PICTURE_DPI`
+/// gives the app's and the command line's): enough for a printed page,
+/// small enough for a file.
+pub const SHADOW_DPI: f64 = 150.0;
+
+/// The picture of one object's drop shadow (see [`Previews::shadows`]):
+/// the shadow alone, with transparency, over the page rectangle `rect`.
+#[derive(Debug, Clone)]
+pub struct ShadowPicture {
+    pub shape: tracedraw_core::ShapeId,
+    pub rect: Rect,
+    pub png: Png,
+}
+
 /// [`document_to_cdr_version`] with the pictures stored beside the drawing
 /// (version 16 and later).
 pub fn document_to_cdr_version_with(doc: &Document, version: u16, previews: &Previews) -> Vec<u8> {
     let v = Ver(version.clamp(OLDEST_VERSION, NEWEST_VERSION));
+    let meshes = mesh_fills_kept_as_one_colour(doc);
+    if meshes > 0 {
+        log::warn!(
+            "{meshes} mesh fill(s) written to .cdr as one colour each (mesh fill records are not written)"
+        );
+    }
+    // The guidelines every page shows (#1928) count as each page's; those
+    // all pages share go to the master page's guides layer
+    // ([`master_guides`]), as files hold them.
+    let guided = master_guides_on_pages(doc);
+    let doc = guided.as_ref().unwrap_or(doc);
+    let on_pages = master_objects_on_pages(doc);
+    let doc = on_pages.as_ref().unwrap_or(doc);
     let mut w = Writer::new(v, &doc.symbols, &doc.title);
+    w.shadow_pictures = previews.shadows.iter().map(|p| (p.shape, p)).collect();
     w.faces = &previews.fonts;
+    w.tech = fonts::face_tech(&previews.fonts);
+    w.embed_fonts = previews.embed_fonts;
+    w.paragraph_frames = previews.paragraph_frames;
     let mut tree = w.document(doc);
     let font_ids = w.fonts.clone();
     if !v.zip() {
@@ -127,21 +178,127 @@ pub fn document_to_cdr_version_with(doc: &Document, version: u16, previews: &Pre
     if !v.zip() {
         tree.push(chunk(b"sumi", sumi(v, doc)));
     }
-    // Blends drawn as groups open live again in TraceDraw from the
-    // package's own member (#986); a RIFF file has no place for it.
-    let own = crate::kept_blends::encode(&w.blends, &w.static_ids);
-    let own = own.as_deref();
-    if v.redirects() {
+    // Blends drawn as groups (#986) and objects drawn with their effects
+    // and shadows (#1031) open live again in TraceDraw from the package's
+    // own members; a RIFF file has no place for them.
+    let mut own: Vec<(&str, Vec<u8>)> = Vec::new();
+    if let Some(b) = crate::kept_blends::encode(&w.blends, &w.static_ids) {
+        own.push((crate::kept_blends::MEMBER, b));
+    }
+    if let Some(b) = crate::kept_effects::encode(&w.effects) {
+        own.push((crate::kept_effects::MEMBER, b));
+    }
+    // Object data, a clone's link to its master among it (#2879).
+    if let Some(b) = crate::kept_data::encode(doc, &w.static_ids) {
+        own.push((crate::kept_data::MEMBER, b));
+    }
+    let out = if v.redirects() {
         let (root, files) = pack_redirected(v, &tree);
-        zip_v16(v, doc, &root, &files, previews, &font_ids, own)
+        zip_v16(
+            v,
+            doc,
+            &root,
+            &files,
+            previews,
+            (&font_ids, &w.run_faces),
+            &own,
+        )
     } else {
         let riff = riff_file(v.form(), &tree);
         if v.zip() {
-            zip_v14(v, doc, &riff, previews, own)
+            zip_v14(v, doc, &riff, previews, &own)
         } else {
             riff
         }
+    };
+    // Every file the tests write passes the checker (`check.rs`).
+    #[cfg(test)]
+    crate::check::assert_clean(&out, v.0);
+    out
+}
+
+/// Whether master layer `l` goes onto the master page's desktop layer:
+/// it shows behind every page and holds no page number field (whose
+/// copies show each page's own number). The files of #1775 (one drawing
+/// saved in each version from 7 to 21) hold objects that show behind
+/// every page on that layer.
+fn on_master_desktop(l: &tracedraw_core::document::Layer) -> bool {
+    l.scope == tracedraw_core::MasterScope::All
+        && !l.in_front
+        && !l.shapes.iter().any(Shape::holds_page_number)
+}
+
+/// The drawing with the objects of its other master layers on the pages,
+/// or `None` when no such layer holds any. No `.cdr` file seen has
+/// objects on a master layer in front of the pages or on some pages
+/// only, so the record a reader would take for one is not known; each
+/// page such a master layer shows on gets a layer of that name with
+/// copies of its objects instead, in front of the page's own layers or
+/// behind them as it is drawn there (#1132), so every page looks as it
+/// did. The first page keeps the objects' ids, later pages' copies get
+/// new ones. The master layers behind every page stay (see
+/// [`on_master_desktop`]).
+fn master_objects_on_pages(doc: &Document) -> Option<Document> {
+    use tracedraw_core::id::IdSource;
+    fn reid(s: &Shape, ids: &mut IdSource) -> Shape {
+        let mut c = s.clone();
+        c.id = ids.shape();
+        match &mut c.kind {
+            ShapeKind::Group { children } => {
+                *children = children.iter().map(|k| reid(k, ids)).collect();
+            }
+            ShapeKind::ClipFrame { frame, contents } => {
+                **frame = reid(frame, ids);
+                *contents = contents.iter().map(|k| reid(k, ids)).collect();
+            }
+            _ => {}
+        }
+        c
     }
+    if doc
+        .master
+        .iter()
+        .all(|l| l.shapes.is_empty() || on_master_desktop(l))
+    {
+        return None;
+    }
+    let mut out = doc.clone();
+    let mut ids = out.ids().clone();
+    let mut seen: Vec<tracedraw_core::LayerId> = Vec::new();
+    for (i, page) in doc.pages.iter().enumerate() {
+        let Ok(drawn) = doc.layers_drawn_for_page(page.id) else {
+            continue;
+        };
+        let mut layers = Vec::with_capacity(drawn.len());
+        for l in drawn {
+            let master = doc.master.iter().find(|m| m.id == l.id);
+            let Some(master) = master else {
+                layers.push(l.into_owned());
+                continue;
+            };
+            if l.shapes.is_empty() || on_master_desktop(master) {
+                continue;
+            }
+            let first = !seen.contains(&l.id);
+            if first {
+                seen.push(l.id);
+            }
+            let mut copy = l.into_owned();
+            copy.id = ids.layer();
+            copy.in_front = false;
+            copy.scope = tracedraw_core::MasterScope::All;
+            if !first {
+                copy.shapes = copy.shapes.iter().map(|s| reid(s, &mut ids)).collect();
+            }
+            layers.push(copy);
+        }
+        if let Some(p) = out.pages.get_mut(i) {
+            p.layers = layers;
+        }
+    }
+    out.master.retain(on_master_desktop);
+    out.set_ids(ids);
+    Some(out)
 }
 
 /// Coordinate units per millimetre.
@@ -150,6 +307,17 @@ const UNITS_PER_MM: f64 = 254000.0 / 25.4;
 const SINCE_13: u32 = 1300;
 /// The `trfd` record tag of version 18 and later.
 const TRFD_SINCE_18: u32 = 1740;
+/// Palette ids (property 7 of a colour) files hold after their default
+/// palettes' CMYK and RGB colours.
+const PALETTE_CMYK: [u8; 16] = [
+    0xcb, 0x19, 0xcd, 0xcc, 0x75, 0x46, 0x5e, 0x4a, 0x8b, 0xda, 0xd0, 0xbb, 0xba, 0xab, 0x8a, 0xf0,
+];
+const PALETTE_RGB: [u8; 16] = [
+    0x5b, 0x96, 0x73, 0x82, 0xfd, 0xa0, 0x34, 0x4e, 0xa5, 0xc2, 0xa2, 0x97, 0x20, 0x14, 0x6c, 0xc3,
+];
+/// Argument 19170 of objects in versions 9 to 15: 1, 1, 0 on every
+/// shape, text and picture of the files seen.
+const ARG_DRAW_FLAGS: u32 = 19170;
 /// Halftone screen of fills and outlines: 45 degrees, 60 lines per inch.
 const SCREEN: [u8; 8] = [0x40, 0xa5, 0xae, 0x02, 0x3c, 0x00, 0x00, 0x00];
 /// A full ellipse is stored from 270 to 270 degrees (millionths).
@@ -158,18 +326,51 @@ const FULL_ELLIPSE_ANGLE: i32 = 270_000_000;
 const ARG_ID: u32 = 100;
 const ARG_LAYER_COLOR: u32 = 2000;
 const ARG_PROPS: u32 = 12000;
+/// The rotation angle (millionths of a degree) of objects and groups in
+/// versions 7 to 12: 0, the transform holding any turn.
+const ARG_ROTATION: u32 = 12030;
 const ARG_GUID: u32 = 40050;
+/// A page's own size (width and height in coordinate units) in its
+/// `lgob`, when it differs from the document's (version 16+ files).
+const ARG_PAGE_SIZE: u32 = 19130;
 /// On text objects of version 16 and later: 1.
 const ARG_TEXT_LINK: u32 = 16015;
 /// Version 21: 1 hides the object (it is kept but not drawn).
 const ARG_HIDDEN: u32 = 16016;
 /// On guides layers of version 17 and later: 2.
 const ARG_GUIDES_MODE: u32 = 16001;
+/// On guidelines of versions 25 to 27: 2.
+const ARG_GUIDE_KIND: u32 = 40160;
+/// On the group of `LIST clpt` holding a clip container's contents: the
+/// group's number (its `spnd`) plus one, in every clip group of the files
+/// of versions 11, 14, 25, 26 and 27 (2 for the group numbered 1).
+pub(crate) const ARG_CLIP_GROUP: u32 = 3500;
+/// On a clip container (version 27): a 16-byte id of its own, and 0.
+const ARG_CLIP_GUID: u32 = 40001;
+const ARG_CLIP_ZERO: u32 = 40200;
+/// The flags of a `clpt` group ([0, 8, 0x80, 0x10]) and byte 2 of a clip
+/// container's flags (0x10), as a version 27 file holds them.
+const CLIP_GROUP_FLAGS: [u8; 4] = [0, 8, 0x80, 0x10];
+const CLIP_CONTAINER_FLAG: u8 = 0x10;
+/// The flags of a drawing's own layer (byte 3: a layer; byte 0 the kind,
+/// byte 2 set on a master layer).
+const PLAIN_LAYER_FLAGS: [u8; 4] = [0, 0, 0, 0x98];
 /// Layer kinds stored as the `loda` object type of a layer.
 const LAYER_PLAIN: u32 = 0;
 const LAYER_GRID: u32 = 0x0b;
 const LAYER_GUIDES: u32 = 0x0c;
 const LAYER_DESKTOP: u32 = 0x11;
+/// The record of a live blend (`LIST lnkg` of object type 7 between its
+/// two ends, #1192): argument 3000 holds the step count, the spacing,
+/// the centres of the two ends and the acceleration (88 bytes); the
+/// argument beside it is 12020 (u32 2 and 8 bytes) in files of versions
+/// 9 and 13 and 12040 (u32 1 and 12 bytes) in a version 25 file.
+const ARG_BLEND: u32 = 3000;
+const ARG_BLEND_LINK: u32 = 12020;
+const ARG_BLEND_LINK_SINCE_23: u32 = 12040;
+/// The flags of a blend's linked group ([1, 0, 0, 0x18] in the version
+/// 9 and 25 files; version 13 has byte 1 = 8).
+const BLEND_GROUP_FLAGS: [u8; 4] = [1, 0, 0, 0x18];
 /// The first text style; text paragraphs refer to the one of their
 /// alignment (`style_for`).
 const STYLE_ID: u32 = 1;
@@ -227,16 +428,41 @@ impl Ver {
     fn tagged(self) -> bool {
         self.0 >= 13
     }
-    /// The zero 12000 on layers, groups and objects, flag 0x40 on pages
-    /// and a master page with an object box, as files from version 13 on
-    /// have them (a version 13 file without them closed the program that
-    /// wrote the samples).
-    fn props(self) -> bool {
-        self.0 >= 13
+    /// The zero 12000 on layers, flag 0x40 on pages and a master page with
+    /// an object box, as files from version 14 on have them. Version 13
+    /// files saved by three releases of the program that reads them have
+    /// none of the three (the master page is flagged [0, 0, 1, 0x90] with
+    /// a zero box and no `obbx`, and only objects and groups carry the
+    /// 12000); they were written from 13 until 2026-10-29, after a test
+    /// whose file differed from those releases' in many other ways too.
+    fn page_props(self) -> bool {
+        self.0 >= 14
+    }
+    /// Objects and groups carry argument 12030 (the rotation angle, 0),
+    /// as every object and group of files of versions 7 to 12 does (two
+    /// drawings saved in each of those versions by the program that reads
+    /// them, a real version 11 file with 550 such records and the shapes
+    /// of a real version 9 file); no file from 13 on has it.
+    fn rotation_arg(self) -> bool {
+        (7..=12).contains(&self.0)
     }
     /// A ZIP archive around the RIFF stream.
     fn zip(self) -> bool {
         self.0 >= 14
+    }
+    /// Colours carry their palette id (property 7): files of versions 14
+    /// and 15 saved by the program that reads them, and all later ones.
+    /// Version 13 files of that program's own release hold the 76-byte
+    /// solid fill without it.
+    fn palette_ids(self) -> bool {
+        self.0 >= 14
+    }
+    /// Objects carry argument 19170 (1, 1, 0), as every shape, text and
+    /// picture of files of versions 7 to 15 saved by the program that
+    /// reads them does (versions 7 and 8 since 2026-10-29: two drawings
+    /// saved in them, issue #1139); from 16 none has it.
+    fn draw_flags(self) -> bool {
+        (7..=15).contains(&self.0)
     }
     /// Payloads in data files, reached through redirect records.
     fn redirects(self) -> bool {
@@ -245,6 +471,57 @@ impl Ver {
     /// Names and text in UTF-16 (8-bit before version 12).
     fn unicode(self) -> bool {
         self.0 >= 12
+    }
+    /// Clip frames go out as clip containers (argument 8005 naming a
+    /// group of `LIST clpt`): the layout read from a version 12 file and
+    /// written as files of versions 25 and 27 hold it. A version 11 file
+    /// (#896) holds its clip frames the same way (2026-10-30, #1226);
+    /// before 11 none was seen.
+    fn clip_containers(self) -> bool {
+        self.0 >= 11
+    }
+    /// The container's own id (40001) and zero (40200), as files of
+    /// versions 25 to 27 have them; the containers of the version 11 file
+    /// have neither.
+    fn clip_container_ids(self) -> bool {
+        self.0 >= 12
+    }
+    /// Blends go out live: an empty `LIST lnkg` of object type 7 between
+    /// the two end objects, as files of versions 9, 13 and 25 hold them
+    /// (#1192). Versions 7 and 8 keep the group of the start object and
+    /// its steps.
+    fn live_blends(self) -> bool {
+        self.0 >= 9
+    }
+    /// The argument beside the blend's step argument: 12020 with u32 2
+    /// in the version 9 and 13 files, 12040 with u32 1 in the version 25
+    /// file; which version changed it is not known (from 23, where the
+    /// records are those of the 2021 to 2026 releases, here).
+    fn blend_link_arg(self) -> (u32, Vec<u8>) {
+        if self.0 >= 23 {
+            (
+                ARG_BLEND_LINK_SINCE_23,
+                [1u32, 0, 0, 0]
+                    .iter()
+                    .flat_map(|x| x.to_le_bytes())
+                    .collect(),
+            )
+        } else {
+            (
+                ARG_BLEND_LINK,
+                [2u32, 0, 0].iter().flat_map(|x| x.to_le_bytes()).collect(),
+            )
+        }
+    }
+    /// The default spacing of a blend along a path (coordinate units):
+    /// 254000 (one inch) in the version 9 and 13 files, 100000 (10 mm)
+    /// in the version 25 file.
+    fn blend_spacing(self) -> i32 {
+        if self.0 >= 23 {
+            100_000
+        } else {
+            254_000
+        }
     }
     /// Objects carry their style as a string (argument 201).
     fn style_strings(self) -> bool {
@@ -257,6 +534,17 @@ impl Ver {
     /// Rectangles keep their own record (from 15 on their layout changes).
     fn native_rects(self) -> bool {
         self.0 < 15
+    }
+    /// The style table's set11 table, and each text style's reference to
+    /// it: from version 9, as the public format notes give it to the
+    /// bidirectional version 8 (801) and later. The program that reads
+    /// these files saves its version 8 (800) files with the 801 table,
+    /// but TraceDraw's version 8 file written so crashed its 2010 release
+    /// on opening while the same drawing's version 7 and 9 files opened,
+    /// and that file differed from the version 9 one only in the
+    /// configuration record and the rectangles' radii (#1139).
+    fn set11(self) -> bool {
+        self.0 >= 9
     }
 }
 
@@ -349,6 +637,17 @@ fn cp1252(s: &str) -> Option<Vec<u8>> {
         .collect()
 }
 
+/// The one byte a letter of a version 12+ text record takes, or `None`
+/// when it must go out as a marked UTF-16 unit: the byte is the letter's
+/// own code point, so only U+0000 to U+00FF have one. The program that
+/// reads the files takes such a byte as that code point, not as a
+/// Windows-1252 byte: curly quotes written as Windows-1252 0x92 and 0x94
+/// showed as missing glyphs in its version 18 reader and vanished in
+/// its version 21 one (#2124).
+fn text_byte(c: char) -> Option<u8> {
+    u8::try_from(u32::from(c)).ok()
+}
+
 /// A layer or object name: UTF-16 from version 12, 8-bit before.
 fn name_bytes(v: Ver, s: &str) -> Vec<u8> {
     if v.unicode() {
@@ -372,6 +671,32 @@ fn locale_bytes() -> Vec<u8> {
 
 /// The locale text records are written with.
 const TEXT_LOCALE: &str = "ENU";
+
+/// The two fields after the letter count of a version 16+ run record
+/// for a run with the paragraph's own style: no member of its (empty)
+/// style applies, and the flags mark a locale (0x04).
+const PLAIN_RUN: (u16, u16) = (0, 0x04);
+
+/// The same fields for a run with a style of its own (another colour,
+/// font or size than its paragraph): every member of its style applies
+/// (0x3fff) and the flags mark a locale and the style (0x04 | 0x10), as
+/// the files of the program that reads them hold such runs. Written as
+/// a plain run, the style was ignored there and every run of a line
+/// took the paragraph's colour (#1297, #1347).
+const STYLED_RUN: (u16, u16) = (0x3fff, 0x14);
+
+/// The most style records of their own a version 16+ paragraph can
+/// hold besides its plain one: a letter names its record in the 7 high
+/// bits of a byte. Letters of further styles take the paragraph's.
+const MAX_RUN_STYLES: usize = 127;
+
+/// The style records of a version 16+ paragraph: (letters, style) of
+/// each, record 0 the plain one (no style of its own), and the record
+/// each run's letters name.
+struct RunLooks {
+    records: Vec<(usize, Option<String>)>,
+    record_of_run: Vec<u8>,
+}
 
 fn style_string(v: Ver, s: &str) -> Vec<u8> {
     let mut b = Buf::default();
@@ -515,11 +840,14 @@ fn cmpr(nodes: &[Node]) -> Node {
 
 /// `sumi`, the last chunk of RIFF files (before version 14): the box of
 /// the first page's drawing (left, top, right, bottom in coordinate units
-/// from the page centre), two u16 1, a flag (0), the time saved (0 here),
-/// two zero words, the version x 100, a build number (0), from version
-/// 10 a zero word, the locale (1033) and a zero word, and from 12 the
-/// version again: 44, 56 or 60 bytes as files of versions 8, 10 and 12 to
-/// 13 hold.
+/// from the page centre), two u16 1, a flag (0), the time saved (Unix
+/// seconds), two zero words, the version x 100, a build number, a zero
+/// word, the locale (1033), a zero word and the version again: 60 bytes
+/// in every version 7 to 13, as the files of those versions saved by the
+/// program that reads them and a real version 11 file hold (a real
+/// version 9 file stops after 52). Shorter records (44 bytes up to 9 and
+/// 56 in 10 and 11, with a zero time and build) were written until
+/// 2026-10-29 (#1139).
 fn sumi(v: Ver, doc: &Document) -> Vec<u8> {
     let (bbox, centre) = doc
         .pages
@@ -539,15 +867,34 @@ fn sumi(v: Ver, doc: &Document) -> Vec<u8> {
         .i32(u(bbox.y1 - centre.y))
         .i32(u(bbox.x1 - centre.x))
         .i32(u(bbox.y0 - centre.y));
-    b.u16(1).u16(1).u32(0).u32(0).u32(0).u32(0);
-    b.u32(u32::from(v.0) * 100).u32(0);
-    if v.0 >= 10 {
-        b.u32(0).u32(1033).u32(0);
-    }
-    if v.0 >= 12 {
-        b.u32(u32::from(v.0) * 100);
-    }
+    b.u16(1).u16(1).u32(0).u32(save_time()).u32(0).u32(0);
+    b.u32(u32::from(v.0) * 100).u32(build_number());
+    b.u32(0).u32(1033).u32(0);
+    b.u32(u32::from(v.0) * 100);
     b.done()
+}
+
+/// The time a file is saved, in Unix seconds (`web_time`: the browser
+/// build has no system clock in `std`).
+fn save_time() -> u32 {
+    web_time::SystemTime::now()
+        .duration_since(web_time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs().min(u64::from(u32::MAX)) as u32)
+}
+
+/// The build number `sumi` carries: TraceDraw's version as one number
+/// (0.24.1 is 2401), never 0 as the files of the program that reads them
+/// never hold 0 there.
+fn build_number() -> u32 {
+    let mut parts = env!("CARGO_PKG_VERSION")
+        .split('.')
+        .map(|p| p.parse::<u32>().unwrap_or(0));
+    let (major, minor, patch) = (
+        parts.next().unwrap_or(0),
+        parts.next().unwrap_or(0),
+        parts.next().unwrap_or(0),
+    );
+    ((major * 100 + minor) * 100 + patch).max(1)
 }
 
 /// RIFF streams before version 16 keep their contents in two compressed
@@ -674,13 +1021,14 @@ fn redirect(nodes: &[Node], file: Option<usize>, files: &mut DataFiles, out: &mu
 
 /// `DISP`: the picture of a RIFF file (before version 14): a u32 8, then a
 /// device-independent bitmap of the drawing fitted into a square on white,
-/// 96 pixels and 8 bits with a 256-colour palette before version 13, 128
-/// pixels and 24 bits from 13, as files of those versions hold.
+/// 8 bits with a 256-colour palette in every version, 96 pixels before
+/// version 13 and 128 in 13, as the files of those versions saved by the
+/// program that reads them hold (its version 13 files hold an 8-bit
+/// picture too; a 24-bit one was written in 13 until 2026-10-29).
 fn disp(v: Ver, png: &[u8]) -> Option<Vec<u8>> {
     let pm = tiny_skia::Pixmap::decode_png(png).ok()?;
     let (sw, sh) = (pm.width() as f64, pm.height() as f64);
-    let true_colour = v.0 >= 13;
-    let side: usize = if true_colour { 128 } else { 96 };
+    let side: usize = if v.0 >= 13 { 128 } else { 96 };
     let scale = (side as f64 / sw).min(side as f64 / sh);
     let (dw, dh) = (sw * scale, sh * scale);
     let (ox, oy) = ((side as f64 - dw) / 2.0, (side as f64 - dh) / 2.0);
@@ -703,9 +1051,9 @@ fn disp(v: Ver, png: &[u8]) -> Option<Vec<u8>> {
             None => [255, 255, 255],
         }
     };
-    let bpp: u16 = if true_colour { 24 } else { 8 };
+    let bpp: u16 = 8;
     let row = (side * usize::from(bpp) / 8).div_ceil(4) * 4;
-    let colours: u32 = if true_colour { 0 } else { 256 };
+    let colours: u32 = 256;
     let mut b = Vec::new();
     b.extend_from_slice(&8u32.to_le_bytes());
     b.extend_from_slice(&40u32.to_le_bytes());
@@ -721,15 +1069,13 @@ fn disp(v: Ver, png: &[u8]) -> Option<Vec<u8>> {
     b.extend_from_slice(&0u32.to_le_bytes());
     // The 8-bit palette: a 6 x 6 x 6 colour cube, then 40 greys.
     let level = |i: usize| (i * 51) as u8;
-    if !true_colour {
-        for i in 0..216 {
-            let (r, g, bl) = (level(i / 36), level(i / 6 % 6), level(i % 6));
-            b.extend_from_slice(&[bl, g, r, 0]);
-        }
-        for i in 0..40u32 {
-            let g = (i * 255 / 39) as u8;
-            b.extend_from_slice(&[g, g, g, 0]);
-        }
+    for i in 0..216 {
+        let (r, g, bl) = (level(i / 36), level(i / 6 % 6), level(i % 6));
+        b.extend_from_slice(&[bl, g, r, 0]);
+    }
+    for i in 0..40u32 {
+        let g = (i * 255 / 39) as u8;
+        b.extend_from_slice(&[g, g, g, 0]);
     }
     let nearest = |c: [u8; 3]| -> u8 {
         let cube = |v: u8| (u32::from(v) + 25) / 51;
@@ -749,12 +1095,7 @@ fn disp(v: Ver, png: &[u8]) -> Option<Vec<u8>> {
     for y in (0..side).rev() {
         let start = b.len();
         for x in 0..side {
-            let c = sample(x, y);
-            if true_colour {
-                b.extend_from_slice(&[c[2], c[1], c[0]]);
-            } else {
-                b.push(nearest(c));
-            }
+            b.push(nearest(sample(x, y)));
         }
         b.resize(start + row, 0);
     }
@@ -857,13 +1198,14 @@ fn summary_xml(v: Ver, doc: &Document) -> String {
 /// Versions 14 and 15: the RIFF stream stored, its pictures as BMP files,
 /// a summary, the names and an empty link list, as files of these versions
 /// hold them.
-/// `own`: the package's member of TraceDraw's own (see [`crate::kept_blends`]).
+/// `own`: the package's members of TraceDraw's own (see
+/// [`crate::kept_blends`] and [`crate::kept_effects`]).
 fn zip_v14(
     v: Ver,
     doc: &Document,
     riff: &[u8],
     previews: &Previews,
-    own: Option<&[u8]>,
+    own: &[(&str, Vec<u8>)],
 ) -> Vec<u8> {
     let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
     let stored =
@@ -902,9 +1244,8 @@ fn zip_v14(
     for (name, text) in members {
         ok &= zip.start_file(name, deflated).is_ok() && zip.write_all(text.as_bytes()).is_ok();
     }
-    if let Some(b) = own {
-        ok &= zip.start_file(crate::kept_blends::MEMBER, deflated).is_ok()
-            && zip.write_all(b).is_ok();
+    for (name, b) in own {
+        ok &= zip.start_file(*name, deflated).is_ok() && zip.write_all(b).is_ok();
     }
     match zip.finish() {
         Ok(c) if ok => c.into_inner(),
@@ -1096,14 +1437,18 @@ fn cmyk_profile_member(name: &str) -> String {
 /// colour its objects use.
 const COLOR_XML: &str = "<Color><ColorContext><ColorModel>Cmyk</ColorModel><RenderingIntent>RelativeColorimetric</RenderingIntent></ColorContext><HasRgbObjects>true</HasRgbObjects><HasCmykObjects>true</HasCmykObjects><HasGrayscaleObjects>false</HasGrayscaleObjects></Color>\r\n";
 
+/// The drawing's font ids by family and the (font id, style flags) of
+/// its text runs, for the package's font members.
+type FontUses<'a> = (&'a [(u16, String)], &'a [(u16, u32)]);
+
 fn zip_v16(
     v: Ver,
     doc: &Document,
     root: &[u8],
     files: &DataFiles,
     previews: &Previews,
-    font_ids: &[(u16, String)],
-    own: Option<&[u8]>,
+    (font_ids, font_uses): FontUses,
+    own: &[(&str, Vec<u8>)],
 ) -> Vec<u8> {
     let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
     let deflated = zip::write::SimpleFileOptions::default()
@@ -1118,7 +1463,7 @@ fn zip_v16(
             .is_ok()
             && zip.write_all(data).is_ok();
     }
-    for (name, data) in fonts::members(&previews.fonts, previews.embed_fonts, font_ids) {
+    for (name, data) in fonts::members(&previews.fonts, previews.embed_fonts, font_ids, font_uses) {
         ok &= zip.start_file(name, deflated).is_ok() && zip.write_all(&data).is_ok();
     }
     ok &= zip.start_file("content/dataFileList.dat", deflated).is_ok()
@@ -1156,9 +1501,8 @@ fn zip_v16(
     for (name, text) in members {
         ok &= zip.start_file(name, deflated).is_ok() && zip.write_all(text.as_bytes()).is_ok();
     }
-    if let Some(b) = own {
-        ok &= zip.start_file(crate::kept_blends::MEMBER, deflated).is_ok()
-            && zip.write_all(b).is_ok();
+    for (name, b) in own {
+        ok &= zip.start_file(*name, deflated).is_ok() && zip.write_all(b).is_ok();
     }
     match zip.finish() {
         Ok(c) if ok => c.into_inner(),
@@ -1192,16 +1536,30 @@ fn colour(c: Color) -> [u8; 12] {
     out
 }
 
-/// Version 13+: a colour as a property list (type 1, then from version 15
-/// an empty palette entry id, type 7), closed by an empty record.
+/// Version 13+: a colour as a property list (type 1, then from version 14
+/// the id of the palette the colour comes from, type 7), closed by an
+/// empty record.
 fn colour_props(v: Ver, c: Color) -> Vec<u8> {
     let mut b = Buf::default();
     b.u8(1).u32(12).bytes(&colour(c));
-    if v.0 >= 15 {
-        b.u8(7).u32(16).zeros(16);
+    if v.palette_ids() {
+        b.u8(7).u32(16).bytes(&palette_id(c));
     }
     b.u8(0).u32(0);
     b.done()
+}
+
+/// The id files of versions 13 to 25 keep after a colour (property 7):
+/// one constant for the CMYK colours of their default palette, another
+/// for the RGB ones, both the same in files of six different users;
+/// zeros for colours of no palette. TraceDraw's CMYK and RGB colours
+/// take the two constants, other models zeros.
+fn palette_id(c: Color) -> [u8; 16] {
+    match c.process() {
+        Color::Cmyk { .. } | Color::Registration => PALETTE_CMYK,
+        Color::Gray { .. } => [0; 16],
+        _ => PALETTE_RGB,
+    }
 }
 
 /// The master page's `loda` arguments for a solid page background, as
@@ -1256,12 +1614,48 @@ fn fill_colour(fill: &Fill) -> Option<Color> {
     }
 }
 
+/// How many objects of `doc` (inside groups and clip frames and in
+/// symbols too) have a mesh fill, which these files get as one colour,
+/// the mesh's mean colour: the records of mesh fill objects are only
+/// known as far as reading them needs (`docs/cdr-format.md`, object type
+/// 0x20), not well enough to write one (discussion #2073). The app tells
+/// the user after saving.
+pub fn mesh_fills_kept_as_one_colour(doc: &Document) -> usize {
+    fn count(shapes: &[Shape]) -> usize {
+        shapes
+            .iter()
+            .map(|s| {
+                let own = usize::from(matches!(s.fill, Fill::Mesh(_)));
+                own + match &s.kind {
+                    ShapeKind::Group { children } => count(children),
+                    ShapeKind::ClipFrame { frame, contents } => {
+                        count(std::slice::from_ref(&**frame)) + count(contents)
+                    }
+                    _ => 0,
+                }
+            })
+            .sum()
+    }
+    doc.pages
+        .iter()
+        .flat_map(|p| &p.layers)
+        .map(|l| count(&l.shapes))
+        .sum::<usize>()
+        + doc
+            .symbols
+            .iter()
+            .map(|s| count(std::slice::from_ref(&s.shape)))
+            .sum::<usize>()
+}
+
 /// The one colour written for a fill these files cannot hold yet: the
 /// mean colour of a bitmap pattern's tile, the middle of a texture's or a
-/// two-colour pattern's colours, else its preview colour.
+/// two-colour pattern's colours, the mean of a mesh's node colours
+/// (weighed by their opacity), else its preview colour.
 fn stand_in_colour(fill: &Fill) -> Option<Color> {
     use tracedraw_core::style::{lerp_color, Pattern};
     match fill {
+        Fill::Mesh(m) => m.mean_color().or_else(|| fill.preview_color()),
         Fill::Pattern(Pattern::Bitmap { png, .. }) => {
             let pm = tiny_skia::Pixmap::decode_png(png).ok()?;
             let (mut sum, mut weight) = ([0.0f64; 3], 0.0f64);
@@ -1401,8 +1795,8 @@ fn fild(v: Ver, id: u32, fill: &Fill) -> Vec<u8> {
             inner.u16(stops.len() as u16);
             for s in stops {
                 inner.u8(1).u32(12).bytes(&colour(s.color));
-                if v.0 >= 15 {
-                    inner.u8(7).u32(16).zeros(16);
+                if v.palette_ids() {
+                    inner.u8(7).u32(16).bytes(&palette_id(s.color));
                 }
                 inner
                     .zeros(5)
@@ -1536,7 +1930,7 @@ fn outl(v: Ver, id: u32, s: Option<&Stroke>) -> Vec<u8> {
     let mut proper = proper;
     proper.resize(130, 0);
     let col = colour_props(v, color);
-    if v.0 == 15 {
+    if (14..=15).contains(&v.0) {
         b.u32(5).u32(48).zeros(48);
     }
     b.u32(3)
@@ -1557,15 +1951,157 @@ fn outl(v: Ver, id: u32, s: Option<&Stroke>) -> Vec<u8> {
 ///
 /// The record opens with a tag from version 13: [1300, 0] up to version
 /// 17, [1740, 56] from 18 (56 = the matrix and the 8 bytes after it).
-/// Files of every version accept either tag when they are read.
+/// Files of every version accept either tag when they are read. Before
+/// 13 the record is 160 bytes (the chunk 184): the matrix and 104 more
+/// bytes, which the program that reads these files and a real version 11
+/// program leave uninitialised and TraceDraw leaves zero (a real version
+/// 9 program stops after the matrix: 56 and 80 bytes, what TraceDraw
+/// wrote until 2026-10-29).
 fn trfd(v: Ver, m: Affine) -> Vec<u8> {
-    let c = m.as_coeffs();
-    let mut rec = Buf::default();
+    trfd_of(&[trfd_matrix(v, m)])
+}
+
+/// A `trfd` of the entries `entries` in order (each from [`trfd_matrix`]
+/// or [`trfd_envelope`]): the length, the entry count, the start of the
+/// offsets table (16), 0xffff, the entries' offsets and the end.
+fn trfd_of(entries: &[Vec<u8>]) -> Vec<u8> {
+    let mut start = 16 + 4 * (entries.len() as u32 + 1);
+    let mut offsets = Vec::with_capacity(entries.len());
+    for e in entries {
+        offsets.push(start);
+        start += e.len() as u32;
+    }
+    let mut b = Buf::default();
+    b.u32(start).u32(entries.len() as u32).u32(16).u32(0xffff);
+    for o in offsets {
+        b.u32(o);
+    }
+    b.u32(start);
+    for e in entries {
+        b.bytes(e);
+    }
+    b.done()
+}
+
+/// The tag a `trfd` entry of `v` starts with, for a body of `len` bytes
+/// (the type and what follows it, without the 8 trailing zeros).
+fn trfd_tag(v: Ver, rec: &mut Buf, len: u32) {
     if v.0 >= 18 {
-        rec.u32(TRFD_SINCE_18).u32(56);
+        rec.u32(TRFD_SINCE_18).u32(len);
     } else if v.tagged() {
         rec.u32(SINCE_13).u32(0);
     }
+}
+
+/// An envelope written as files hold one on an object (#2432): the
+/// object's own record stays as it is, its `trfd` holds the envelope
+/// after the matrix that places it and an `envd` after the `trfd` holds
+/// the frame. In page space here; [`trfd_envelope`] and [`envd`] take it
+/// to the file's.
+#[derive(Debug, Clone)]
+struct NativeEnvelope {
+    /// The box the envelope maps from (the box of the letters).
+    rect: Rect,
+    frame: tracedraw_core::envelope::Frame,
+}
+
+/// The `envd` outline of `frame` (already in file space, `m` applied):
+/// the nodes run clockwise from the bottom-left corner up the left side,
+/// every segment a cubic (node, two handles), the last node back on the
+/// first; with the point index of each corner (bottom-left, top-left,
+/// top-right, bottom-right).
+fn envelope_outline(frame: &tracedraw_core::envelope::Frame) -> (Vec<Point>, Vec<u8>, [u32; 4]) {
+    let k = frame.nodes.len();
+    let [bl, br, tr, tl] = frame.corners;
+    // The frame runs the other way round, from its bottom-left corner
+    // `bl`: file node i is frame node bl - i, and the segment from it
+    // runs back along the frame's segment from node bl - i - 1.
+    let at = |i: usize| (bl + k - i % k) % k;
+    let mut pts = vec![frame.nodes[at(0)]];
+    let mut types = vec![0x0c];
+    for i in 0..k {
+        let [h1, h2] = frame.handles[at(i + 1)];
+        pts.extend([h2, h1, frame.nodes[at(i + 1)]]);
+        types.extend([
+            0xd0,
+            0xd0,
+            if i + 1 == k {
+                0x88
+            } else if frame.is_corner(at(i + 1)) {
+                0x84
+            } else {
+                0x94
+            },
+        ]);
+    }
+    let point = |c: usize| ((bl + k - c) % k * 3) as u32;
+    (pts, types, [point(bl), point(tl), point(tr), point(br)])
+}
+
+/// The `trfd` entry (type 1) of envelope number `serial` (from 1) in the
+/// file, `rect` and the outline's corners from [`envelope_outline`] in
+/// file space: as the version 27 files of #1668 hold them, 8 bytes that
+/// differ from file to file (written from the outline here) and 6 zero
+/// bytes, the box (left, top, right, bottom), the corners' point
+/// indexes, the number, 0, the point count and three numbers that rise
+/// through the file.
+fn trfd_envelope(v: Ver, serial: u32, rect: Rect, corners: [u32; 4], points: &[Point]) -> Vec<u8> {
+    let mut rec = Buf::default();
+    trfd_tag(v, &mut rec, 72);
+    rec.u16(1);
+    let mut h: u32 = 0x811c_9dc5;
+    for p in points {
+        for b in units(p.x)
+            .to_le_bytes()
+            .into_iter()
+            .chain(units(p.y).to_le_bytes())
+        {
+            h = (h ^ u32::from(b)).wrapping_mul(0x0100_0193);
+        }
+    }
+    rec.u32(h).u16((h >> 7) as u16).u16(2).zeros(6);
+    rec.i32(units(rect.x0))
+        .i32(units(rect.y1))
+        .i32(units(rect.x1))
+        .i32(units(rect.y0));
+    for c in corners {
+        rec.u32(c);
+    }
+    let id = 4 + 3 * serial;
+    rec.u32(serial)
+        .u32(0)
+        .u32(points.len() as u32)
+        .u32(id)
+        .u32(id + 1)
+        .u32(id + 2);
+    rec.zeros(8);
+    rec.done()
+}
+
+/// The `envd` record of an outline from [`envelope_outline`] in file
+/// space: a header like a `loda`'s (its length, 2 arguments, the offsets
+/// table at 60, the types table at 72) with the point count at byte 16,
+/// the node types (argument type 30), then the points (type 40).
+fn envd(points: &[Point], types: &[u8]) -> Vec<u8> {
+    let n = points.len() as u32;
+    let types_at = 80u32;
+    let points_at = types_at + n;
+    let end = points_at + 8 * n;
+    let mut b = Buf::default();
+    b.u32(end).u32(2).u32(60).u32(72).u32(n).zeros(40);
+    b.u32(types_at).u32(points_at).u32(end).u32(30).u32(40);
+    b.bytes(types);
+    for p in points {
+        b.i32(units(p.x)).i32(units(p.y));
+    }
+    b.done()
+}
+
+/// A `trfd` matrix entry (type 8).
+fn trfd_matrix(v: Ver, m: Affine) -> Vec<u8> {
+    let c = m.as_coeffs();
+    let mut rec = Buf::default();
+    trfd_tag(v, &mut rec, 56);
     rec.u16(8).zeros(6);
     for x in [
         c[0],
@@ -1577,21 +2113,8 @@ fn trfd(v: Ver, m: Affine) -> Vec<u8> {
     ] {
         rec.f64(if x.is_finite() { x } else { 0.0 });
     }
-    if v.tagged() {
-        rec.zeros(8);
-    }
-    let rec = rec.done();
-    let start = 24u32;
-    let end = start + rec.len() as u32;
-    let mut b = Buf::default();
-    b.u32(end)
-        .u32(1)
-        .u32(16)
-        .u32(0xffff)
-        .u32(start)
-        .u32(end)
-        .bytes(&rec);
-    b.done()
+    rec.zeros(if v.tagged() { 8 } else { 104 });
+    rec.done()
 }
 
 /// `txtj`: the line breaking tables that follow every `txsm` from version
@@ -1800,10 +2323,12 @@ fn mcfg_12(w_mm: f64, h_mm: f64) -> Vec<u8> {
 fn mcfg_7_8(v: Ver, w_mm: f64, h_mm: f64) -> Vec<u8> {
     const SIZE_8: usize = 656;
     let (w, h) = (units(w_mm), units(h_mm));
+    let (paper, landscape) = paper_code(w_mm, h_mm);
     let mut r = vec![0u8; SIZE_8];
     put(&mut r, 0, &w.to_le_bytes());
     put(&mut r, 4, &h.to_le_bytes());
-    put(&mut r, 8, &0x0fu32.to_le_bytes());
+    put(&mut r, 8, &paper.to_le_bytes());
+    put(&mut r, 10, &landscape.to_le_bytes());
     put(&mut r, 12, &1u32.to_le_bytes());
     // Ruler origin: the page's bottom-left corner, from the page centre.
     put(&mut r, 24, &(-(w / 2)).to_le_bytes());
@@ -1887,10 +2412,17 @@ fn mcfg_7_8(v: Ver, w_mm: f64, h_mm: f64) -> Vec<u8> {
 fn mcfg_9_11(v: Ver, w_mm: f64, h_mm: f64) -> Vec<u8> {
     const SIZE_11: usize = 4088;
     let (w, h) = (units(w_mm), units(h_mm));
+    let (paper, landscape) = paper_code(w_mm, h_mm);
     let mut r = vec![0u8; SIZE_11];
     put(&mut r, 4, &w.to_le_bytes());
     put(&mut r, 8, &h.to_le_bytes());
-    put(&mut r, 12, &0x0fu32.to_le_bytes());
+    put(&mut r, 12, &paper.to_le_bytes());
+    put(&mut r, 14, &landscape.to_le_bytes());
+    // 1/8 inch for a page of its own size (0 for a preset), as the
+    // version 9 to 11 files of the program that reads them hold.
+    if paper == 0 {
+        put(&mut r, 36, &31750u32.to_le_bytes());
+    }
     // Ruler origin: the page's bottom-left corner, from the page centre.
     put(&mut r, 372, &(-(w / 2)).to_le_bytes());
     put(&mut r, 376, &(-(h / 2)).to_le_bytes());
@@ -1991,6 +2523,25 @@ fn mcfg_9_11(v: Ver, w_mm: f64, h_mm: f64) -> Vec<u8> {
     r9.extend_from_slice(r10.get(848..924).unwrap_or_default());
     r9.resize(848, 0);
     r9
+}
+
+/// The paper preset of a `mcfg` record before version 12 and whether the
+/// page is landscape (u16 each): 0x0f for A4 and 3 for Letter, the two
+/// codes files of versions 7 to 11 show (A4 portrait saves of the program
+/// that reads them, a real version 9 Letter file), 0 for a page of any
+/// other size (the saves of a 210 x 148 mm page, which hold 1 for its
+/// orientation). A preset in landscape is assumed to keep its code.
+fn paper_code(w_mm: f64, h_mm: f64) -> (u16, u16) {
+    let (short, long) = (w_mm.min(h_mm), w_mm.max(h_mm));
+    let near = |a: f64, b: f64| (a - b).abs() < 0.1;
+    let code = if near(short, 210.0) && near(long, 297.0) {
+        0x0f
+    } else if near(short, 215.9) && near(long, 279.4) {
+        3
+    } else {
+        0
+    };
+    (code, u16::from(w_mm > h_mm))
 }
 
 /// Write `bytes` into `rec` at `at` (records are built to their size
@@ -2121,15 +2672,45 @@ fn mcfg_21(w_mm: f64, h_mm: f64) -> Vec<u8> {
 /// then the name. Files list a record for each face their styles use
 /// (two for Arial when text is set in Arial and Arial bold); a style
 /// naming a face without its record was drawn in a stand-in font.
-fn font_record(v: Ver, id: u16, family: &str, flags: u32) -> Vec<u8> {
+/// From version 16 the record of a face the package embeds (`face`) also
+/// carries what the package's font table says about it: the PANOSE bytes
+/// at 8, the character set at 86 and the script name at 88 ("Western"),
+/// u32 1 at 156 and the PostScript name at 164 (the embedded faces of the
+/// version 19 file of #624 and the version 27 file of #313, #1009). The
+/// records of faces not embedded stay as before, so a drawing saved
+/// without Embed fonts writes the same bytes.
+fn font_record(
+    v: Ver,
+    id: u16,
+    family: &str,
+    flags: u32,
+    face: Option<&fonts::FaceRecord>,
+) -> Vec<u8> {
     let mut b = Buf::default();
-    b.u16(id).u16(0).u32(flags).zeros(10);
+    b.u16(id).u16(0).u32(flags);
+    let face = face.filter(|f| f.embedded && v.redirects());
+    match face {
+        Some(f) => b.bytes(&f.panose),
+        _ => b.zeros(10),
+    };
     if v.unicode() {
         let name: Vec<u16> = family.encode_utf16().take(31).collect();
         for u in &name {
             b.u16(*u);
         }
-        b.pad_to(160).u32(2).pad_to(296);
+        if let Some(f) = face {
+            b.pad_to(86).u16(0);
+            for u in "Western".encode_utf16() {
+                b.u16(u);
+            }
+            b.pad_to(156).u32(1).u32(2);
+            for u in f.postscript.encode_utf16().take(65) {
+                b.u16(u);
+            }
+        } else {
+            b.pad_to(160).u32(2);
+        }
+        b.pad_to(296);
     } else {
         let mut name =
             cp1252(family).unwrap_or_else(|| family.bytes().filter(|c| c.is_ascii()).collect());
@@ -2147,6 +2728,10 @@ struct StyleUses {
     graphic_fill: u32,
     outline: u32,
     font: u16,
+    /// The style flags of the face of `font` the styles name: the flags
+    /// of its first `font` record (0x40 where the regular face is used
+    /// or before version 16), so the styles name a face the file has.
+    font_flags: u32,
     /// Text formats of versions 7 to 15, one style each after the
     /// graphic style (ids from `GRAPHIC_STYLE_ID + 1`).
     formats: Vec<TextFormat>,
@@ -2233,22 +2818,31 @@ fn stlt(v: Ver, uses: StyleUses) -> Vec<u8> {
     }
     // Outlines: id, 4 unknown, the outline record.
     t.u32(1).u32(outline).u32(0).u32(uses.outline);
-    // Fonts: id, a mask (12 bytes before 10, 20 after), then the font,
-    // size and style of the three scripts (Latin, Asian, other), all in
-    // the one font: font id u16 and character set u16, two more font
-    // references, sizes, style flags (one before 10).
+    // Fonts: id, a mask (0, 0xffff, 1 before 10; 0, 0xffff three times
+    // and 1 after), then the font, size and style of the three scripts
+    // (Latin, Asian, other), all in the one font: font id u16 and
+    // character set u16, two more font references, then one size and
+    // three style flags before 10 (a real version 9 file and the version
+    // 7 to 9 saves of the program that reads them), three sizes and three
+    // style flags from 10.
     let mask = if v.redirects() { 0xff } else { 0xffff };
     let font_entry = |t: &mut Buf, entry: u32, face: u16, size: i32, flags: u32| {
         let script_font = u32::from(face);
-        t.u32(entry).u32(0).u32(mask).u32(mask);
+        t.u32(entry).u32(0).u32(mask);
         if n >= 10 {
-            t.u32(mask).u32(if v.redirects() { u32::MAX } else { 1 });
+            t.u32(mask)
+                .u32(mask)
+                .u32(if v.redirects() { u32::MAX } else { 1 });
+        } else {
+            t.u32(1);
         }
         t.u16(face).u16(0).u32(script_font).u32(script_font);
-        t.i32(size).i32(size).i32(size).u32(flags);
         if n >= 10 {
-            t.u32(flags).u32(flags);
+            t.i32(size).i32(size).i32(size);
+        } else {
+            t.i32(size);
         }
+        t.u32(flags).u32(flags).u32(flags);
     };
     t.u32(1 + uses.formats.len() as u32);
     font_entry(
@@ -2256,7 +2850,7 @@ fn stlt(v: Ver, uses: StyleUses) -> Vec<u8> {
         font,
         uses.font,
         (12.0 * 254000.0 / 72.0) as i32,
-        0x40,
+        uses.font_flags,
     );
     for (f, (_, entry)) in uses.formats.iter().zip(&format_entries) {
         font_entry(&mut t, *entry, f.font, f.size, f.flags);
@@ -2280,23 +2874,27 @@ fn stlt(v: Ver, uses: StyleUses) -> Vec<u8> {
     for (position, thickness) in DECORATION_LINES {
         t.u32(0).i32(position).i32(thickness);
     }
-    // Tabs, bullets, indents, hyphenation, drop caps: none; set11 from 9.
+    // Tabs, bullets, indents, hyphenation, drop caps: none; set11 from 9
+    // (see `Ver::set11`).
     for _ in 0..5 {
         t.u32(0);
     }
-    if n >= 9 {
+    if v.set11() {
         t.u32(1).u32(set11).u32(0).u32(0);
     }
     // The records: sections (1: fill and outline; 2: also the character
     // and paragraph settings), id, no parent, 8 unknown, the name (none
-    // from 16, as files have it), then the entries they use.
+    // from 16, as files have it), then the entries they use. Before 12
+    // the name ends with a NUL that its length counts ("Default Graphic"
+    // is 16 in every 8-bit file seen); from 12 (UTF-16) the length is the
+    // characters alone.
     let name = |t: &mut Buf, s: &str| {
         let s = if v.redirects() { "" } else { s };
-        t.u32(s.chars().count() as u32);
         if v.unicode() {
-            t.bytes(&utf16(s));
+            t.u32(s.chars().count() as u32).bytes(&utf16(s));
         } else {
-            t.bytes(s.as_bytes());
+            let b = cp1252(s).unwrap_or_else(|| s.bytes().filter(|c| c.is_ascii()).collect());
+            t.u32(b.len() as u32 + 1).bytes(&b).u8(0);
         }
     };
     let labels = ["Default", "Centred", "Right", "Justified"];
@@ -2305,7 +2903,7 @@ fn stlt(v: Ver, uses: StyleUses) -> Vec<u8> {
         name(&mut t, label);
         t.u32(text_fill).u32(outline);
         t.u32(font).u32(*align).u32(interval).u32(set5);
-        if n >= 9 {
+        if v.set11() {
             t.u32(set11);
         }
     }
@@ -2322,11 +2920,19 @@ fn stlt(v: Ver, uses: StyleUses) -> Vec<u8> {
         t.u32(*fill).u32(outline);
         let align = aligns.get(f.align).copied().unwrap_or(aligns[0]);
         t.u32(*font).u32(align).u32(interval).u32(set5);
-        if n >= 9 {
+        if v.set11() {
             t.u32(set11);
         }
     }
     t.done()
+}
+
+/// A picture written as a `bmp ` record: its bytes, the box size in mm
+/// (as bits) it was written at, and the record's id and pixel size.
+struct WrittenImage {
+    png: SharedBytes,
+    size_mm: (u64, u64),
+    record: (u32, u32, u32),
 }
 
 /// `bmp `: a 24-bit image: id, a file-like header ("UI" block size, the
@@ -2337,7 +2943,8 @@ fn stlt(v: Ver, uses: StyleUses) -> Vec<u8> {
 /// 8): "RI", its length, 0, a 78-byte header (model 99, 1, size, 1 plane,
 /// 8 bits, stride, bytes, 64 at 62) and one byte per pixel, 255 opaque,
 /// rows bottom-up padded to 4 bytes.
-fn bmp_record(id: u32, png: &[u8], size_mm: (f64, f64)) -> Option<Vec<u8>> {
+/// Returns the record and the image's width and height in pixels.
+pub(crate) fn bmp_record(id: u32, png: &[u8], size_mm: (f64, f64)) -> Option<(Vec<u8>, u32, u32)> {
     let pm = tiny_skia::Pixmap::decode_png(png).ok()?;
     let (w, h) = (pm.width(), pm.height());
     if w == 0 || h == 0 {
@@ -2432,7 +3039,7 @@ fn bmp_record(id: u32, png: &[u8], size_mm: (f64, f64)) -> Option<Vec<u8>> {
             .zeros(12);
         b.bytes(&mask);
     }
-    Some(b.done())
+    Some((b.done(), w, h))
 }
 
 /// `loda`: header (length, argument count, offsets table, types table,
@@ -2542,10 +3149,16 @@ fn curve_coords_typed(
             PathEl::LineTo(p) => {
                 // A line of no length (a file of an earlier version read
                 // back: a curve to the start, then the closing line) is
-                // left out.
-                let q = (units(p.x), units(p.y));
+                // left out. A subpath that is only such a line (the
+                // extension lines of a dimension, as files have them)
+                // keeps a line of one unit instead: left out, the object
+                // was lost on saving.
+                let mut q = (units(p.x), units(p.y));
                 if pts.len() > last_start && pts.last() == Some(&q) {
-                    continue;
+                    if pts.len() > last_start + 1 {
+                        continue;
+                    }
+                    q.0 = q.0.saturating_add(1);
                 }
                 pts.push(q);
                 types.push(0x40 | node_bits(i));
@@ -2619,9 +3232,14 @@ fn mark_nodes(coords: &mut [u8]) {
         .get(0..4)
         .and_then(|b| b.try_into().ok())
         .map_or(0, u32::from_le_bytes) as usize;
-    let Some(types) = coords.get_mut(4 + 8 * n..4 + 9 * n) else {
-        return;
-    };
+    if let Some(types) = coords.get_mut(4 + 8 * n..4 + 9 * n) {
+        mark_node_types(types);
+    }
+}
+
+/// The node marks of [`mark_nodes`] set on a curve's node bytes alone
+/// (`check` compares a written outline with them).
+pub(crate) fn mark_node_types(types: &mut [u8]) {
     let mut start = 0;
     for k in 0..=types.len() {
         let ends = k == types.len() || (k > start && types[k] & 0xc0 == 0);
@@ -2642,6 +3260,20 @@ fn mark_nodes(coords: &mut [u8]) {
         }
         start = k;
     }
+}
+
+/// The page box of `s` as a reader finds what it is written as: for
+/// paragraph text that goes out as one artistic text a line, the box of
+/// those lines (the frame's box is not in the file); else its own.
+fn drawn_bounds(s: &Shape) -> Rect {
+    tracedraw_core::document::paragraph_lines(&s.kind)
+        .and_then(|kinds| {
+            kinds
+                .into_iter()
+                .map(|kind| Shape { kind, ..s.clone() }.bounds())
+                .reduce(|a, b| a.union(b))
+        })
+        .unwrap_or_else(|| s.bounds())
 }
 
 /// A box as `bbox` stores it: top left, then bottom right (file units,
@@ -2681,17 +3313,49 @@ fn graded_transparency_json(g: (&tracedraw_core::Fountain, u8)) -> Option<String
         _ => 1,
     };
     let scale = 1.0 - 2.0 * f.edge_pad.clamp(0.0, 0.49);
+    let (mut sx, mut sy, mut offset) = (scale, scale, f.offset);
+    // A radial run's scales are its radius in half sizes of the object
+    // (#2735): our own run reaches the box's corners, half its diagonal
+    // (exact for a square box), unless its nodes place it.
+    if f.kind == FountainKind::Radial {
+        match f.handles {
+            Some(h) => {
+                sx = (h.end - h.start).hypot();
+                sy = (h.skew - h.start).hypot();
+                offset = h.start;
+            }
+            None => {
+                sx = scale * std::f64::consts::SQRT_2;
+                sy = sx;
+            }
+        }
+    }
     let nil = "00000000-0000-0000-0000-000000000000";
     Some(format!(
-        r#"{{"mode":"0","fill":{{"type":"2","fountainType":"{kind}","angle":"{}","xCenterOffset":"{}","yCenterOffset":"{}","xScale":"{scale}","yScale":"{scale}","primaryColor":"GRAY255,USER,{},100,{nil}","secondaryColor":"GRAY255,USER,{},100,{nil}","primaryAlpha":"255","secondaryAlpha":"255","spreadMethod":"0","numSteps":"0","mergeMode":"0"}},"appliesTo":"{}","startTransparency":"0","endTransparency":"1"}}"#,
+        r#"{{"mode":"0","fill":{{"type":"2","fountainType":"{kind}","angle":"{}","xCenterOffset":"{}","yCenterOffset":"{}","xScale":"{sx}","yScale":"{sy}","primaryColor":"GRAY255,USER,{},100,{nil}","secondaryColor":"GRAY255,USER,{},100,{nil}","primaryAlpha":"255","secondaryAlpha":"255","spreadMethod":"0","numSteps":"0","mergeMode":"0"}},"appliesTo":"{}","startTransparency":"0","endTransparency":"1"}}"#,
         f.angle,
-        f.offset.x * 100.0,
-        f.offset.y * 100.0,
+        offset.x * 100.0,
+        offset.y * 100.0,
         grey(&first.color),
         grey(&last.color),
         target.min(2),
     ))
 }
+
+/// The `outline` of an object's style string when it has no outline, as
+/// the program's own files of version 27 hold it on pictures and shapes
+/// without one (the members in their order, width 0, no `type`).
+pub(crate) const NO_OUTLINE_JSON: &str = concat!(
+    r#"{"angle":"0","aspect":"100","behindFill":"0","#,
+    r#""color":"CMYK,USER,0,0,0,100,100,00000000-0000-0000-0000-000000000000","#,
+    r#""dashAdjust":"0","dashDotSpec":"0","dotLength":"0","endCaps":"0","joinType":"0","#,
+    r#""justification":"0","leftArrow":"|0","leftArrowAttributes":"0|0|0|0|0|0|0","#,
+    r#""matrix":"1,0,0,0,1,0","miterLimit":"5","overlapArrow":"0","overprint":"0","#,
+    r#""projectMatrix":"1,0,0,0,1,0","rightArrow":"|0","#,
+    r#""rightArrowAttributes":"0|0|0|0|0|0|0","scaleWithObject":"0","#,
+    r#""screenSpec":"0,0,45000000,60,0","shareArrow":"0","variableAttributes":"0|0","#,
+    r#""width":"0"}"#
+);
 
 /// The style string of an object (versions 16+): its fill, outline and
 /// transparency.
@@ -2700,12 +3364,19 @@ fn object_style_json(
     stroke: Option<&Stroke>,
     opacity: f64,
     graded: Option<(&tracedraw_core::Fountain, u8)>,
+    nonzero: bool,
 ) -> String {
+    // A nonzero fill rule is `winding` "1" in the fill (#1919); even-odd,
+    // the default, is left out as most files do.
+    let winding = if nonzero { r#","winding":"1""# } else { "" };
     let fill_part = match fill_colour(fill) {
         Some(c) if !matches!(fill, Fill::None) => {
-            format!(r#"{{"type":"1","primaryColor":"{}"}}"#, colour_spec(c))
+            format!(
+                r#"{{"type":"1","primaryColor":"{}"{winding}}}"#,
+                colour_spec(c)
+            )
         }
-        _ => r#"{"type":"0"}"#.to_string(),
+        _ => format!(r#"{{"type":"0"{winding}}}"#),
     };
     let outline_part = match stroke {
         // The mitre limit in degrees, where the reader takes it (#384).
@@ -2719,7 +3390,12 @@ fn object_style_json(
             colour_spec(s.color),
             Stroke::miter_angle_from_ratio(s.miter_ratio())
         ),
-        None => r#"{"type":"1","width":"0"}"#.to_string(),
+        // As the files of versions 16 to 27 hold an object without an
+        // outline: every member with width 0 and no `type`. TraceDraw
+        // wrote `{"type":"1","width":"0"}`, a type no file holds; the
+        // program that reads them closed when such a picture, or a group
+        // of such curves, was clicked (#1226).
+        None => NO_OUTLINE_JSON.to_string(),
     };
     let transparency = if let Some(g) = graded.and_then(graded_transparency_json) {
         g
@@ -2743,10 +3419,10 @@ fn object_style_json(
 /// next bit up its italic.
 fn style_flags(sp: &TextSpan) -> u32 {
     let mut f = weight_code(sp);
-    if sp.underline {
+    if sp.underline.is_on() {
         f |= 1 << 18;
     }
-    if sp.strikethrough {
+    if sp.strikethrough.is_on() {
         f |= 1 << 24;
     }
     f
@@ -2777,37 +3453,110 @@ fn weight_member(sp: &TextSpan) -> u32 {
     1 << (2 * (span_weight(sp) / 100 - 1))
 }
 
-/// The style string of a run (versions 16+): its font, size, weight,
-/// slant, lines and colour.
-fn run_style_json(sp: &TextSpan, fill: Option<&Fill>) -> String {
-    format!("{{{}}}", character_json(sp, fill))
-}
-
-/// The `character` member of a style string.
-fn character_json(sp: &TextSpan, fill: Option<&Fill>) -> String {
-    let weight = weight_member(sp);
-    let size = (sp.size_pt * 254000.0 / 72.0).round() as i64;
-    let family = sp.font_family.replace('\\', "\\\\").replace('"', "\\\"");
-    let font = format!(
-        r#"{{"font":"{family}","size":"{size}","weight":"{weight}","italic":"{}","underline":"{}","strikeout":"{}"}}"#,
-        u8::from(sp.italic),
-        u8::from(sp.underline),
-        u8::from(sp.strikethrough)
-    );
+/// The style string of a run with a look of its own (versions 16+):
+/// its colour and its font, size, weight, slant and lines for the three
+/// scripts, with the members the paragraph's default style holds besides
+/// them (angle, outline, shifts), as every such run of the files of the
+/// program that reads them is complete (#1379).
+fn run_style_json(v: Ver, sp: &TextSpan, fill: Option<&Fill>, tech: &fonts::FaceTech) -> String {
+    // A fill other than a colour is left to the paragraph's.
     let fill = match fill.and_then(fill_colour) {
-        Some(c) => format!(
-            r#""fill":{{"type":"1","primaryColor":"{}"}},"#,
-            colour_spec(c)
-        ),
+        Some(c) => format!("{},", fill_json(&colour_spec(c))),
         None => String::new(),
     };
-    format!(r#""character":{{{fill}"latin":{font},"RTL":{font},"farEast":{font}}}"#)
+    format!(
+        r#"{{"character":{{{}"angle":"0","outline":{},"RTL":{},"latin":{},"h_shift":"0","v_shift":"0","farEast":{}}}}}"#,
+        fill,
+        character_outline_json(v),
+        font_json(v, Some(sp), 178, tech),
+        font_json(v, Some(sp), 0, tech),
+        font_json(v, Some(sp), 128, tech)
+    )
 }
 
-/// A text paragraph's whole default style, as files of versions 16 and
-/// later write it: the first run's font, size, weight and colour, the
-/// alignment, and every other member with the values files hold when it
-/// is not set.
+/// CMYK black, the colour of text and outlines that set none.
+const BLACK_SPEC: &str = "CMYK,USER,0,0,0,100,100,00000000-0000-0000-0000-000000000000";
+
+/// The `outline` member of a character style: none (width 0), with the
+/// members files give it; from version 19 `variableAttributes` too, as
+/// every text of the files of versions 19 and 22 to 27 the program's
+/// recent releases save holds it (#1698; its 2019 release leaves it out
+/// up to 21).
+fn character_outline_json(v: Ver) -> String {
+    let screen = "0,0,45000000,60,0";
+    let variable = if v.0 >= 19 {
+        r#""variableAttributes":"0|0","#
+    } else {
+        ""
+    };
+    format!(
+        r#"{{"overprint":"0","angle":"0","aspect":"100","dashDotSpec":"0","behindFill":"0","miterLimit":"5","justification":"0","dashAdjust":"0","rightArrow":"|0","screenSpec":"{screen}","overlapArrow":"0","shareArrow":"0","dotLength":"0","scaleWithObject":"0","matrix":"1,0,0,0,1,0","color":"{BLACK_SPEC}","leftArrow":"|0","projectMatrix":"1,0,0,0,1,0","leftArrowAttributes":"0|0|0|0|0|0|0","endCaps":"0","rightArrowAttributes":"0|0|0|0|0|0|0","joinType":"0",{variable}"width":"0"}}"#
+    )
+}
+
+/// The `character` member of a run's style string: its fill and its
+/// font for the three scripts, each with every member the paragraph's
+/// default style gives a font ([`font_json`]). A run named its font with
+/// six members only (no character set, technology or script), and a
+/// text of two colours, whose runs carry their own styles, then lost
+/// its embedded font in the program that opened it, which asked for
+/// the font and drew the whole text in one colour; the runs of a file
+/// that program saved name their fonts as the paragraph style does
+/// (#1297).
+fn character_json(v: Ver, sp: &TextSpan, fill: Option<&Fill>, tech: &fonts::FaceTech) -> String {
+    let fill = match fill.and_then(fill_colour) {
+        Some(c) => format!("{},", fill_json(&colour_spec(c))),
+        None => String::new(),
+    };
+    format!(
+        r#""character":{{{fill}"latin":{},"RTL":{},"farEast":{}}}"#,
+        font_json(v, Some(sp), 0, tech),
+        font_json(v, Some(sp), 178, tech),
+        font_json(v, Some(sp), 128, tech)
+    )
+}
+
+/// The `fill` member of a character style: a solid colour with the
+/// members files give it.
+fn fill_json(colour: &str) -> String {
+    format!(
+        r#""fill":{{"type":"1","overprint":"0","secondaryColor":"CMYK,USER,0,0,0,0,100,00000000-0000-0000-0000-000000000000","primaryColor":"{colour}","screenSpec":"0,0,45000000,60,0"}}"#
+    )
+}
+
+/// The font of one script in a character style (`latin`, `RTL` with
+/// character set 178, `farEast` with 128): `sp`'s family, size in
+/// coordinate units, weight code, slant and lines, with the members
+/// files hold when nothing sets them; 24 pt Arial without a span. The
+/// `technology` and `version` are those of the font drawing the run
+/// (`tech`), as files give them for every face they find (#1484); 4 and
+/// an empty version for a face without its font file. From version 22
+/// an empty `font_axes` too, as every font of the files of versions 22
+/// to 27 holds it when no variable font axis is set (#1698; the files
+/// of versions 19 to 21 have none).
+fn font_json(v: Ver, sp: Option<&TextSpan>, charset: u32, tech: &fonts::FaceTech) -> String {
+    let (technology, version) = sp
+        .and_then(|sp| tech.get(&(sp.font_family.clone(), sp.bold, sp.italic)))
+        .map_or((4, String::new()), |(k, v)| {
+            (*k, v.replace('\\', "\\\\").replace('"', "\\\""))
+        });
+    let (family, size, weight, italic, underline, strike) = match sp {
+        Some(sp) => (
+            sp.font_family.replace('\\', "\\\\").replace('"', "\\\""),
+            (sp.size_pt * 254000.0 / 72.0).round() as i64,
+            weight_member(sp),
+            u8::from(sp.italic),
+            u8::from(sp.underline.is_on()),
+            u8::from(sp.strikethrough.is_on()),
+        ),
+        None => ("Arial".to_string(), 254000 * 24 / 72, 64, 0, 0, 0),
+    };
+    let axes = if v.0 >= 22 { r#","font_axes":"""# } else { "" };
+    format!(
+        r#"{{"overline":"0","effect":"0","version":"{version}","italic":"{italic}","weight":"{weight}","underline":"{underline}","charset":"{charset}","technology":"{technology}","size":"{size}","font":"{family}","script":"0","strikeout":"{strike}"{axes}}}"#
+    )
+}
+
 /// A paragraph's line spacing as a factor of the character height (the
 /// unit of a style string's `interLineSpacing`), the character height of
 /// `size_pt` text taken as 1.15 times the size as the reader takes it.
@@ -2825,50 +3574,139 @@ fn line_spacing_factor(f: &tracedraw_core::ParagraphFormat, size_pt: f64) -> f64
     }
 }
 
+/// The members of a paragraph text's paragraph style (versions 16+)
+/// beyond those artistic text has: hyphenation, bullets, drop caps,
+/// indents and tabs. Every paragraph of every paragraph text of the
+/// files of versions 19, 22 and 27 holds them (18 paragraphs, 2026-11-04,
+/// #1698); TraceDraw gave its paragraph text the members of artistic
+/// text only, and the program that reads the files hung on opening any
+/// of them. The values are those of the version 27 file when nothing is
+/// set (no hyphenation, bullet or drop cap, no indent), each a JSON value.
+pub(crate) const FRAME_TEXT_PARAGRAPH: &[(&str, &str)] = &[
+    ("autoHyphenate", r#""0""#),
+    ("breakAllCapWords", r#""0""#),
+    ("breakCapitalizedWords", r#""0""#),
+    ("bulletAngle", r#""0""#),
+    ("bulletChar", r#""22200000""#),
+    ("bulletFill", r#"{"type":"0"}"#),
+    ("bulletFirstCharIndent", r#""37500""#),
+    (
+        "bulletFont",
+        r#"{"charset":"0","effect":"0","font":"Arial","overline":"0","script":"0","size":"42333","strikeout":"0","technology":"0","underline":"0","version":"","weight":"12480"}"#,
+    ),
+    ("bulletHShift", r#""0""#),
+    ("bulletHanging", r#""1""#),
+    ("bulletOn", r#""0""#),
+    ("bulletOutline", r#"{"width":"0"}"#),
+    ("bulletVShift", r#""0""#),
+    ("dropCapOn", r#""0""#),
+    ("firstLineIndent", r#""0""#),
+    ("hangingIndent", r#""0""#),
+    ("hyphenateHotZone", r#""127000""#),
+    ("hyphenateMinCharsAfter", r#""2""#),
+    ("hyphenateMinCharsBefore", r#""3""#),
+    ("hyphenateMinWordLength", r#""6""#),
+    ("leftMargin", r#""0""#),
+    ("linesToDrop", r#""3""#),
+    ("restOfLinesIndent", r#""0""#),
+    ("spacingFromText", r#""0""#),
+    ("tabLeaderChar", r#""2e000000""#),
+    ("tabLeaderSpacing", r#""1""#),
+    (
+        "tabs",
+        r#""0,0,75000|0,0,150000|0,0,225000|0,0,300000|0,0,375000|0,0,450000|0,0,525000|0,0,600000|0,0,675000|0,0,750000|0,0,825000|0,0,900000""#,
+    ),
+];
+
+/// A text paragraph's whole default style, as files of versions 16 and
+/// later write it: the first run's font, size, weight and colour, the
+/// alignment, and every other member with the values files hold when it
+/// is not set; paragraph text (`frame_text`) with the members of
+/// [`FRAME_TEXT_PARAGRAPH`] too, its `tabs` member holding `tabs` when
+/// the paragraph has stops of its own.
+#[allow(clippy::too_many_arguments)]
 fn full_text_style(
+    v: Ver,
     sp: Option<&TextSpan>,
     fill: Option<&Fill>,
     align: TextAlign,
     leading: f64,
+    tabs: &[tracedraw_core::TabStop],
+    tech: &fonts::FaceTech,
+    frame_text: bool,
 ) -> String {
-    let black = "CMYK,USER,0,0,0,100,100,00000000-0000-0000-0000-000000000000";
+    // Paragraph text holds one `tabs` member, among the members of
+    // [`FRAME_TEXT_PARAGRAPH`]: the paragraph's own stops when it has
+    // them, else the files' default; artistic text holds its stops only
+    // when it has some.
+    let own_tabs = tab_list(tabs);
+    let frame_members: String = if frame_text {
+        FRAME_TEXT_PARAGRAPH
+            .iter()
+            .map(|(k, v)| match (*k, &own_tabs) {
+                ("tabs", Some(list)) => format!(r#""tabs":"{list}","#),
+                _ => format!(r#""{k}":{v},"#),
+            })
+            .collect()
+    } else {
+        String::new()
+    };
+    let tabs = if frame_text {
+        String::new()
+    } else {
+        tabs_members(tabs)
+    };
     let colour = fill
         .and_then(fill_colour)
         .map(colour_spec)
-        .unwrap_or_else(|| black.to_string());
-    let (family, size, weight, italic, underline, strike) = match sp {
-        Some(sp) => (
-            sp.font_family.replace('\\', "\\\\").replace('"', "\\\""),
-            (sp.size_pt * 254000.0 / 72.0).round() as i64,
-            weight_member(sp),
-            u8::from(sp.italic),
-            u8::from(sp.underline),
-            u8::from(sp.strikethrough),
-        ),
-        None => ("Arial".to_string(), 254000 * 24 / 72, 64, 0, 0, 0),
-    };
-    let font = |charset: u32| {
-        format!(
-            r#"{{"overline":"0","effect":"0","version":"","italic":"{italic}","weight":"{weight}","underline":"{underline}","charset":"{charset}","technology":"4","size":"{size}","font":"{family}","script":"0","strikeout":"{strike}"}}"#
-        )
-    };
-    let screen = "0,0,45000000,60,0";
+        .unwrap_or_else(|| BLACK_SPEC.to_string());
     format!(
         concat!(
-            r#"{{"character":{{"fill":{{"type":"1","overprint":"0","secondaryColor":"CMYK,USER,0,0,0,0,100,00000000-0000-0000-0000-000000000000","primaryColor":"{colour}","screenSpec":"{screen}"}},"#,
-            r#""angle":"0","outline":{{"overprint":"0","angle":"0","aspect":"100","dashDotSpec":"0","behindFill":"0","miterLimit":"5","justification":"0","dashAdjust":"0","rightArrow":"|0","screenSpec":"{screen}","overlapArrow":"0","shareArrow":"0","dotLength":"0","scaleWithObject":"0","matrix":"1,0,0,0,1,0","color":"{black}","leftArrow":"|0","projectMatrix":"1,0,0,0,1,0","leftArrowAttributes":"0|0|0|0|0|0|0","endCaps":"0","rightArrowAttributes":"0|0|0|0|0|0|0","joinType":"0","width":"0"}},"#,
+            r#"{{"character":{{{fill},"#,
+            r#""angle":"0","outline":{outline},"#,
             r#""RTL":{rtl},"latin":{latin},"h_shift":"0","v_shift":"0","farEast":{far}}},"frame":{{}},"#,
-            r#""paragraph":{{"interCharSpacing":"0","thickOverlineAbsolute":"0","thickAbsolute":"0","dblStrikeout2Thickness":"45455","dblStrikeout2Distance":"287878","dblOverline1Absolute":"0","maxInterCharSpacing":"2000000","dblUnderline1Distance":"-90909","dblOverline2Absolute":"0","dblStrikeout1Distance":"378788","dblStrikeout1Absolute":"0","thickThickness":"90909","dblUnderline2Distance":"-181819","dblUnderline2Thickness":"45455","interLineSpacing":"{leading}","dblOverline1Thickness":"45455","afterParaSpacing":"0","thickOverlineThickness":"90909","spacingMethod":"0","dblStrikeout2Absolute":"0","thickStrikeoutAbsolute":"0","thinThickness":"45455","interLangSpacing":"0","interWordSpacing":"1000000","maxInterWordSpacing":"3000000","thinAbsolute":"0","dblUnderline1Absolute":"0","dblUnderline2Absolute":"0","dblUnderline1Thickness":"45455","thinOverlineAbsolute":"0","thinOverlineThickness":"45455","thinDistance":"-90909","beforeParaSpacing":"1000000","dblOverline2Distance":"890910","thinOverlineDistance":"845455","dblOverline2Thickness":"45455","thinStrikeoutAbsolute":"0","dblOverline1Distance":"800000","thinStrikeoutDistance":"333333","minInterWordSpacing":"600000","thinStrikeoutThickness":"45455","thickDistance":"-90909","thickOverlineDistance":"868182","thickStrikeoutDistance":"356060","thickStrikeoutThickness":"90909","dblStrikeout1Thickness":"45455","justify":"{justify}"}}}}"#
+            r#""paragraph":{{{frame_members}"interCharSpacing":"0","thickOverlineAbsolute":"0","thickAbsolute":"0","dblStrikeout2Thickness":"45455","dblStrikeout2Distance":"287878","dblOverline1Absolute":"0","maxInterCharSpacing":"2000000","dblUnderline1Distance":"-90909","dblOverline2Absolute":"0","dblStrikeout1Distance":"378788","dblStrikeout1Absolute":"0","thickThickness":"90909","dblUnderline2Distance":"-181819","dblUnderline2Thickness":"45455","interLineSpacing":"{leading}","dblOverline1Thickness":"45455","afterParaSpacing":"0","thickOverlineThickness":"90909","spacingMethod":"0","dblStrikeout2Absolute":"0","thickStrikeoutAbsolute":"0","thinThickness":"45455","interLangSpacing":"0","interWordSpacing":"1000000","maxInterWordSpacing":"3000000","thinAbsolute":"0","dblUnderline1Absolute":"0","dblUnderline2Absolute":"0","dblUnderline1Thickness":"45455","thinOverlineAbsolute":"0","thinOverlineThickness":"45455","thinDistance":"-90909","beforeParaSpacing":"1000000","dblOverline2Distance":"890910","thinOverlineDistance":"845455","dblOverline2Thickness":"45455","thinStrikeoutAbsolute":"0","dblOverline1Distance":"800000","thinStrikeoutDistance":"333333","minInterWordSpacing":"600000","thinStrikeoutThickness":"45455","thickDistance":"-90909","thickOverlineDistance":"868182","thickStrikeoutDistance":"356060","thickStrikeoutThickness":"90909","dblStrikeout1Thickness":"45455",{tabs}"justify":"{justify}"}}}}"#
         ),
-        colour = colour,
-        screen = screen,
-        black = black,
-        rtl = font(178),
-        latin = font(0),
-        far = font(128),
+        tabs = tabs,
+        fill = fill_json(&colour),
+        outline = character_outline_json(v),
+        rtl = font_json(v, sp, 178, tech),
+        latin = font_json(v, sp, 0, tech),
+        far = font_json(v, sp, 128, tech),
         justify = justify_code(align),
         leading = (leading * 1_000_000.0).round() as i64,
+        frame_members = frame_members,
     )
+}
+
+/// A paragraph's tab stops as members of a version 16+ style string's
+/// paragraph, as the samples of #1852 hold them: `tabs` (each stop 0,
+/// its kind code and its position in coordinate units, `|` between), the
+/// leader spacing 1 and the leader character "." (`2e000000`, its code
+/// as four little-endian bytes); nothing for a paragraph without stops
+/// of its own.
+fn tabs_members(tabs: &[tracedraw_core::TabStop]) -> String {
+    match tab_list(tabs) {
+        Some(list) => {
+            format!(r#""tabs":"{list}","tabLeaderSpacing":"1","tabLeaderChar":"2e000000","#)
+        }
+        None => String::new(),
+    }
+}
+
+/// The value of a `tabs` member for a paragraph's own stops (each stop
+/// 0, its kind code and its position in coordinate units, `|` between),
+/// or `None` for a paragraph without stops of its own.
+fn tab_list(tabs: &[tracedraw_core::TabStop]) -> Option<String> {
+    if tabs.is_empty() {
+        return None;
+    }
+    let list: Vec<String> = tracedraw_core::normalized_tabs(tabs)
+        .iter()
+        .take(crate::text::TAB_ENTRY_STOPS)
+        .map(|t| format!("0,{},{}", crate::text::tab_code(t.kind), units(t.pos)))
+        .collect();
+    Some(list.join("|"))
 }
 
 /// The alignment of each paragraph of a text (its own, or `align`).
@@ -2896,6 +3734,109 @@ fn justify_code(align: TextAlign) -> u32 {
     }
 }
 
+/// The coordinates argument of paragraph text (object type 6) as the files
+/// of versions 7 to 27 hold it: 0, the frame's width and height, 1, 1,
+/// from version 9 a 0, the width again, then zeros (88 bytes in all
+/// before 9, 92 from 9; the files' last four bytes vary and are written
+/// as zeros).
+fn paragraph_coords(v: Ver, f: Size) -> Vec<u8> {
+    let (w, h) = (units(f.width), units(f.height));
+    let mut c = Buf::default();
+    c.i32(0).i32(w).i32(h).u32(1).u32(1);
+    if v.0 >= 9 {
+        c.u32(0);
+    }
+    c.i32(w);
+    c.pad_to(if v.0 >= 9 { 92 } else { 88 });
+    c.done()
+}
+
+/// The size record of a paragraph text frame in a `txsm` of versions 7
+/// to 15, after the frame's matrix (and, from 8, its on-path flag and,
+/// in 15, the 12 bytes after it), as the files hold it: 0, 1, (from 8 a
+/// u16 0), the width, 0, the height going down from the frame's top,
+/// then zeros: 36 bytes in 7, 34 from 8 to 13, 36 in 14 and 15.
+fn frame_record_7(n: u16, f: Size) -> Vec<u8> {
+    let mut r = Buf::default();
+    r.u32(0).u32(1);
+    if n >= 8 {
+        r.u16(0);
+    }
+    r.i32(units(f.width)).i32(0).i32(-units(f.height));
+    r.pad_to(if (8..14).contains(&n) { 34 } else { 36 });
+    r.done()
+}
+
+/// The settings of a paragraph frame (version 16+ `txsm` frame record):
+/// the columns, each one's width and the gap after it (the last one's 0,
+/// one column as wide as the frame in the files seen), equal columns,
+/// left to right, the text from the top (`v_justify` 0, the one value
+/// seen; `writes_frame` lets other vertical placings go out as lines).
+fn frame_json(f: Size, para: &tracedraw_core::ParagraphStyle) -> String {
+    let n = para.columns.max(1);
+    let gutter = if n > 1 { para.gutter.max(0.0) } else { 0.0 };
+    let width = ((f.width - gutter * f64::from(n - 1)) / f64::from(n)).max(0.0);
+    let columns: Vec<String> = (0..n)
+        .map(|k| {
+            let gap = if k + 1 < n { units(gutter) } else { 0 };
+            format!("{},{gap}", units(width))
+        })
+        .collect();
+    format!(
+        r#"{{"frame":{{"columns":"{}","equalWidthColumns":"1","rtlColumns":"0","v_justify":"0"}}}}"#,
+        columns.join(",")
+    )
+}
+
+/// The guidelines every page of `doc` has, when its pages are all of one
+/// size (a master guideline lies as far from each page's centre): they go
+/// on the master page's guides layer once, as the files of versions 11,
+/// 15 and 25 to 27 keep their guidelines (#1161).
+/// The drawing with the master page's guidelines (#1928) added to every
+/// page's own, or `None` when it has none.
+fn master_guides_on_pages(doc: &Document) -> Option<Document> {
+    if doc.master_guides.is_empty() {
+        return None;
+    }
+    let mut out = doc.clone();
+    for p in &mut out.pages {
+        let own = std::mem::take(&mut p.guides);
+        p.guides = doc.master_guides.clone();
+        for g in own {
+            if !p.guides.iter().any(|h| h.line == g.line) {
+                p.guides.push(g);
+            }
+        }
+    }
+    out.master_guides.clear();
+    Some(out)
+}
+
+fn master_guides(doc: &Document) -> Vec<tracedraw_core::document::GuideLine> {
+    let Some(first) = doc.pages.first() else {
+        return Vec::new();
+    };
+    let same_size = doc.pages.iter().all(|p| {
+        (p.size.width - first.size.width).abs() < 1e-6
+            && (p.size.height - first.size.height).abs() < 1e-6
+    });
+    if !same_size {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for g in &first.guides {
+        if !out.contains(&g.line)
+            && doc
+                .pages
+                .iter()
+                .all(|p| p.guides.iter().any(|h| h.line == g.line))
+        {
+            out.push(g.line);
+        }
+    }
+    out
+}
+
 // ---- the writer ----------------------------------------------------------
 
 struct Writer<'a> {
@@ -2910,6 +3851,10 @@ struct Writer<'a> {
     /// Bitmap pattern fills already written, matched by their picture's
     /// content (the pointer first, then the bytes) and size.
     bitmap_fills: Vec<(SharedBytes, u32, u32, u64, u32)>,
+    /// Images already written as `bmp ` records, matched the same way
+    /// (picture, then the box size in mm as bits): the id and pixel size.
+    /// The same picture placed many times is stored once (#2923).
+    bitmap_images: Vec<WrittenImage>,
     /// Static ids (`usdn`), object ids (argument 100), next fill, outline
     /// and bitmap ids.
     next_usdn: u32,
@@ -2935,15 +3880,103 @@ struct Writer<'a> {
     /// the package's own member names them (#986).
     static_ids: HashMap<tracedraw_core::ShapeId, u32>,
     blends: Vec<crate::kept_blends::Written>,
+    /// The objects written as what their effects and shadows draw, for
+    /// the package's own member (#1031), and the pictures of the
+    /// objects' drop shadows the caller rendered (see
+    /// [`Previews::shadows`]).
+    effects: Vec<crate::kept_effects::Written>,
+    /// How deep inside [`Self::drawn_as`] the writer is: what an object
+    /// with effects is drawn as is kept by that object's entry.
+    drawing_effects: usize,
+    /// The envelope the next text [`Self::place`] writes holds as the
+    /// files' own (#2432), and how many such envelopes were written.
+    native_envelope: Option<NativeEnvelope>,
+    envelopes: u32,
+    shadow_pictures: HashMap<tracedraw_core::ShapeId, &'a ShadowPicture>,
+    /// Clip containers (#1222): the groups of the document's `LIST clpt`
+    /// holding the contents of the clip frames written; the number the
+    /// container being written names (taken by [`Self::place`]); how
+    /// deep inside clip contents the writer is (objects there carry no
+    /// `usdn` and no argument 12000, as the files have them).
+    clip_groups: Vec<Node>,
+    clip_container: Option<u32>,
+    clip_depth: usize,
     /// The faces the text uses, with their font files (see
     /// [`Previews::fonts`]), and what [`fonts::split_family`] said for
     /// each family named with a weight.
     faces: &'a [FontFace],
-    split_families: HashMap<String, Option<(String, u16)>>,
+    /// Embed the faces whose licence allows it (see
+    /// [`Previews::embed_fonts`]).
+    embed_fonts: bool,
+    /// Write paragraph text as paragraph text (see
+    /// [`Previews::paragraph_frames`]).
+    paragraph_frames: bool,
+    split_families: HashMap<(String, bool), Option<(String, u16)>>,
+    /// What [`fonts::drawn_style`] said for each face the runs name.
+    drawn_styles: HashMap<(String, bool, bool), Option<(u16, bool)>>,
+    /// The technology and version of the faces the runs name (see
+    /// [`fonts::FaceTech`]).
+    tech: fonts::FaceTech,
     /// The faces the runs of version 16+ text use (font id, face bits of
     /// the style flags), for the font table as [`Writer::text_formats`]
     /// gives them before.
     run_faces: Vec<(u16, u32)>,
+    /// The drawing's layers as the master page and every page list them
+    /// before version 14 (see [`layer_slots`]).
+    layer_slots: Vec<LayerSlot>,
+    /// The document's page size (`mcfg`): the first page's. A page of
+    /// another size carries its own from version 16.
+    doc_size: tracedraw_core::geometry::Size,
+    /// The guidelines every page has, written once on the master page's
+    /// guides layer (#1161); the others go on their page.
+    master_guides: Vec<tracedraw_core::document::GuideLine>,
+}
+
+/// One of the drawing's layers as files before version 14 list them: by
+/// name, and by rank among the layers of a page sharing that name (two
+/// layers named "Layer 1" on one page take two slots). The master page
+/// lists every slot without objects and every page lists them all in the
+/// same order, with its own layer's objects or none, so a page's entry
+/// stands for the master's entry of the same rank (positional pairing:
+/// a real version 9 file, two version 13 files of other releases and the
+/// version 7 to 13 saves of the program that reads them all list the same
+/// layers in the same order on both).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LayerSlot {
+    name: String,
+    nth: usize,
+}
+
+/// The slots of a page's layers, front to back as files list them.
+fn slots_of(page: &tracedraw_core::document::Page) -> Vec<LayerSlot> {
+    let mut seen: HashMap<&str, usize> = HashMap::new();
+    page.layers
+        .iter()
+        .rev()
+        .map(|l| {
+            let nth = seen.entry(l.name.as_str()).or_insert(0);
+            let slot = LayerSlot {
+                name: l.name.clone(),
+                nth: *nth,
+            };
+            *nth += 1;
+            slot
+        })
+        .collect()
+}
+
+/// The slots of every page of the document in one order: the first page's
+/// front to back, then those later pages add.
+fn layer_slots(doc: &Document) -> Vec<LayerSlot> {
+    let mut slots: Vec<LayerSlot> = Vec::new();
+    for page in &doc.pages {
+        for slot in slots_of(page) {
+            if !slots.contains(&slot) {
+                slots.push(slot);
+            }
+        }
+    }
+    slots
 }
 
 /// The master page's layers, in the order of `Writer::master_guids`.
@@ -3003,13 +4036,19 @@ impl<'a> Writer<'a> {
             bitmaps: Vec::new(),
             next_usdn: 1,
             static_ids: HashMap::new(),
+            effects: Vec::new(),
+            shadow_pictures: HashMap::new(),
             blends: Vec::new(),
+            clip_groups: Vec::new(),
+            clip_container: None,
+            clip_depth: 0,
             next_object: 1,
             graded: std::collections::HashMap::new(),
             next_fill: 1,
             next_outline: 1,
             next_bitmap: 1,
             bitmap_fills: Vec::new(),
+            bitmap_images: Vec::new(),
             next_spnd: 1,
             text_formats: Vec::new(),
             guid_seed: seed,
@@ -3017,8 +4056,18 @@ impl<'a> Writer<'a> {
             master_guids,
             has_text: false,
             faces: &[],
+            embed_fonts: false,
+            paragraph_frames: false,
             split_families: HashMap::new(),
+            drawn_styles: HashMap::new(),
+            drawing_effects: 0,
+            native_envelope: None,
+            envelopes: 0,
+            tech: fonts::FaceTech::new(),
             run_faces: Vec::new(),
+            layer_slots: Vec::new(),
+            doc_size: tracedraw_core::geometry::Size::new(210.0, 297.0),
+            master_guides: Vec::new(),
         }
     }
 
@@ -3030,24 +4079,71 @@ impl<'a> Writer<'a> {
     fn file_spans(&mut self, spans: &[TextSpan]) -> Option<Vec<TextSpan>> {
         let mut out: Option<Vec<TextSpan>> = None;
         for (i, sp) in spans.iter().enumerate() {
-            if sp.bold || sp.variation("wght").is_some() {
+            if sp.variation("wght").is_some() {
                 continue;
             }
-            let split = match self.split_families.get(&sp.font_family) {
+            let key = (sp.font_family.clone(), sp.bold);
+            let split = match self.split_families.get(&key) {
                 Some(s) => s.clone(),
                 None => {
-                    let s = fonts::split_family(&sp.font_family, false, self.faces);
-                    self.split_families
-                        .insert(sp.font_family.clone(), s.clone());
+                    let s = fonts::split_family(&sp.font_family, sp.bold, self.faces);
+                    self.split_families.insert(key, s.clone());
                     s
                 }
             };
             let Some((family, weight)) = split else {
+                // Text drawn by a face of its family that is not the one
+                // it asks for (regular text drawn by the bold file) goes
+                // out as that face (#1733).
+                let key = (sp.font_family.clone(), sp.bold, sp.italic);
+                let drawn = match self.drawn_styles.get(&key) {
+                    Some(d) => *d,
+                    None => {
+                        let d = self
+                            .faces
+                            .iter()
+                            .find(|f| {
+                                f.family == sp.font_family
+                                    && f.bold == sp.bold
+                                    && f.italic == sp.italic
+                            })
+                            .and_then(fonts::drawn_style);
+                        self.drawn_styles.insert(key, d);
+                        d
+                    }
+                };
+                if let Some((weight, italic)) = drawn {
+                    if let Some(file_sp) = out.get_or_insert_with(|| spans.to_vec()).get_mut(i) {
+                        file_sp.italic = italic;
+                        match weight {
+                            700 => file_sp.bold = true,
+                            400 => {}
+                            w => file_sp.set_variation("wght", Some(f64::from(w))),
+                        }
+                    }
+                }
                 continue;
             };
+            // Italic of an upright file goes out upright (#1733).
+            let upright = sp.italic
+                && self
+                    .faces
+                    .iter()
+                    .find(|f| {
+                        f.family == sp.font_family && f.bold == sp.bold && f.italic == sp.italic
+                    })
+                    .is_some_and(fonts::slanted_upright);
             if let Some(file_sp) = out.get_or_insert_with(|| spans.to_vec()).get_mut(i) {
                 file_sp.font_family = family;
-                file_sp.set_variation("wght", Some(f64::from(weight)));
+                if upright {
+                    file_sp.italic = false;
+                }
+                // Bold text drawn by the family's bold face stays bold
+                // (written at 700); another weight is carried on the
+                // weight axis the style codes are taken from.
+                if !sp.bold {
+                    file_sp.set_variation("wght", Some(f64::from(weight)));
+                }
             }
         }
         out
@@ -3067,6 +4163,7 @@ impl<'a> Writer<'a> {
             width_px,
             height_px,
             size_mm,
+            ..
         }) = fill
         {
             let key = (*width_px, *height_px, size_mm.to_bits());
@@ -3116,12 +4213,30 @@ impl<'a> Writer<'a> {
         id
     }
 
-    fn bitmap_id(&mut self, png: &[u8], size_mm: (f64, f64)) -> Option<u32> {
+    /// The `bmp ` record for `png`: its id and the image's size in
+    /// pixels. A picture already written at the same box size reuses its
+    /// record, as files of the program that reads them share one image
+    /// among its copies; writing it once per object made a 17 MB file
+    /// with repeated pictures hundreds of MB (#2923).
+    fn bitmap_id(&mut self, png: &SharedBytes, size_mm: (f64, f64)) -> Option<(u32, u32, u32)> {
+        let key = (size_mm.0.to_bits(), size_mm.1.to_bits());
+        if let Some(found) = self
+            .bitmap_images
+            .iter()
+            .find(|b| b.size_mm == key && b.png == *png)
+        {
+            return Some(found.record);
+        }
         let id = self.next_bitmap;
-        let rec = bmp_record(id, png, size_mm)?;
+        let (rec, w, h) = bmp_record(id, png, size_mm)?;
         self.next_bitmap += 1;
         self.bitmaps.push(rec);
-        Some(id)
+        self.bitmap_images.push(WrittenImage {
+            png: png.clone(),
+            size_mm: key,
+            record: (id, w, h),
+        });
+        Some((id, w, h))
     }
 
     /// The whole file: version chunks, bitmaps, the document tables, the
@@ -3132,11 +4247,36 @@ impl<'a> Writer<'a> {
             .first()
             .map(|p| p.size)
             .unwrap_or(tracedraw_core::geometry::Size::new(210.0, 297.0));
+        self.doc_size = first;
+        self.master_guides = master_guides(doc);
+        // The master page's guidelines, written now as they fill the
+        // tables too.
+        let centre = Point::new(first.width / 2.0, first.height / 2.0);
+        let master_guides: Vec<Node> = self
+            .master_guides
+            .clone()
+            .iter()
+            .map(|g| self.guide(g, centre))
+            .collect();
+        // The objects of the master layers behind every page, on the
+        // master page's desktop layer (front to back, as files list
+        // them), written now as they fill the tables too (#1775).
+        let mut desktop = Vec::new();
+        let mut unused = None;
+        for layer in doc.master.iter().rev().filter(|l| on_master_desktop(l)) {
+            desktop.extend(self.layer_objects(layer, centre, &mut unused));
+        }
+        let desktop_name = doc
+            .master
+            .iter()
+            .find(|l| on_master_desktop(l) && !l.shapes.is_empty())
+            .map(|l| l.name.clone());
         // Pages first: they fill the tables.
+        self.layer_slots = layer_slots(doc);
         let mut pages = Vec::new();
         let mut content: Option<Rect> = None;
-        for page in &doc.pages {
-            let (node, b) = self.page(page);
+        for (index, page) in doc.pages.iter().enumerate() {
+            let (node, b) = self.page(page, index);
             if content.is_none() {
                 content = b;
             }
@@ -3180,19 +4320,61 @@ impl<'a> Writer<'a> {
         if self.fonts.is_empty() {
             self.font_id("Arial");
         }
+        // The face the style table names: the first record of the first
+        // font, as the file of #1733 names its one face there (Khand at
+        // 0x1000, the bold face, with no regular record).
+        let first_font = self.fonts.first().map(|(id, _)| *id);
+        let mut style_face = 0x40;
         if !self.fonts.is_empty() {
+            // What the package's font table says about each embedded
+            // face, for the records of version 16 and later (faces not
+            // embedded keep their plain records).
+            let records = if v.redirects() {
+                fonts::records(self.faces, self.embed_fonts, &self.fonts, &self.run_faces)
+            } else {
+                Vec::new()
+            };
+            let record_of = |id: u16, flags: u32| {
+                records
+                    .iter()
+                    .find(|r| r.embedded && r.describes(id, flags))
+            };
             let mut fonts = Vec::new();
             for (id, f) in &self.fonts {
-                fonts.push(chunk(b"font", font_record(v, *id, f, 0x40)));
+                // The faces the text asks for, and the faces the font
+                // table lists for them (a bold face drawing bold italic
+                // text), each of which has its record in files (#1455).
                 let mut faces: Vec<u32> = format_faces
                     .iter()
-                    .filter(|(fid, flags)| fid == id && *flags != 0x40)
+                    .filter(|(fid, _)| fid == id)
                     .map(|(_, flags)| *flags)
+                    .chain(
+                        records
+                            .iter()
+                            .filter(|r| r.number == *id)
+                            .flat_map(|r| r.flags.iter().copied()),
+                    )
                     .collect();
+                // Files of version 16 and later hold a record for each
+                // face used and none for a regular face nothing uses: the
+                // file of #1733 that program saved has one "Khand" record,
+                // the bold one. A plain record beside it named a regular
+                // face the file neither embeds nor needs, which was asked
+                // for where the font is not installed. Before 16 the
+                // regular record is the font the text styles name.
+                if faces.is_empty() || !v.redirects() {
+                    faces.push(0x40);
+                }
                 faces.sort_unstable();
                 faces.dedup();
+                if Some(*id) == first_font {
+                    style_face = faces[0];
+                }
                 for flags in faces {
-                    fonts.push(chunk(b"font", font_record(v, *id, f, flags)));
+                    fonts.push(chunk(
+                        b"font",
+                        font_record(v, *id, f, flags, record_of(*id, flags)),
+                    ));
                 }
             }
             docl.push(list(b"fntt", fonts));
@@ -3204,6 +4386,7 @@ impl<'a> Writer<'a> {
             graphic_fill: self.fill_id(&Fill::None),
             outline: self.outline_id(None),
             font: self.fonts.first().map(|(id, _)| *id).unwrap_or(1),
+            font_flags: style_face,
             formats: std::mem::take(&mut self.text_formats),
         };
 
@@ -3224,6 +4407,11 @@ impl<'a> Writer<'a> {
             // Before version 16 the style table is the body of a list.
             docl.push(Node::RawList(*b"stlt", styles));
         }
+        // The contents of the clip containers, after the style table as
+        // a version 27 file has them.
+        if !self.clip_groups.is_empty() {
+            docl.push(list(b"clpt", std::mem::take(&mut self.clip_groups)));
+        }
         if !v.zip() {
             // RIFF files (before version 14) end the document tables
             // with an empty `uil` list.
@@ -3234,7 +4422,7 @@ impl<'a> Writer<'a> {
             Some(Fill::Solid(c)) => Some(*c),
             _ => None,
         };
-        out.push(self.master_page(background));
+        out.push(self.master_page(background, master_guides, desktop, desktop_name));
         out.extend(pages);
         out
     }
@@ -3265,9 +4453,10 @@ impl<'a> Writer<'a> {
         } else {
             args.push((ARG_LAYER_COLOR, colour(colour_bytes).to_vec()));
         }
-        // A zero 12000 from version 13, as layers of files of versions 13
-        // to 27 have it (it was written from 17 only).
-        if v.props() {
+        // A zero 12000 from version 14, as layers of files of versions 14
+        // to 27 have it; no layer of a version 7 to 13 file saved by four
+        // different writers has one (objects and groups have it).
+        if v.page_props() {
             args.push((ARG_PROPS, vec![0; 4]));
         }
         if v.0 >= 17 && kind == LAYER_GUIDES {
@@ -3293,32 +4482,176 @@ impl<'a> Writer<'a> {
     /// A layer of the master page (`page` false), or a page's entry for it:
     /// the same flags and GUID, and from version 14 no name.
     fn master_layer(&mut self, which: MasterLayer, page: bool) -> Node {
+        self.master_layer_with(which, page, Vec::new())
+    }
+
+    /// [`Self::master_layer`] holding `objects`.
+    fn master_layer_with(&mut self, which: MasterLayer, page: bool, objects: Vec<Node>) -> Node {
         let guid = self.master_guids[which as usize];
         let name = (!page || !self.v.zip()).then(|| which.name());
-        self.layer_entry(which.flags(), which.kind(), name, guid, Vec::new())
+        self.layer_entry(which.flags(), which.kind(), name, guid, objects)
+    }
+
+    /// A guideline as files of versions 11, 15 and 25 to 27 hold one: an
+    /// object of type 0x16 whose argument 16000 holds 12 bytes (zeros
+    /// from 25, leftovers before), the angle (millionths of a degree: 0
+    /// horizontal, 90 000 000 vertical) and three points from the page's
+    /// centre: the line's two ends 22 860 mm out (900 inches) and the
+    /// second again; coordinates 12 zero bytes, no fill, a blue outline,
+    /// and from 25 argument 40160 = 2; in 11 (and assumed 7 to 12)
+    /// argument 16016 = 1; in 9 to 15 argument 19170 with 999 (11) or
+    /// 5000 (15) where objects have 1. An angled guideline (not seen)
+    /// is written alike through its point at its angle (#1161).
+    fn guide(&mut self, line: &tracedraw_core::document::GuideLine, centre: Point) -> Node {
+        use tracedraw_core::document::GuideLine;
+        let v = self.v;
+        const REACH: f64 = 22860.0;
+        let (point, angle) = match *line {
+            GuideLine::Horizontal { y } => (Point::new(centre.x, y), 0.0),
+            GuideLine::Vertical { x } => (Point::new(x, centre.y), 90.0),
+            GuideLine::Angled { x, y, angle } => (Point::new(x, y), angle.rem_euclid(180.0)),
+        };
+        let angle = if angle.is_finite() { angle } else { 0.0 };
+        let p = point - centre.to_vec2();
+        // Horizontal and vertical lines run through the centre's x or y,
+        // as the files hold them; others through their own point.
+        let dir = match *line {
+            GuideLine::Horizontal { .. } => tracedraw_core::Vec2::new(1.0, 0.0),
+            GuideLine::Vertical { .. } => tracedraw_core::Vec2::new(0.0, 1.0),
+            GuideLine::Angled { .. } => {
+                let r = angle.to_radians();
+                tracedraw_core::Vec2::new(r.cos(), r.sin())
+            }
+        };
+        let (a, b) = (p - dir * REACH, p + dir * REACH);
+        let mut rec = Buf::default();
+        rec.zeros(12)
+            .i32((angle * 1_000_000.0).round() as i32)
+            .i32(units(a.x))
+            .i32(units(a.y))
+            .i32(units(b.x))
+            .i32(units(b.y))
+            .i32(units(b.x))
+            .i32(units(b.y));
+        let colour = Color::rgb8(0, 0, 255);
+        let stroke = Stroke::new(colour, 1.0 / UNITS_PER_MM);
+        let fill_id = self.fill_id(&Fill::None);
+        let outline_id = self.outline_id(Some(&stroke));
+        let id = self.next_object;
+        self.next_object += 1;
+        let mut args: Vec<(u32, Vec<u8>)> = vec![
+            (ARG_COORDS, vec![0; 12]),
+            (ARG_FILL, fill_id.to_le_bytes().to_vec()),
+            (ARG_OUTLINE, outline_id.to_le_bytes().to_vec()),
+            (ARG_ID, id.to_le_bytes().to_vec()),
+        ];
+        if v.style_strings() {
+            let json = format!(
+                r#"{{"fill":{{}},"outline":{{"color":"{}","type":"0","width":"1"}}}}"#,
+                colour_spec(colour)
+            );
+            let mut a = Buf::default();
+            a.u32(1).bytes(&style_string(v, &json));
+            args.push((ARG_STYLE_STRING, a.done()));
+        } else {
+            args.push((ARG_STYLE, GRAPHIC_STYLE_ID.to_le_bytes().to_vec()));
+        }
+        args.push((ARG_PROPS, vec![0; 4]));
+        if v.rotation_arg() {
+            args.push((ARG_ROTATION, vec![0; 4]));
+        }
+        args.push((ARG_GUIDE_LINE, rec.done()));
+        if v.0 <= 12 {
+            args.push((ARG_HIDDEN, 1u32.to_le_bytes().to_vec()));
+        }
+        if v.draw_flags() {
+            let mark: u32 = if v.0 >= 13 { 5000 } else { 999 };
+            args.push((
+                ARG_DRAW_FLAGS,
+                [1u32, mark, 0]
+                    .iter()
+                    .flat_map(|x| x.to_le_bytes())
+                    .collect(),
+            ));
+        }
+        if v.0 >= 25 {
+            args.push((ARG_GUIDE_KIND, 2u32.to_le_bytes().to_vec()));
+        }
+        // Its box: the line, 2 units across.
+        let t = 2.0 / UNITS_PER_MM;
+        let (pa, pb) = (a + centre.to_vec2(), b + centre.to_vec2());
+        let page_box = Rect::new(
+            pa.x.min(pb.x) - if dir.x.abs() < 1e-9 { t } else { 0.0 },
+            pa.y.min(pb.y) - if dir.y.abs() < 1e-9 { t } else { 0.0 },
+            pa.x.max(pb.x) + if dir.x.abs() < 1e-9 { t } else { 0.0 },
+            pa.y.max(pb.y) + if dir.y.abs() < 1e-9 { t } else { 0.0 },
+        );
+        let mut body = self.head([0, 2, 0, 8], page_box, 0.0, centre);
+        body.push(list(
+            b"lgob",
+            vec![
+                chunk(b"loda", loda(OBJ_GUIDE, args)),
+                chunk(b"ftil", ftil()),
+                list(b"trfl", vec![chunk(b"trfd", trfd(v, Affine::IDENTITY))]),
+            ],
+        ));
+        list(b"obj ", body)
     }
 
     /// The master page: guides, desktop and grid layers, no objects; from
     /// version 21 the page background colour in its `loda`.
-    fn master_page(&mut self, background: Option<Color>) -> Node {
+    ///
+    /// Before version 14 the drawing's own layers stand between the
+    /// desktop and the grid, named and empty: files of versions 7 to 13
+    /// put the same layers in the same order on the master page and on
+    /// every page (a real version 9 file, two releases' version 13 files
+    /// and the version 7 to 13 saves of the program that reads them all
+    /// list guides, desktop, "Layer 1", grid on both), the master defining
+    /// each layer and a page's entry of the same rank carrying its
+    /// objects. From 14 pages list their own layers by GUID and the master
+    /// keeps only its three.
+    fn master_page(
+        &mut self,
+        background: Option<Color>,
+        guides: Vec<Node>,
+        desktop: Vec<Node>,
+        desktop_name: Option<String>,
+    ) -> Node {
         let v = self.v;
         let mut children = vec![chunk(
             b"flgs",
-            vec![if v.props() { 0x40 } else { 0 }, 0, 1, 0x90],
+            vec![if v.page_props() { 0x40 } else { 0 }, 0, 1, 0x90],
         )];
         let unit = 1.0 / UNITS_PER_MM;
         let tiny = Rect::new(-2.0 * unit, -2.0 * unit, 2.0 * unit, 2.0 * unit);
-        if v.props() {
+        if v.page_props() {
             children.push(chunk(b"bbox", box_bytes(tiny)));
             children.push(chunk(b"obbx", obbx_bytes(tiny, 0.0)));
         } else {
             children.push(chunk(b"bbox", vec![0; 16]));
         }
-        let layers = vec![
-            self.master_layer(MasterLayer::Guides, false),
-            self.master_layer(MasterLayer::Desktop, false),
-            self.master_layer(MasterLayer::Grid, false),
+        // The desktop layer holds the objects of the master layers behind
+        // every page, named after the first of them (#1775).
+        let desktop = match desktop_name {
+            Some(name) if !desktop.is_empty() => {
+                let which = MasterLayer::Desktop;
+                let guid = self.master_guids[which as usize];
+                self.layer_entry(which.flags(), which.kind(), Some(&name), guid, desktop)
+            }
+            _ => self.master_layer_with(MasterLayer::Desktop, false, desktop),
+        };
+        let mut layers = vec![
+            self.master_layer_with(MasterLayer::Guides, false, guides),
+            desktop,
         ];
+        if !v.zip() {
+            let slots = std::mem::take(&mut self.layer_slots);
+            for slot in &slots {
+                layers.push(self.layer(PLAIN_LAYER_FLAGS, LAYER_PLAIN, &slot.name, Vec::new()));
+            }
+            self.layer_slots = slots;
+        }
+        layers.push(self.master_layer(MasterLayer::Grid, false));
         children.push(list(b"gobj", layers));
         match background {
             Some(c) if v.0 >= 21 => {
@@ -3338,80 +4671,488 @@ impl<'a> Writer<'a> {
     /// A page: its flags, the box of its objects, its entries for the
     /// master's guides and desktop layers, its own guides layer (from
     /// version 14), its layers and its entry for the master's grid layer.
-    fn page(&mut self, page: &tracedraw_core::document::Page) -> (Node, Option<Rect>) {
+    /// Before 14 the layers come in the master page's order, one entry per
+    /// slot of [`layer_slots`], empty where the page has no such layer.
+    /// `index` is the page's place, from 0.
+    fn page(
+        &mut self,
+        page: &tracedraw_core::document::Page,
+        index: usize,
+    ) -> (Node, Option<Rect>) {
         let v = self.v;
-        let centre = Point::new(page.size.width / 2.0, page.size.height / 2.0);
+        // A page of another size than the document's keeps its own in its
+        // `lgob` (argument 19130), as version 16+ files hold it; files of
+        // earlier versions give every page the document's size, so their
+        // objects are placed from that page's centre, where a reader puts
+        // them again.
+        let own_size = (page.size.width - self.doc_size.width).abs() > 1e-6
+            || (page.size.height - self.doc_size.height).abs() > 1e-6;
+        let own_size = own_size && v.redirects();
+        let size = if own_size { page.size } else { self.doc_size };
+        let centre = Point::new(size.width / 2.0, size.height / 2.0);
+        // The page's own guidelines (those not on the master page): from
+        // version 14 on its own guides layer (assumed: the files seen keep
+        // theirs on the master page), before on its entry for the
+        // master's guides layer, as version 12 files hold them.
+        let own: Vec<tracedraw_core::document::GuideLine> = page
+            .guides
+            .iter()
+            .map(|g| g.line)
+            .filter(|l| !self.master_guides.contains(l))
+            .collect();
+        let own: Vec<Node> = own.iter().map(|l| self.guide(l, centre)).collect();
+        let (entry, own) = if v.zip() {
+            (Vec::new(), own)
+        } else {
+            (own, Vec::new())
+        };
         let mut layers = vec![
-            self.master_layer(MasterLayer::Guides, true),
+            self.master_layer_with(MasterLayer::Guides, true, entry),
             self.master_layer(MasterLayer::Desktop, true),
         ];
         if v.zip() {
-            layers.push(self.layer([0x0a, 0, 0, 0x98], LAYER_GUIDES, "Guides", Vec::new()));
+            layers.push(self.layer([0x0a, 0, 0, 0x98], LAYER_GUIDES, "Guides", own));
         }
         let mut content: Option<Rect> = None;
-        // Front to back, as files list them.
-        for layer in page.layers.iter().rev() {
-            let objects = if layer.visible {
-                let placed = self.objects(&layer.shapes, centre, 0);
-                if let Some(b) = placed.bounds {
-                    content = Some(content.map_or(b, |c| c.union(b)));
+        if v.zip() {
+            // Front to back, as files list them.
+            for layer in page.layers.iter().rev() {
+                let objects = self.layer_objects(layer, centre, &mut content);
+                layers.push(self.layer(PLAIN_LAYER_FLAGS, LAYER_PLAIN, &layer.name, objects));
+            }
+        } else {
+            let slots = std::mem::take(&mut self.layer_slots);
+            let mut by_slot: Vec<Option<&tracedraw_core::document::Layer>> =
+                vec![None; slots.len()];
+            for (layer, slot) in page.layers.iter().rev().zip(slots_of(page)) {
+                if let Some(i) = slots.iter().position(|s| *s == slot) {
+                    by_slot[i] = Some(layer);
                 }
-                placed.nodes
-            } else {
-                Vec::new()
-            };
-            layers.push(self.layer([0, 0, 0, 0x98], LAYER_PLAIN, &layer.name, objects));
+            }
+            for (slot, layer) in slots.iter().zip(by_slot) {
+                let objects = match layer {
+                    Some(layer) => self.layer_objects(layer, centre, &mut content),
+                    None => Vec::new(),
+                };
+                layers.push(self.layer(PLAIN_LAYER_FLAGS, LAYER_PLAIN, &slot.name, objects));
+            }
+            self.layer_slots = slots;
         }
         layers.push(self.master_layer(MasterLayer::Grid, true));
         let page_box = content.map(|c| c - centre.to_vec2()).unwrap_or(Rect::ZERO);
         let mut children = vec![chunk(
             b"flgs",
-            vec![if v.props() { 0x40 } else { 0 }, 0, 0, 0x90],
+            vec![if v.page_props() { 0x40 } else { 0 }, 0, 0, 0x90],
         )];
         children.push(chunk(b"bbox", box_bytes(page_box)));
         children.push(chunk(b"obbx", obbx_bytes(page_box, 0.0)));
         children.push(list(b"gobj", layers));
+        // A name of the user's own (not the "Page N" a reader gives the
+        // page at its place) goes into the page's `lgob` as argument 1000
+        // after a zero 12000, ending in a line feed, as files of versions
+        // 15 and 27 hold it. From version 14 only: no file of an earlier
+        // version seen names a page.
+        let name = page.name.trim_end_matches(['\n', '\r', '\0']);
+        let named = v.zip() && !name.trim().is_empty() && name != format!("Page {}", index + 1);
+        if own_size || named {
+            let mut args = Vec::new();
+            if own_size {
+                let mut size = Buf::default();
+                size.i32(units(page.size.width))
+                    .i32(units(page.size.height));
+                args.push((ARG_PAGE_SIZE, size.done()));
+            }
+            if named {
+                args.push((ARG_PROPS, vec![0; 4]));
+                args.push((ARG_NAME, name_bytes(v, &format!("{name}\n"))));
+            }
+            children.push(list(b"lgob", vec![chunk(b"loda", loda(0, args))]));
+        }
         (list(b"page", children), content)
+    }
+
+    /// The objects of a layer (none when it is hidden), widening `content`
+    /// by their box.
+    fn layer_objects(
+        &mut self,
+        layer: &tracedraw_core::document::Layer,
+        centre: Point,
+        content: &mut Option<Rect>,
+    ) -> Vec<Node> {
+        if !layer.visible {
+            return Vec::new();
+        }
+        let placed = self.objects(&layer.shapes, centre, 0);
+        if let Some(b) = placed.bounds {
+            *content = Some(content.map_or(b, |c| c.union(b)));
+        }
+        placed.nodes
     }
 
     /// Objects of a layer or group, front to back as files store them.
     fn objects(&mut self, shapes: &[Shape], centre: Point, depth: usize) -> Placed {
+        self.objects_with_ids(shapes, centre, depth).0
+    }
+
+    /// [`Writer::objects`] with the static id each shape was written
+    /// with, in the shapes' order (none for a shape written as nothing or
+    /// as several lists).
+    fn objects_with_ids(
+        &mut self,
+        shapes: &[Shape],
+        centre: Point,
+        depth: usize,
+    ) -> (Placed, Vec<Option<u32>>) {
         let mut nodes = Vec::new();
         let mut bounds: Option<Rect> = None;
+        let mut ids = vec![None; shapes.len()];
         if depth > 60 {
-            return Placed { nodes, bounds };
+            return (Placed { nodes, bounds }, ids);
         }
-        for s in shapes.iter().rev() {
+        let pairs = self.blend_pairs(shapes);
+        let mut written = vec![false; shapes.len()];
+        for (i, s) in shapes.iter().enumerate().rev() {
+            if written[i] {
+                continue;
+            }
+            // A live blend: its two ends go out together, the upper one
+            // first, where the upper one stood (#1192).
+            if let Some((start, end)) = pairs[i] {
+                written[start] = true;
+                let s = &shapes[start];
+                let p = match end {
+                    Some(end) => {
+                        written[end] = true;
+                        self.live_blend(s, &shapes[end], end > start, centre, depth)
+                    }
+                    None => {
+                        // The end lives in the effect alone: it lies over
+                        // the start unless the steps are drawn below.
+                        let Some(tracedraw_core::live::Effect::Blend { end, options, .. }) =
+                            s.effects.first()
+                        else {
+                            continue;
+                        };
+                        let mut end = (**end).clone();
+                        end.effects.clear();
+                        self.live_blend(s, &end, !options.steps_below, centre, depth)
+                    }
+                };
+                if let Some(b) = p.bounds {
+                    bounds = Some(bounds.map_or(b, |c| c.union(b)));
+                }
+                nodes.extend(p.nodes);
+                continue;
+            }
             let before = self.next_usdn;
             let p = self.object(s, centre, depth);
             // One list for the shape: the last static id given is its
             // own (a group's head follows its children).
             if p.nodes.len() == 1 && self.next_usdn > before {
                 self.static_ids.insert(s.id, self.next_usdn - 1);
+                ids[i] = Some(self.next_usdn - 1);
             }
             if let Some(b) = p.bounds {
                 bounds = Some(bounds.map_or(b, |c| c.union(b)));
             }
             nodes.extend(p.nodes);
         }
-        Placed { nodes, bounds }
+        (Placed { nodes, bounds }, ids)
     }
 
     /// The common head of an object or group list: flags, boxes and the
     /// static id.
     fn head(&mut self, flags: [u8; 4], page_box: Rect, outline: f64, centre: Point) -> Vec<Node> {
         let b = page_box - centre.to_vec2();
-        let usdn = self.next_usdn;
-        self.next_usdn += 1;
-        vec![
+        let mut head = vec![
             chunk(b"flgs", flags.to_vec()),
             chunk(b"bbox", box_bytes(b)),
             chunk(b"obbx", obbx_bytes(b, outline)),
-            chunk(b"usdn", usdn.to_le_bytes().to_vec()),
-        ]
+        ];
+        // The objects inside a clip container's group carry no static id
+        // (files of versions 25 and 27).
+        if self.clip_depth == 0 {
+            let usdn = self.next_usdn;
+            self.next_usdn += 1;
+            head.push(chunk(b"usdn", usdn.to_le_bytes().to_vec()));
+        }
+        head
     }
 
-    fn group(&mut self, children: &[Shape], centre: Point, depth: usize) -> Placed {
+    /// A clip frame as a clip container (version 12 on, #1222): the
+    /// contents go, on the page like any other objects, into a group of
+    /// the document's `LIST clpt` numbered by its `spnd`; the frame is
+    /// written as an object of its own look naming that number in
+    /// argument 8005. A reader draws the group inside the frame. Without
+    /// contents that reach the file, the frame alone.
+    fn clip_container(
+        &mut self,
+        s: &Shape,
+        frame: &Shape,
+        contents: &[Shape],
+        centre: Point,
+        depth: usize,
+    ) -> Placed {
+        let kids: Vec<Shape> = contents
+            .iter()
+            .map(|c| {
+                let mut c = c.clone();
+                c.absorb(s.transform);
+                c
+            })
+            .collect();
+        self.clip_depth += 1;
+        let inner = self.objects(&kids, centre, depth + 1);
+        self.clip_depth -= 1;
+        let mut f = frame.clone();
+        f.absorb(s.transform);
+        // The frame's effects would make it several objects; the first
+        // would take the container's arguments.
+        f.effects.clear();
+        // The clip frame's transparency is the container's: a frame is
+        // drawn at the clip frame's opacity, its own ignored, so the
+        // container takes that (and a graded transparency kept for it).
+        // The frame's own was written, so a transparent picture in a
+        // frame was saved opaque (#2513).
+        f.opacity = s.opacity;
+        if let Some(g) = self.graded.get(&s.id).cloned() {
+            self.graded.insert(f.id, g);
+        }
+        if f.name.is_none() {
+            f.name = s.name.clone();
+        }
+        let Some(b) = inner.bounds else {
+            return self.object(&f, centre, depth);
+        };
+        // The group takes the next number and its argument 3500 the one
+        // after it, which no other object takes: every clip group of the
+        // files of versions 11, 14, 25, 26 and 27 holds its number plus
+        // one there. (Written 2 for every group before: a second clip, or
+        // text written before the first, broke that.)
+        let number = self.next_spnd;
+        self.next_spnd += 2;
+        let mut group_args = vec![(ARG_CLIP_GROUP, (number + 1).to_le_bytes().to_vec())];
+        // The zero rotation every object of versions 7 to 12 carries; the
+        // clip groups of the version 11 file have it too.
+        if self.v.rotation_arg() {
+            group_args.push((ARG_ROTATION, vec![0; 4]));
+        }
+        let b = b - centre.to_vec2();
+        let mut body = vec![
+            chunk(b"spnd", number.to_le_bytes().to_vec()),
+            chunk(b"flgs", CLIP_GROUP_FLAGS.to_vec()),
+            chunk(b"bbox", box_bytes(b)),
+            chunk(b"obbx", obbx_bytes(b, 0.0)),
+            list(b"lgob", vec![chunk(b"loda", loda(0, group_args))]),
+        ];
+        body.extend(inner.nodes);
+        self.clip_groups.push(list(b"grp ", body));
+        self.clip_container = Some(number);
+        let placed = self.object(&f, centre, depth);
+        if self.clip_container.take().is_some() {
+            // The frame became no object: the group would name nothing.
+            self.clip_groups.pop();
+        }
+        placed
+    }
+
+    /// The blends of a list that go out live (#1192): for each shape
+    /// whose only effect is a blend, and which is visible, the index of
+    /// the start (itself) and of its end: a visible sibling without
+    /// effects of its own, or `None` when the end lives in the effect
+    /// alone. Both entries of a pair hold it, so the pair is written when
+    /// the loop (front to back) reaches the upper one. A blend whose end
+    /// is elsewhere (another layer, inside a group, an object with
+    /// effects) or already taken keeps going out as a drawn group.
+    fn blend_pairs(&self, shapes: &[Shape]) -> Vec<Option<(usize, Option<usize>)>> {
+        let mut pairs = vec![None; shapes.len()];
+        if !self.v.live_blends() {
+            return pairs;
+        }
+        for (i, s) in shapes.iter().enumerate() {
+            let [tracedraw_core::live::Effect::Blend { end_id, .. }] = s.effects.as_slice() else {
+                continue;
+            };
+            if !s.visible || pairs[i].is_some() {
+                continue;
+            }
+            match end_id {
+                Some(e) => {
+                    let Some(j) = shapes.iter().position(|t| t.id == *e) else {
+                        continue;
+                    };
+                    if j == i
+                        || pairs[j].is_some()
+                        || !shapes[j].effects.is_empty()
+                        || !shapes[j].visible
+                    {
+                        continue;
+                    }
+                    pairs[i] = Some((i, Some(j)));
+                    pairs[j] = Some((i, Some(j)));
+                }
+                None => pairs[i] = Some((i, None)),
+            }
+        }
+        pairs
+    }
+
+    /// A blend as the files hold it (#1192): the two end objects as
+    /// objects of their own with an empty `LIST lnkg` between them whose
+    /// `loda` is of object type 7 and holds the step count, the spacing
+    /// and the centres of the two ends (argument 3000). A reader draws
+    /// the steps between the two and keeps the blend live, so its steps
+    /// and acceleration can be changed there. The upper object goes
+    /// first, as files store objects; `end_upper` says which. From
+    /// version 23 the record also holds the accelerations, the rotation
+    /// and loop, Apply to sizing and the colour direction
+    /// ([`crate::blend_record`], #1192), counted from the lower object;
+    /// a path is not written. A version 14+ package names the start
+    /// object in its own member so TraceDraw opens the blend with all its
+    /// settings.
+    fn live_blend(
+        &mut self,
+        s: &Shape,
+        end: &Shape,
+        end_upper: bool,
+        centre: Point,
+        depth: usize,
+    ) -> Placed {
+        let Some(tracedraw_core::live::Effect::Blend {
+            steps,
+            options,
+            accel_objects,
+            accel_colors,
+            rotation,
+            ..
+        }) = s.effects.first()
+        else {
+            return self.object(s, centre, depth);
+        };
+        // The settings as the record counts them, from the lower object
+        // (#1192).
+        let settings = crate::blend_record::Settings {
+            accel_objects: *accel_objects,
+            accel_colors: *accel_colors,
+            rotation: *rotation,
+            loop_rotation: options.loop_rotation,
+            accel_sizing: options.accel_sizing,
+            color_blend: options.color_blend,
+        };
+        let settings = if end_upper {
+            settings
+        } else {
+            settings.reversed()
+        };
+        let blend = s.effects[0].clone();
+        if s.shadow.is_some_and(|sh| sh.opacity > 0.0) {
+            log::warn!("a blended object's drop shadow is not written to .cdr (the blend is kept)");
+        }
+        let mut start = s.clone();
+        start.effects.clear();
+        start.shadow = None;
+        let mut end = end.clone();
+        end.shadow = None;
+        // Where the steps lie: between the two ends, as the blend draws
+        // them (the end copy of an effect that holds its end is not a
+        // step).
+        let ev = tracedraw_core::live::evaluate(s);
+        let steps_box = ev
+            .below
+            .iter()
+            .chain(&ev.above)
+            .filter(|x| x.id != end.id)
+            .map(|x| x.bounds())
+            .reduce(|a, b| a.union(b))
+            .unwrap_or_else(|| start.bounds().union(end.bounds()));
+        let (first, second) = if end_upper {
+            (&end, &start)
+        } else {
+            (&start, &end)
+        };
+        let mut nodes = Vec::new();
+        let mut bounds: Option<Rect> = None;
+        let static_id = |w: &mut Self, shape: &Shape, p: &Placed, before: u32| {
+            if p.nodes.len() == 1 && w.next_usdn > before {
+                w.static_ids.insert(shape.id, w.next_usdn - 1);
+            }
+        };
+        let before = self.next_usdn;
+        let p1 = self.object(first, centre, depth);
+        static_id(self, first, &p1, before);
+        if p1.nodes.is_empty() {
+            // Nothing written for the upper end: the other goes alone.
+            return self.object(second, centre, depth);
+        }
+        let mut arg = Buf::default();
+        let count = (*steps).clamp(1, tracedraw_core::live::MAX_BLEND_STEPS) as u16;
+        let spacing = options
+            .spacing
+            .filter(|d| d.is_finite() && *d > 0.0)
+            .map_or(self.v.blend_spacing(), units);
+        arg.u16(count).u16(0).i32(spacing).zeros(20);
+        // The centres of the two ends' boxes, the lower (later) one first.
+        for x in [second, first] {
+            let c = x.bounds().center() - centre.to_vec2();
+            arg.i32(units(c.x)).i32(units(c.y));
+        }
+        if self.v.0 >= crate::blend_record::SETTINGS_SINCE {
+            // Accelerations, rotation, loop, sizing and colour direction
+            // where the version 27 files of #1192 keep them.
+            arg.bytes(&crate::blend_record::encode(&settings));
+        } else {
+            arg.u32(crate::blend_record::DEFAULT_FLAGS)
+                .zeros(8)
+                .f64(0.0)
+                .f64(0.0);
+        }
+        arg.zeros(16);
+        let number = self.next_spnd;
+        self.next_spnd += 1;
+        let mut body = vec![chunk(b"spnd", number.to_le_bytes().to_vec())];
+        body.extend(self.head(BLEND_GROUP_FLAGS, steps_box, 0.0, centre));
+        let link = self.v.blend_link_arg();
+        body.push(list(
+            b"lgob",
+            vec![chunk(b"loda", loda(7, vec![link, (ARG_BLEND, arg.done())]))],
+        ));
+        let before = self.next_usdn;
+        let p2 = self.object(second, centre, depth);
+        static_id(self, second, &p2, before);
+        if p2.nodes.is_empty() {
+            return p1;
+        }
+        for p in [&p1, &p2] {
+            if let Some(b) = p.bounds {
+                bounds = Some(bounds.map_or(b, |c| c.union(b)));
+            }
+        }
+        // The package names the start object, so the blend opens in
+        // TraceDraw with the settings the record has no place for (#986).
+        if let Some(&start_id) = self.static_ids.get(&start.id) {
+            self.blends.push(crate::kept_blends::Written {
+                group: start_id,
+                count: 0,
+                start: 0,
+                end: self.static_ids.contains_key(&end.id).then_some(end.id),
+                blend,
+            });
+        }
+        nodes.extend(p1.nodes);
+        nodes.push(list(b"lnkg", body));
+        nodes.extend(p2.nodes);
+        Placed { nodes, bounds }
+    }
+
+    /// A group list of `children`, named `name` (argument 1000 of its
+    /// `loda`, as files name groups).
+    fn group(
+        &mut self,
+        children: &[Shape],
+        name: Option<&str>,
+        centre: Point,
+        depth: usize,
+    ) -> Placed {
         let inner = self.objects(children, centre, depth + 1);
         let Some(b) = inner.bounds else {
             return Placed {
@@ -3426,10 +5167,17 @@ impl<'a> Writer<'a> {
             b"lgob",
             vec![
                 chunk(b"loda", {
-                    // Groups carry a zero 12000 from version 13 as well.
-                    let mut args = vec![(ARG_ID, id.to_le_bytes().to_vec())];
-                    if self.v.props() {
-                        args.push((ARG_PROPS, vec![0; 4]));
+                    // Groups carry a zero 12000 in every version, and the
+                    // zero rotation (12030) in 7 to 12, as objects do.
+                    let mut args =
+                        vec![(ARG_ID, id.to_le_bytes().to_vec()), (ARG_PROPS, vec![0; 4])];
+                    if self.v.rotation_arg() {
+                        args.push((ARG_ROTATION, vec![0; 4]));
+                    }
+                    // From version 14, where a file's group carries one;
+                    // the records of older versions stay as they were.
+                    if let Some(n) = name.filter(|n| !n.is_empty() && self.v.zip()) {
+                        args.push((ARG_NAME, name_bytes(self.v, n)));
                     }
                     loda(0, args)
                 }),
@@ -3448,6 +5196,15 @@ impl<'a> Writer<'a> {
 
     /// A bitmap object: image rectangle, image id and crop path (the whole
     /// rectangle, or `crop` in the bitmap's local space).
+    ///
+    /// From version 14 the record is laid out as the files of every
+    /// version seen (14, 18, 19 and 27) hold their bitmaps: the image's box starts
+    /// at the origin and spans its size, the object's transform placing it
+    /// on the page; so the shape's own `rect` offset moves into the
+    /// transform here and the crop path moves with it (#1226, #1268). No
+    /// file of versions 7 to 13 with a bitmap was at hand to check, so
+    /// those versions keep the box where the picture lies on the page,
+    /// the shape's transform and the number 0.
     fn bitmap_object(&mut self, s: &Shape, centre: Point, crop: Option<&BezPath>) -> Placed {
         let ShapeKind::Bitmap { rect, png, .. } = &s.kind else {
             return Placed {
@@ -3455,36 +5212,52 @@ impl<'a> Writer<'a> {
                 bounds: None,
             };
         };
-        let (sx, sy) = {
-            let c = s.transform.as_coeffs();
-            (c[0].hypot(c[1]), c[2].hypot(c[3]))
-        };
-        let Some(image) = self.bitmap_id(png, (rect.width() * sx, rect.height() * sy)) else {
+        // The image's resolution gives it the size of the object's box,
+        // which the object's transform places and scales, as every bitmap
+        // of the files seen holds it; the picture's pixel size is the
+        // image's own (#1222). The resolution was taken from the size on
+        // the page, so a scaled picture's box and image disagreed, and the
+        // pixel size from the shape, which need not match its picture.
+        let Some((image, width_px, height_px)) = self.bitmap_id(png, (rect.width(), rect.height()))
+        else {
             return Placed {
                 nodes: Vec::new(),
                 bounds: None,
             };
         };
         let v = self.v;
-        let (width_px, height_px) = match &s.kind {
-            ShapeKind::Bitmap {
-                width_px,
-                height_px,
-                ..
-            } => (*width_px, *height_px),
-            _ => (0, 0),
+        // The page box is the shape's as it stands; the record then
+        // speaks in the image's own space, from the origin.
+        let page_box = match crop {
+            Some(p) => (s.transform * p.clone()).bounding_box(),
+            None => (s.transform * rect.to_path(0.01)).bounding_box(),
         };
+        let from_origin = v.0 >= 14;
+        let (shift, local, number) = if from_origin {
+            (
+                Affine::translate((rect.x0, rect.y0)),
+                Rect::new(0.0, 0.0, rect.width(), rect.height()),
+                image,
+            )
+        } else {
+            (Affine::IDENTITY, *rect, 0)
+        };
+        let transform = s.transform * shift;
         // As files of versions 7 to 27 hold it: the top-left and the
         // bottom-right corner, the image's own box the same way, 2 and
-        // the bits per pixel (u16 each), the size in pixels, 4 bytes the
-        // program fills with anything, the image id, then 0, 0, -1, 0, 0.
-        // The program that wrote the samples shows no image when the
-        // pixel size is left at zero.
+        // the bits per pixel (u16 each), the size in pixels, the image's
+        // number among the drawing's bitmap objects' images (1, 2, ...,
+        // in order of first use: files never hold 0 there), the image id,
+        // then 0, 0, -1, 0, 0. The program that wrote the samples shows
+        // no image when the pixel size is left at zero. Images get their
+        // ids in order of first use and copies share them (#2923), so the
+        // number is the image id (from version 14; before it 0, as
+        // written before #1226).
         let corners = |c: &mut Buf| {
-            c.i32(units(rect.x0))
-                .i32(units(rect.y1))
-                .i32(units(rect.x1))
-                .i32(units(rect.y0));
+            c.i32(units(local.x0))
+                .i32(units(local.y1))
+                .i32(units(local.x1))
+                .i32(units(local.y0));
         };
         let mut c = Buf::default();
         corners(&mut c);
@@ -3493,7 +5266,7 @@ impl<'a> Writer<'a> {
             .u16(24)
             .u32(width_px)
             .u32(height_px)
-            .u32(0)
+            .u32(number)
             .u32(image)
             .u32(0)
             .u32(0)
@@ -3503,28 +5276,37 @@ impl<'a> Writer<'a> {
         }
         let outline = {
             let mut p = BezPath::new();
-            p.move_to((rect.x0, rect.y1));
-            p.line_to((rect.x1, rect.y1));
-            p.line_to((rect.x1, rect.y0));
-            p.line_to((rect.x0, rect.y0));
+            p.move_to((local.x0, local.y1));
+            p.line_to((local.x1, local.y1));
+            p.line_to((local.x1, local.y0));
+            p.line_to((local.x0, local.y0));
             p.close_path();
             p
         };
         let path_bytes = match crop {
-            Some(p) => curve_coords(p),
+            Some(p) => curve_coords(&(shift.inverse() * p.clone())),
             None => curve_coords(&outline),
         };
-        c.bytes(&path_bytes.unwrap_or_else(|| 0u32.to_le_bytes().to_vec()));
-        let page_box = match crop {
-            Some(p) => (s.transform * p.clone()).bounding_box(),
-            None => (s.transform * rect.to_path(0.01)).bounding_box(),
-        };
+        let mut path_bytes = path_bytes.unwrap_or_else(|| 0u32.to_le_bytes().to_vec());
+        // The outline's nodes carry the marks a curve's do (0x0c, 0x44,
+        // 0x44, 0x44, 0x48 for the box), as every bitmap of the files the
+        // program that reads them wrote has them, versions 14 to 27.
+        // Without them (0x00, 0x40, ...) the bitmap showed and opened,
+        // but a click on it made that program close at once, also after
+        // it had saved the file again (#1226).
+        mark_nodes(&mut path_bytes);
+        c.bytes(&path_bytes);
+        // Files of versions 14, 18, 19 and 27 end the record with 4 zero bytes
+        // after the node types (none seen in older files).
+        if v.0 >= 14 {
+            c.zeros(4);
+        }
         self.place(
             s,
             OBJ_BITMAP,
             c.done(),
             &Fill::None,
-            s.transform,
+            transform,
             page_box,
             None,
             centre,
@@ -3547,7 +5329,16 @@ impl<'a> Writer<'a> {
         centre: Point,
     ) -> Placed {
         let v = self.v;
-        let fill_id = self.fill_id(fill);
+        // Files measure a fountain fill's angle from the object's x axis
+        // (#1257); ours is on the page.
+        let fill_id = match fill {
+            Fill::Fountain(f) => {
+                let mut f = f.clone();
+                crate::turn_fountain(&mut f, transform, -1.0);
+                self.fill_id(&Fill::Fountain(f))
+            }
+            _ => self.fill_id(fill),
+        };
         let outline_id = self.outline_id(s.stroke.as_ref());
         let id = self.next_object;
         self.next_object += 1;
@@ -3562,22 +5353,28 @@ impl<'a> Writer<'a> {
         }
         if v.style_strings() {
             let graded = self.graded.get(&s.id).map(|(f, t)| (f, *t));
-            let mut json = object_style_json(fill, s.stroke.as_ref(), s.opacity, graded);
+            let nonzero = s.fill_rule == tracedraw_core::shaping::FillRule::NonZero;
+            let mut json = object_style_json(fill, s.stroke.as_ref(), s.opacity, graded, nonzero);
             if let Some((_, character, _)) = &text {
                 // Text objects keep their character settings there too.
                 json.pop();
                 json.push(',');
                 json.push_str(character);
                 json.push('}');
-                args.push((ARG_TEXT_LINK, 1u32.to_le_bytes().to_vec()));
+                // Paragraph text has none in any file.
+                if kind != OBJ_PARAGRAPH_TEXT {
+                    args.push((ARG_TEXT_LINK, 1u32.to_le_bytes().to_vec()));
+                }
             }
             let mut a = Buf::default();
             a.u32(1).bytes(&style_string(v, &json));
             args.push((ARG_STYLE_STRING, a.done()));
         } else {
-            // Version 15 text carries 1 in argument 16015 as from 16 (every
-            // text object of the version 15 files seen).
-            if text.is_some() && v.0 == 15 {
+            // Artistic text carries 1 in argument 16015 as from 16: every
+            // artistic text object of the version 7 to 13 and 15 files seen
+            // (the version 14 files, which open, were written without it
+            // and stay so); paragraph text has none in any version.
+            if text.is_some() && v.0 != 14 && kind != OBJ_PARAGRAPH_TEXT {
                 args.push((ARG_TEXT_LINK, 1u32.to_le_bytes().to_vec()));
             }
             // Text refers to the style of its alignment, as its paragraphs;
@@ -3587,8 +5384,34 @@ impl<'a> Writer<'a> {
                 .map_or(GRAPHIC_STYLE_ID, |(_, _, style)| *style);
             args.push((ARG_STYLE, style.to_le_bytes().to_vec()));
         }
-        if v.props() {
+        // A zero 12000 in every version and, in 7 to 12, the zero
+        // rotation angle (12030), as every object of the files of those
+        // versions has them; not inside a clip container's group, whose
+        // objects have neither (version 27).
+        if self.clip_depth == 0 {
             args.push((ARG_PROPS, vec![0; 4]));
+        }
+        // A clip container names the group of its contents, with an id of
+        // its own and a zero, as a version 27 file has it.
+        let container = self.clip_container.take();
+        if let Some(n) = container {
+            args.push((
+                ARG_CLIP_CONTENTS,
+                [n, 1, 0, 1].iter().flat_map(|x| x.to_le_bytes()).collect(),
+            ));
+            if v.clip_container_ids() {
+                args.push((ARG_CLIP_GUID, self.guid().to_vec()));
+                args.push((ARG_CLIP_ZERO, vec![0; 4]));
+            }
+        }
+        if v.rotation_arg() {
+            args.push((ARG_ROTATION, vec![0; 4]));
+        }
+        if v.draw_flags() {
+            args.push((
+                ARG_DRAW_FLAGS,
+                [1u32, 1, 0].iter().flat_map(|x| x.to_le_bytes()).collect(),
+            ));
         }
         if let Some(n) = &s.name {
             args.push((ARG_NAME, name_bytes(v, n)));
@@ -3603,37 +5426,212 @@ impl<'a> Writer<'a> {
         }
         let outline = s.stroke.as_ref().map(|st| st.width / 2.0).unwrap_or(0.0);
         // Text objects start with a number of their own (`spnd`: 1, 2, ...
-        // in the order written, as files number them) and before version
-        // 18 are flagged 9 instead of 8.
+        // in the order written, as files number them). Every text of the
+        // files of versions 7 to 15 saved by the program that reads them
+        // is flagged 8 like the shapes; 9 was seen in one version 17 file,
+        // and the version 14 and 15 files written with 9 open, so 14 to 17
+        // keep it.
         let mut body = Vec::new();
         let mut flags = [0, 2, 0, 8];
+        // A locked object stays locked in the program that reads the
+        // file, as its own locked objects are flagged (#2347).
+        if s.locked {
+            flags[0] |= crate::parse::OBJECT_LOCKED;
+        }
+        if container.is_some() {
+            flags[2] = CLIP_CONTAINER_FLAG;
+        }
         if text.is_some() {
             body.push(chunk(b"spnd", self.next_spnd.to_le_bytes().to_vec()));
             self.next_spnd += 1;
-            if v.0 < 18 {
+            if (14..18).contains(&v.0) {
                 flags[3] = 9;
             }
         }
         body.extend(self.head(flags, page_box, outline, centre));
         let recenter = Affine::translate(-centre.to_vec2());
+        let mut trfl = vec![chunk(b"trfd", trfd(v, recenter * transform))];
+        // A text's envelope written as the files' own (#2432): after the
+        // matrix, with its outline in an `envd` after the `trfd`.
+        if let Some(e) = text.as_ref().and_then(|_| self.native_envelope.take()) {
+            self.envelopes += 1;
+            let (points, types, corners) = envelope_outline(&e.frame.transformed(recenter));
+            let rect = recenter.transform_rect_bbox(e.rect);
+            trfl = vec![
+                chunk(
+                    b"trfd",
+                    trfd_of(&[
+                        trfd_matrix(v, recenter * transform),
+                        trfd_envelope(v, self.envelopes, rect, corners, &points),
+                    ]),
+                ),
+                chunk(b"envd", envd(&points, &types)),
+            ];
+        }
         body.push(list(
             b"lgob",
             vec![
                 chunk(b"loda", loda(kind, args)),
                 chunk(b"ftil", ftil()),
-                list(b"trfl", vec![chunk(b"trfd", trfd(v, recenter * transform))]),
+                list(b"trfl", trfl),
             ],
         ));
         if let Some((t, _, _)) = text {
+            // The line breaking tables follow every text record in every
+            // version (the saves of versions 7 to 10 of the program that
+            // reads them hold them too; they were written from 11 only).
             body.push(chunk(b"txsm", t));
-            if v.0 >= 11 {
-                body.push(chunk(b"txtj", txtj()));
-            }
+            body.push(chunk(b"txtj", txtj()));
         }
         Placed {
             nodes: vec![list(b"obj ", body)],
             bounds: Some(page_box),
         }
+    }
+
+    /// The picture of the drop shadow of `s` (in page space), when it is
+    /// visible and casts one: the caller's (see [`Previews::shadows`]), or
+    /// one drawn here from the object's outline. A hidden object, kept
+    /// from version 21, casts none.
+    fn shadow_picture(&self, s: &Shape) -> Option<ShadowPicture> {
+        let sh = s.shadow.as_ref()?;
+        if !s.visible || sh.opacity.is_nan() || sh.opacity <= 0.0 {
+            return None;
+        }
+        if let Some(p) = self.shadow_pictures.get(&s.id) {
+            return Some((*p).clone());
+        }
+        let (rect, pm) = crate::shadow_image::shadow_image(s, SHADOW_DPI)?;
+        if !(rect.width() > 0.0 && rect.height() > 0.0) {
+            return None;
+        }
+        let data = pm.encode_png().ok()?;
+        Some(ShadowPicture {
+            shape: s.id,
+            rect,
+            png: Png {
+                data,
+                width: pm.width(),
+                height: pm.height(),
+            },
+        })
+    }
+
+    /// `s` written as the objects `all` (bottom to top, the object itself
+    /// at `main_at`), with the picture of its drop shadow as a bitmap
+    /// object beneath them. From version 14 the package's own member
+    /// names them, so `s` opens live again in TraceDraw (#1031).
+    fn drawn_as(
+        &mut self,
+        s: &Shape,
+        mut all: Vec<Shape>,
+        mut main_at: usize,
+        shadow: Option<ShadowPicture>,
+        centre: Point,
+        depth: usize,
+    ) -> Placed {
+        if let Some(p) = shadow {
+            let mut picture = Shape::new(
+                // No object of the drawing: the shape's static id stays
+                // the object's own.
+                tracedraw_core::ShapeId(u64::MAX),
+                ShapeKind::Bitmap {
+                    rect: p.rect,
+                    width_px: p.png.width,
+                    height_px: p.png.height,
+                    png: p.png.data.into(),
+                    fx: None,
+                },
+            );
+            picture.stroke = None;
+            all.insert(0, picture);
+            main_at += 1;
+        }
+        self.drawing_effects += 1;
+        let (placed, ids) = self.objects_with_ids(&all, centre, depth + 1);
+        self.drawing_effects -= 1;
+        if self.v.zip() {
+            if let (Some(objects), Some(main)) = (
+                ids.into_iter().collect::<Option<Vec<u32>>>(),
+                all.get(main_at),
+            ) {
+                // Paragraph text written with its frame reads back as
+                // itself, other paragraph text as its lines.
+                let bounds = if self.writes_frame(main) {
+                    main.bounds()
+                } else {
+                    drawn_bounds(main)
+                };
+                self.effects.push(crate::kept_effects::Written {
+                    objects,
+                    main: main_at,
+                    bounds,
+                    source: s.clone(),
+                });
+            }
+        }
+        placed
+    }
+
+    /// Name text `s` written with its slant left out (`bounds`, the box
+    /// of the text as written, see [`Self::file_spans`]) in the package's
+    /// own member by the static id it took, so TraceDraw opens it as it
+    /// was (#1733); text given no static id (inside clip contents) opens
+    /// as written.
+    fn keep_slanted(&mut self, s: &Shape, bounds: Option<Rect>, usdn_before: u32) {
+        if let Some(bounds) = bounds.filter(|_| self.next_usdn > usdn_before) {
+            self.effects.push(crate::kept_effects::Written {
+                objects: vec![self.next_usdn - 1],
+                main: 0,
+                bounds,
+                source: s.clone(),
+            });
+        }
+    }
+
+    /// The envelope artistic text `s` keeps as the files' own (#2432):
+    /// from version 16, for text under one envelope and nothing else,
+    /// mapped as putty without keeping lines straight (as files' envelopes
+    /// on text read back), placed by a matrix that only moves and scales
+    /// it. Other text goes out as the curves its effects draw.
+    fn native_text_envelope(&self, s: &Shape) -> Option<NativeEnvelope> {
+        use tracedraw_core::{envelope::Mapping, live::Effect};
+        if self.v.0 < 16 || s.shadow.is_some() || !s.visible {
+            return None;
+        }
+        let [e @ Effect::Envelope {
+            keep_lines: false,
+            mapping: Mapping::Putty,
+            ..
+        }] = s.effects.as_slice()
+        else {
+            return None;
+        };
+        let ShapeKind::Text {
+            frame: None,
+            on_path: None,
+            para,
+            ..
+        } = &s.kind
+        else {
+            return None;
+        };
+        if para.vertical {
+            return None;
+        }
+        let [a, b, c, d, _, _] = s.transform.as_coeffs();
+        if b.abs() > 1e-9 || c.abs() > 1e-9 || a.abs() < 1e-9 || d.abs() < 1e-9 {
+            return None;
+        }
+        let frame = e.envelope_frame()?;
+        let rect = s.local_path().bounding_box();
+        if !(rect.width() > 0.0 && rect.height() > 0.0) {
+            return None;
+        }
+        Some(NativeEnvelope {
+            rect: s.transform.transform_rect_bbox(rect),
+            frame: frame.transformed(s.transform),
+        })
     }
 
     fn object(&mut self, s: &Shape, centre: Point, depth: usize) -> Placed {
@@ -3654,25 +5652,56 @@ impl<'a> Writer<'a> {
         if !s.visible && !keeps_hidden {
             return none();
         }
-        // Paragraph text goes out as a group of artistic texts, one a line
-        // placed where its frame put it (frames are not written yet), so it
-        // keeps its look.
-        if let Some(kinds) = tracedraw_core::document::paragraph_lines(&s.kind) {
-            let children: Vec<Shape> = kinds
-                .into_iter()
-                .map(|kind| Shape { kind, ..s.clone() })
-                .collect();
-            let group = match children.len() {
-                0 => return none(),
-                1 => children.into_iter().next().unwrap_or_else(|| s.clone()),
-                _ => Shape {
-                    kind: ShapeKind::Group { children },
-                    transform: Affine::IDENTITY,
-                    effects: Vec::new(),
-                    ..s.clone()
-                },
-            };
-            return self.object(&group, centre, depth);
+        // Bitmap filters keep their source and settings in our member,
+        // with a picture other readers can show without a filter engine.
+        if let Some(picture) = s.drawn_as() {
+            return self.drawn_as(s, vec![picture], 0, None, centre, depth);
+        }
+        if let Some(fx) = &s.raster_fx {
+            if fx.effects.iter().any(|e| e.visible) && fx.png.is_empty() {
+                log::warn!("bitmap effect picture unavailable; .cdr keeps the source without its filter picture");
+            }
+            let mut plain = s.clone();
+            plain.raster_fx = None;
+            return self.drawn_as(s, vec![plain], 0, None, centre, depth);
+        }
+        // An object with live effects goes out as what they draw, and its
+        // drop shadow as a picture of it beneath it (the caller's, or one
+        // drawn here). From version 14 the package's own member keeps the
+        // object itself, so it opens live again in TraceDraw (#1031). This
+        // comes before paragraph text is split into lines, so the shadow
+        // goes out once. A hidden object casts no picture.
+        if s.effects.is_empty() && s.shadow.is_some() {
+            let shadow = self.shadow_picture(s);
+            let mut plain = s.clone();
+            plain.shadow = None;
+            return self.drawn_as(s, vec![plain], 0, shadow, centre, depth);
+        }
+        // Artistic text under an envelope alone goes out as text holding
+        // the envelope as the files' own, so it stays text there (#2432);
+        // the package's member keeps the object, so it opens here with
+        // its envelope as it was.
+        if let Some(e) = self.native_text_envelope(s) {
+            let mut plain = s.clone();
+            plain.effects.clear();
+            let usdn_before = self.next_usdn;
+            let kept_before = self.effects.len();
+            self.native_envelope = Some(e);
+            let placed = self.object(&plain, centre, depth);
+            self.native_envelope = None;
+            if self.v.zip() && self.drawing_effects == 0 && self.next_usdn > usdn_before {
+                // It replaces the entry upright text written for a slant
+                // takes (#1733): the object holds both.
+                let usdn = self.next_usdn - 1;
+                self.effects.truncate(kept_before);
+                self.effects.push(crate::kept_effects::Written {
+                    objects: vec![usdn],
+                    main: 0,
+                    bounds: s.bounds(),
+                    source: s.clone(),
+                });
+            }
+            return placed;
         }
         if !s.effects.is_empty() {
             let ev = tracedraw_core::live::evaluate(s);
@@ -3699,10 +5728,12 @@ impl<'a> Writer<'a> {
                     }
                 }
             }
+            let main_at = all.len();
             all.push(main);
             all.extend(ev.above.iter().cloned());
             for x in all.iter_mut() {
                 x.effects.clear();
+                x.shadow = None;
             }
             // A blend goes out as one plain group of what it draws: its
             // start object and its steps as curves (and its end when the
@@ -3715,9 +5746,17 @@ impl<'a> Writer<'a> {
                 .iter()
                 .any(|e| matches!(e, tracedraw_core::live::Effect::Blend { .. }));
             if blends && all.len() > 1 {
+                // The blend's group has no place for the shadow's picture
+                // (#986 restores the group alone): the blend goes out
+                // without its shadow, as `docs/cdr-format.md` says.
+                if s.visible && s.shadow.is_some_and(|sh| sh.opacity > 0.0) {
+                    log::warn!(
+                        "a blended object's drop shadow is not written to .cdr (the blend is kept)"
+                    );
+                }
                 let start = ev.below.len();
                 let before = self.next_usdn;
-                let placed = self.group(&all, centre, depth + 1);
+                let placed = self.group(&all, s.name.as_deref(), centre, depth + 1);
                 // A blend that is the object's only effect opens live
                 // again in TraceDraw: the package names the group (#986).
                 if let [blend @ tracedraw_core::live::Effect::Blend { end_id, .. }] =
@@ -3735,7 +5774,40 @@ impl<'a> Writer<'a> {
                 }
                 return placed;
             }
-            return self.objects(&all, centre, depth + 1);
+            let shadow = self.shadow_picture(s);
+            return self.drawn_as(s, all, main_at, shadow, centre, depth);
+        }
+        // Paragraph text goes out as paragraph text, its frame and the
+        // text flowing in it (#1226), when the files' paragraph text can
+        // hold it as TraceDraw draws it (see [`Self::writes_frame`]). Any
+        // other goes out as a group of artistic texts, one a line placed
+        // where its frame put it, so it keeps its look. Its effects and
+        // shadow were taken above, so the lines carry neither (a shadow
+        // written once per line and once for the text was the result
+        // before).
+        let lines = if self.writes_frame(s) {
+            None
+        } else {
+            tracedraw_core::document::paragraph_lines(&s.kind)
+        };
+        if let Some(kinds) = lines {
+            let children: Vec<Shape> = kinds
+                .into_iter()
+                .map(|kind| Shape { kind, ..s.clone() })
+                .collect();
+            let group = match children.len() {
+                0 => return none(),
+                1 => children.into_iter().next().unwrap_or_else(|| s.clone()),
+                _ => Shape {
+                    kind: ShapeKind::Group { children },
+                    transform: Affine::IDENTITY,
+                    effects: Vec::new(),
+                    // The lines carry the text's transparency.
+                    opacity: 1.0,
+                    ..s.clone()
+                },
+            };
+            return self.object(&group, centre, depth);
         }
         let v = self.v;
         match &s.kind {
@@ -3745,10 +5817,13 @@ impl<'a> Writer<'a> {
                     .map(|c| {
                         let mut c = c.clone();
                         c.absorb(s.transform);
+                        // A group's transparency is written on each object
+                        // it holds.
+                        c.absorb_opacity(s.opacity);
                         c
                     })
                     .collect();
-                return self.group(&kids, centre, depth);
+                return self.group(&kids, s.name.as_deref(), centre, depth);
             }
             ShapeKind::Table(_) | ShapeKind::SymbolInstance { .. } => {
                 let kids: Vec<Shape> = s
@@ -3759,7 +5834,10 @@ impl<'a> Writer<'a> {
                         c
                     })
                     .collect();
-                return self.group(&kids, centre, depth);
+                return self.group(&kids, s.name.as_deref(), centre, depth);
+            }
+            ShapeKind::ClipFrame { frame, contents } if v.clip_containers() => {
+                return self.clip_container(s, frame, contents, centre, depth);
             }
             ShapeKind::ClipFrame { frame, contents }
                 if contents.len() == 1
@@ -3771,13 +5849,20 @@ impl<'a> Writer<'a> {
                 let clip = bm.transform.inverse() * frame.page_path();
                 let mut b = bm.clone();
                 b.transform = s.transform * bm.transform;
+                // The clip frame's transparency covers the picture (#2513).
+                b.absorb_opacity(s.opacity);
                 return self.bitmap_object(&b, centre, Some(&clip));
             }
             ShapeKind::ClipFrame { frame, contents } => {
-                // Not yet written as a clip container: the frame's fill
-                // under the contents and its outline over them, unclipped.
+                // Before version 12 (no clip container seen): the frame's
+                // fill under the contents and its outline over them,
+                // unclipped.
                 let mut f = (**frame).clone();
                 f.absorb(s.transform);
+                // The clip frame's transparency is on each of them, as a
+                // group's is (#2513); the frame's own is not drawn.
+                f.opacity = 1.0;
+                f.absorb_opacity(s.opacity);
                 let mut kids = Vec::new();
                 if !matches!(f.fill, Fill::None) {
                     let mut under = f.clone();
@@ -3787,13 +5872,16 @@ impl<'a> Writer<'a> {
                 for c in contents {
                     let mut c = c.clone();
                     c.absorb(s.transform);
+                    c.absorb_opacity(s.opacity);
                     kids.push(c);
                 }
                 if f.stroke.is_some() {
                     f.fill = Fill::None;
+                    // The shadow went out under the fill.
+                    f.shadow = None;
                     kids.push(f);
                 }
-                return self.group(&kids, centre, depth);
+                return self.group(&kids, s.name.as_deref(), centre, depth);
             }
             ShapeKind::Bitmap { .. } => return self.bitmap_object(s, centre, None),
             _ => {}
@@ -3841,21 +5929,75 @@ impl<'a> Writer<'a> {
                 origin,
                 align,
                 para,
+                frame,
                 on_path: None,
-                ..
             } => {
                 // Each paragraph goes out with its own alignment (and line
                 // spacing from version 16); the object takes the first
                 // paragraph's.
                 let own_align = *align;
                 let file_spans = self.file_spans(spans);
+                // Italic TraceDraw slants from an upright file goes out
+                // upright (#1733); the package's own member keeps the
+                // text, so TraceDraw opens it italic again. The box is the
+                // written text's, as it reads back.
+                let slant_kept = file_spans
+                    .as_ref()
+                    .filter(|f| {
+                        spans
+                            .iter()
+                            .zip(f.iter())
+                            .any(|(a, b)| a.italic && !b.italic)
+                    })
+                    .filter(|_| self.v.zip() && self.drawing_effects == 0)
+                    .map(|f| {
+                        let mut written = s.clone();
+                        if let ShapeKind::Text { spans, .. } = &mut written.kind {
+                            spans.clone_from(f);
+                        }
+                        if self.writes_frame(&written) {
+                            written.bounds()
+                        } else {
+                            drawn_bounds(&written)
+                        }
+                    });
+                let usdn_before = self.next_usdn;
                 let spans = file_spans.as_deref().unwrap_or(spans);
                 let first_align = paragraph_aligns(spans, own_align)
                     .first()
                     .copied()
                     .unwrap_or(own_align);
                 let align = &first_align;
-                let t = s.transform * Affine::translate(origin.to_vec2());
+                // A paragraph frame hangs from the object's (0, 0), its
+                // top left (`writes_frame` let only such frames through).
+                let frame = frame.filter(|_| self.writes_frame(s));
+                // Vertical text with its columns from the right goes out
+                // as files hold it (#1544): a horizontal line turned a
+                // quarter clockwise, set in the vertical form of its face,
+                // the family's name with a leading `@`.
+                let at_spans: Option<Vec<TextSpan>> =
+                    (para.vertical && para.columns_from_right() && frame.is_none()).then(|| {
+                        spans
+                            .iter()
+                            .map(|sp| {
+                                let mut sp = sp.clone();
+                                if !sp.font_family.starts_with('@') {
+                                    sp.font_family = format!("@{}", sp.font_family);
+                                }
+                                sp
+                            })
+                            .collect()
+                    });
+                let turn = if at_spans.is_some() {
+                    tracedraw_core::document::vertical_line_frame()
+                } else {
+                    Affine::IDENTITY
+                };
+                let spans = at_spans.as_deref().unwrap_or(spans);
+                let t = match frame {
+                    Some(f) => s.transform * Affine::translate((origin.x, origin.y + f.height)),
+                    None => s.transform * Affine::translate(origin.to_vec2()) * turn,
+                };
                 self.has_text = true;
                 let record = if v.0 >= 16 {
                     self.txsm16(
@@ -3864,26 +6006,81 @@ impl<'a> Writer<'a> {
                         para,
                         &s.fill,
                         Affine::translate(-centre.to_vec2()) * t,
+                        frame,
                     )
                 } else {
-                    self.txsm7(spans, own_align, &s.fill)
+                    self.txsm7(spans, own_align, &s.fill, frame)
                 };
+                if let Some(f) = frame {
+                    // Its box on the page is the frame's, as files have it.
+                    let corners = [
+                        Point::new(0.0, 0.0),
+                        Point::new(f.width, 0.0),
+                        Point::new(0.0, -f.height),
+                        Point::new(f.width, -f.height),
+                    ]
+                    .map(|p| t * p);
+                    let page_box = corners
+                        .iter()
+                        .skip(1)
+                        .fold(Rect::from_points(corners[0], corners[0]), |r, p| {
+                            r.union_pt(*p)
+                        });
+                    let character = format!(
+                        r#"{},"frame":{{}},"paragraph":{{"justify":"{}"}}"#,
+                        spans
+                            .first()
+                            .map(|sp| character_json(
+                                v,
+                                sp,
+                                Some(sp.fill.as_ref().unwrap_or(&s.fill)),
+                                &self.tech
+                            ))
+                            .unwrap_or_else(|| r#""character":{}"#.to_string()),
+                        justify_code(*align)
+                    );
+                    let placed = self.place(
+                        s,
+                        OBJ_PARAGRAPH_TEXT,
+                        paragraph_coords(v, f),
+                        &s.fill,
+                        t,
+                        page_box,
+                        Some((record, character, style_for(*align))),
+                        centre,
+                    );
+                    self.keep_slanted(s, slant_kept, usdn_before);
+                    return placed;
+                }
                 // The character settings of the first run, the width of
                 // the lines as the frame's one column (files give artistic
                 // text its line width there) and the alignment.
-                let width = s.local_path().bounding_box().width();
+                let lines_box = s.local_path().bounding_box();
+                // (A turned line runs down the box of the columns.)
+                let width = if at_spans.is_some() {
+                    lines_box.height()
+                } else {
+                    lines_box.width()
+                };
                 let character = format!(
                     r#"{},"frame":{{"equalWidthColumns":"1","rtlColumns":"0","columns":"{},0"}},"paragraph":{{"justify":"{}"}}"#,
                     spans
                         .first()
-                        .map(|sp| character_json(sp, Some(sp.fill.as_ref().unwrap_or(&s.fill))))
+                        .map(|sp| {
+                            character_json(
+                                v,
+                                sp,
+                                Some(sp.fill.as_ref().unwrap_or(&s.fill)),
+                                &self.tech,
+                            )
+                        })
                         .unwrap_or_else(|| r#""character":{}"#.to_string()),
                     units(if width.is_finite() { width } else { 0.0 }).max(0),
                     justify_code(*align)
                 );
                 let mut c = Buf::default();
                 c.i32(0).i32(0);
-                self.place(
+                let placed = self.place(
                     s,
                     OBJ_ARTISTIC_TEXT,
                     c.done(),
@@ -3892,15 +6089,47 @@ impl<'a> Writer<'a> {
                     page_box,
                     Some((record, character, style_for(*align))),
                     centre,
-                )
+                );
+                self.keep_slanted(s, slant_kept, usdn_before);
+                placed
             }
             _ => {
                 let coords = match &s.kind {
+                    // A curve that fills nonzero (#1919) goes out as the
+                    // outline of the area it covers, which fills the same
+                    // under the even-odd rule: before version 16 no file
+                    // seen holds a fill rule, and from 16 the program that
+                    // reads the files still filled such curves even-odd,
+                    // with holes where their parts overlap, although
+                    // their style strings hold `winding` "1" (#2733). The
+                    // winding stays in the style string, so TraceDraw
+                    // reads the curve back as nonzero.
+                    ShapeKind::Path { path, .. }
+                        if s.fill_rule == tracedraw_core::shaping::FillRule::NonZero
+                            && !matches!(s.fill, Fill::None) =>
+                    {
+                        curve_coords(&tracedraw_core::shaping::nonzero_as_even_odd(path))
+                    }
                     ShapeKind::Path { path, .. } => curve_coords_typed(path, &s.node_types),
+                    // The outline of a text fitted to a path, or bent,
+                    // fills nonzero as the text does (#2733): written as
+                    // the area it covers, in every version.
+                    ShapeKind::Text { .. } => curve_coords(
+                        &tracedraw_core::shaping::nonzero_as_even_odd(&s.local_path()),
+                    ),
                     _ => curve_coords(&s.local_path()),
                 };
                 let Some(mut coords) = coords else {
                     return none();
+                };
+                let nonzero_text;
+                let s = if matches!(s.kind, ShapeKind::Text { .. }) {
+                    let mut t = s.clone();
+                    t.fill_rule = tracedraw_core::shaping::FillRule::NonZero;
+                    nonzero_text = t;
+                    &nonzero_text
+                } else {
+                    s
                 };
                 // The node marks of every version's files. (Version 13 and
                 // 14 files written with them once closed the program that
@@ -3930,6 +6159,51 @@ impl<'a> Writer<'a> {
         }
     }
 
+    /// Whether `s` goes out as paragraph text, its frame and the text
+    /// flowing in it, as the files of versions 7 and 9 to 27 hold it
+    /// (#1226): a frame of horizontal text placed by a transform that
+    /// neither scales nor slants (the other program's transform scales
+    /// the frame and not the letters, TraceDraw's both), from the top,
+    /// not fitted to the frame, not linked to other frames (each frame
+    /// would hold all the text) and, before 16, of one column. Version 8
+    /// is left out: its two layouts give frames of 32 and 34 bytes and no
+    /// file of the layout TraceDraw writes (800) holding one was seen.
+    /// The others go out as one artistic text per line, and so does every
+    /// frame unless [`Previews::paragraph_frames`] asks for them (#1698).
+    fn writes_frame(&self, s: &Shape) -> bool {
+        let ShapeKind::Text {
+            frame: Some(f),
+            para,
+            on_path: None,
+            ..
+        } = &s.kind
+        else {
+            return false;
+        };
+        let n = self.v.0;
+        let [a, b, c, d, e, g] = s.transform.as_coeffs();
+        let rigid = [a, b, c, d, e, g].iter().all(|x| x.is_finite())
+            && (a.hypot(b) - 1.0).abs() < 1e-6
+            && (c.hypot(d) - 1.0).abs() < 1e-6
+            && (a * c + b * d).abs() < 1e-6;
+        let linked = s
+            .data
+            .iter()
+            .any(|(k, _)| k == "text.next" || k == "text.prev");
+        self.paragraph_frames
+            && n != 8
+            && rigid
+            && !linked
+            && f.width > 1e-3
+            && f.height > 1e-3
+            && f.width.is_finite()
+            && f.height.is_finite()
+            && !para.vertical
+            && !para.fit_to_frame
+            && para.vertical_align == tracedraw_core::VerticalAlign::Top
+            && (para.columns <= 1 || n >= 16)
+    }
+
     /// Paragraphs of the text: the runs between line breaks, each run with
     /// its own style.
     fn paragraphs(spans: &[TextSpan]) -> Vec<Vec<TextSpan>> {
@@ -3952,10 +6226,55 @@ impl<'a> Writer<'a> {
         out
     }
 
+    /// The style records of a version 16+ paragraph of `runs`, whose
+    /// default style is `first`'s (see [`RunLooks`]): runs whose style
+    /// string is `first`'s take the plain record 0, every other look a
+    /// record of its own (up to [`MAX_RUN_STYLES`]), in the order the
+    /// looks first appear. `fill` is the object's, for runs without one.
+    fn run_looks(
+        v: Ver,
+        runs: &[TextSpan],
+        first: Option<&TextSpan>,
+        fill: &Fill,
+        tech: &fonts::FaceTech,
+    ) -> RunLooks {
+        let json = |sp: &TextSpan| run_style_json(v, sp, sp.fill.as_ref().or(Some(fill)), tech);
+        let base = first.map(json);
+        // Record 0 counts the paragraph's end.
+        let mut records: Vec<(usize, Option<String>)> = vec![(1, None)];
+        let mut record_of_run = Vec::with_capacity(runs.len());
+        for sp in runs {
+            let letters = sp.text.chars().count();
+            let own = json(sp);
+            let k = if letters == 0 || Some(&own) == base.as_ref() {
+                0
+            } else if let Some(k) = records
+                .iter()
+                .position(|(_, s)| s.as_deref() == Some(own.as_str()))
+            {
+                k
+            } else if records.len() <= MAX_RUN_STYLES {
+                records.push((0, Some(own)));
+                records.len() - 1
+            } else {
+                0
+            };
+            if let Some(r) = records.get_mut(k) {
+                r.0 += letters;
+            }
+            record_of_run.push(k as u8);
+        }
+        RunLooks {
+            records,
+            record_of_run,
+        }
+    }
+
     /// `txsm` of versions 7 to 15: one frame, a paragraph per line, one
     /// style per run (font, encoding, style flags, size and, when it
     /// differs from the object's, the fill), the text in UTF-16 from
-    /// version 12 and in Windows-1252 before.
+    /// version 12 (one byte for U+0000 to U+00FF) and in Windows-1252
+    /// before.
     /// The style id of a text format (versions 7 to 15), adding it to
     /// the style table when new.
     fn text_style(&mut self, f: TextFormat) -> u32 {
@@ -3969,27 +6288,34 @@ impl<'a> Writer<'a> {
         GRAPHIC_STYLE_ID + 1 + i as u32
     }
 
-    fn txsm7(&mut self, spans: &[TextSpan], align: TextAlign, fill: &Fill) -> Vec<u8> {
+    fn txsm7(
+        &mut self,
+        spans: &[TextSpan],
+        align: TextAlign,
+        fill: &Fill,
+        frame: Option<Size>,
+    ) -> Vec<u8> {
         let v = self.v;
         let n = v.0;
         // As files of versions 7 to 15 hold artistic text: -1, -1, 0, -1,
-        // 8, a number growing with the version (2 in 7, 3 in 8, 5 in 10
-        // and 11, 6 in 12, 8 in 13, 9 in 14, 11 in 15), 0, 3, 0; one frame
-        // with an identity matrix (six f64). A header of zeros and a zero
-        // matrix made the program that wrote the samples drop the text of
-        // a version 15 file as an invalid object.
+        // 8, a number growing with the version (2 in 7, 4 in 8 (both
+        // variants), 4 in 9, 5 in 10 and 11, 6 in 12, 8 in 13, 9 in 14, 11
+        // in 15), 0, 3, 0; one frame with an identity matrix (six f64). A
+        // header of zeros and a zero matrix made the program that wrote
+        // the samples drop the text of a version 15 file as an invalid
+        // object.
         let layout = match n {
             0..=7 => 2,
-            8 => 3,
-            9 => 4,
+            8 | 9 => 4,
             10 | 11 => 5,
             12 => 6,
             13 => 8,
             14 => 9,
             _ => 11,
         };
+        // Paragraph text starts with 0 (its frames hold their size).
         let mut t = Buf::default();
-        t.u32(u32::MAX)
+        t.u32(if frame.is_some() { 0 } else { u32::MAX })
             .u32(u32::MAX)
             .u32(0)
             .u32(u32::MAX)
@@ -4016,6 +6342,9 @@ impl<'a> Writer<'a> {
                 t.zeros(8 + 4);
             }
         }
+        if let Some(f) = frame {
+            t.bytes(&frame_record_7(n, f));
+        }
         let paragraphs = Self::paragraphs(spans);
         t.u32(paragraphs.len() as u32);
         let aligns = paragraph_aligns(spans, align);
@@ -4040,71 +6369,119 @@ impl<'a> Writer<'a> {
             };
             let style_id = self.text_style(base);
             t.u32(style_id).zeros(1);
-            if n >= 13 {
+            // From 13 artistic text has one more byte; paragraph text
+            // not (the files of 13 to 15).
+            if n >= 13 && frame.is_none() {
                 t.zeros(1);
             }
-            t.u32(runs.len() as u32);
-            let mut text = String::new();
+            // The records: before 14 one per distinct look of the paragraph
+            // (its size and fill, what a record carries), the paragraph's
+            // own look first, each counting the letters that wear it and
+            // the first the paragraph's end too; every letter names its
+            // record. The files of versions 7 to 13 saved by the program
+            // that reads them are so, and its 14 and 15 saves too, but the
+            // files of 14 and 15 written with one record per run open
+            // there and stay as they were. A run whose weight or slant
+            // differs from the paragraph's carries its style flags (flag
+            // 0x02, the face code as the text styles hold it): "Runs: bold
+            // red and italic" saved by that program in version 7 is a
+            // record of 12 letters with no override, one of 6 with the
+            // italic code (0x80) and one of 8 with the bold code (0x1000)
+            // and the red fill (#1139). Overrides of the font are written
+            // in no version: no file of 7 to 15 shows them.
+            let by_look = n < 14;
             let last_run = runs.len().saturating_sub(1);
+            // (size, fill, style flags, letters) of each record, and each
+            // run's record.
+            let mut records: Vec<(i32, u32, u32, usize)> = Vec::new();
+            let mut record_of_run: Vec<usize> = Vec::with_capacity(runs.len());
+            if by_look {
+                records.push((base.size, base.fill, base.flags, 1));
+            }
             for (ri, sp) in runs.iter().enumerate() {
                 let look = format_of(self, sp);
+                let same = |r: &(i32, u32, u32, usize)| {
+                    (r.0, r.1, r.2) == (look.size, look.fill, look.flags)
+                };
                 // The last run counts the paragraph's end too, as files
                 // count it.
-                let chars =
-                    (sp.text.chars().count() + usize::from(ri == last_run)).min(65535) as u16;
-                let mut flags = 0u8;
-                if look.font != base.font && n < 13 {
-                    flags |= 0x01;
+                let end = usize::from(!by_look && ri == last_run);
+                let index = match records.iter().position(same).filter(|_| by_look) {
+                    Some(i) => i,
+                    // A letter names its record in 7 bits: the runs past
+                    // the 128th record take the first one's look.
+                    None if records.len() > MAX_RUN_STYLES => 0,
+                    None => {
+                        records.push((look.size, look.fill, look.flags, 0));
+                        records.len() - 1
+                    }
+                };
+                if let Some(r) = records.get_mut(index) {
+                    r.3 += sp.text.chars().count() + end;
                 }
-                if look.flags != base.flags && n < 13 {
+                record_of_run.push(index);
+            }
+            t.u32(records.len() as u32);
+            for (size, fill_id, style, letters) in &records {
+                let mut flags = 0u8;
+                if *style != base.flags {
                     flags |= 0x02;
                 }
-                if look.size != base.size {
+                if *size != base.size {
                     flags |= 0x04;
                 }
-                if look.fill != base.fill {
+                if *fill_id != base.fill {
                     flags |= 0x40;
                 }
-                t.u16(chars).u8(flags);
+                t.u16((*letters).min(65535) as u16).u8(flags);
                 if n >= 8 {
                     t.u8(0);
                 }
-                if flags & 0x01 != 0 {
-                    t.u16(look.font).u16(0);
-                }
                 if flags & 0x02 != 0 {
-                    t.u32(look.flags);
+                    t.u32(*style);
+                    // The face it names has its font record, as the file
+                    // above lists Arial's italic and bold faces.
+                    let face = (base.font, *style & 0x3_ffff);
+                    if !self.run_faces.contains(&face) {
+                        self.run_faces.push(face);
+                    }
                 }
                 if flags & 0x04 != 0 {
-                    t.i32(look.size);
+                    t.i32(*size);
                 }
                 if flags & 0x40 != 0 {
-                    t.u32(look.fill);
+                    t.u32(*fill_id);
                     if v.tagged() {
                         t.zeros(48);
                     }
                 }
+            }
+            // The letters, each description numbering its record times 2
+            // in its third byte (4 bytes before 12, 8 from 12).
+            let mut text = String::new();
+            let mut record_of_letter: Vec<u8> = Vec::new();
+            for (ri, sp) in runs.iter().enumerate() {
                 text.push_str(&sp.text);
+                let number = record_of_run.get(ri).copied().unwrap_or(0).min(127) as u8;
+                record_of_letter.extend(std::iter::repeat_n(number, sp.text.chars().count()));
             }
             let chars = text.chars().count();
             if v.unicode() {
-                // From version 12 a letter is one byte in Windows-1252
-                // unless bit 0 of the first byte of its 8-byte record marks
-                // it as a UTF-16 unit in two bytes; the third byte numbers
-                // its run, times 2. Text all in UTF-16 with no letter
-                // marked made the program that wrote the samples crash.
-                let mut records = Buf::default();
+                // From version 12 a letter of U+0000 to U+00FF is one byte
+                // (its code point) unless bit 0 of the first byte of its
+                // 8-byte record marks it as a UTF-16 unit in two bytes.
+                // Text all in UTF-16 with no letter marked made the
+                // program that wrote the samples crash. Letters Windows-1252
+                // holds above 0x7f but Latin-1 does not (curly quotes,
+                // dashes, the euro) go out marked too (#2124).
+                let mut descriptions = Buf::default();
                 let mut bytes = Vec::new();
-                let mut run_of = Vec::with_capacity(chars);
-                for (ri, sp) in runs.iter().enumerate() {
-                    run_of.extend(std::iter::repeat_n(ri, sp.text.chars().count()));
-                }
                 for (i, c) in text.chars().enumerate() {
-                    let run = run_of.get(i).copied().unwrap_or(0).min(127) as u8;
-                    match cp1252(&c.to_string()) {
+                    let number = record_of_letter.get(i).copied().unwrap_or(0);
+                    match text_byte(c) {
                         Some(b) => {
-                            records.u8(0).u8(0).u8(run << 1).zeros(5);
-                            bytes.extend_from_slice(&b);
+                            descriptions.u8(0).u8(0).u8(number << 1).zeros(5);
+                            bytes.push(b);
                         }
                         None => {
                             let unit = if (c as u32) <= 0xffff {
@@ -4112,15 +6489,21 @@ impl<'a> Writer<'a> {
                             } else {
                                 b'?' as u16
                             };
-                            records.u8(1).u8(0).u8(run << 1).zeros(5);
+                            descriptions.u8(1).u8(0).u8(number << 1).zeros(5);
                             bytes.extend_from_slice(&unit.to_le_bytes());
                         }
                     }
                 }
-                t.u32(chars as u32).bytes(&records.done());
+                t.u32(chars as u32).bytes(&descriptions.done());
                 t.u32(bytes.len() as u32).bytes(&bytes);
             } else {
-                t.u32(chars as u32).zeros(chars * 4);
+                // Before 12: 4-byte descriptions (the saves of versions 7
+                // to 11 number the letters so; zeros were written until
+                // 2026-10-29) and one byte per letter in Windows-1252.
+                t.u32(chars as u32);
+                for number in &record_of_letter {
+                    t.u8(0).u8(0).u8(number << 1).u8(0);
+                }
                 let bytes = cp1252(&text).unwrap_or_else(|| {
                     text.chars()
                         .map(|c| if c.is_ascii() { c as u8 } else { b'?' })
@@ -4133,13 +6516,14 @@ impl<'a> Writer<'a> {
         t.done()
     }
 
-    /// `txsm` of version 16 and later, as files of versions 17 to 21 store
-    /// artistic text: the frame flag set, layout 1700 (also in version
-    /// 16), one frame with the text's matrix, then a paragraph per line
-    /// with the default style string (the first run's style and the
-    /// alignment) and one record per run whose style string the letters
-    /// select; text in UTF-16 (16) or one byte per letter (17 on:
-    /// Windows-1252, or UTF-8 for letters it lacks).
+    /// `txsm` of version 16 and later, as files store text: the frame
+    /// flag set (artistic text) or 0 (paragraph text), layout 1700 in
+    /// versions 16 to 18 and 1800 from 19 (#1698), one frame with the
+    /// text's matrix, then a paragraph per line with the default style
+    /// string (the first run's style and the alignment) and one record
+    /// per run whose style string the letters select; text one byte per
+    /// letter of U+0000 to U+00FF (its code point), other letters as
+    /// marked UTF-16 units.
     fn txsm16(
         &mut self,
         spans: &[TextSpan],
@@ -4147,23 +6531,42 @@ impl<'a> Writer<'a> {
         para: &tracedraw_core::ParagraphStyle,
         fill: &Fill,
         m: Affine,
+        frame: Option<Size>,
     ) -> Vec<u8> {
         let v = self.v;
         let mut t = Buf::default();
-        t.u32(u32::MAX)
-            .u32(u32::MAX)
+        // Text from version 19 has the header of every text of the files
+        // of versions 19, 22 to 27 that the program's recent releases save
+        // (artistic and paragraph text alike): 1 where the files of its
+        // 2019 release (versions 16 to 21) and TraceDraw until 0.39 have
+        // -1, 14 from version 22, layout 1800, then 4 zero bytes after the
+        // paragraphs from 22. Paragraph text starts with 0, artistic text
+        // with 1 (-1 before 19). TraceDraw wrote paragraph text with
+        // artistic text's 1700 header, which no paragraph text of any
+        // file has, and the program that reads the files hung on opening
+        // it; its user reports one-line text hanging too (#1698).
+        let recent = v.0 >= 19;
+        let none = if recent { 1 } else { u32::MAX };
+        // Paragraph text starts with 0: its frames hold their size and
+        // its paragraphs no flag byte.
+        t.u32(if frame.is_some() { 0 } else { none })
+            .u32(none)
             .u32(0)
-            .u32(u32::MAX)
+            .u32(none)
             .u32(8)
-            // 12 in version 16, 13 from 17; the layout is 1700 in both,
-            // as files saved for those versions have them (a version 16
-            // file with 13 and 1600 was refused as holding an invalid
-            // object).
-            .u32(if v.0 >= 17 { 13 } else { 12 })
+            // 12 in version 16, 13 from 17, 14 from 22; the layout is 1700
+            // in 16 to 18, as files saved for those versions have them (a
+            // version 16 file with 13 and 1600 was refused as holding an
+            // invalid object).
+            .u32(match v.0 {
+                22.. => 14,
+                17.. => 13,
+                _ => 12,
+            })
             .u32(0)
             .u32(3)
             .u32(0)
-            .u16(1700)
+            .u16(if recent { 1800 } else { 1700 })
             .zeros(3);
         // One frame, numbered as the text object (its `spnd`), the text's
         // matrix, not on a path, 8 unknown. A frame number other than the
@@ -4181,6 +6584,16 @@ impl<'a> Writer<'a> {
             t.f64(if x.is_finite() { x } else { 0.0 });
         }
         t.u32(0).zeros(8);
+        if let Some(f) = frame {
+            // The frame as files of versions 19, 22 and 27 hold it: 0,
+            // its height going down from its top, 0, its width, then its
+            // settings (the columns) as a style string.
+            t.i32(0)
+                .i32(-units(f.height))
+                .i32(0)
+                .i32(units(f.width))
+                .bytes(&style_string(v, &frame_json(f, para)));
+        }
         let paragraphs = Self::paragraphs(spans);
         t.u32(paragraphs.len() as u32);
         let formats = tracedraw_core::paragraphs::paragraph_formats_of(spans, align, para);
@@ -4189,7 +6602,9 @@ impl<'a> Writer<'a> {
             let align = format.map_or(align, |f| f.align);
             for sp in runs {
                 let id = self.font_id(&sp.font_family);
-                let face = (id, style_flags(sp) & 0x3_ffff);
+                // The face bits and the single underline bit, which files
+                // set in the records of underlined faces (#1455).
+                let face = (id, style_flags(sp) & (0x3_ffff | fonts::UNDERLINE_FLAG));
                 if !self.run_faces.contains(&face) {
                     self.run_faces.push(face);
                 }
@@ -4204,69 +6619,75 @@ impl<'a> Writer<'a> {
             // The colour is the first run's own when it has one: a
             // paragraph of one run keeps its colour only here (#1057).
             let first_fill = first.and_then(|sp| sp.fill.as_ref()).unwrap_or(fill);
-            let default = full_text_style(first, Some(first_fill), align, leading);
-            t.u32(style_for(align))
-                .zeros(1)
-                .u8(0)
-                .bytes(&style_string(v, &default));
-            // One record per run; a letter's override index selects it.
-            // One record per run: its letter count (the last one counts the
-            // paragraph end too), no URL, a locale, then its style: empty
-            // when the run has the paragraph's own. Records of no letters
-            // make the program that opens the file hang.
-            t.u32(runs.len().max(1) as u32);
-            let single = runs.len() <= 1;
-            for (k, sp) in runs.iter().enumerate() {
-                let mut n = sp.text.chars().count();
-                if k + 1 == runs.len() {
-                    n += 1;
-                }
-                let json = if single {
-                    r#"{"character":{}}"#.to_string()
-                } else {
-                    run_style_json(sp, sp.fill.as_ref().or(Some(fill)))
-                };
-                t.u16(n.min(usize::from(u16::MAX)) as u16)
-                    .u16(0)
-                    .u16(4)
-                    .bytes(&locale_bytes())
-                    .bytes(&style_string(v, &json));
+            let tabs = format.map_or(&[][..], |f| f.tabs.as_slice());
+            let default = full_text_style(
+                v,
+                first,
+                Some(first_fill),
+                align,
+                leading,
+                tabs,
+                &self.tech,
+                frame.is_some(),
+            );
+            t.u32(style_for(align)).zeros(1);
+            if frame.is_none() {
+                t.u8(0);
             }
-            if runs.is_empty() {
-                t.u16(1)
-                    .u16(0)
-                    .u16(4)
+            t.bytes(&style_string(v, &default));
+            // The records, a table of the paragraph's looks as the files
+            // of the program that reads them hold it: first the plain
+            // record, for the letters in the paragraph's own style, with
+            // an empty style and counting the paragraph's end too, then
+            // one record per other look (colour, font, size), each with
+            // its complete style marked as applying, counting the letters
+            // that wear it. Every letter names its record. A record is
+            // its letter count, which of the style's members apply,
+            // flags, a locale, then its style. Records of no letters make
+            // the program that opens the file hang.
+            let looks = Self::run_looks(v, runs, first, fill, &self.tech);
+            t.u32(looks.records.len() as u32);
+            for (n, json) in &looks.records {
+                let (members, flags) = if json.is_some() {
+                    STYLED_RUN
+                } else {
+                    PLAIN_RUN
+                };
+                t.u16((*n).min(usize::from(u16::MAX)) as u16)
+                    .u16(members)
+                    .u16(flags)
                     .bytes(&locale_bytes())
-                    .bytes(&style_string(v, r#"{"character":{}}"#));
+                    .bytes(&style_string(
+                        v,
+                        json.as_deref().unwrap_or(r#"{"character":{}}"#),
+                    ));
             }
             let mut text = String::new();
             let mut index = Vec::new();
-            for (k, sp) in runs.iter().enumerate() {
+            for (sp, k) in runs.iter().zip(&looks.record_of_run) {
                 text.push_str(&sp.text);
-                index.extend(std::iter::repeat_n(k as u8, sp.text.chars().count()));
+                index.extend(std::iter::repeat_n(*k, sp.text.chars().count()));
             }
             t.u32(index.len() as u32);
             // The letters are one byte each from version 16 (files saved
             // for 16 hold them so, while their style strings are UTF-16;
             // UTF-16 letters in a version 16 file are read as half the
-            // text by the program that opens it), Windows-1252, except a
-            // letter Windows-1252 lacks (Cyrillic, Greek, most of Central
-            // European): bit 0 of its record's flags marks it as a UTF-16
-            // unit of two bytes, as from version 12 (#368). A letter beyond
-            // the 16-bit range goes out as "?".
+            // text by the program that opens it), the letter's code point
+            // for U+0000 to U+00FF, except a letter beyond them (Cyrillic,
+            // Greek, most of Central European, and the curly quotes,
+            // dashes and euro Windows-1252 puts in 0x80 to 0x9f, #2124):
+            // bit 0 of its record's flags marks it as a UTF-16 unit of two
+            // bytes, as from version 12 (#368). A letter beyond the 16-bit
+            // range goes out as "?".
             let mut bytes = Vec::new();
             for (c, k) in text.chars().zip(&index) {
-                let one = if v.0 >= 16 {
-                    cp1252(&c.to_string())
-                } else {
-                    None
-                };
+                let one = if v.0 >= 16 { text_byte(c) } else { None };
                 let wide = one.is_none();
                 t.u16(u16::from(wide && v.0 >= 16))
                     .u8(k.saturating_mul(2))
                     .zeros(5);
                 match one {
-                    Some(b) => bytes.extend_from_slice(&b),
+                    Some(b) => bytes.push(b),
                     None => {
                         let unit = if (c as u32) <= 0xffff {
                             c as u16
@@ -4279,12 +6700,15 @@ impl<'a> Writer<'a> {
             }
             t.u32(bytes.len() as u32).bytes(&bytes).u8(0);
         }
+        if v.0 >= 22 {
+            t.u32(0);
+        }
         t.done()
     }
 }
 
 mod fonts;
-pub use fonts::{embedded_size, FontFace};
+pub use fonts::{embedded_size, left_out, FontFace, LeftOut};
 
 #[cfg(test)]
 mod tests;

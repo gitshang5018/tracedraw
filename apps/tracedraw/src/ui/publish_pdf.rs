@@ -1,9 +1,10 @@
-//! File > Publish to PDF: the PDF Settings dialog. Its tabs choose the
+//! File > Export as PDF: the PDF Settings dialog. Its tabs choose the
 //! file, what goes in (the drawing, every open drawing, the selection,
 //! the current page or a list of pages), the page size, a preset and the
 //! compatibility (General), the output intent (Color), the document
 //! information and bookmarks (Document), transparency flattening and
-//! how text and fonts go in (Objects), the bleed (Prepress), password
+//! how text and fonts go in (Objects), the bleed and printers' marks
+//! (Prepress), password
 //! protection (Security), and list what the preflight found (Issues). OK writes the file. The PDF
 //! itself comes from `tracedraw_io::pdf`. See docs/behavior/publish-to-pdf.md.
 
@@ -110,8 +111,62 @@ impl BitmapPrefs {
     }
 }
 
+/// The printers' marks around every page (Prepress tab, #789): drawn by
+/// the same code as the Print dialog's, in a margin outside the bleed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MarkPrefs {
+    pub crop: bool,
+    /// Lines on the bleed's edges (#2197).
+    pub bleed: bool,
+    pub registration: bool,
+    pub color_bars: bool,
+    /// A strip of gray steps (#2197).
+    pub densitometer: bool,
+    /// The drawing's name, the page and the date under the page.
+    pub file_info: bool,
+}
+
+impl MarkPrefs {
+    /// The print layout's marks for these choices.
+    pub fn marks(self) -> crate::imposition::Marks {
+        crate::imposition::Marks {
+            crop: self.crop,
+            bleed: self.bleed,
+            registration: self.registration,
+            color_bars: self.color_bars,
+            densitometer: self.densitometer,
+            page_info: self.file_info,
+            ..Default::default()
+        }
+    }
+
+    /// Every mark is on: All printers' marks shows ticked.
+    pub fn all(self) -> bool {
+        self.crop
+            && self.bleed
+            && self.registration
+            && self.color_bars
+            && self.densitometer
+            && self.file_info
+    }
+
+    /// Every mark on, or every mark off (All printers' marks, #2197).
+    pub fn set_all(&mut self, on: bool) {
+        *self = MarkPrefs {
+            crop: on,
+            bleed: on,
+            registration: on,
+            color_bars: on,
+            densitometer: on,
+            file_info: on,
+        };
+    }
+}
+
 /// A named set of choices (PDF preset): the compatibility, the output
-/// condition, the flattening resolution, the bookmarks and the bleed.
+/// condition, the flattening resolution, the bookmarks, the bleed and the
+/// printers' marks.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PdfPreset {
@@ -123,6 +178,7 @@ pub struct PdfPreset {
     pub show_bookmarks: bool,
     pub bleed_mm: f64,
     pub bitmaps: BitmapPrefs,
+    pub marks: MarkPrefs,
 }
 
 impl Default for PdfPreset {
@@ -136,6 +192,7 @@ impl Default for PdfPreset {
             show_bookmarks: false,
             bleed_mm: 0.0,
             bitmaps: BitmapPrefs::default(),
+            marks: MarkPrefs::default(),
         }
     }
 }
@@ -177,6 +234,10 @@ pub fn builtin_presets() -> Vec<(&'static str, PdfPreset)> {
                 standard: 3,
                 bookmarks: false,
                 bleed_mm: 3.0,
+                marks: MarkPrefs {
+                    crop: true,
+                    ..Default::default()
+                },
                 ..base.clone()
             },
         ),
@@ -236,6 +297,8 @@ pub struct PublishPrefs {
     pub subset_below_pct: f64,
     /// Bitmap resolution and compression (#550).
     pub bitmaps: BitmapPrefs,
+    /// Printers' marks around the pages (#789).
+    pub marks: MarkPrefs,
 }
 
 impl Default for PublishPrefs {
@@ -261,6 +324,7 @@ impl Default for PublishPrefs {
             subset_fonts: true,
             subset_below_pct: 80.0,
             bitmaps: BitmapPrefs::default(),
+            marks: MarkPrefs::default(),
         }
     }
 }
@@ -426,6 +490,7 @@ impl PublishState {
             self.prefs.show_bookmarks = p.show_bookmarks;
             self.bleed_mm = p.bleed_mm.max(0.0);
             self.prefs.bitmaps = p.bitmaps;
+            self.prefs.marks = p.marks;
             self.prefs.preset = key.to_string();
         }
     }
@@ -446,6 +511,7 @@ impl PublishState {
             show_bookmarks: self.prefs.show_bookmarks,
             bleed_mm: self.bleed_mm,
             bitmaps: self.prefs.bitmaps,
+            marks: self.prefs.marks,
         };
         self.prefs.user_presets.retain(|q| q.name != name);
         self.prefs.user_presets.push(p);
@@ -531,7 +597,49 @@ impl PublishState {
             security: self.security(),
             text: self.prefs.text(),
             images: self.prefs.bitmaps.options(),
+            marks_margin_mm: 0.0,
+            page_marks: Vec::new(),
         }
+    }
+
+    /// The writer's options for `doc`: [`Self::options`] with the
+    /// printers' marks of each page and the room they need, made by the
+    /// print layout's code (#789).
+    pub fn options_for(
+        &self,
+        doc: &Document,
+        title: &str,
+        when: &str,
+        output_profile: Option<Vec<u8>>,
+    ) -> PdfOptions {
+        let mut opts = self.options(output_profile);
+        let marks = self.prefs.marks.marks();
+        if marks.any() {
+            let sizes: Vec<_> = doc.pages.iter().map(|p| p.size).collect();
+            let names: Vec<String> = doc
+                .pages
+                .iter()
+                .enumerate()
+                .map(|(i, p)| {
+                    let n = p.name.trim();
+                    if n.is_empty() {
+                        (i + 1).to_string()
+                    } else {
+                        n.to_string()
+                    }
+                })
+                .collect();
+            let layout = crate::imposition::Options {
+                bleed: opts.bleed_mm,
+                marks,
+                title: title.to_string(),
+                when: when.to_string(),
+                ..Default::default()
+            };
+            opts.marks_margin_mm = crate::imposition::MARK_MARGIN;
+            opts.page_marks = crate::imposition::page_marks(&sizes, &names, &layout);
+        }
+        opts
     }
 }
 
@@ -667,7 +775,14 @@ pub fn publish(app: &App, st: &PublishState, path: &Path) -> Result<String, Stri
     if doc.pages.is_empty() {
         return Err(tr("publish.need_pages"));
     }
-    let opts = st.options(crate::export::pdfx_profile(app, st.prefs.standard()));
+    let tz = crate::time_tracker::local_zone();
+    let when = crate::time_tracker::date_time(crate::time_tracker::unix_now(), &tz);
+    let opts = st.options_for(
+        &doc,
+        &app.document_name(),
+        &when,
+        crate::export::pdfx_profile(app, st.prefs.standard()),
+    );
     let (pdf, report) = tracedraw_io::pdf::document_to_pdf_report(&doc, &opts);
     crate::files::write(path, pdf).map_err(|e| e.to_string())?;
     let mut msg = trf("status.exported", &[("path", &path.display().to_string())]);
@@ -769,6 +884,26 @@ pub fn dialog(app: &mut App, ctx: &Context, st: &mut PublishState, close: &mut b
             return;
         }
         app.settings.publish_pdf = st.prefs.clone();
+        // On Android the system's picker asks where the PDF goes, with
+        // the file name of the form; it answers on a later frame.
+        if crate::files::ANDROID {
+            let name = st
+                .file
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| "Graphic1.pdf".into());
+            let st = st.clone();
+            crate::files::Dialog::new()
+                .add_filter("PDF (*.pdf)", &["pdf"])
+                .set_file_name(name)
+                .save_file(app, move |app, path| {
+                    app.status = match publish(app, &st, &path) {
+                        Ok(msg) => msg,
+                        Err(e) => trf("status.export_failed", &[("e", &e)]),
+                    };
+                });
+            return;
+        }
         if !crate::files::WEB {
             if let Some(dir) = st.file.parent() {
                 app.settings.last_dir = Some(dir.to_path_buf());
@@ -821,7 +956,10 @@ fn general(app: &App, ui: &mut Ui, st: &mut PublishState) {
     }
     row(ui, &tr("publish.file_name"), |ui| {
         ui.label(st.file.display().to_string());
-        if !crate::files::WEB && ui.button(tr("publish.browse")).clicked() {
+        // On Android the system's picker asks where the file goes when OK
+        // is pressed, so there is nothing to browse first.
+        if !crate::files::WEB && !crate::files::ANDROID && ui.button(tr("publish.browse")).clicked()
+        {
             let name = st
                 .file
                 .file_name()
@@ -882,7 +1020,7 @@ fn general(app: &App, ui: &mut Ui, st: &mut PublishState) {
             .map(|(_, n, _)| n.clone())
             .unwrap_or_default();
         let mut pick = None;
-        egui::ComboBox::from_id_salt("publish_preset")
+        crate::ui::keynav::ComboBox::from_id_salt("publish_preset")
             .selected_text(shown)
             .width(220.0)
             .show_ui(ui, |ui| {
@@ -947,7 +1085,7 @@ fn general(app: &App, ui: &mut Ui, st: &mut PublishState) {
         }
     }
     row(ui, &tr("publish.compatibility"), |ui| {
-        egui::ComboBox::from_id_salt("publish_standard")
+        crate::ui::keynav::ComboBox::from_id_salt("publish_standard")
             .selected_text(PDF_STANDARDS[st.prefs.standard.min(PDF_STANDARDS.len() - 1)])
             .width(220.0)
             .show_ui(ui, |ui| {
@@ -1041,7 +1179,7 @@ fn bitmaps(ui: &mut Ui, b: &mut BitmapPrefs) {
         }
         ui.horizontal(|ui| {
             ui.label(tr("publish.compression"));
-            egui::ComboBox::from_id_salt("publish_compression")
+            crate::ui::keynav::ComboBox::from_id_salt("publish_compression")
                 .selected_text(if b.jpeg {
                     tr("publish.compression_jpeg")
                 } else {
@@ -1053,7 +1191,7 @@ fn bitmaps(ui: &mut Ui, b: &mut BitmapPrefs) {
                 });
             ui.add_enabled_ui(b.jpeg, |ui| {
                 ui.label(tr("publish.jpeg_quality"));
-                ui.add(egui::Slider::new(&mut b.jpeg_quality, 1..=100));
+                ui.add(crate::ui::Slider::new(&mut b.jpeg_quality, 1..=100));
             });
         });
         ui.checkbox(&mut b.compress_content, tr("publish.compress_content"));
@@ -1091,7 +1229,7 @@ fn text_and_fonts(ui: &mut Ui, p: &mut PublishPrefs) {
     });
 }
 
-/// Prepress: the bleed around every page.
+/// Prepress: the bleed around every page and the printers' marks.
 fn prepress(ui: &mut Ui, st: &mut PublishState) {
     row(ui, &tr("dialog.bleed"), |ui| {
         ui.add(
@@ -1102,6 +1240,39 @@ fn prepress(ui: &mut Ui, st: &mut PublishState) {
         );
     });
     note(ui, "publish.bleed_note");
+    ui.add_space(8.0);
+    group(ui, &tr("publish.marks"), |ui| {
+        let m = &mut st.prefs.marks;
+        let mut all = m.all();
+        if ui
+            .checkbox(&mut all, tr("publish.all_marks"))
+            .rich_tip(crate::ui::tips::keyed("publish.all_marks"))
+            .changed()
+        {
+            m.set_all(all);
+        }
+        egui::Grid::new("publish_marks")
+            .num_columns(2)
+            .spacing([24.0, 4.0])
+            .show(ui, |ui| {
+                ui.checkbox(&mut m.crop, tr("dialog.crop_marks"))
+                    .rich_tip(tr("dialog.crop_marks_tip"));
+                ui.checkbox(&mut m.bleed, tr("publish.bleed_marks"))
+                    .rich_tip(crate::ui::tips::keyed("publish.bleed_marks"));
+                ui.end_row();
+                ui.checkbox(&mut m.registration, tr("dialog.registration_marks"))
+                    .rich_tip(tr("dialog.registration_marks_tip"));
+                ui.checkbox(&mut m.color_bars, tr("print.color_bars"))
+                    .rich_tip(tr("print.color_bars_tip"));
+                ui.end_row();
+                ui.checkbox(&mut m.densitometer, tr("print.densitometer"))
+                    .rich_tip(tr("print.densitometer_tip"));
+                ui.checkbox(&mut m.file_info, tr("publish.file_info"))
+                    .rich_tip(tr("publish.file_info_tip"));
+                ui.end_row();
+            });
+        note(ui, "publish.marks_note");
+    });
 }
 
 /// Issues: what the preflight found in the drawing.
@@ -1188,7 +1359,7 @@ fn security(ui: &mut Ui, st: &mut PublishState) {
             ui.horizontal(|ui| {
                 ui.add_space(22.0);
                 ui.label(tr("publish.printing"));
-                egui::ComboBox::from_id_salt("publish_printing")
+                crate::ui::keynav::ComboBox::from_id_salt("publish_printing")
                     .selected_text(tr(p.printing.key()))
                     .width(150.0)
                     .show_ui(ui, |ui| {
@@ -1258,6 +1429,23 @@ mod tests {
         doc.pages.push(second);
         app.open_document(doc, None);
         app
+    }
+
+    /// All printers' marks ticks every mark and unticks them all; bleed
+    /// marks and the densitometer scale reach the marks drawn (#2197).
+    #[test]
+    fn all_printers_marks_and_bleed_marks() {
+        let mut m = MarkPrefs::default();
+        assert!(!m.all());
+        m.set_all(true);
+        assert!(m.all());
+        let marks = m.marks();
+        assert!(marks.crop && marks.bleed && marks.registration);
+        assert!(marks.color_bars && marks.densitometer && marks.page_info);
+        m.bleed = false;
+        assert!(!m.all());
+        m.set_all(false);
+        assert!(!m.marks().any());
     }
 
     #[test]
@@ -1453,6 +1641,156 @@ mod tests {
             assert!(words.contains("Searchable words"), "{words:?}");
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Texts one frame of the dialog drew, with where.
+    fn dialog_texts(
+        app: &mut App,
+        ctx: &egui::Context,
+        st: &mut PublishState,
+        events: Vec<egui::Event>,
+    ) -> Vec<(String, Rect)> {
+        fn walk(s: &egui::Shape, out: &mut Vec<(String, Rect)>) {
+            match s {
+                egui::Shape::Text(t) => {
+                    out.push((t.galley.text().to_string(), t.visual_bounding_rect()))
+                }
+                egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, out)),
+                _ => {}
+            }
+        }
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1400.0, 900.0))),
+            events,
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input, |ui| {
+            let mut close = false;
+            dialog(app, ui.ctx(), st, &mut close);
+        });
+        out.textures_delta.clear();
+        let mut texts = Vec::new();
+        out.shapes.iter().for_each(|c| walk(&c.shape, &mut texts));
+        texts
+    }
+
+    /// Prepress: the printers' marks are ticked in the dialog, and the
+    /// file gets them around every page in a margin outside the bleed,
+    /// with the trim, bleed and media boxes set to match (#789).
+    #[test]
+    fn prepress_marks_go_around_the_pages_and_grow_the_media_box() {
+        tracedraw_text::install();
+        let mut app = app_with_two_pages();
+        let mut st = PublishState::new(&app);
+        st.tab = Tab::Prepress;
+        let ctx = crate::theme::ui_context();
+        let mut texts = Vec::new();
+        for _ in 0..3 {
+            texts = dialog_texts(&mut app, &ctx, &mut st, Vec::new());
+        }
+        for key in [
+            "publish.marks",
+            "dialog.crop_marks",
+            "dialog.registration_marks",
+            "print.color_bars",
+            "publish.file_info",
+        ] {
+            assert!(texts.iter().any(|(t, _)| *t == tr(key)), "{key} shown");
+        }
+        // Click Crop marks and File information, as a user would.
+        for key in ["dialog.crop_marks", "publish.file_info"] {
+            let at = texts
+                .iter()
+                .find(|(t, _)| *t == tr(key))
+                .map(|(_, r)| r.center())
+                .expect("shown");
+            let press = |pressed| egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: Default::default(),
+            };
+            dialog_texts(&mut app, &ctx, &mut st, vec![egui::Event::PointerMoved(at)]);
+            dialog_texts(&mut app, &ctx, &mut st, vec![press(true)]);
+            texts = dialog_texts(&mut app, &ctx, &mut st, vec![press(false)]);
+        }
+        assert!(st.prefs.marks.crop && st.prefs.marks.file_info);
+        assert!(!st.prefs.marks.registration && !st.prefs.marks.color_bars);
+        // The file: 100 x 50 mm pages, 3 mm of bleed, 12 mm for the marks.
+        let dir = std::env::temp_dir().join(format!("tracedraw-pdfmarks-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("marks.pdf");
+        st.prefs.bitmaps.compress_content = false;
+        publish(&app, &st, &path).expect("published");
+        let bytes = std::fs::read(&path).expect("written");
+        let pdf = lopdf::Document::load_mem(&bytes).expect("parse");
+        let pt = |mm: f64| (mm * 72.0 / 25.4) as f32;
+        let near = |a: f32, b: f32| (a - b).abs() < 0.01;
+        let pages = pdf.get_pages();
+        assert_eq!(pages.len(), 2);
+        for id in pages.values() {
+            let page = pdf.get_dictionary(*id).expect("page");
+            let rect = |name: &[u8]| -> Vec<f32> {
+                page.get(name)
+                    .and_then(|o| o.as_array())
+                    .expect("box")
+                    .iter()
+                    .map(|v| v.as_float().expect("number"))
+                    .collect()
+            };
+            let media = rect(b"MediaBox");
+            assert!(
+                near(media[2], pt(130.0)) && near(media[3], pt(80.0)),
+                "{media:?}"
+            );
+            let trim = rect(b"TrimBox");
+            assert!(
+                near(trim[0], pt(15.0)) && near(trim[2], pt(115.0)),
+                "{trim:?}"
+            );
+            let bleed = rect(b"BleedBox");
+            assert!(
+                near(bleed[0], pt(12.0)) && near(bleed[3], pt(68.0)),
+                "{bleed:?}"
+            );
+        }
+        // The page information names the drawing and each page (in
+        // DejaVu Sans, when it is installed).
+        if tracedraw_text::fonts().has_family("DejaVu Sans") {
+            let words = pdf.extract_text(&[2]).unwrap_or_default();
+            assert!(
+                words.contains("Leaflet") && words.contains("Back"),
+                "{words:?}"
+            );
+        }
+        // No marks: the boxes are the page and its bleed, as before.
+        st.prefs.marks = MarkPrefs::default();
+        publish(&app, &st, &path).expect("published");
+        let bytes = std::fs::read(&path).expect("written");
+        let text = String::from_utf8_lossy(&bytes).into_owned();
+        assert!(!text.contains("/CSAll"), "no registration marks");
+        let pdf = lopdf::Document::load_mem(&bytes).expect("parse");
+        let first = pdf.get_pages()[&1];
+        let media = pdf
+            .get_dictionary(first)
+            .and_then(|d| d.get(b"MediaBox"))
+            .and_then(|o| o.as_array())
+            .expect("box")
+            .iter()
+            .map(|v| v.as_float().expect("number"))
+            .collect::<Vec<_>>();
+        assert!(near(media[2], pt(106.0)), "{media:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+        // The prepress preset asks for crop marks; a saved preset keeps
+        // the marks chosen.
+        st.apply_preset("publish.preset_prepress");
+        assert!(st.prefs.marks.crop);
+        st.prefs.marks.color_bars = true;
+        assert!(st.save_preset("Marks"));
+        st.apply_preset("publish.preset_distribution");
+        assert_eq!(st.prefs.marks, MarkPrefs::default());
+        st.apply_preset("Marks");
+        assert!(st.prefs.marks.color_bars);
     }
 
     #[test]

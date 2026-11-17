@@ -1,5 +1,7 @@
 # Opzioni degli strumenti
 
+> *Traduzione automatica: questa pagina può essere meno aggiornata della versione inglese.*
+
 [[menu.tools > menu.tools.options > menu.tools.options_tools]] imposta come si
 comportano gli strumenti e quali nuovi oggetti disegnano. La maggior parte di
 questi valori si trova anche nella barra delle proprietà di ciascuno
@@ -16,6 +18,18 @@ strumento.
   seleziona anche gli oggetti che tocca soltanto; <kbd>Alt</kbd> seleziona
   allora solo quelli completamente all'interno.
 
+- [[options.ctrl_shift_keys]] [[options.keys_traditional]]: [[options.keys_traditional_tip]]
+  [[options.keys_windows]]: [[options.keys_windows_tip]]
+
+## Gomma {#eraser}
+
+![Le opzioni dello strumento Gomma](../../img/customize-tool-options-eraser.png)
+
+[[options.eraser_width]] (6,35 mm in partenza), e [[options.eraser_round]] o
+[[options.eraser_square]].
+
+[[options.eraser_reduce_nodes]]: [[options.eraser_reduce_nodes_tip]]
+
 ## Zoom e spostamento {#zoom-pan}
 
 ![Le opzioni di zoom e spostamento](../../img/customize-tool-options-zoom-pan.png)
@@ -23,15 +37,45 @@ strumento.
 - [[options.zoom_right_button]]: [[options.zoom_out]] (in partenza) o il
   [[options.context_menu]].
 - [[options.wheel_action]]: [[options.wheel_zoom]] o [[options.wheel_scroll]].
+- [[options.zoom_relative_1to1]] (attivo): lo zoom 100% è la dimensione reale alla
+  risoluzione dello schermo calibrata; disattivo, sono 96 pixel per pollice.
+- [[options.wheel_center_mouse]] (disattivo): uno zoom con la rotellina porta il punto
+  sotto il puntatore al centro della vista, insieme al puntatore.
+- [[options.smooth_zoom]] (attivo): uno scatto della rotellina zooma con un breve
+  scorrimento invece di un salto; più veloce gira la rotellina, più è breve.
+  Disattivo, ogni scatto zooma subito.
+- [[options.light_zoom]]: [[options.light_zoom_tip]]
+- [[options.wheel_zoom_step]] di quanto uno scatto ingrandisce o riduce, da 1 a
+  100 per cento (15 % all'inizio).
+- [[options.pan_right_button]] [[options.zoom_out]] o il [[options.context_menu]] (all'inizio).
+- [[options.pan_inertia]] (disattivo): una panoramica rilasciata mentre il
+  puntatore si muove ancora fa scorrere la vista nella stessa direzione,
+  rallentando fino a fermarsi. Un clic o la rotellina la ferma. Vale per lo
+  strumento Panoramica, il pulsante centrale e due dita.
 
-## Curve {#curves}
+## Mano libera/Bézier {#curves}
 
-![Le opzioni degli strumenti curva](../../img/customize-tool-options-curves.png)
+![Le opzioni degli strumenti Mano libera/Bézier](../../img/customize-tool-options-curves.png)
 
 - [[options.freehand_smoothing]]: da 0 a 100 (50 in partenza).
 - [[options.join_within]]: quanto vicino a un nodo finale deve iniziare una
   linea per continuare la curva (5 pixel dello schermo in partenza). Vedi
   [Continuare una curva](../lines-shapes/lines.md#continue).
+
+- [[options.pen_preview]] e [[options.pen_auto_add_delete]] (entrambe attive)
+  per lo strumento [[tool.pen]]; vedere [Penna](../lines-shapes/lines.md#pen).
+- [[options.pen_tablet]]: [[options.pen_pressure]] (attiva); vedere
+  [Disegnare con una tavoletta grafica](../lines-shapes/pen-pressure.md).
+
+- [[options.corner_threshold]]: [[options.corner_threshold_tip]]
+- [[options.straight_threshold]]: [[options.straight_threshold_tip]]
+
+## Riconoscimento forme {#shape-recognition}
+
+![Le opzioni dello strumento Riconoscimento forme](../../img/customize-tool-options-shape-recognition.png)
+
+[[recognize.recognition]] e [[recognize.smoothing]] dello strumento Riconoscimento
+forme, da disattivato a massimo, come nella sua barra delle proprietà.
 
 ## Rettangolo {#rectangle}
 
@@ -49,11 +93,20 @@ quattro angoli e [[toolbar.corners_together]]. [[options.scale_corners]]:
 [[options.ellipse]], [[options.pie]] o [[options.arc]], con
 l'[[options.starting_angle]] e l'[[options.ending_angle]].
 
+[[options.arc_direction]]: [[options.counterclockwise]] / [[options.clockwise]].
+[[options.arc_direction_desc]]
+
 ## Poligono {#polygon}
 
 ![Le opzioni dello strumento Poligono](../../img/customize-tool-options-polygon.png)
 
 [[options.number_of_points]] e [[options.sharpness]].
+
+## Carta millimetrata {#graph-paper}
+
+![Le opzioni dello strumento Carta millimetrata](../../img/customize-tool-options-graph-paper.png)
+
+[[options.rows]] e [[options.columns]] della griglia.
 
 ## Spirale {#spiral}
 
@@ -62,11 +115,8 @@ l'[[options.starting_angle]] e l'[[options.ending_angle]].
 [[options.revolutions]], e [[options.symmetrical_spiral]] o
 [[options.logarithmic_spiral]].
 
-## Carta millimetrata {#graph-paper}
-
-![Le opzioni dello strumento Carta millimetrata](../../img/customize-tool-options-graph-paper.png)
-
-[[options.rows]] e [[options.columns]] della griglia.
+[[options.spiral_expansion]]: [[options.spiral_expansion_tip]]
+[[options.spiral_preview_tip]]
 
 ## Tabella {#table}
 
@@ -74,9 +124,37 @@ l'[[options.starting_angle]] e l'[[options.ending_angle]].
 
 [[options.rows]] e [[options.columns]] delle nuove tabelle.
 
-## Gomma {#eraser}
+## Quota {#dimension}
 
-![Le opzioni dello strumento Gomma](../../img/customize-tool-options-eraser.png)
+![Le opzioni dello strumento Quota](../../img/customize-tool-options-dimension.png)
 
-[[options.eraser_width]] (6,35 mm in partenza), e [[options.eraser_round]] o
-[[options.eraser_square]].
+Come si legge l'etichetta delle nuove quote: [[dimension.precision]],
+[[dimension.units]], [[dimension.show_units]], [[dimension.prefix]] e
+[[dimension.suffix]]. Le quote già disegnate mantengono la loro etichetta;
+selezionatene una e usate la barra delle proprietà per cambiarla.
+
+[[options.dimension_style]]: [[options.decimal]] / [[options.fractional]].
+[[options.dimension_style_tip]]
+
+## Quota angolare {#angular-dimension}
+
+[[dimension.precision]], [[dimension.show_units]], [[dimension.prefix]] and
+[[dimension.suffix]] of new angular dimensions.
+[[options.angular_units_tip]]
+
+## Connettore {#connector}
+
+![Le opzioni dello strumento Connettore](../../img/customize-tool-options-connector.png)
+
+[[connector.radius]] dei nuovi connettori arrotondati (3 mm all'inizio).
+
+[[options.connector_gap]]: [[options.connector_gap_tip]]
+
+[[options.connector_geometric_anchors]]: [[options.connector_geometric_anchors_tip]]
+
+## Riempimento a maglia {#mesh-fill}
+
+![Le opzioni dello strumento Riempimento a maglia](../../img/customize-tool-options-mesh-fill.png)
+
+[[options.columns]] e [[options.rows]] della griglia con cui inizia un nuovo
+riempimento a maglia (2 per 2 all'inizio).

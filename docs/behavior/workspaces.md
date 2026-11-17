@@ -2,8 +2,8 @@
 
 A workspace is how the window is set up: which bars show and where they
 sit, the toolbox, keyboard shortcuts, the colour palette options and the
-interface's look. Window > Workspace picks a built-in one (Default, Lite,
-Classic, Illustration, Page Layout, Touch); the user's own setup can be
+interface's look. Window > Workspace picks a built-in one (Standard, Minimal,
+Compact, Drawing, Publishing, Touch); the user's own setup can be
 kept in a file and brought back.
 
 ## Touch
@@ -17,8 +17,38 @@ fingers pan and a pinch zooms about its centre, with any tool; the
 gesture drops what the first finger had begun, so it neither drags an
 object nor draws a marquee. Picking another workspace brings the
 interface back to the size chosen.
-Checks: `ui::tests::the_touch_workspace_is_larger_and_keeps_real_sizes`,
+
+With a finger only (#1611, #1707, #1499): the standard toolbar's Delete deletes
+the selection, its Shift, Ctrl and Alt buttons hold those keys down
+until they are tapped again (a tap adds to the selection with Shift held) and its Panels button shows the dockers (Properties and
+the rest); a finger held still on the drawing for 0.8 s is the right
+click (egui's long press), so it opens the menu of the object under it
+(picking it) or of the page, with Delete, Copy, Order, Group and the
+rest; on a palette swatch a tap fills, a hold of 0.5 s let go sets the
+outline and a hold of 1 s shows the shades (`color-palettes.md`).
+Checks: `ui::tests::a_finger_deletes_opens_the_panels_and_the_object_menu`,
+`ui::tests::the_touch_workspace_is_larger_and_keeps_real_sizes`,
 `pick_drag_tests::two_fingers_pan_without_dragging_anything`.
+
+On a phone (a screen whose smaller side is under 600 density-independent
+pixels, Android's line between phone and tablet layouts, in either
+orientation) the interface is not enlarged: a 360 dp phone would be
+257 points wide, too narrow for any bar (#1301, #1691). The phone
+layout: the bars, the property bar, the toolbox and the palette slide
+with their « and » buttons, the wheel, or a finger dragged along them
+(#1997, `toolbars.md`, "Bars longer than the window"); the menu titles
+that do not fit go under » at the end of the menu bar; an open panel is
+a sheet over the whole room beside its tab strip instead of a column
+beside the drawing; the Welcome Screen's tabs wrap and Get Started puts
+the recent drawings under its buttons, the page scrolling; a dialog
+larger than the screen is drawn at the screen's size and its body
+scrolls both ways. A tablet (600 dp and more) keeps its layout.
+Checks: `ui::tests::the_touch_workspace_is_larger_and_keeps_real_sizes`,
+`pick_drag_tests::two_fingers_pan_without_dragging_anything`,
+`ui::phone::tests::phones_are_told_by_their_smaller_side`,
+`ui::tests::phones_fit_and_tablets_keep_their_layout` (360 x 640 and
+412 x 915 dp phones and an 800 x 1280 tablet, upright and turned:
+nothing ends outside the screen).
 
 ## Kept across restarts
 
@@ -65,9 +95,12 @@ Checks: `app::tests::tools_view_snapping_and_dockers_survive_a_restart`,
 
 ## Dockers
 
-The tab column holds the open dockers, as tabs; a click on a tab brings
-its docker to the front, a click on the tab in front collapses the
-docker area to the column. The docker's close button (x) and its tab's
+The tab column holds the open dockers, as tabs; the tab of the docker
+in front takes the colour of the document tab in front (light blue on
+the light themes; #2316,
+`ui::dockers::tests::the_tab_of_the_docker_in_front_is_marked`). A
+click on a tab brings its docker to the front, a click on the tab in
+front collapses the docker area to the column. The docker's close button (x) and its tab's
 "Close Docker" take the docker out of the column and bring the next one
 forward; with none left the docker area closes. Collapse (the two
 triangles) only folds the area. A docker opened from a menu or its
@@ -81,7 +114,9 @@ Checks: `app::tests::a_closed_docker_stays_closed_the_next_time`.
 With objects selected: the first one's kind and box, a row of buttons,
 then its sections, in this order: Outline, Fill, Transparency, then
 what the kind has (Rectangle: its corners; a bitmap: its effects; text:
-its character settings), then Summary. Each section has a header bar
+its character settings), then Summary (the selection in figures, Wrap
+paragraph text and Lock Object, see `properties-docker.md`). Each
+section has a header bar
 with a triangle; the buttons (the outline pen, the fill bucket, the
 transparency checker, a rectangle, "fx", "A", "i") show which sections
 are open and open or close them, as a click on a header does. Sections

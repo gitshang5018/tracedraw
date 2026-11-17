@@ -70,6 +70,35 @@ is asked for), selects it, and is one undo step.
 - EAN and UPC guard bars reach down into the digits' line when the text
   is under the bars.
 
+## Print Merge
+
+The inserted barcode keeps the wizard's settings in its object data
+(`barcode`, JSON), so Print Merge can make it again for every record
+when its data names merge fields as `<Field>` (#1084; see
+`print-merge.md`, Barcodes). With records loaded, step 1 has an Insert
+field list that appends a field's `<Name>` to the data. Data naming
+fields is checked and shown with the symbology's sample in its place
+(as typed when the symbology holds it, as Code 128 does), and changing
+the standard keeps it.
+
+Serial number (#2158): with records loaded, step 1 also has a Serial
+number list. None (the default) leaves the data as typed. Same on every
+record and Continue from record to record append a new field's
+`<Serial>` to the data (named "Serial", "Serial 2" and so on, whichever
+no field has), so the digits typed before it stay fixed; choosing None
+again takes it out. Start (1), Step (1, Continue only) and Digits (4,
+padded with zeros) set the number, and Records (0) makes that many
+records when the data has fewer. A line under them shows the data of
+the first two records, and the preview shows the first record's
+barcode. Finish adds the field to the merge data as a number field
+counting from Start by Step (by 0 for Same).
+
+Place Inside Frame (#1084): with the Print Merge panel's field kind set
+to Barcode, Place Inside Frame opens the wizard for the selected shapes
+(or the one clicked next); Finish puts a barcode inside each of them,
+scaled to fill nine tenths of the shape's box and centred, as the
+shape's contents. Print Merge makes it again there for every record.
+
 ## Checks
 
 - Known check characters: EAN-13 590123412345 gives 7, Code 39 CODE39

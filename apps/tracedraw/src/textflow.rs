@@ -5,6 +5,9 @@
 //! Links are kept in the object data of each frame (`text.next`,
 //! `text.prev`, shape ids), so they survive save and load without a model
 //! change. Re-flow runs after typing, linking and resizing a frame.
+//!
+//! Not the linked text content of `content_link.rs` (texts that hold the
+//! same characters); a frame takes part in one or the other.
 
 use crate::app::App;
 use crate::i18n::tr;
@@ -115,7 +118,86 @@ pub fn relink_copies(originals: &[Shape], copies: &mut [Shape]) {
     }
 }
 
+/// The paragraph frames among `shapes` (inside groups and clip frames
+/// too) that a PDF import marked as one chain
+/// ([`tracedraw_io::pdf_paragraphs::FLOW_KEY`], #2323), now that they
+/// have the ids they keep: the object data each is to get, the mark taken
+/// out and the links to the frames before and after it put in. A frame
+/// whose partner did not come along (a page left out) just loses the mark.
+pub fn imported_flow_links(shapes: &[&Shape]) -> Vec<(ShapeId, Vec<(String, String)>)> {
+    use tracedraw_io::pdf_paragraphs::FLOW_KEY;
+    fn walk<'a>(s: &'a Shape, out: &mut Vec<(&'a Shape, usize, usize)>) {
+        if let Some((_, v)) = s.data.iter().find(|(k, _)| k == FLOW_KEY) {
+            let mut parts = v.split(':').map(|p| p.parse::<usize>().ok());
+            if let (Some(Some(chain)), Some(Some(place))) = (parts.next(), parts.next()) {
+                out.push((s, chain, place));
+            } else {
+                out.push((s, usize::MAX, 0));
+            }
+        }
+        match &s.kind {
+            ShapeKind::Group { children } => {
+                for c in children {
+                    walk(c, out);
+                }
+            }
+            ShapeKind::ClipFrame { frame, contents } => {
+                walk(frame, out);
+                for c in contents {
+                    walk(c, out);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut marked = Vec::new();
+    for s in shapes {
+        walk(s, &mut marked);
+    }
+    marked.sort_by_key(|(_, chain, place)| (*chain, *place));
+    let mut out = Vec::with_capacity(marked.len());
+    for (i, (s, chain, _)) in marked.iter().enumerate() {
+        let linked = |j: Option<usize>| {
+            j.and_then(|j| marked.get(j))
+                .filter(|(o, c, _)| c == chain && *c != usize::MAX && o.id != s.id)
+                .map(|(o, _, _)| o.id)
+        };
+        let prev = linked(i.checked_sub(1));
+        let next = linked(Some(i + 1));
+        let mut data: Vec<(String, String)> = s
+            .data
+            .iter()
+            .filter(|(k, _)| k != FLOW_KEY)
+            .cloned()
+            .collect();
+        without_links(&mut data);
+        let data = with_key(with_key(data, PREV, prev), NEXT, next);
+        out.push((s.id, data));
+    }
+    out
+}
+
 impl App {
+    /// Link the paragraph frames a PDF import marked as one chain among
+    /// the objects `ids` just brought in (see [`imported_flow_links`]).
+    pub fn link_imported_flows(&mut self, ids: &[ShapeId]) {
+        let links = {
+            let shapes: Vec<&Shape> = ids
+                .iter()
+                .filter_map(|id| self.doc().find_shape(*id))
+                .collect();
+            imported_flow_links(&shapes)
+        };
+        if links.is_empty() {
+            return;
+        }
+        let cmds: Vec<Command> = links
+            .into_iter()
+            .map(|(shape, data)| Command::SetObjectData { shape, data })
+            .collect();
+        let _ = self.engine.run_batch("Import", &cmds);
+    }
+
     fn frame_data(&self, id: ShapeId) -> Option<Vec<(String, String)>> {
         let s = self.doc().find_shape(id)?;
         matches!(s.kind, ShapeKind::Text { frame: Some(_), .. }).then(|| s.data.clone())
@@ -127,7 +209,8 @@ impl App {
         self.frame_data(next).map(|_| next)
     }
 
-    fn prev_frame(&self, id: ShapeId) -> Option<ShapeId> {
+    /// Previous frame in the chain, if any and still present.
+    pub fn prev_frame(&self, id: ShapeId) -> Option<ShapeId> {
         let prev = data_id(&self.frame_data(id)?, PREV)?;
         self.frame_data(prev).map(|_| prev)
     }
@@ -169,13 +252,31 @@ impl App {
 
     /// Link the two selected paragraph frames: the first selected flows into
     /// the second. The second frame's own text is appended to the chain.
+    /// An empty frame of no chain always takes the overflow of the other
+    /// one, whichever was picked first: the text stays in the frame it
+    /// starts in (picked first, the empty frame took all of it).
     pub fn link_text_frames(&mut self) {
         let [a, b] = self.selection.as_slice() else {
             self.status = tr("status.link_needs_two_frames");
             return;
         };
         let (a, b) = (*a, *b);
+        let (a, b) = if self.lone_empty_frame(a) && !self.lone_empty_frame(b) {
+            (b, a)
+        } else {
+            (a, b)
+        };
         self.link_frames(a, b);
+    }
+
+    /// `id` is a paragraph frame with no characters, in no chain.
+    fn lone_empty_frame(&self, id: ShapeId) -> bool {
+        let empty = matches!(
+            self.doc().find_shape(id).map(|s| &s.kind),
+            Some(ShapeKind::Text { spans, frame: Some(_), .. })
+                if tracedraw_core::spans_char_count(spans) == 0
+        );
+        empty && !self.is_linked_frame(id)
     }
 
     /// Link frame `a` to flow into `b` (on any page): false, with the
@@ -191,6 +292,18 @@ impl App {
             || self.prev_frame(b).is_some()
         {
             self.status = tr("status.link_already");
+            return false;
+        }
+        // A frame whose text content is linked (Link Text Content) keeps
+        // all of its text: it flows into no other frame (#1568).
+        let content_linked = |id| {
+            self.doc()
+                .find_shape(id)
+                .and_then(tracedraw_core::linked_text::link_of)
+                .is_some()
+        };
+        if content_linked(a) || content_linked(b) {
+            self.status = tr("status.flow_not_content_linked");
             return false;
         }
         let cmds = vec![
@@ -218,16 +331,131 @@ impl App {
             .find(|f| {
                 let a = self.view.to_screen(f.corners[0]);
                 let b = self.view.to_screen(f.corners[1]);
-                crate::canvas::flow_tab_rect(a, b).expand(2.0).contains(at)
+                crate::canvas::flow_tab_rect(a, b, self.handle_size())
+                    .expand(2.0)
+                    .contains(at)
             })
             .map(|f| f.id)
+    }
+
+    /// The frame whose top tab is under the screen point `at` (Pick
+    /// tool): a picked frame that no other frame flows into yet.
+    pub fn flow_in_tab_at(&self, at: egui::Pos2) -> Option<ShapeId> {
+        self.shown_text_frames(None)
+            .into_iter()
+            .filter(|f| f.chosen && !f.receives)
+            .find(|f| {
+                let a = self.view.to_screen(f.corners[3]);
+                let b = self.view.to_screen(f.corners[2]);
+                crate::canvas::flow_in_tab_rect(a, b, self.handle_size())
+                    .expand(2.0)
+                    .contains(at)
+            })
+            .map(|f| f.id)
+    }
+
+    /// The flow tab under the screen point `at` whatever the tool, with
+    /// whether it is a frame's top tab (`true`: text flows into it) or
+    /// its bottom one. Nothing is looked up while no frame can show (no
+    /// Show Text Frames, nothing selected or edited): the pointer asks
+    /// at every frame.
+    pub fn any_flow_tab_at(&self, at: egui::Pos2) -> Option<(ShapeId, bool)> {
+        if !self.settings.show_text_frames && self.selection.is_empty() && self.text_edit.is_none()
+        {
+            return None;
+        }
+        // The frames are looked up once for both kinds of tab: as
+        // `flow_tab_at`, then as `flow_in_tab_at`.
+        let frames = self.shown_text_frames(None);
+        let hs = self.handle_size();
+        let screen = |p| self.view.to_screen(p);
+        frames
+            .iter()
+            .find(|f| {
+                (f.overflow || f.chosen)
+                    && !f.linked
+                    && crate::canvas::flow_tab_rect(screen(f.corners[0]), screen(f.corners[1]), hs)
+                        .expand(2.0)
+                        .contains(at)
+            })
+            .map(|f| (f.id, false))
+            .or_else(|| {
+                frames
+                    .iter()
+                    .find(|f| {
+                        f.chosen
+                            && !f.receives
+                            && crate::canvas::flow_in_tab_rect(
+                                screen(f.corners[3]),
+                                screen(f.corners[2]),
+                                hs,
+                            )
+                            .expand(2.0)
+                            .contains(at)
+                    })
+                    .map(|f| (f.id, true))
+            })
+    }
+
+    /// A press on a flow tab at the screen point `at` with any tool
+    /// (#1914, #1986): the text being edited is finished and the link
+    /// starts, the next click (or the end of the drag, `drag`) saying
+    /// where the text flows. `false` off the tabs.
+    pub fn press_flow_tab(&mut self, at: egui::Pos2, drag: bool) -> bool {
+        let Some((id, incoming)) = self.any_flow_tab_at(at) else {
+            return false;
+        };
+        self.finish_text();
+        if incoming {
+            self.start_text_link_in(id);
+        } else {
+            self.start_text_link(id);
+        }
+        self.text_link_from_tab = drag;
+        true
     }
 
     /// A click on a frame's flow tab: the next click says where its text
     /// flows on (#371).
     pub fn start_text_link(&mut self, from: ShapeId) {
         self.pending_text_link = Some(from);
+        self.text_link_incoming = false;
         self.status = tr("status.flow_text_where");
+    }
+
+    /// A click on a frame's top tab: the next click says which frame's
+    /// text flows into it (a new frame on empty space).
+    pub fn start_text_link_in(&mut self, to: ShapeId) {
+        self.pending_text_link = Some(to);
+        self.text_link_incoming = true;
+        self.status = tr("status.flow_text_from");
+    }
+
+    /// Let go of a pending link (Esc, a right click).
+    pub fn cancel_text_link(&mut self) {
+        self.pending_text_link = None;
+        self.text_link_drag = None;
+        self.text_link_incoming = false;
+        self.text_link_from_tab = false;
+    }
+
+    /// The screen point the pending link's line starts from: the middle of
+    /// the tab it came from.
+    pub fn text_link_origin(&self) -> Option<egui::Pos2> {
+        let id = self.pending_text_link?;
+        let s = self.doc().find_shape(id)?;
+        let c = s.text_frame_corners()?;
+        let (a, b) = if self.text_link_incoming {
+            (c[3], c[2])
+        } else {
+            (c[0], c[1])
+        };
+        let (a, b) = (self.view.to_screen(a), self.view.to_screen(b));
+        Some(if self.text_link_incoming {
+            crate::canvas::flow_in_tab_rect(a, b, self.handle_size()).center()
+        } else {
+            crate::canvas::flow_tab_rect(a, b, self.handle_size()).center()
+        })
     }
 
     /// The click after a flow tab, at page point `p` (a drag: the frame
@@ -235,14 +463,23 @@ impl App {
     /// into it; elsewhere a new frame takes it, the size of the first one
     /// with its top left corner at `p`, or the dragged rectangle.
     pub fn finish_text_link(&mut self, p: Point, rect: Option<tracedraw_core::geometry::Rect>) {
+        let incoming = std::mem::take(&mut self.text_link_incoming);
+        self.text_link_from_tab = false;
         let Some(from) = self.pending_text_link.take() else {
             return;
         };
         if rect.is_none() {
-            if let Some(to) = self.hit_test(p).filter(|id| self.frame_data(*id).is_some()) {
-                if to != from {
-                    self.link_frames(from, to);
-                    self.select(vec![to]);
+            if let Some(other) = self.hit_test(p).filter(|id| self.frame_data(*id).is_some()) {
+                if other != from {
+                    // From a top tab the frame clicked flows into the
+                    // frame of the tab.
+                    let (a, b) = if incoming {
+                        (other, from)
+                    } else {
+                        (from, other)
+                    };
+                    self.link_frames(a, b);
+                    self.select(vec![other]);
                     return;
                 }
             }
@@ -285,7 +522,12 @@ impl App {
         let Some(to) = self.new_shape(kind) else {
             return;
         };
-        self.link_frames(from, to);
+        if incoming {
+            // The new frame comes first: the text starts in it.
+            self.link_frames(to, from);
+        } else {
+            self.link_frames(from, to);
+        }
         self.select(vec![to]);
     }
 
@@ -335,17 +577,39 @@ impl App {
         if chain.len() < 2 {
             return;
         }
-        // Gather the whole text in chain order.
+        let Some(all) = self.chain_text(&chain) else {
+            return;
+        };
+        let cmds = self.flow_commands(&chain, all);
+        if !cmds.is_empty() {
+            let _ = self.engine.run_batch("Text Flow", &cmds);
+        }
+    }
+
+    /// The whole text of the frames `chain`, in that order; `None` when
+    /// one of them is missing.
+    fn chain_text(&self, chain: &[ShapeId]) -> Option<Vec<TextSpan>> {
         let mut all: Vec<TextSpan> = Vec::new();
-        let mut kinds = Vec::new();
-        for id in &chain {
-            let Some(s) = self.doc().find_shape(*id) else {
-                return;
-            };
+        for id in chain {
+            let s = self.doc().find_shape(*id)?;
             if let ShapeKind::Text { spans, .. } = &s.kind {
                 all.extend(spans.iter().cloned());
             }
-            kinds.push(s.kind.clone());
+        }
+        Some(all)
+    }
+
+    /// The commands that lay the text `all` over the frames `chain` in
+    /// order: each frame keeps what fits, the rest flows on and the last
+    /// frame takes whatever is left. Only frames whose text changes get a
+    /// command.
+    fn flow_commands(&self, chain: &[ShapeId], all: Vec<TextSpan>) -> Vec<Command> {
+        let kinds: Vec<ShapeKind> = chain
+            .iter()
+            .filter_map(|id| self.doc().find_shape(*id).map(|s| s.kind.clone()))
+            .collect();
+        if kinds.len() != chain.len() {
+            return Vec::new();
         }
         let fonts = tracedraw_text::fonts();
         let mut cmds = Vec::new();
@@ -392,9 +656,85 @@ impl App {
                 },
             });
         }
-        if !cmds.is_empty() {
-            let _ = self.engine.run_batch("Text Flow", &cmds);
+        cmds
+    }
+
+    /// The commands that keep the text of a chain when the objects
+    /// `shapes` are deleted (#1986): a frame of a chain among them, or
+    /// inside a group or clip frame among them, leaves its text to the
+    /// chain. The frames left are linked to one another in their order,
+    /// skipping the deleted ones, and the chain's whole text flows anew
+    /// over them: the frame after a deleted one shows what it showed, and
+    /// the last frame takes the rest, with the overflow mark when it does
+    /// not fit. A chain of two left with one frame leaves an ordinary
+    /// paragraph frame holding all the text. The commands are meant to
+    /// run after the deletion, in its step, so one Undo brings the frame
+    /// and the flow back together. Empty when no frame of a chain goes.
+    pub fn flow_around_deleted(&self, shapes: &[ShapeId]) -> Vec<Command> {
+        fn frames_in(s: &Shape, out: &mut Vec<ShapeId>) {
+            match &s.kind {
+                ShapeKind::Text { frame: Some(_), .. } => out.push(s.id),
+                ShapeKind::Group { children } => {
+                    for c in children {
+                        frames_in(c, out);
+                    }
+                }
+                ShapeKind::ClipFrame { frame, contents } => {
+                    frames_in(frame, out);
+                    for c in contents {
+                        frames_in(c, out);
+                    }
+                }
+                _ => {}
+            }
         }
+        let mut gone = Vec::new();
+        for id in shapes {
+            if let Some(s) = self.doc().find_shape(*id) {
+                frames_in(s, &mut gone);
+            }
+        }
+        gone.retain(|id| self.is_linked_frame(*id));
+        let mut heads: Vec<ShapeId> = Vec::new();
+        for id in &gone {
+            let head = self.chain_head(*id);
+            if !heads.contains(&head) {
+                heads.push(head);
+            }
+        }
+        let mut cmds = Vec::new();
+        for head in heads {
+            let chain = self.chain_of(head);
+            let Some(all) = self.chain_text(&chain) else {
+                continue;
+            };
+            let left: Vec<ShapeId> = chain
+                .iter()
+                .copied()
+                .filter(|id| !gone.contains(id))
+                .collect();
+            if left.is_empty() {
+                continue;
+            }
+            // The frames left are linked in order, the first with nothing
+            // before it and the last with nothing after it.
+            for (i, id) in left.iter().enumerate() {
+                let Some(data) = self.frame_data(*id) else {
+                    continue;
+                };
+                let prev = i.checked_sub(1).and_then(|j| left.get(j).copied());
+                let next = left.get(i + 1).copied();
+                if data_id(&data, PREV) == prev && data_id(&data, NEXT) == next {
+                    continue;
+                }
+                cmds.push(Command::SetObjectData {
+                    shape: *id,
+                    data: with_key(with_key(data, PREV, prev), NEXT, next),
+                });
+            }
+            cmds.extend(self.flow_commands(&left, all));
+        }
+        cmds
     }
 
     /// Re-flow every chain that touches the given shapes (after a resize).
@@ -459,6 +799,50 @@ mod tests {
         assert_eq!(text_of(&app, a), ta);
     }
 
+    /// Linking a frame of text to an EMPTY frame flows the overflow into
+    /// the empty one, whichever of the two was picked first: the text
+    /// stays where it starts, in its own frame. Picked empty frame first,
+    /// the whole text went into it and its own frame was left empty.
+    #[test]
+    fn linking_to_an_empty_frame_keeps_the_source_text_whatever_the_order() {
+        tracedraw_text::install();
+        let mut app = App::headless();
+        let long = "one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty";
+        let a = frame(&mut app, long, 30.0, 8.0);
+        let fits = text_of(&app, a);
+        let b = frame(&mut app, "", 80.0, 80.0);
+        // The empty frame picked first, then the frame with the text.
+        app.select(vec![b, a]);
+        app.link_text_frames();
+        assert_eq!(app.next_frame(a), Some(b), "{}", app.status);
+        let (ta, tb) = (text_of(&app, a), text_of(&app, b));
+        assert!(long.starts_with(&ta) && !ta.is_empty(), "a={ta:?}");
+        assert!(!tb.is_empty(), "the overflow flows on: b={tb:?}");
+        assert_eq!(format!("{ta}{tb}"), long);
+        assert_eq!(fits, long, "the frame had all of the text");
+        // Back in the source frame: typing at its start keeps the text,
+        // which flows on into the second frame.
+        app.begin_text_edit(a);
+        app.text_set_caret_at(0, false);
+        app.text_insert("X");
+        assert_eq!(
+            format!("{}{}", text_of(&app, a), text_of(&app, b)),
+            format!("X{long}")
+        );
+        assert!(text_of(&app, a).starts_with("Xone"));
+        app.finish_text();
+        assert_eq!(
+            format!("{}{}", text_of(&app, a), text_of(&app, b)),
+            format!("X{long}")
+        );
+        // Two frames with text keep the order they were picked in.
+        let c = frame(&mut app, "first", 60.0, 60.0);
+        let d = frame(&mut app, "second", 60.0, 60.0);
+        app.select(vec![d, c]);
+        app.link_text_frames();
+        assert_eq!(app.next_frame(d), Some(c));
+    }
+
     /// The flow tab (#371): a click on it, then a click on another page's
     /// empty space makes a frame there that the text flows into; a click
     /// on a frame links to that frame.
@@ -477,6 +861,7 @@ mod tests {
         let tab = crate::canvas::flow_tab_rect(
             app.view.to_screen(Point::new(10.0, 10.0)),
             app.view.to_screen(Point::new(40.0, 10.0)),
+            app.handle_size(),
         );
         assert!(tab.top() > edge.y);
         assert_eq!(app.flow_tab_at(tab.center()), Some(a));
@@ -505,6 +890,214 @@ mod tests {
         app.page = first_page;
         app.select(vec![a]);
         assert_eq!(app.flow_tab_at(tab.center()), None);
+    }
+
+    fn text_of(app: &App, id: ShapeId) -> String {
+        match app.doc().find_shape(id).map(|s| &s.kind) {
+            Some(ShapeKind::Text { spans, .. }) => spans.iter().map(|s| s.text.as_str()).collect(),
+            _ => String::new(),
+        }
+    }
+
+    const LONG: &str = "one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty";
+
+    /// A chain of three frames, the first two a line high, the third
+    /// large enough for the rest; with the text each shows.
+    fn chain_of_three(app: &mut App) -> ([ShapeId; 3], [String; 3]) {
+        let a = frame(app, LONG, 30.0, 8.0);
+        let b = frame(app, "", 30.0, 8.0);
+        let c = frame(app, "", 60.0, 60.0);
+        assert!(app.link_frames(a, b));
+        assert!(app.link_frames(b, c));
+        assert_eq!(app.chain_of(a), vec![a, b, c]);
+        let texts = [text_of(app, a), text_of(app, b), text_of(app, c)];
+        assert!(
+            texts.iter().all(|t| !t.is_empty()),
+            "every frame shows some of the text: {texts:?}"
+        );
+        assert_eq!(texts.concat(), LONG);
+        ([a, b, c], texts)
+    }
+
+    /// Deleting the middle frame of a chain (#1986): the frame goes, its
+    /// text does not. The frames left are a chain of two, the text flows
+    /// on into the last one (which shows what the deleted one had), and
+    /// one Undo brings the frame and the flow back.
+    #[test]
+    fn deleting_the_middle_frame_of_a_chain_keeps_its_text() {
+        tracedraw_text::install();
+        let mut app = App::headless();
+        let ([a, b, c], [ta, tb, tc]) = chain_of_three(&mut app);
+        app.select(vec![b]);
+        app.delete_selection();
+        assert!(app.doc().find_shape(b).is_none(), "the frame is deleted");
+        assert_eq!(app.chain_of(a), vec![a, c], "a chain of two is left");
+        assert_eq!(app.next_frame(a), Some(c));
+        assert_eq!(app.prev_frame(c), Some(a));
+        assert_eq!(text_of(&app, a), ta, "the first frame shows the same");
+        assert_eq!(
+            text_of(&app, c),
+            format!("{tb}{tc}"),
+            "the last frame takes what the deleted one had"
+        );
+        assert_eq!(format!("{}{}", text_of(&app, a), text_of(&app, c)), LONG);
+        assert!(app.selection.is_empty());
+        // One Undo: the three frames and their flow as before.
+        assert_eq!(app.engine.undo_label(), Some("Delete"));
+        app.undo();
+        assert_eq!(app.chain_of(a), vec![a, b, c]);
+        assert_eq!(text_of(&app, a), ta);
+        assert_eq!(text_of(&app, b), tb);
+        assert_eq!(text_of(&app, c), tc);
+        // Redo deletes it again, with the flow.
+        app.redo();
+        assert_eq!(app.chain_of(a), vec![a, c]);
+        assert_eq!(text_of(&app, c), format!("{tb}{tc}"));
+    }
+
+    /// Deleting the first frame: the text starts in the second, which
+    /// shows the start of it, and flows on as before.
+    #[test]
+    fn deleting_the_first_frame_of_a_chain_keeps_its_text() {
+        tracedraw_text::install();
+        let mut app = App::headless();
+        let ([a, b, c], [ta, tb, tc]) = chain_of_three(&mut app);
+        app.select(vec![a]);
+        app.delete_selection();
+        assert!(app.doc().find_shape(a).is_none());
+        assert_eq!(app.chain_of(c), vec![b, c]);
+        assert_eq!(app.prev_frame(b), None, "the second frame is now the head");
+        assert_eq!(app.next_frame(b), Some(c));
+        // The second frame is the first one's size: it shows the same
+        // start of the text.
+        assert_eq!(text_of(&app, b), ta);
+        assert_eq!(format!("{}{}", text_of(&app, b), text_of(&app, c)), LONG);
+        app.undo();
+        assert_eq!(app.chain_of(a), vec![a, b, c]);
+        assert_eq!(
+            [text_of(&app, a), text_of(&app, b), text_of(&app, c)],
+            [ta, tb, tc]
+        );
+    }
+
+    /// Deleting the last frame: the frame before it takes the rest of
+    /// the text and shows the overflow mark, since it does not fit.
+    #[test]
+    fn deleting_the_last_frame_of_a_chain_keeps_its_text() {
+        tracedraw_text::install();
+        let mut app = App::headless();
+        let ([a, b, c], [ta, tb, tc]) = chain_of_three(&mut app);
+        app.select(vec![c]);
+        app.delete_selection();
+        assert!(app.doc().find_shape(c).is_none());
+        assert_eq!(app.chain_of(a), vec![a, b]);
+        assert_eq!(app.next_frame(b), None, "the second frame is now the end");
+        assert_eq!(text_of(&app, a), ta);
+        assert_eq!(text_of(&app, b), format!("{tb}{tc}"));
+        let shape = app.doc().find_shape(b).cloned().expect("frame");
+        assert!(app.text_overflows(&shape), "the rest does not fit");
+        app.select(vec![b]);
+        let shown = app
+            .shown_text_frames(None)
+            .into_iter()
+            .find(|f| f.id == b)
+            .expect("the frame is shown");
+        assert!(shown.overflow && !shown.linked && shown.receives);
+        app.undo();
+        assert_eq!(app.chain_of(a), vec![a, b, c]);
+        assert_eq!(
+            [text_of(&app, a), text_of(&app, b), text_of(&app, c)],
+            [ta, tb, tc]
+        );
+        let shape = app.doc().find_shape(b).cloned().expect("frame");
+        assert!(!app.text_overflows(&shape), "the text flows on again");
+    }
+
+    /// Deleting a frame of a chain of two leaves one ordinary paragraph
+    /// frame with all the text: the small one overflows, the large one
+    /// holds it.
+    #[test]
+    fn deleting_a_frame_of_a_chain_of_two_leaves_one_frame_with_all_the_text() {
+        tracedraw_text::install();
+        let mut app = App::headless();
+        let a = frame(&mut app, LONG, 30.0, 8.0);
+        let b = frame(&mut app, "", 60.0, 60.0);
+        assert!(app.link_frames(a, b));
+        let (ta, tb) = (text_of(&app, a), text_of(&app, b));
+        assert!(!ta.is_empty() && !tb.is_empty());
+        // The large frame deleted: the small one holds all the text and
+        // overflows, linked to nothing.
+        app.select(vec![b]);
+        app.delete_selection();
+        assert!(app.doc().find_shape(b).is_none());
+        assert!(!app.is_linked_frame(a));
+        assert_eq!(app.chain_of(a), vec![a]);
+        assert_eq!(text_of(&app, a), LONG);
+        let shape = app.doc().find_shape(a).cloned().expect("frame");
+        assert!(app.text_overflows(&shape));
+        assert_eq!(
+            app.doc().find_shape(a).map(|s| s.data.clone()),
+            Some(Vec::new()),
+            "no link is left in the frame's data"
+        );
+        app.undo();
+        assert_eq!(app.chain_of(a), vec![a, b]);
+        assert_eq!((text_of(&app, a), text_of(&app, b)), (ta, tb));
+        // The small frame deleted: the large one holds all the text.
+        app.select(vec![a]);
+        app.delete_selection();
+        assert!(app.doc().find_shape(a).is_none());
+        assert!(!app.is_linked_frame(b));
+        assert_eq!(text_of(&app, b), LONG);
+        let shape = app.doc().find_shape(b).cloned().expect("frame");
+        assert!(!app.text_overflows(&shape));
+    }
+
+    /// Cut takes a frame of a chain out the same way: the text stays
+    /// with the chain (the clipboard has the frame as it showed).
+    #[test]
+    fn cutting_a_frame_of_a_chain_keeps_its_text() {
+        tracedraw_text::install();
+        let mut app = App::headless();
+        let ([a, b, c], [ta, tb, tc]) = chain_of_three(&mut app);
+        app.select(vec![b]);
+        app.cut();
+        assert!(app.doc().find_shape(b).is_none());
+        assert_eq!(app.chain_of(a), vec![a, c]);
+        assert_eq!(text_of(&app, a), ta);
+        assert_eq!(text_of(&app, c), format!("{tb}{tc}"));
+        app.undo();
+        assert_eq!(app.chain_of(a), vec![a, b, c]);
+        assert_eq!(text_of(&app, b), tb);
+    }
+
+    /// A frame of a chain deleted inside a group goes the same way: the
+    /// chain keeps its text.
+    #[test]
+    fn deleting_a_group_holding_a_frame_of_a_chain_keeps_its_text() {
+        tracedraw_text::install();
+        let mut app = App::headless();
+        let ([a, b, c], [ta, tb, tc]) = chain_of_three(&mut app);
+        let other = frame(&mut app, "aside", 20.0, 20.0);
+        app.select(vec![b, other]);
+        app.group_selection();
+        let group = app.selection[0];
+        assert_ne!(group, b);
+        assert_eq!(
+            app.chain_of(a),
+            vec![a, b, c],
+            "a grouped frame stays in its chain"
+        );
+        app.select(vec![group]);
+        app.delete_selection();
+        assert!(app.doc().find_shape(b).is_none());
+        assert_eq!(app.chain_of(a), vec![a, c]);
+        assert_eq!(text_of(&app, a), ta);
+        assert_eq!(text_of(&app, c), format!("{tb}{tc}"));
+        app.undo();
+        assert_eq!(app.chain_of(a), vec![a, b, c]);
+        assert_eq!(text_of(&app, b), tb);
+        assert_eq!(text_of(&app, c), tc);
     }
 
     /// A copy of one frame of a chain is a frame of its own: editing it
@@ -559,5 +1152,120 @@ mod tests {
         app.select(vec![a3]);
         app.duplicate();
         assert!(!app.is_linked_frame(app.selection[0]));
+    }
+
+    /// A published text that flows from the end of one page into the top
+    /// of the next, opened or imported as new pages: two paragraph frames
+    /// linked as one chain, so text typed in the first flows on into the
+    /// second (#2323).
+    #[test]
+    fn a_pdf_with_text_running_over_a_page_opens_as_linked_frames() {
+        use tracedraw_core::document::{Layer, Page};
+        tracedraw_text::install();
+        let long = "TraceDraw reads the lines of a PDF back into paragraph text, so that a \
+            word typed in the middle of a page pushes the words after it along the lines and on \
+            into the next frame, as it does in the drawing the file was published from. Every \
+            frame is laid out again before it replaces its lines.";
+        let spans = [TextSpan::new(long, "DejaVu Sans", 11.0)];
+        let size_a = Size::new(100.0, 22.0);
+        let fitted = tracedraw_text::fonts()
+            .layout(&TextRequest {
+                spans: &spans,
+                frame: Some(size_a),
+                align: TextAlign::Left,
+                para: &Default::default(),
+                on_path: None,
+            })
+            .fitted_chars;
+        let head: String = long.chars().take(fitted).collect();
+        let tail: String = long.chars().skip(fitted).collect();
+        let page = Size::new(150.0, 120.0);
+        let mut src = tracedraw_core::Document::new("flow", page);
+        let mut ids = src.ids().clone();
+        let mut shape = |text: &str, y: f64, size: Size| {
+            let mut s = Shape::new(
+                ids.shape(),
+                ShapeKind::Text {
+                    spans: vec![TextSpan::new(text, "DejaVu Sans", 11.0)],
+                    origin: Point::new(20.0, y),
+                    frame: Some(size),
+                    align: TextAlign::Left,
+                    para: Default::default(),
+                    on_path: None,
+                },
+            );
+            s.fill = tracedraw_core::Fill::Solid(tracedraw_core::Color::BLACK);
+            s.stroke = None;
+            s
+        };
+        let a = shape(&head, 10.0, size_a);
+        let b = shape(&tail, 40.0, Size::new(100.0, 70.0));
+        src.pages[0].layers[0].shapes.push(a);
+        let mut layer = Layer::new(ids.layer(), "Layer 1");
+        layer.shapes.push(b);
+        src.pages.push(Page {
+            id: ids.page(),
+            name: "Page 2".into(),
+            size: page,
+            layers: vec![layer],
+            guides: Vec::new(),
+            background: None,
+        });
+        src.set_ids(ids);
+        let dir = std::env::temp_dir().join(format!("tracedraw-pdfflow-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("flow.pdf");
+        std::fs::write(&path, tracedraw_io::pdf::document_to_pdf(&src)).expect("written");
+
+        let frames = |app: &App, pages: std::ops::Range<usize>| -> Vec<ShapeId> {
+            app.doc().pages[pages]
+                .iter()
+                .flat_map(|p| &p.layers)
+                .flat_map(|l| &l.shapes)
+                .filter(|s| matches!(s.kind, ShapeKind::Text { frame: Some(_), .. }))
+                .map(|s| s.id)
+                .collect()
+        };
+        let mut app = App::headless();
+        app.settings.formats.pdf_ask_text = false;
+        app.open_path(path.clone());
+        let found = frames(&app, 0..2);
+        assert_eq!(found.len(), 2, "{}", app.status);
+        let (fa, fb) = (found[0], found[1]);
+        assert_eq!(app.next_frame(fa), Some(fb));
+        assert_eq!(app.prev_frame(fb), Some(fa));
+        assert!(app.doc().find_shape(fa).is_some_and(|s| s
+            .data
+            .iter()
+            .all(|(k, _)| k != tracedraw_io::pdf_paragraphs::FLOW_KEY)));
+        assert_eq!(
+            format!("{}{}", text_of(&app, fa), text_of(&app, fb)).trim_end(),
+            long
+        );
+        // Typing at the start of the first frame pushes words on into
+        // the second; nothing is lost.
+        app.begin_text_edit(fa);
+        app.text_set_caret_at(0, false);
+        app.text_insert("New words at the start. ");
+        assert_eq!(
+            format!("{}{}", text_of(&app, fa), text_of(&app, fb)).trim_end(),
+            format!("New words at the start. {long}")
+        );
+        assert!(text_of(&app, fb).len() > tail.len());
+
+        // Imported as new pages: linked too, in one undo step.
+        let mut app = App::headless();
+        app.settings.formats.pdf_ask_text = false;
+        let steps = app.engine.history_labels().0.len();
+        app.import_pdf(&path);
+        if let crate::ui::dialogs::Dialog::PdfPages(st) =
+            std::mem::replace(&mut app.dialog, crate::ui::dialogs::Dialog::None)
+        {
+            app.import_pdf_pages(&path, &st.pdf, &[0, 1], true);
+        }
+        let found = frames(&app, 1..3);
+        assert_eq!(found.len(), 2, "{}", app.status);
+        assert_eq!(app.next_frame(found[0]), Some(found[1]));
+        assert_eq!(app.engine.history_labels().0.len(), steps + 1);
     }
 }

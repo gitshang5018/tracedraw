@@ -2,11 +2,14 @@
 
 Tools > Options is a submenu: TraceDraw
 (Ctrl+J), Customization, Tools, Global, Workspaces and AI each open the
-Options window on their pages. Layout > Document Options opens it on the
-document's pages (also a double-click on a ruler, the page border or its
-shadow). The window has a tab for each of them along the top, so every
+Options window on their pages, and Document Setup (greyed with no
+drawing open) on the document's pages, so every tab of the window has
+its entry there and in the standard bar's Options list (#2006,
+`ui::menus::options_items_tests::the_options_list_has_document_setup`).
+Page > Document Setup opens it on the document's pages too (also a
+double-click on a ruler, the page border or its shadow). The window has a tab for each of them along the top, so every
 option is a click away: TraceDraw, Customization, Tools, Global,
-Workspaces, AI and, while a drawing is open, Document Options. A tab
+Workspaces, AI and, while a drawing is open, Document Setup. A tab
 shows its set's page list and the page of that set shown last (else its
 first page); the title follows the tab, and OK and Cancel cover what
 was changed on every tab (#633).
@@ -22,6 +25,14 @@ was changed on every tab (#633).
   100 px of the dialog stays inside the left, right and bottom edges,
   so even a dialog as large as the window can be pushed aside to show
   the drawing (#908).
+- The window keeps its size and its place whatever page it shows: its
+  body is drawn in a child of its own, cut at the window's edge
+  (`chrome::dialog`), so a page cannot make the window wider or taller.
+  A page a little too wide did (the Edit page by 32 px: its Reset
+  button stood past the slider that took the whole row), and the
+  window, placed by its centre, moved to the side by half of every such
+  change, and by another half pixel each time the position was rounded
+  (#2199, `ui::options::tests::the_window_keeps_its_place_from_page_to_page`).
 - The tabs in a row at the top of the body, over a light line, the
   current one selected.
 - A white page list on the left (225 px; rows 23 px apart; the current
@@ -30,7 +41,7 @@ was changed on every tab (#633).
 - Section headings are a label followed by a light line to the right
   edge. Indented groups have no guide line.
 - Bottom row: the help button (27 x 27) at the left (and Save as Default
-  in Document Options), OK and Cancel (100 x 27) at the right.
+  in Document Setup), OK and Cancel (100 x 27) at the right.
 - Changes show at once. OK keeps them and writes the preferences; Cancel,
   the close button and Esc put back everything the dialog changed,
   including document settings (their commands are undone).
@@ -39,16 +50,16 @@ was changed on every tab (#633).
 
 | Page | Settings (defaults) |
 |---|---|
-| General | On start-up: Welcome Screen, Start a new document, Open last edited document; Show New Document dialog box (on); Show the splash screen at start-up (on); Undo levels, Regular (150) |
-| Display | Proof colors; Show tooltips (on); Hide bounding box for curve tools (off); Enable node tracking (off, see `pick-tool.md`); Full-screen preview: Show page border (on); Default action for mouse wheel: Zoom or Scroll; Ruler calibration (below) |
-| Edit | Constrain angle (15 degrees: Ctrl while rotating); Drawing precision (3 decimal places in the property bar and the status bar) |
-| Nodes and Handles | Node size Small, Medium, Large (7, 9, 11 px); node shape per type (cusp square, smooth circle, symmetrical diamond); Show curve direction (an arrow after the first node, secondary colour); main colour (selected nodes and handles, blue) and secondary colour (red); Show unselected nodes with fill (on, Ctrl+Shift+G) |
+| General | On start-up: Welcome Screen, Start a new document, Open last edited document; Show New Document dialog box (on); Show the splash screen at start-up (on); Use hardware acceleration and the graphics card (from the next start); Undo levels, Regular (150). The splash, hardware acceleration and Global > General's AI agents section are shown on the desktop only: on Android and in the browser they do nothing and are hidden (`ui::options::DesktopOnly`, #1415) |
+| Display | Proof colors; Show tooltips (on); Hide bounding box for curve tools (off); Enable node tracking (off, see `pick-tool.md`); Full-screen preview: Show page border (on); Default action for mouse wheel: Zoom or Scroll; View when a drawing opens (below); Ruler calibration (below); Screen margins (Android only, see `android.md`, #1917) |
+| Edit | Constrain angle (15 degrees: Ctrl while rotating); Drawing precision (3 decimal places: at most that many in the property bars' length fields, at least one, trailing zeros dropped; that many in the status bar) |
+| Nodes and Handles | Node size Small, Medium, Large (7, 9, 11 px); Handle size Small, Medium, Large (6, 8, 10 px, Large by default; the Pick tool's selection handles, #1285, see `pick-tool.md`, and the Shape tool's control handle heads: Small 60 %, Medium 80 %, Large their full length, #3003); node shape per type (cusp square, smooth circle, symmetrical diamond); Show curve direction (an arrow after the first node, secondary colour); main colour (selected nodes and handles, blue) and secondary colour (red); Show unselected nodes with fill (on, Ctrl+Shift+G); Pick distance (6 px, nodes and handles) and, on the same row, Object click distance (3 px by default, 0 to 20): how far from an object's outline a click still picks it with the Pick tool and the other tools that pick objects by a click (`App::object_pick_tol`, `pick_drag_tests::the_object_click_distance_is_a_setting`, #1679); control handle arrow heads are as long as the node size (#1643) |
 | clip frame | Auto-center new content: when it lies completely outside the frame (default), always, never; Show lines in empty clip frame frames (on, on screen) |
 | Snapping | Snap to objects, page, guidelines, grid, baseline grid, pixels; snapping radius (10 px); show snap location marks and the screen tip (on); the modes, each with its mark (all on), Select All, Deselect All |
 | Alignment Guides | On or off; guides for the selection as one or each object; edges, centres, the page, equal spacing, equal sizes; margins with offset and inset; colour and line style; Reset (see `live-guides.md`) |
 | Dynamic Guides | On or off; angles (check boxes every 15 degrees, others added by value); distance and angle tip; tick marks, their spacing, snap to ticks; colour and line style; Reset (see `live-guides.md`) |
-| Save | Back up original file before saving (on): `backup_of_<name>` next to the file or in a chosen folder; Auto-backup every 20 minutes (on): each open drawing with unsaved changes as `AutoBackup_of_<name>.tdraw` in `TraceDraw` under the temporary folder or a chosen folder; a session that ended without closing offers them at the next start (see `recovery.md`) |
-| Text | Five tabs (`options_text_tab`). Display: keyboard text increment (1 pt: Ctrl+8 and Ctrl+2 grow and shrink the selected text), text units (points at first, any unit of the rulers: font sizes on the property bar, the Text docker, the table bar, this page and the object information show and take sizes in it, a unit typed with the value counts; sizes are kept in points, `settings.text_units`, `pick_drag_tests::font_sizes_show_and_type_in_the_text_units`, #529), default font and size (of new text: they do not follow the text selected and can be changed while a text is selected; with no text selected the Text tool's bar shows and sets them, `the_default_text_font_does_not_follow_the_selection`, #449), non-printing characters. Paragraph Text: show text frames, hyphenation, hyphenation patterns (Built-in (English) or a `hyph_*.dic` file found in the dictionary folders, shown without `hyph_`; see `text.md`). Fonts: show recently used fonts at the top of the font lists (on) and how many (5, 1 to 20; the lists keep the last 20), font sample size. Spelling: ignore words with numbers, ignore words in capitals (both off, also under Options in the Spell Checker), add corrections to Autocorrect (off: a word replaced in the Spell Checker becomes a replacement row, its row replaced if it has one). Dictionaries: the Hunspell dictionaries found, each with a check box, TraceDraw's dictionaries folder with Open Folder, Also read dictionaries from (a folder, Browse and Clear) and Read Again (see `writing-tools.md`). Autocorrect: see `writing-tools.md`; Text > Writing Tools > Autocorrect opens this tab |
+| Save | Back up original file before saving (on): `backup_of_<name>` next to the file or in a chosen folder; Auto-backup every 20 minutes (on): each open drawing with unsaved changes as `AutoBackup_of_<name>.tdraw` in `TraceDraw` under the temporary folder or a chosen folder; a session that ended without closing offers them at the next start (see `recovery.md`). In a browser and on Android no folder can be chosen: both Browse buttons are greyed with the reason (the page's storage, the app's own folder; #1399) |
+| Text | Five tabs (`options_text_tab`). Display: keyboard text increment (1 pt: Ctrl+8 and Ctrl+2 grow and shrink the selected text), text units (points at first, any unit of the rulers: font sizes on the property bar, the Text docker, the table bar, this page and the object information show and take sizes in it, a unit typed with the value counts; sizes are kept in points, `settings.text_units`, `pick_drag_tests::font_sizes_show_and_type_in_the_text_units`, #529), default font and size (of new text: they do not follow the text selected and can be changed while a text is selected; with no text selected the Text tool's bar shows and sets them, `the_default_text_font_does_not_follow_the_selection`, #449), non-printing characters. Paragraph Text: show text frames, hyphenation, hyphenation patterns (Built-in (English) or a `hyph_*.dic` file found in the dictionary folders, shown without `hyph_`; see `text.md`). Fonts: show recently used fonts at the top of the font lists (on) and how many (5, 1 to 20; the lists keep the last 20), font sample size. Spelling: ignore words with numbers, ignore words in capitals (both off, also under Options in the Spell Checker), add corrections to Autocorrect (off: a word replaced in the Spell Checker becomes a replacement row, its row replaced if it has one). Dictionaries: the Hunspell dictionaries found (and on Windows its own spell checker), each with a check box, TraceDraw's dictionaries folder with Open Folder and Also read dictionaries from (a folder, Browse and Clear), both not in a browser (on Android, Browse picks `.dic` and `.aff` files as Add Files does, #1399), Download dictionary (a language and Download), Add Files and Read Again (see `writing-tools.md`, #1405). Autocorrect: see `writing-tools.md`; Text > Proofing > Autocorrect opens this tab |
 
 ## Customization
 
@@ -62,23 +73,82 @@ mouse button; see `color-palettes.md`).
 
 ## Tools
 
+The page list shows each tool's toolbox icon beside its name, in this
+order: Pick, Eraser, Zoom/Pan, Freehand/Bézier, Shape Recognition,
+Rectangle, Ellipse, Polygon, Graph Paper, Spiral, Table, Dimension,
+Angular Dimension, Connector, Mesh Fill (`OptionsSet::pages`). Each page has the label column
+and controls of the other options pages; every value is the same one the
+tool's property bar edits, so a change on either shows on the other, is
+kept with the tool settings across restarts (`settings.tools`) and is put
+back by Cancel.
+
 Pick (cross hair cursor; treat all objects as filled, on by default:
 unfilled objects are picked inside too; marquee selects touched objects,
 off by default: a marquee or freehand selection takes what it touches and
-Alt only what lies wholly inside), Zoom/Pan (right mouse button of the Zoom tool:
-zoom out or context menu; mouse wheel action), Curve tools (Freehand
+Alt only what lies wholly inside; Ctrl and Shift keys: Traditional, at
+first (Ctrl or Shift keeps a move straight; on a handle Shift works from
+the centre and Ctrl in steps), or Windows standard
+(`settings.pick_windows_keys`: Ctrl held when a move is dropped leaves
+the original, what moved being a copy, and no longer keeps the move
+straight, Shift does; on a scale, rotate or skew handle Ctrl and Shift
+trade places)), Eraser (thickness, round or square nib; Auto-reduce
+nodes of resulting objects, off: what the eraser leaves loses the nodes
+it does not need, the curve staying within 2 % of the nib width,
+`settings.eraser_reduce_nodes`), Zoom/Pan (Zoom tool section: right mouse button of the Zoom tool:
+zoom out or context menu; Zoom relative to 1:1, on: zoom 100 % is the
+real size at the calibrated screen resolution, off: 96 pixels per inch
+whatever the calibration (`settings.zoom_relative_1to1`); Center mouse
+when zooming with the mouse wheel, off: a wheel notch first brings the
+spot under the pointer to the middle of the canvas and moves the pointer
+there (not in the browser, which cannot move it), then zooms about the
+middle, plain wheel or Ctrl+wheel as the mouse wheel action says
+(`settings.wheel_zoom_centers`); mouse wheel action; Calibrate Zoom... opens the ruler
+calibration on the Display page; Pan tool section: right mouse button of
+the Pan tool, zoom out or context menu (at first,
+`settings.pan_right_click_out`)), Freehand/Bézier (Freehand
 smoothing, 0 to 100, 50 by default; Join and close within, 1 to 50
-screen pixels, 5 by default; see `curve-tools.md`), Rectangle (Rectangle
+screen pixels, 5 by default; Corner threshold, 0 (off, at first) to 10:
+a freehand stroke keeps a cusp where it turns by more than 180 - 12 x
+the value degrees; Straight line threshold, 0 (off, at first) to 10
+screen pixels: a stretch of at least 20 pixels drawn within that many
+pixels of straight becomes a line (`settings.curves`); Graphics tablet: pen pressure sets the
+width of Freehand and Brush Strokes drags, on; on Android, Ignore the
+hand while drawing with a pen, on (palm rejection, `android.md`); see
+`curve-tools.md` and `pen-pressure.md`), Shape Recognition (recognition and smoothing levels,
+off to highest, as on the tool's property bar), Rectangle (Rectangle
 corners: style, the four sizes, Edit corners together; Scale corners:
 Relative corner scaling, off by default so that new rectangles keep
 their corner size when resized; see `shape-tools.md`),
-Ellipse (ellipse, pie or arc and its angles), Polygon (points, sharpness),
-Spiral (revolutions, symmetrical or logarithmic), Graph Paper and Table
-(rows, columns), Eraser (thickness, round or square nib).
+Ellipse (ellipse, pie or arc and its angles; Direction,
+counterclockwise at first or clockwise, which swaps the starting and
+ending angles of new pies and arcs, the same setting as the property
+bar's direction button, `settings.ellipse_clockwise`), Polygon (points, sharpness),
+Graph Paper (rows, columns), Spiral (revolutions, symmetrical or
+logarithmic; Expansion, 1 to 100, 100 at first, enabled for logarithmic
+spirals and also on the property bar: the radius grows as
+(e^(kt) - 1) / (e^k - 1) with k = expansion / 25, so 1 is almost even;
+a small preview draws the spiral these values make,
+`settings.spiral_expansion`), Table (rows, columns), Dimension (the label of new
+dimensions: precision, style (Decimal or Fractional: a length in
+halves, quarters and so on down to 64ths as the precision rises,
+`DimensionStyle::fractional`), units, show units, prefix, suffix; dimensions
+already drawn keep theirs, unlike the property bar, which also changes
+the selected dimensions; see `dimensions.md`), Angular Dimension
+(precision, show units (degrees), prefix and suffix of new angular
+dimensions, `settings.angular_dimension`; the Angular Dimension tool's
+property bar edits these, the other dimension tools' bar the linear
+ones), Connector (corner radius of new rounded connectors, 0 to 1000
+mm, 3 mm by default; Route distance from object, 0 to 100 mm, 0 at
+first: new right-angle connectors run that far straight out of the side
+their anchor is on before they turn, kept with each connector as it
+follows its objects, `settings.connector_gap`; Use geometric anchor
+points as snapping points, off: an object's own nodes, up to 64, are
+anchors too, `settings.connector_geometric_anchors`), Mesh Fill
+(columns and rows of a new mesh, 1 to 50, 2 by 2 by default).
 
 ## Global and Workspaces
 
-Global > General: user interface language; check for updates at start (on, see `updates.md`); Reset all settings... (asks
+Global > General: user interface language (System language first, then every language; see `language.md`); check for updates at start (desktop, asked at first start, see `updates.md`); Reset all settings... (asks
 first, then puts every preference back to how TraceDraw comes, keeping
 the recent drawings, the last folder and the window's size; drawings are
 not touched). Global > File Locations: where the preferences and
@@ -121,24 +191,61 @@ for the next session (#617). Export for Web and Export for Office keep
 their own presets and never change these
 (`pick_drag_tests::the_export_dialog_starts_with_the_last_exports_choices`).
 
-Imported objects go (File > Import, Ctrl+I): where the file has them
-(the default), or centred in the middle of the view; the move is part of
-the import's undo step.
+Export without showing the options (use the last ones)
+(`skip_export_dialog`, off): the Export dialog's "Do not show this
+dialog again", kept here so it can be found and turned off once the
+dialog no longer shows; on, File > Export writes the file right after
+the Save dialog with the last options (see `export.md`, "Skipping the
+options"). Until 0.42.1 the dialog's check box was this setting itself,
+so a tick that was then cancelled stayed, and this page did not show it:
+preferences saved before are brought back to off once (upgrade 7,
+`settings::tests::older_preferences_show_the_export_options_again_once`).
+
+Place imported files with the import cursor (`import_with_cursor`, on):
+after File > Import (Ctrl+I, the toolbar button or Import on the
+drawing's right-click menu) and the file chosen, nothing comes in yet;
+the pointer becomes a corner bracket. A click puts the top left corner
+of what the file holds there, at its own size; a drag draws the box it
+is fitted in, its proportions kept, from the box's top left corner;
+Space or Enter centres it on the page; Esc or a right click calls the
+import off. The move or the size is part of the import's undo step. An
+import that first asks a question (how to read a PDF's text, a
+password) is placed once the question is answered
+(`import_place.rs`, `pick_drag_tests::an_import_waits_for_a_click_and_its_corner_goes_there`,
+`pick_drag_tests::an_import_is_sized_by_a_drag_centred_by_space_or_called_off`, #1936).
+
+Several files can be picked at once in the Import dialog (discussion
+#2695): they come in one after another, in the order picked. With the
+import cursor each waits for its own click, drag or Space once the one
+before is in (and any question it asked is answered); Esc or a right
+click calls off the one waiting and those after it. Without the cursor
+they all come in straight away. Each file is its own undo step, and
+once the last is in, everything the files brought is selected together
+(`App::import_picked_many`, `App::advance_import_queue`,
+`pick_drag_tests::several_imported_files_are_placed_one_after_another`,
+`pick_drag_tests::several_imported_files_come_in_at_once_without_the_cursor`).
+
+Imported objects go (File > Import with the import cursor off, Ctrl+I):
+where the file has them (the default), or centred in the middle of the
+view; the move is part of the import's undo step. Files dropped or
+pasted come in at once as before.
+
+The drawing's right-click menu (on the page with nothing selected) has
+Import... under Paste and Select All (#1931).
 
 Saving .cdr files: the Version Save As starts at and new drawings are
-saved in (`cdr_version`, 27 by default, 14 to 27; a value out of range
+saved in (`cdr_version`, 27 by default, 7 to 27; a value out of range
 from a file is brought into it); a drawing opened from (or saved to) a
-`.cdr` file keeps its own version for Save and Save As when TraceDraw
-saves that version, and a drawing started from a template takes this one
+`.cdr` file keeps its own version for Save and Save As, and a drawing started from a template takes this one
 (`files.md`, #613).
 Save new drawings as .cdr files (`save_new_as_cdr`, off): Save As
 starts at the CDR type for a drawing without a file (#613).
 
 ### Bitmap Tracing
 
-Quick Trace uses (`tracing`): one of the eight presets (Clipart by
-default). Every trace starts with: Remove background (on) and Delete
-original image (off); Quick Trace and the Trace dialog's presets take
+Automatic trace uses (`tracing`): one of the nine presets (Optimized by
+default, which chooses the detail for each picture; Clipart before). Every trace starts with: Remove background (on) and Delete
+original image (off); Automatic trace and the Trace dialog's presets take
 them, and the dialog can still change them for one trace.
 
 ### Warnings
@@ -150,6 +257,11 @@ Show a message (`warnings`, all on):
   button that opens a new issue for the file.
 - When an opened drawing uses fonts that are not installed: the message
   names them (the text shows in a similar font and keeps its font name).
+- Ask which installed font draws each missing one: the Missing Fonts
+  dialog (`behavior/missing-fonts.md`) instead of that message. A choice
+  of its own, so the message's "Do not show this message again" ticked
+  before the dialog existed does not silence the dialog (#1243). With it
+  off, the status line's note of the fonts opens this page when clicked.
 - Before an item is removed from the Shelf: Remove or Cancel.
 
 Both parts after opening share one message. Each message has "Do not show
@@ -160,9 +272,10 @@ message never replaces another dialog that is open.
 ### Pages with no equivalent
 
 Pen settings (pressure curves for tablets), Tablet Mode, VBA and
-plug-ins have no page: TraceDraw reads no pen pressure, has its own
-workspaces instead of a tablet mode, scripts in JavaScript (Scripts
-panel) and hosts no plug-ins.
+plug-ins have no page: a pen's pressure sets widths as it comes, with
+one checkbox under Curve tools (see `pen-pressure.md`); TraceDraw has
+its own workspaces instead of a tablet mode, scripts in JavaScript
+(Scripts panel) and hosts no plug-ins.
 
 ## Interface size
 
@@ -179,8 +292,8 @@ it), applied when the slider is let go.
   rows. 100 % is a zoom of 1 over the system's scaling on every system:
   one interface point per pixel at the system's scaling (`BASE_ZOOM`).
   It was 0.8 on macOS and in the browser and 12 / 13 on Windows, to make
-  the whole interface as compact as the reference drawing program; what
-  made that program compact was its small button size, which the bars
+  the whole interface compact; what
+  made it compact was its small button size, which the bars
   offer (Default Button Size: Small, also the size at first, see `toolbars.md`), so
   the text and the menus stay at the system's size (#1, #229).
 - The size is a zoom factor over the monitor's own scaling, so text stays
@@ -190,6 +303,32 @@ it), applied when the slider is let go.
 - Preferences written before sizes were relative (`ui_scale`, an absolute
   size) are ignored: the size starts at 100 % (`ui_size`).
 - Ctrl+plus and Ctrl+minus zoom the drawing, never the interface.
+
+## View when a drawing opens
+
+Options > Display > View when a drawing opens (`open_view` in the
+preferences) sets the view of every drawing opened or made, once its
+window first shows it (#1134):
+
+| Choice | View |
+|---|---|
+| Fit to page (default) | the whole page (in Multipage View, all the pages), as before |
+| Fit to objects | the objects of the first page with a 5 % margin, as View > Zoom to Fit; an empty page stays fitted |
+| Page width | the page's width across the window, the page centred down it |
+| Page height | the page's height down the window |
+| 100% (real size) | real size (see Ruler calibration), the middle of the page in the middle of the window |
+| Zoom level | the zoom typed beside the list (`open_zoom_percent`, 1 to 10000 %, 100 at first; a value that is not a number gives 100), the middle of the page in the middle of the window (#1266) |
+| As saved | the page, the point in the middle of the window and the zoom the drawing had when it was last saved |
+
+Saving a TraceDraw file keeps its view in the file (`saved_view`: the
+page index, the middle point in mm and the zoom in percent of real
+size). Keeping it is no undo step and does not mark the drawing changed,
+and undo and redo leave it alone. A file saved without it (an older
+file, another format, a page that is gone, numbers that are not finite
+or a zoom of 0) opens fitted to the page. In Multipage View As saved
+shows the saved page and keeps the pages fitted.
+`pick_drag_tests::a_drawing_opens_in_the_view_chosen_in_options`,
+`engine::tests::the_saved_view_stays_out_of_the_history`.
 
 ## Ruler calibration
 
@@ -204,13 +343,22 @@ per inch are that resolution over the interface's zoom (96 at 100 %),
 so the interface size never changes real sizes. Reset puts
 96 back.
 
-## Document Options
+## Document Setup
 
 General (rendering resolution; Fill open curves, off: an open curve's
 fill shows only in its closed subpaths, on screen, in hit testing and in
-vector exports; duplicate distance), Page Size, Layout, Background, Bleed,
+vector exports, and an ellipse made an arc (not a pie) is an open curve
+and shows none; on, the fill runs across the open ends and a click there
+picks the object; duplicate distance), Page Size, Layout, Background, Bleed,
 Rulers, Grid, Guidelines (see `rulers-grid-guidelines.md`). Save as
-Default keeps the grid, ruler and guideline settings for new drawings.
+Default keeps the grid, ruler and guideline settings and the page spacing
+for new drawings.
+
+Layout has Page spacing, a number field in the document's units (0 to
+1000 mm, 30 mm at first): the space between the pages of the Multipage
+View, a document property saved with the drawing, each change one undo
+step (see `multipage-view.md`,
+`settings::tests::the_page_spacing_is_saved_as_a_default_for_new_drawings`).
 
 ## Checks
 
@@ -241,12 +389,32 @@ white too (white stood for the theme's colour, so picking it changed
 nothing, #530, `app::tests::a_white_desktop_picked_is_white`); Reset goes
 back to the theme's. The button with a moon (light themes) or a sun (dark
 themes) at the right end of the status bar switches to Dark or to
-Light. The choice is kept in the preferences and applies at once. The
-system's dark mode (the browser's `prefers-color-scheme` in the browser
-build) does not change the theme: egui's own theme preference is pinned
+Light. The choice is kept in the preferences and applies at once. Until
+a theme is picked, the desktop's dark mode gives Dark and its light mode
+Light (#2748, `settings::chosen_theme_with`), and the Theme list shows
+the one in use; the desktop is read as for high contrast
+(`system_prefs`): Windows' `AppsUseLightTheme`, macOS' dark appearance,
+the desktop portal's `color-scheme` on Linux (any package, the AppImage
+too), else GNOME's `color-scheme` or a GTK theme named dark, KDE's
+colour scheme named dark, and the browser's `prefers-color-scheme`
+(`system_prefs::tests::the_desktop_dark_mode_is_read`,
+`settings::tests::a_dark_desktop_gives_the_dark_theme_until_one_is_picked`).
+Once a theme is picked, the system's dark mode does not change it:
+egui's own theme preference is pinned
 and both of its style slots hold the chosen theme's visuals
 (`App::setup_context`, `ui::apply_theme` each frame;
 `ui::tests::the_system_dark_mode_does_not_change_the_theme`).
+The window's own title bar and frame follow the theme too, not the
+system's setting: a dark theme (Medium Dark, Dark, a dark High Contrast)
+asks the window for a dark frame, a light one for a light frame, at once
+when the theme changes (`ui::apply_theme` sends the window's theme and
+turns off egui's own sync, which follows the pinned Light preference and
+asked for a light frame;
+`ui::tests::the_window_frame_follows_the_theme`, #1920). On Windows 10
+(October 2018 update and later) and Windows 11 this sets the title bar's
+immersive dark mode attribute and redraws the frame (`vendor/README.md`);
+macOS and Linux desktops take it as the window's appearance or theme
+variant where they offer one.
 
 ## Coloured tool icons
 
@@ -255,29 +423,50 @@ toolbox, its flyouts and the Hints panel draw each tool in its group's
 colour (pick blue, shape editing purple, crop red, zoom teal, curves
 green, drawing orange, shapes light blue, text grey, dimensions slate,
 connectors sea green, effects magenta, transparency indigo, eyedroppers
-ochre, fills orange, outlines navy), 35 % lighter on dark themes. The
+ochre, fills orange, outlines navy), 35 % lighter on dark themes: the
+hue is the icon's ink, the live point's blue stays (see `icons.md`). The
 High Contrast theme keeps one icon colour.
 
 ## Desktop accessibility settings
 
-Read once at start-up (`system_prefs.rs`, with the `reg` tool on
-Windows; elsewhere nothing is read and the defaults apply):
+The system's text size and contrast setting, followed on every platform
+(#1412, `system_prefs.rs`). A background thread reads them at start
+(the first frame waits for that reading 0.3 s at most) and again every
+3 s; in the browser a page timer does. A frame only takes the last
+reading, and a change asks for a frame, so the interface follows the
+system within seconds and no frame waits for the system:
 
-- Text size (Windows Settings > Accessibility > Text size, the
-  `TextScaleFactor` value, 100 to 225 %): with "Grow with the desktop
-  text size" (Appearance, on by default) the interface size is
-  multiplied by it, up to 400 %. The option shows the size read.
-- High contrast (the `Flags` value of the HighContrast key, bit 1):
-  with "Use high contrast while the desktop has a high contrast theme
-  on" (on by default) the High Contrast theme is used whatever theme is
-  picked. Its colours are the desktop's (`Control Panel\Colors`:
-  Window, WindowText, Hilight, HilightText, ButtonFace, ButtonText,
-  GrayText, HotTrackingColor): panels in the button face colour, fields
-  and menus in the window colour, text in the button text colour,
-  disabled text in the grey text colour, hovered and picked rows in the
-  highlight colour with the highlight text colour on them, links and
-  focus frames in the hot-track colour. Picked by hand, or when a colour
-  cannot be read, the classic black theme's colours are used.
+| Platform | Text size | High contrast |
+|---|---|---|
+| Windows | Settings > Accessibility > Text size (`TextScaleFactor`, 100 to 225 %, read with `reg`) | the high contrast themes (`Flags` of the HighContrast key, bit 1), with their colours |
+| macOS | none: macOS has no system text size for programs of this kind, so the option is greyed and its tip says to use Interface size | Accessibility > Display > Increase contrast, asked of AppKit (`NSWorkspace.accessibilityDisplayShouldIncreaseContrast`) through `osascript`, with the dark or light appearance choosing the colours |
+| Linux, GNOME and its relatives | `gsettings get org.gnome.desktop.interface text-scaling-factor` | the desktop portal's `org.freedesktop.appearance contrast` (read through `gdbus`, 1 s at most), else `org.gnome.desktop.a11y.interface high-contrast` or a `HighContrast` theme |
+| Linux, KDE | `forceFontDPI` of `kcmfonts` over 96, else the general font's size in `kdeglobals` over 10 points | the portal's contrast, else a high contrast colour scheme in `kdeglobals` |
+| Android | Settings > Display > Font size (the configuration's font scale; a change reaches the running app) | Android 14's contrast setting at medium or high, or high contrast text |
+| Browser | the page's default font size (the browser's font size setting) over 16 px | `prefers-contrast: more` or `forced-colors: active` |
+
+- Text size: with "Grow with the desktop text size" (Appearance, on by
+  default) the interface size is multiplied by it (1 to 2.25, smaller
+  sizes count as 1), up to 400 %. The option shows the size read; where
+  none can be read it is greyed and its tip says why.
+- High contrast: with "Use high contrast while the desktop has a high
+  contrast theme on" (on by default) the High Contrast theme is used
+  whatever theme is picked; greyed with the reason where the setting
+  cannot be read. On Windows its colours are the desktop's
+  (`Control Panel\Colors`: Window, WindowText, Hilight, HilightText,
+  ButtonFace, ButtonText, GrayText, HotTrackingColor): panels in the
+  button face colour, fields and menus in the window colour, text in the
+  button text colour, disabled text in the grey text colour, hovered and
+  picked rows in the highlight colour with the highlight text colour on
+  them, links and focus frames in the hot-track colour. Elsewhere,
+  where the system names no colours, a system with dark windows gets
+  the classic black theme's colours and one with light windows the white
+  theme's (black text on white, a purple highlight, dark blue links).
+  Picked by hand, or when a colour cannot be read, the classic black
+  theme's colours are used. When the colours change while the editor
+  runs, the interface takes them at once.
+- Tests read nothing from the system running them
+  (`system_prefs::tests`: the recorded outputs of each platform).
 
 ## Where the preferences are kept
 

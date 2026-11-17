@@ -2,9 +2,18 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>TraceDraw: open-source vector editor</title>
   <meta name="description" content="TraceDraw is an open-source vector editor written in Rust that opens .cdr files, here running in the browser. Alpha.">
+  <!-- Installable as an app on tablets and desktops (web/manifest.webmanifest,
+       web/sw.js; docs/behavior/web.md, "Installing on a tablet"). -->
+  <link rel="manifest" href="manifest.webmanifest">
+  <meta name="theme-color" content="#1a3158">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="TraceDraw">
+  <link rel="apple-touch-icon" href="icon-192.png">
   <link rel="icon" type="image/png" href="icon-256.png">
   <!-- The script and the module start downloading together, not the module
        after the script has run. -->
@@ -12,10 +21,33 @@
   <link rel="preload" href="./tracedraw_bg.wasm" as="fetch" type="application/wasm" crossorigin>
   <style>
     html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #d4d4d4; }
-    canvas#tracedraw { position: absolute; inset: 0; width: 100%; height: 100%; outline: none; }
+    /* A drag with the button held, or a finger held down, is the editor's
+       (a marquee, a move), not the browser's text selection: without this
+       Safari on iPad selected the whole page while dragging on the canvas
+       and offered its callout (#1654). The loading text stays selectable
+       so an error message can be copied. */
+    html, body, canvas#tracedraw {
+      user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
+    }
+    #loading { user-select: text; -webkit-user-select: text; }
+    /* The canvas keeps clear of a tablet's rounded corners, camera notch
+       and status bar when the page fills the screen as an installed app
+       (viewport-fit=cover): eframe sizes the editor from the canvas's
+       box, so the editor's bars stay where a finger can reach them. */
+    /* A finger or a pen on the canvas draws, picks and pans in the
+       editor: the browser neither scrolls nor zooms the page under it
+       nor takes an Apple Pencil for handwriting (#1655). */
+    canvas#tracedraw {
+      position: absolute; outline: none; touch-action: none;
+      top: env(safe-area-inset-top, 0px); left: env(safe-area-inset-left, 0px);
+      width: calc(100% - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px));
+      height: calc(100% - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
+    }
     #loading {
       position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center;
-      justify-content: center; gap: 14px; box-sizing: border-box; padding: 16px; overflow: auto;
+      justify-content: center; gap: 14px; box-sizing: border-box; overflow: auto;
+      padding: calc(16px + env(safe-area-inset-top, 0px)) calc(16px + env(safe-area-inset-right, 0px))
+        calc(16px + env(safe-area-inset-bottom, 0px)) calc(16px + env(safe-area-inset-left, 0px));
       font: 13px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; color: #3a3a3a; text-align: center;
     }
     #splash {
@@ -30,6 +62,7 @@
     }
     #loading a { color: #0b5cad; }
     #loading .links a { white-space: nowrap; }
+    #loading .notice { font-size: 12px; color: #5a6b80; }
     #loading-error { color: #a1260d; font-weight: 600; }
   </style>
 </head>
@@ -81,23 +114,45 @@
         <text id="loading-status" x="44" y="315" font-size="13" fill="#c9d7ec">Loading TraceDraw...</text>
         <rect x="44" y="326" width="552" height="3" rx="1.5" fill="#fff" fill-opacity="0.12"/>
         <rect id="loading-bar" x="44" y="326" width="0" height="3" rx="1.5" fill="#5caeff"/>
-        <text x="44" y="357" font-size="11.5" fill="#8fa3c0">Copyright &#169; 2026 Ighor Toth and the TraceDraw contributors</text>
+        <text x="44" y="357" font-size="11.5" fill="#8fa3c0">Copyright &#169; 2026 TraceDraw members and contributors</text>
         <text x="596" y="357" font-size="11.5" fill="#8fa3c0" text-anchor="end">v@VERSION@</text>
       </g>
       <rect x="0.5" y="0.5" width="639" height="379" fill="none" stroke="#fff" stroke-opacity="0.157"/>
     </svg>
     <p id="loading-error" role="alert" hidden></p>
     <p><b>TraceDraw</b> <span class="alpha">alpha</span>: open-source vector editor that opens .cdr files. Written in Rust, free under the MIT or Apache-2.0 license.</p>
+    <p class="notice">TraceDraw is an independent project, not affiliated with, endorsed by or sponsored by Corel Corporation or Alludo. CorelDRAW is a registered trademark of Corel Corporation. .cdr support is implemented independently, for interoperability.</p>
     <p>Works best in a desktop browser with a mouse and keyboard. On a tablet choose Window &gt; Workspace &gt; Touch; a phone screen is too small for editing.</p>
     <p class="links">
-      <a href="https://github.com/igtoth/tracedraw/releases/latest">Download the desktop app</a> &middot;
-      <a href="https://github.com/igtoth/tracedraw">Source code</a> &middot;
-      <a href="https://github.com/igtoth/tracedraw/issues">Report a problem</a>
+      <a href="https://github.com/tracedraw/tracedraw/releases/latest">Download the desktop app</a> &middot;
+      <a href="https://github.com/tracedraw/tracedraw">Source code</a> &middot;
+      <a href="https://github.com/tracedraw/tracedraw/issues">Report a problem</a>
     </p>
     <noscript><p>TraceDraw needs JavaScript, WebAssembly and WebGL 2 to run in the browser.</p></noscript>
   </div>
   <script type="module">
     import init from "./tracedraw.js";
+
+    // Files the system opens with the installed app (its file manager's
+    // Open with, #646; manifest.webmanifest file_handlers): read here and
+    // queued for the editor, which opens each in a tab of its own
+    // (web.rs, take_launched_files). launch_handler focus-existing sends
+    // them to the window already open.
+    window.tracedrawLaunched = [];
+    if ("launchQueue" in window) {
+      window.launchQueue.setConsumer(async (params) => {
+        for (const handle of params.files || []) {
+          try {
+            const file = await handle.getFile();
+            const bytes = new Uint8Array(await file.arrayBuffer());
+            window.tracedrawLaunched.push({ name: file.name, bytes });
+          } catch (e) {
+            console.warn("TraceDraw: a launched file could not be read: " + e);
+          }
+        }
+        window.dispatchEvent(new Event("tracedraw-launched"));
+      });
+    }
 
     const status = document.getElementById("loading-status");
     const bar = document.getElementById("loading-bar");
@@ -168,6 +223,20 @@
     }
 
     start();
+
+    // The service worker (sw.js) keeps this deploy's page, script and
+    // module, so the editor starts without a network once it has been
+    // opened once and the page can be installed as an app. Registered once
+    // the page has loaded, so it does not compete with the module's
+    // download; a page served from disk, or over plain http away from
+    // localhost, gets none and works as before.
+    if ("serviceWorker" in navigator) {
+      window.addEventListener("load", () => {
+        navigator.serviceWorker.register("sw.js").catch((e) => {
+          console.warn("TraceDraw: no service worker: " + e);
+        });
+      });
+    }
   </script>
 </body>
 </html>

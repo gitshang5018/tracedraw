@@ -73,6 +73,17 @@ pub const BORDER_DASHES: [(&str, &[f64]); 3] = [
     ("table.border_dotted", &[1.0, 1.5]),
 ];
 
+/// How a click of the Pick or the Shape tool chooses cells of a table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CellPick {
+    /// The cell clicked alone.
+    One,
+    /// The cell clicked added to the chosen ones, or taken from them.
+    Toggle,
+    /// Every cell from the active one to the cell clicked.
+    Range,
+}
+
 impl App {
     /// The table being edited with the Table tool, else the selected one,
     /// with its transform.
@@ -143,6 +154,36 @@ impl App {
 
     /// Ctrl+click: add the cell under the point to the selection, or take
     /// it out (the last cell stays).
+    /// A click of the Pick or the Shape tool on a table that chooses
+    /// cells, at page point `p`: one cell, one more or less (`Toggle`),
+    /// or the block from the active cell (`Range`, with a cell of this
+    /// table chosen, else one cell). The table becomes the selection, so
+    /// the property bar has the cells' borders, fill, merge and split.
+    /// False when no table is under `p` (#2434, #2436).
+    pub fn pick_table_cell(&mut self, p: Point, how: CellPick) -> bool {
+        let Some(id) = self.hit_test(p) else {
+            return false;
+        };
+        let Some(tf) = self
+            .doc()
+            .shape(id)
+            .ok()
+            .filter(|(_, s)| matches!(s.kind, ShapeKind::Table(_)))
+            .map(|(_, s)| s.transform)
+        else {
+            return false;
+        };
+        let local = tf.inverse() * p;
+        let chosen = self.table_edit.as_ref().is_some_and(|e| e.shape == id);
+        match how {
+            CellPick::Toggle => self.table_toggle_cell(id, local),
+            CellPick::Range if chosen => self.table_range_to(id, local),
+            CellPick::One | CellPick::Range => self.table_click(id, local, false),
+        }
+        self.select(vec![id]);
+        true
+    }
+
     pub fn table_toggle_cell(&mut self, id: ShapeId, local: Point) {
         let Some(t) = self.table_of(id) else {
             return;
@@ -723,6 +764,43 @@ impl App {
         any
     }
 
+    /// A palette colour goes to the chosen cells of a table rather than
+    /// to the whole table: with the Table tool, and with the Pick or the
+    /// Shape tool when the table whose cells they chose is the selection
+    /// (#2707).
+    pub fn palette_goes_to_cells(&self) -> bool {
+        let Some(e) = self.table_edit.as_ref().filter(|e| !e.cells.is_empty()) else {
+            return false;
+        };
+        self.tool == Tool::Table || self.selection == [e.shape]
+    }
+
+    /// A palette's outline colour (right click) for the chosen cells:
+    /// every border of each takes `color`, keeping the width and style
+    /// the bar shows; `None` (No Color) takes the borders away. False when
+    /// no cell is chosen (#2707).
+    pub fn table_set_cell_outline_color(&mut self, color: Option<tracedraw_core::Color>) -> bool {
+        let Some(e) = self.table_edit.clone().filter(|e| !e.cells.is_empty()) else {
+            return false;
+        };
+        let Some(mut t) = self.table_of(e.shape) else {
+            return false;
+        };
+        let edge = match color {
+            Some(c) => {
+                let mut s = self
+                    .table_shown_border()
+                    .unwrap_or_else(|| Stroke::hairline(c));
+                s.color = c;
+                EdgeBorder::Stroke(Box::new(s))
+            }
+            None => EdgeBorder::None,
+        };
+        t.apply_borders(&e.cells, BorderSet::All, edge);
+        self.set_table_as(e.shape, t, "Cell Borders");
+        true
+    }
+
     /// The fill of the active cell (its own, else the table's).
     pub fn table_active_fill(&self) -> Option<Fill> {
         let e = self.table_edit.as_ref()?;
@@ -856,12 +934,14 @@ impl App {
             self.text_underline,
             self.text_align,
         );
+        let strike = self.text_strikethrough;
         self.cells_apply_style(move |sp| {
             sp.font_family = font.clone();
             sp.size_pt = size;
             sp.bold = bold;
             sp.italic = italic;
-            sp.underline = underline;
+            sp.underline = underline.into();
+            sp.strikethrough = strike.into();
         });
         let Some(e) = self.table_edit.clone() else {
             return;
@@ -1049,6 +1129,103 @@ mod tests {
         let id = app.new_shape(ShapeKind::Table(t)).unwrap();
         app.select(vec![id]);
         (app, id)
+    }
+
+    /// The Pick and the Shape tool choose cells of a table: one cell, one
+    /// more or less, a block from the active cell; a point off any table
+    /// chooses nothing and says so (#2434, #2436).
+    #[test]
+    fn the_pick_and_shape_tools_choose_cells_of_a_table() {
+        let (mut app, id) = app_with_table();
+        app.tool = Tool::Pick;
+        app.select(Vec::new());
+        assert!(app.pick_table_cell(at(1, 2), CellPick::One));
+        assert_eq!(app.selection, vec![id]);
+        assert_eq!(cells(&app), vec![(1, 2)]);
+        // One more, then that one taken away again.
+        assert!(app.pick_table_cell(at(0, 0), CellPick::Toggle));
+        assert_eq!(cells(&app), vec![(0, 0), (1, 2)]);
+        assert!(app.pick_table_cell(at(0, 0), CellPick::Toggle));
+        assert_eq!(cells(&app), vec![(1, 2)]);
+        // A block from the active cell.
+        app.tool = Tool::Shape;
+        assert!(app.pick_table_cell(at(0, 0), CellPick::One));
+        assert!(app.pick_table_cell(at(1, 1), CellPick::Range));
+        assert_eq!(cells(&app), vec![(0, 0), (0, 1), (1, 0), (1, 1)]);
+        // With no cell chosen yet, a block is the cell clicked.
+        app.table_edit = None;
+        assert!(app.pick_table_cell(at(2, 3), CellPick::Range));
+        assert_eq!(cells(&app), vec![(2, 3)]);
+        // Off the table: nothing.
+        assert!(!app.pick_table_cell(Point::new(500.0, 500.0), CellPick::One));
+    }
+
+    /// A palette click goes to the cells chosen with the Pick tool
+    /// (Ctrl+click) or the Shape tool, not to the whole table nor to its
+    /// first cell: left fills them, right colours their borders (#2707).
+    #[test]
+    fn a_palette_colour_goes_to_cells_chosen_with_the_pick_or_shape_tool() {
+        use tracedraw_core::Color;
+        let (mut app, id) = app_with_table();
+        let filled = |app: &App| -> Vec<(u32, u32, Option<Fill>)> {
+            let t = table(app);
+            let mut v: Vec<_> = t
+                .cells
+                .iter()
+                .filter(|c| c.fill.is_some())
+                .map(|c| (c.row, c.col, c.fill.clone()))
+                .collect();
+            v.sort_by_key(|c| (c.0, c.1));
+            v
+        };
+        let blue = Fill::Solid(Color::rgb8(0, 0, 200));
+        app.tool = Tool::Pick;
+        app.select(Vec::new());
+        assert!(app.pick_table_cell(at(1, 2), CellPick::One));
+        app.apply_fill(blue.clone());
+        assert_eq!(filled(&app), vec![(1, 2, Some(blue.clone()))]);
+        assert_eq!(table(&app).cell_fill, Fill::None, "not the whole table");
+        // The Shape tool, two cells.
+        let green = Fill::Solid(Color::rgb8(0, 160, 0));
+        app.tool = Tool::Shape;
+        assert!(app.pick_table_cell(at(0, 0), CellPick::One));
+        assert!(app.pick_table_cell(at(2, 3), CellPick::Toggle));
+        app.apply_fill(green.clone());
+        assert_eq!(
+            filled(&app),
+            vec![
+                (0, 0, Some(green.clone())),
+                (1, 2, Some(blue)),
+                (2, 3, Some(green))
+            ]
+        );
+        // Right click: the chosen cells' borders take the colour.
+        let red = Color::rgb8(200, 0, 0);
+        app.apply_outline_color(Some(red));
+        let t = table(&app);
+        let c = &t.cells[t.cell_index(2, 3).unwrap()];
+        for b in [
+            &c.borders.top,
+            &c.borders.left,
+            &c.borders.bottom,
+            &c.borders.right,
+        ] {
+            assert!(
+                matches!(b, EdgeBorder::Stroke(s) if s.color == red),
+                "{b:?}"
+            );
+        }
+        assert_eq!(
+            t.cells[t.cell_index(1, 1).unwrap()].borders.top,
+            EdgeBorder::Table
+        );
+        assert_eq!(t.border, Some(Stroke::hairline(Color::BLACK)));
+        // The cells let go: the colour goes to the table as before, no
+        // cell takes it.
+        let before = filled(&app);
+        app.table_edit = None;
+        app.apply_fill(Fill::Solid(Color::WHITE));
+        assert_eq!(filled(&app), before);
     }
 
     /// Centre of cell (r, c).

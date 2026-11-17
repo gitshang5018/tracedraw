@@ -1,5 +1,7 @@
 # Opzioni di personalizzazione
 
+> *Traduzione automatica: questa pagina può essere meno aggiornata della versione inglese.*
+
 [[menu.tools > menu.tools.options > menu.tools.options_customization]]
 imposta l'aspetto dell'interfaccia, le tue scorciatoie da tastiera, quali
 barre sono visibili e come si comporta la tavolozza dei colori.
@@ -13,6 +15,10 @@ barre sono visibili e come si comporta la tavolozza dei colori.
 - [[options.ui_shadows]] (meno ombre aiutano le schede grafiche più lente).
 - [[options.colored_icons]]: ogni gruppo di strumenti riceve un colore
   proprio.
+- [[options.docker_tabs_icons_only]]: le schede dei pannelli ai lati della
+  finestra mostrano solo l'immagine, con il nome nel suggerimento.
+  Disattivato, mostrano immagine e nome, e una colonna con più schede di
+  quante ne entrino scorre.
 - [[options.ui_size]]: quanto sono grandi menu, barre, icone e pannelli,
   rispetto al ridimensionamento che il sistema dà al monitor (100% in
   partenza). [[options.reset_to_default]] torna al 100%. La dimensione
@@ -44,6 +50,15 @@ rimuove, e il ripristino dei valori predefiniti le rimuove tutte. I tasti
 degli strumenti sono una lettera o <kbd>Shift</kbd> e una lettera. Vedi
 [Scorciatoie da tastiera](../reference/keyboard-shortcuts.md).
 
+Un comando può avere più scorciatoie: un nuovo tasto si aggiunge a quelli che
+ha (un tasto predefinito continua a funzionare accanto), e ogni tasto ha il suo
+pulsante di eliminazione. Anche i pulsanti delle barre che eseguono un comando
+di menu (Nuovo, Apri, Salva, Annulla, Zoom avanti e altri) accettano
+scorciatoie, gli stessi tasti del comando di menu, così come le righe che i
+menu mostrano solo a volte. Un elenco **Pulsanti delle barre degli strumenti**
+contiene tutti i pulsanti delle barre Standard e Zoom: trascinate da lì nella
+barra un pulsante che avete tolto.
+
 ## Barre dei comandi {#command-bars}
 
 ![La pagina Barre dei comandi delle opzioni di personalizzazione](../../img/customize-customization-command-bars.png)
@@ -64,6 +79,9 @@ degli strumenti sono una lettera o <kbd>Shift</kbd> e una lettera. Vedi
 
 - [[options.palette_auto_update]] e [[options.palette_show_document]]
   (entrambi attivi).
+- [[options.palette_position]] (In alto, In basso, A sinistra, A destra o
+  Mobile) della tavolozza predefinita, come la imposta il suo menu; non
+  cambia mentre le barre degli strumenti sono bloccate.
 - [[options.palette_swatches]]: [[options.palette_no_color]] (attivo), e cosa
   fa il [[options.palette_right_button]]: [[options.palette_set_outline]] (in
   partenza) o aprire il [[options.palette_context_menu]].

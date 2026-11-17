@@ -1,5 +1,7 @@
 # Opções de personalização
 
+> *Tradução automática: esta página pode estar atrasada em relação à versão em inglês.*
+
 [[menu.tools > menu.tools.options > menu.tools.options_customization]] define a
 aparência da interface, seus próprios atalhos de teclado, quais barras
 aparecem e como a paleta de cores se comporta.
@@ -12,6 +14,9 @@ aparecem e como a paleta de cores se comporta.
   desligado, abrem onde você as deixou.
 - [[options.ui_shadows]] (menos sombras ajudam gráficos mais lentos).
 - [[options.colored_icons]]: cada grupo de ferramentas recebe uma cor própria.
+- [[options.docker_tabs_icons_only]]: as abas dos painéis nas laterais da
+  janela mostram só as figuras, com o nome na dica. Desligado, mostram a
+  figura e o nome, e uma coluna com mais abas do que cabem rola.
 - [[options.ui_size]]: o tamanho de menus, barras, ícones e painéis, em
   relação à escala que o sistema dá ao monitor (100% de início).
   [[options.reset_to_default]] volta a 100%. O tamanho da interface nunca muda
@@ -41,6 +46,21 @@ O **x** ao lado de um atalho o remove, e voltar aos padrões remove todos. As
 teclas de ferramenta são uma letra ou <kbd>Shift</kbd> e uma letra. Veja
 [Atalhos de teclado](../reference/keyboard-shortcuts.md).
 
+Um comando pode ter vários atalhos: uma tecla nova se junta às que ele já tem
+(uma tecla padrão continua funcionando ao lado dela), e cada tecla tem o próprio
+botão de excluir. Os botões das barras que executam um comando de menu (Novo,
+Abrir, Salvar, Desfazer, Aproximar e outros) também aceitam atalhos, as mesmas
+teclas do comando de menu, assim como linhas que os menus mostram só às vezes
+(como Concluir edição do conteúdo). Uma lista **Botões das barras de
+ferramentas** tem todos os botões das barras Padrão e Zoom: arraste dali de
+volta para a barra um botão que você tirou.
+
+Um comando arrastado para uma barra de ferramentas mostra ali a figura dele,
+ou o nome quando não tem figura. Na aba **Geral**, **Ícone** mostra a figura
+do comando: **Escolher...** abre as figuras dos outros comandos e das
+ferramentas, e um clique dá aquela ao comando, nos menus e nas barras;
+**Restaurar padrão** devolve a figura dele.
+
 ## Barras de comando {#command-bars}
 
 ![A página Barras de comando das opções de personalização](../../img/customize-customization-command-bars.png)
@@ -61,6 +81,12 @@ teclas de ferramenta são uma letra ou <kbd>Shift</kbd> e uma letra. Veja
 
 - [[options.palette_auto_update]] e [[options.palette_show_document]] (ambos
   ligados).
+- [[options.palette_position]] (Em cima, Embaixo, À esquerda, À direita ou
+  Flutuante), **Linhas** (de 1 a 8, ou Ajustar) e **Tamanho das amostras**
+  (de Extrapequeno a Extragrande) da paleta padrão, como o menu da própria
+  paleta os define: uma paleta flutuante ocupa as linhas ao longo do seu
+  comprimento. A posição não muda enquanto as barras de ferramentas estão
+  bloqueadas.
 - [[options.palette_swatches]]: [[options.palette_no_color]] (ligado), e o que
   o [[options.palette_right_button]] faz: [[options.palette_set_outline]] (de
   início) ou abrir o [[options.palette_context_menu]].

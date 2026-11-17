@@ -4,34 +4,39 @@ resolver = "2"
 exclude = ["vendor"]
 members = [
     "crates/core",
+    "crates/cdr-format",
     "crates/cdr",
     "crates/io",
     "crates/text",
     "crates/render",
     "crates/vba",
     "crates/vba-project",
+    "crates/tracecut",
     "apps/tracedraw",
     "apps/tracedraw-cli",
+    "apps/tracedraw-thumbnailer",
     "apps/tracedraw-android",
 ]
 
 [workspace.package]
-version = "0.40.0"
+version = "0.48.0"
 edition = "2021"
-authors = ["Ighor Toth"]
+authors = ["TraceDraw members and contributors"]
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/igtoth/tracedraw"
-homepage = "https://github.com/igtoth/tracedraw"
+repository = "https://github.com/tracedraw/tracedraw"
+homepage = "https://github.com/tracedraw/tracedraw"
 rust-version = "1.89"
 
 [workspace.dependencies]
 tracedraw-core = { path = "crates/core" }
+tracedraw-cdr-format = { path = "crates/cdr-format" }
 tracedraw-cdr = { path = "crates/cdr" }
 tracedraw-io = { path = "crates/io" }
 tracedraw-text = { path = "crates/text" }
 tracedraw-render = { path = "crates/render" }
 tracedraw-vba = { path = "crates/vba" }
 tracedraw-vba-project = { path = "crates/vba-project" }
+tracedraw-tracecut = { path = "crates/tracecut" }
 
 kurbo = { version = "0.13", features = ["serde"] }
 tiny-skia = "0.12"
@@ -40,11 +45,13 @@ ttf-parser = { version = "0.25", features = ["gvar-alloc"] }
 rustybuzz = "0.20"
 unicode-general-category = "1.1"
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# `unbounded_depth` lets the `.tdraw` reader lift the JSON reader's
+# 128-level nesting limit (see `Document::from_json`).
+serde_json = { version = "1", features = ["unbounded_depth"] }
 thiserror = "2"
 log = "0.4"
 env_logger = "0.11"
-zip = { version = "4", default-features = false, features = ["deflate"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
 encoding_rs = "0.8"
 # The window system is chosen per platform in apps/tracedraw: X11 and
 # Wayland on desktop, the native activity on Android, WebGL in the browser.
@@ -78,3 +85,7 @@ opt-level = 2
 # vendor/README.md. Drop it when moving to egui 0.37 or later.
 [patch.crates-io]
 eframe = { path = "vendor/eframe" }
+# winit 0.30.13 reporting a graphics tablet's pen pressure on X11 and
+# macOS as a touch with a force (#850); see vendor/README.md. Drop it
+# when a winit release carries pen pressure on those platforms.
+winit = { path = "vendor/winit" }

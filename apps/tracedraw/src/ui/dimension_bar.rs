@@ -1,12 +1,12 @@
 //! The dimension tools' property bar (also shown when dimensions are
 //! selected with the Pick tool) and the preview of the dimension being
 //! placed. Bar: Precision, Units, Show units, Prefix, Suffix, Text
-//! position, Text size; the look; more options (extension lines,
+//! position, Text size, Drawing scale; the look; more options (extension lines,
 //! horizontal text); then what to click next. Changes
 //! apply to the selected dimensions and to the ones made next.
 
 use crate::app::App;
-use crate::dimensions::{units_choices, ArrowStyle, DimensionStyle, TextPosition};
+use crate::dimensions::{units_choices, ArrowStyle, DimensionStyle, LabelAlong, TextPosition};
 use crate::i18n::tr;
 use crate::theme::Tokens;
 use crate::tools::Tool;
@@ -24,7 +24,7 @@ fn dim(ui: &mut Ui, text: String) {
 }
 
 /// What a precision looks like: 1.23 with that many decimals.
-fn precision_sample(p: u8) -> String {
+pub(crate) fn precision_sample(p: u8) -> String {
     let p = p.min(6) as usize;
     format!("{:.p$}", 1.234_567)
 }
@@ -102,7 +102,7 @@ fn style_part(app: &mut App, ui: &mut Ui, style: &DimensionStyle) {
         app.set_dimension_style(|s| s.line_width = width_mm);
     }
     let mut arrows = style.arrows;
-    egui::ComboBox::from_id_salt("dimension_arrows")
+    crate::ui::keynav::ComboBox::from_id_salt("dimension_arrows")
         .selected_text(tr(arrows.key()))
         .width(90.0)
         .show_ui(ui, |ui| {
@@ -160,7 +160,7 @@ fn length_field(
 /// lines joined in rounded corners (#641).
 fn options_part(app: &mut App, ui: &mut Ui, style: &DimensionStyle) {
     let button = ui
-        .button(format!("{} \u{25BE}", tr("dimension.options")))
+        .button(format!("{} \u{23F7}", tr("dimension.options")))
         .rich_tip(tr("dimension.options"));
     // The menu stays open while its fields are typed in and stepped; a
     // click outside closes it.
@@ -212,16 +212,61 @@ fn options_part(app: &mut App, ui: &mut Ui, style: &DimensionStyle) {
         });
 }
 
+/// The document's drawing scale, at hand where dimensions are made: a
+/// plan drawn at 1:100 measures metres in its labels while the page
+/// keeps millimetres (#2772, #1891). Picking a typical scale changes the
+/// whole drawing's scale (Document Setup > Rulers), Custom opens that
+/// page.
+fn drawing_scale_combo(app: &mut App, ui: &mut Ui) {
+    use crate::drawing_scale as ds;
+    let rulers = app.doc().metadata.rulers.clone();
+    let current = ds::matching_preset(&rulers).map(|p| p.label);
+    let shown = current
+        .map(str::to_string)
+        .or_else(|| ds::short_label(&rulers))
+        .unwrap_or_else(|| "1:1".to_string());
+    dim(ui, tr("dimension.drawing_scale"));
+    let mut pick = None;
+    let mut custom = false;
+    crate::ui::keynav::ComboBox::from_id_salt("dimension_drawing_scale")
+        .selected_text(shown)
+        .width(80.0)
+        .height(320.0)
+        .show_ui(ui, |ui| {
+            for p in ds::PRESETS.iter() {
+                if ui
+                    .selectable_label(current == Some(p.label), p.label)
+                    .clicked()
+                {
+                    pick = Some(*p);
+                }
+            }
+            ui.separator();
+            if ui.button(tr("dimension.drawing_scale_custom")).clicked() {
+                custom = true;
+            }
+        })
+        .response
+        .rich_tip(crate::ui::tips::keyed("dimension.drawing_scale"));
+    if let Some(p) = pick {
+        app.set_drawing_scale_preset(&p);
+    }
+    if custom {
+        app.dialog = crate::ui::dialogs::Dialog::Options;
+        app.options_page = crate::ui::dialogs::OptionsPage::Rulers;
+    }
+}
+
 /// The bar.
 pub fn dimension_bar(app: &mut App, ui: &mut Ui) {
     // The first selected dimension, read once a frame.
     let first = app.first_selected_dimension();
     let style = first
         .map(|d| d.style)
-        .unwrap_or_else(|| app.dimension_style.clone());
+        .unwrap_or_else(|| app.new_dimension_style());
     dim(ui, tr("dimension.precision"));
     let mut precision = style.precision.min(6);
-    egui::ComboBox::from_id_salt("dimension_precision")
+    crate::ui::keynav::ComboBox::from_id_salt("dimension_precision")
         .selected_text(precision_sample(precision))
         .width(80.0)
         .show_ui(ui, |ui| {
@@ -242,7 +287,7 @@ pub fn dimension_bar(app: &mut App, ui: &mut Ui) {
         .find(|(id, _)| *id == units)
         .map(|(_, l)| l.clone())
         .unwrap_or_default();
-    egui::ComboBox::from_id_salt("dimension_units")
+    crate::ui::keynav::ComboBox::from_id_salt("dimension_units")
         .selected_text(shown_units)
         .width(120.0)
         .show_ui(ui, |ui| {
@@ -263,6 +308,7 @@ pub fn dimension_bar(app: &mut App, ui: &mut Ui) {
     {
         app.set_dimension_style(|s| s.show_units = show);
     }
+    drawing_scale_combo(app, ui);
     crate::ui::propbar::sep(ui);
     dim(ui, tr("dimension.prefix"));
     text_field(app, ui, "dimension.prefix", &style.prefix, |s, v| {
@@ -275,7 +321,7 @@ pub fn dimension_bar(app: &mut App, ui: &mut Ui) {
     crate::ui::propbar::sep(ui);
     dim(ui, tr("dimension.text_position"));
     let mut pos = style.text_position;
-    egui::ComboBox::from_id_salt("dimension_text_position")
+    crate::ui::keynav::ComboBox::from_id_salt("dimension_text_position")
         .selected_text(tr(pos.key()))
         .width(90.0)
         .show_ui(ui, |ui| {
@@ -287,6 +333,21 @@ pub fn dimension_bar(app: &mut App, ui: &mut Ui) {
         .rich_tip(crate::ui::tips::keyed("dimension.text_position"));
     if pos != style.text_position {
         app.set_dimension_style(|s| s.text_position = pos);
+    }
+    // Along the line: the middle, toward either end or outside (#1500).
+    let mut along = style.label_along;
+    crate::ui::keynav::ComboBox::from_id_salt("dimension_text_along")
+        .selected_text(tr(along.key()))
+        .width(110.0)
+        .show_ui(ui, |ui| {
+            for a in LabelAlong::ALL {
+                ui.selectable_value(&mut along, a, tr(a.key()));
+            }
+        })
+        .response
+        .rich_tip(crate::ui::tips::keyed("dimension.text_along"));
+    if along != style.label_along {
+        app.set_dimension_style(|s| s.label_along = along);
     }
     let mut size = style.text_size;
     let r = ui
@@ -342,8 +403,23 @@ pub fn draw_preview(app: &App, painter: &Painter) {
     let ctrl = painter
         .ctx()
         .input(|i| i.modifiers.command || i.modifiers.ctrl);
+    // Where a click would put the point: snapped, then constrained. Only
+    // while a dimension is being placed: snapping shows its own marks.
+    let placing = !app.dimension_points.is_empty()
+        && matches!(
+            app.tool,
+            Tool::ParallelDimension
+                | Tool::HorizontalVerticalDimension
+                | Tool::SegmentDimension
+                | Tool::AngularDimension
+        );
+    let at = if placing { app.snap_point(at) } else { at };
     let at = app.dimension_point(at, ctrl);
     let blue = Color32::from_rgb(40, 110, 220);
+    // The length (or angle) so far, beside the pointer (#2624).
+    if let Some(text) = app.dimension_live_text(at) {
+        draw_live_label(painter, app.view.to_screen(at), &text, blue);
+    }
     // The first leg follows the pointer while the second point is wanted.
     if let (
         [first],
@@ -392,10 +468,80 @@ pub fn draw_preview(app: &App, painter: &Painter) {
     }
 }
 
+/// The live measure `text` in a small box below and to the right of the
+/// pointer at `at`, kept inside the drawing area (#2624).
+fn draw_live_label(painter: &Painter, at: egui::Pos2, text: &str, blue: Color32) {
+    let font = egui::FontId::proportional(12.0);
+    let galley = painter.layout_no_wrap(text.to_string(), font, Color32::from_rgb(20, 40, 90));
+    let pad = egui::vec2(5.0, 2.0);
+    let size = galley.size() + pad * 2.0;
+    let clip = painter.clip_rect();
+    let mut min = at + egui::vec2(16.0, 18.0);
+    if min.x + size.x > clip.max.x {
+        min.x = at.x - 16.0 - size.x;
+    }
+    if min.y + size.y > clip.max.y {
+        min.y = at.y - 18.0 - size.y;
+    }
+    let rect = egui::Rect::from_min_size(min, size);
+    painter.rect_filled(
+        rect,
+        3.0,
+        Color32::from_rgba_unmultiplied(255, 255, 255, 235),
+    );
+    painter.rect_stroke(
+        rect,
+        3.0,
+        Stroke::new(1.0, blue),
+        egui::epaint::StrokeKind::Inside,
+    );
+    painter.galley(rect.min + pad, galley, Color32::BLACK);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use tracedraw_core::geometry::Point;
+
+    /// While a dimension is placed, the length (or angle) so far reads in
+    /// the property bar's units and decimals, from the first point on
+    /// (#2624).
+    #[test]
+    fn the_measure_reads_live_while_the_dimension_is_placed() {
+        let mut app = App::headless();
+        app.tool = Tool::ParallelDimension;
+        assert_eq!(app.dimension_live_text(Point::new(5.0, 5.0)), None);
+        app.dimension_style.units = "cm".into();
+        app.dimension_style.precision = 1;
+        app.dimension_style.show_units = true;
+        app.dimension_points = vec![Point::new(0.0, 0.0)];
+        assert_eq!(
+            app.dimension_live_text(Point::new(215.0, 0.0)).as_deref(),
+            Some("21.5 cm")
+        );
+        // Horizontal/Vertical measures the leg along its axis only.
+        app.tool = Tool::HorizontalVerticalDimension;
+        assert_eq!(
+            app.dimension_live_text(Point::new(30.0, 4.0)).as_deref(),
+            Some("3.0 cm")
+        );
+        // The line being placed keeps the measure of its two points.
+        app.dimension_points = vec![Point::new(0.0, 0.0), Point::new(0.0, 40.0)];
+        assert_eq!(
+            app.dimension_live_text(Point::new(25.0, 20.0)).as_deref(),
+            Some("4.0 cm")
+        );
+        app.tool = Tool::AngularDimension;
+        app.dimension_points = vec![Point::new(0.0, 0.0)];
+        assert_eq!(app.dimension_live_text(Point::new(5.0, 5.0)), None);
+        app.dimension_points = vec![Point::new(0.0, 0.0), Point::new(10.0, 0.0)];
+        // The angular tool's bar sets the angular decimals (#1436).
+        app.set_dimension_style(|s| s.precision = 0);
+        let t = app
+            .dimension_live_text(Point::new(10.0, 10.0))
+            .expect("angle");
+        assert_eq!(t, "45\u{b0}");
+    }
 
     #[test]
     fn the_bar_and_the_preview_draw() {

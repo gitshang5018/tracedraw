@@ -1,6 +1,6 @@
 //! Drawings side by side: Window > Cascade, Tile Horizontally and Tile
 //! Vertically give every open drawing a window in the drawing area;
-//! Combine Windows and Dock Window bring the tabs back. A window has a
+//! Merge Windows and Dock Window bring the tabs back. A window has a
 //! title bar naming its drawing (an asterisk while it has unsaved
 //! changes) with buttons to go back to tabs (as a double click on the
 //! bar does) and to close the drawing. The active drawing's window is
@@ -99,7 +99,7 @@ fn fit_all(app: &mut App) {
 }
 
 /// Arrange the windows as `layout` says (Window > Cascade, Tile; Tabs for
-/// Combine Windows and Dock Window): every page is fitted again.
+/// Merge Windows and Dock Window): every page is fitted again.
 pub fn set_layout(app: &mut App, layout: WindowLayout) {
     if app.window_layout != layout {
         app.window_layout = layout;
@@ -237,6 +237,9 @@ fn paint_parked(app: &mut App, ui: &Ui, i: usize, rect: Rect) {
     if app.fit_pending {
         app.view.fit(app.page_rect(), rect);
         app.fit_pending = false;
+        if std::mem::take(&mut app.open_view_pending) {
+            app.apply_open_view(rect);
+        }
     }
     crate::canvas::draw_parked(app, &ui.painter_at(rect), rect);
     app.drag = drag;
@@ -316,7 +319,7 @@ mod tests {
     }
 
     /// Drawing the windows leaves every drawing as it was; a click on
-    /// another window makes it active, and Combine Windows goes back to
+    /// another window makes it active, and Merge Windows goes back to
     /// tabs with every page fitted again.
     #[test]
     fn tiled_windows_draw_every_drawing_and_switch() {

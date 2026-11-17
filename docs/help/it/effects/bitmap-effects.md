@@ -17,7 +17,9 @@ restituisce l'originale.
 3. Gli effetti senza impostazioni si applicano subito. Gli altri aprono una
    finestra di dialogo con le anteprime **prima** e **dopo** del primo
    oggetto selezionato: imposta i valori e fai clic su [[dialog.ok]].
-   **Reimposta** riporta ogni impostazione al valore predefinito.
+   Le impostazioni stanno in un pannello a destra; sotto di esso
+   **Reimposta** riporta ogni impostazione al valore predefinito e le due
+   frecce annullano e ripetono le modifiche fatte nella finestra di dialogo.
 
 ![Una finestra di dialogo di effetto bitmap](../../img/effects-bitmap-effects.png)
 
@@ -74,6 +76,19 @@ finestra di dialogo), **Sposta su**, **Sposta giù** ed **Elimina**.
 
 [[menu.effects > menu.effects.flatten]] rende permanenti gli effetti: una
 bitmap mantiene ciò che mostra e un oggetto vettoriale diventa una bitmap.
+
+### Su tutte le pagine
+
+In un disegno di più pagine, la finestra di dialogo di un effetto mostra la
+casella [[dialog.fx_all_pages]] mentre è selezionata un'immagine. Se è
+spuntata, OK applica l'effetto anche a ogni immagine di ogni pagina, in un solo
+passo di annullamento. Le immagini bloccate e quelle su livelli bloccati
+restano come sono.
+
+[[menu.effects > menu.effects.all_pages]] fa lo stesso con gli effetti che
+l'immagine selezionata ha già, compresi quelli senza finestra di dialogo: ogni
+altra immagine riceve lo stesso elenco di effetti, in un solo passo di
+annullamento.
 
 ## Il selettore di effetti {#effect-picker}
 

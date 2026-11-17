@@ -40,6 +40,8 @@ pub struct OutlinePenState {
     /// What the drawing shows of the dialog (outline, fields set,
     /// overprint), so the preview is made again only when it changes.
     pub shown: Option<(Option<Stroke>, Vec<StrokeField>, Option<bool>)>,
+    /// The width box took the keys when the dialog opened.
+    pub width_focused: bool,
 }
 
 /// The widths the width list offers in unit `u`, as (millimetres, label):
@@ -105,6 +107,7 @@ impl App {
             node: None,
             defaults,
             shown: None,
+            width_focused: false,
         }));
     }
 
@@ -297,7 +300,7 @@ fn general(ui: &mut Ui, st: &mut OutlinePenState, lib: &crate::ui::line_style::O
         } else {
             crate::ui::propbar::outline_width_number(st.stroke.width, u)
         };
-        egui::ComboBox::from_id_salt("outline_pen_width")
+        crate::ui::keynav::ComboBox::from_id_salt("outline_pen_width")
             .selected_text(shown)
             .width(110.0)
             .show_ui(ui, |ui| {
@@ -319,17 +322,21 @@ fn general(ui: &mut Ui, st: &mut OutlinePenState, lib: &crate::ui::line_style::O
                 }
             });
         let mut v = u.from_mm(st.stroke.width);
-        if ui
-            .add(
-                crate::ui::field::NumField::new(&mut v)
-                    .range(u.from_mm(0.001)..=u.from_mm(1000.0))
-                    .unit_mm(u.mm())
-                    .max_decimals(4)
-                    .width(60.0)
-                    .mixed(mixed(st, StrokeField::Width) || !st.has),
-            )
-            .changed()
-        {
+        let resp = ui.add(
+            crate::ui::field::NumField::new(&mut v)
+                .range(u.from_mm(0.001)..=u.from_mm(1000.0))
+                .unit_mm(u.mm())
+                .max_decimals(4)
+                .width(60.0)
+                .mixed(mixed(st, StrokeField::Width) || !st.has),
+        );
+        // The dialog opens with the width selected, as the reference
+        // program's does: F12, the width typed, Enter (#2597).
+        if !st.width_focused {
+            st.width_focused = true;
+            resp.request_focus();
+        }
+        if resp.changed() {
             st.stroke.width = u.to_mm(v).clamp(0.001, 1000.0);
             touch(st, StrokeField::Width);
         }
@@ -344,7 +351,7 @@ fn general(ui: &mut Ui, st: &mut OutlinePenState, lib: &crate::ui::line_style::O
             .into_iter()
             .chain(lib.dashes.iter().cloned())
             .collect();
-        let resp = egui::ComboBox::from_id_salt("outline_pen_style")
+        let resp = crate::ui::keynav::ComboBox::from_id_salt("outline_pen_style")
             .selected_text("")
             .width(170.0)
             .show_ui(ui, |ui| {
@@ -479,14 +486,72 @@ fn arrowheads(ui: &mut Ui, st: &mut OutlinePenState, lib: &crate::ui::line_style
         ),
         (StrokeField::EndArrow, "outline_pen_end", "docker.arrow_end"),
     ] {
+        let end = field == StrokeField::EndArrow;
         let mixed = st.mix.has(field) && !st.touched.contains(&field);
-        let a = if field == StrokeField::StartArrow {
-            &mut st.stroke.start_arrow
-        } else {
-            &mut st.stroke.end_arrow
-        };
-        if crate::ui::dockers::arrow_combo(ui, id, &tr(key), a, &lib.arrows, mixed) {
-            touch(st, field);
+        // With Share attributes on the end follows the start.
+        let enabled = !end || !st.stroke.share_arrowheads;
+        ui.add_enabled_ui(enabled, |ui| {
+            ui.horizontal(|ui| {
+                let a = if end {
+                    &mut st.stroke.end_arrow
+                } else {
+                    &mut st.stroke.start_arrow
+                };
+                if crate::ui::dockers::arrow_combo(ui, id, &tr(key), a, &lib.arrows, mixed) {
+                    if !end && st.stroke.share_arrowheads {
+                        st.stroke.share_start_head();
+                    }
+                    touch(st, field);
+                }
+                // The Arrowhead editor (#1210); it comes back here after.
+                if ui
+                    .button("...")
+                    .rich_tip(crate::ui::tips::keyed("arrowhead_editor.edit"))
+                    .clicked()
+                {
+                    crate::ui::arrowhead_editor::request(ui, end);
+                }
+            });
+        });
+    }
+    let share_mixed = st.mix.has(StrokeField::ShareArrowheads)
+        && !st.touched.contains(&StrokeField::ShareArrowheads);
+    if ui
+        .add(
+            egui::Checkbox::new(
+                &mut st.stroke.share_arrowheads,
+                tr("arrowhead_editor.share"),
+            )
+            .indeterminate(share_mixed),
+        )
+        .rich_tip(crate::ui::tips::keyed("arrowhead_editor.share"))
+        .changed()
+    {
+        if st.stroke.share_arrowheads {
+            st.stroke.share_start_head();
+        }
+        touch(st, StrokeField::ShareArrowheads);
+    }
+}
+
+impl OutlinePenState {
+    /// The Arrowhead editor's result for one end: the head and its
+    /// placement, marked as set; with Share attributes on, the start
+    /// reaches the end too.
+    pub fn set_head(
+        &mut self,
+        end: bool,
+        head: tracedraw_core::Arrowhead,
+        at: tracedraw_core::ArrowheadPlacement,
+    ) {
+        crate::ui::arrowhead_editor::set_head(&mut self.stroke, end, head, at);
+        for f in crate::ui::arrowhead_editor::fields_of(end) {
+            touch(self, f);
+        }
+        if !end && self.stroke.share_arrowheads {
+            for f in crate::ui::arrowhead_editor::fields_of(true) {
+                touch(self, f);
+            }
         }
     }
 }
@@ -543,34 +608,12 @@ fn calligraphy(ui: &mut Ui, st: &mut OutlinePenState) {
                 touch(st, StrokeField::NibAngle);
             }
         });
-        // The nib: a square stretched and turned as set; a drag on it
-        // turns and stretches it.
-        let (rect, resp) = ui.allocate_exact_size(Vec2::splat(64.0), Sense::drag());
-        let p = ui.painter();
-        p.rect_filled(rect, 2.0, Color32::WHITE);
-        p.rect_stroke(
-            rect,
-            2.0,
-            EStroke::new(1.0, Tokens::border()),
-            egui::StrokeKind::Inside,
-        );
-        if let Some(at) = resp.interact_pointer_pos().filter(|_| resp.dragged()) {
-            let d = at - rect.center();
-            if d.length() > 2.0 {
-                let a = (-d.y).atan2(d.x).to_degrees() as f64;
-                let a = ((a + 90.0).rem_euclid(180.0)) - 90.0;
-                st.stroke.nib_angle = a.round();
-                st.stroke.stretch = f64::from(d.length() / 28.0).clamp(0.1, 1.0);
-                touch(st, StrokeField::NibAngle);
-                touch(st, StrokeField::Stretch);
-            }
+        if let Some((stretch, angle)) = nib_picture(ui, st.stroke.stretch, st.stroke.nib_angle) {
+            st.stroke.nib_angle = angle;
+            st.stroke.stretch = stretch;
+            touch(st, StrokeField::NibAngle);
+            touch(st, StrokeField::Stretch);
         }
-        let corners = nib_corners(rect.center(), 24.0, st.stroke.stretch, st.stroke.nib_angle);
-        p.add(egui::Shape::convex_polygon(
-            corners.to_vec(),
-            Color32::BLACK,
-            EStroke::NONE,
-        ));
     });
     for (field, key) in [
         (StrokeField::BehindFill, "docker.behind_fill"),
@@ -589,6 +632,39 @@ fn calligraphy(ui: &mut Ui, st: &mut OutlinePenState) {
             touch(st, field);
         }
     }
+}
+
+/// The nib: a square stretched and turned as set, 64 points across; a
+/// drag on it turns and stretches it, and the new stretch and angle come
+/// back (the Outline Pen dialog and the Properties docker, #1200).
+pub fn nib_picture(ui: &mut Ui, stretch: f64, angle: f64) -> Option<(f64, f64)> {
+    let (rect, resp) = ui.allocate_exact_size(Vec2::splat(64.0), Sense::drag());
+    let p = ui.painter();
+    p.rect_filled(rect, 2.0, Color32::WHITE);
+    p.rect_stroke(
+        rect,
+        2.0,
+        EStroke::new(1.0, Tokens::border()),
+        egui::StrokeKind::Inside,
+    );
+    let mut dragged = None;
+    if let Some(at) = resp.interact_pointer_pos().filter(|_| resp.dragged()) {
+        let d = at - rect.center();
+        if d.length() > 2.0 {
+            let a = (-d.y).atan2(d.x).to_degrees() as f64;
+            let a = ((a + 90.0).rem_euclid(180.0)) - 90.0;
+            dragged = Some((f64::from(d.length() / 28.0).clamp(0.1, 1.0), a.round()));
+        }
+    }
+    let (stretch, angle) = dragged.unwrap_or((stretch, angle));
+    let corners = nib_corners(rect.center(), 24.0, stretch, angle);
+    p.add(egui::Shape::convex_polygon(
+        corners.to_vec(),
+        Color32::BLACK,
+        EStroke::NONE,
+    ));
+    resp.on_hover_text(tr("docker.nib_tip"));
+    dragged
 }
 
 /// The corners of the nib picture: a square of half side `r` at `c`,
@@ -842,11 +918,7 @@ fn pic_button(ui: &mut Ui, pic: Pic, on: bool, enabled: bool, tip: &str) -> bool
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(28.0, 24.0), Sense::click());
     let resp = resp.rich_tip(tr(tip));
     let p = ui.painter();
-    if on {
-        p.rect_filled(rect, 3.0, Tokens::ACCENT.gamma_multiply(0.35));
-    } else if resp.hovered() && enabled {
-        p.rect_filled(rect, 3.0, Tokens::tool_hover());
-    }
+    crate::theme::paint_icon_button(p, rect, resp.hovered() && enabled, on);
     let ink = if enabled {
         Tokens::text()
     } else {
@@ -1216,6 +1288,67 @@ mod tests {
         out.textures_delta.clear();
     }
 
+    /// A text without an outline: the outline set up in the dialog shows
+    /// on it while the dialog is open, Behind fill and all, and Esc
+    /// takes it back to no outline (#819).
+    #[test]
+    fn an_outline_given_to_a_text_without_one_shows_live() {
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        app.show_welcome = false;
+        let a = app
+            .new_shape(ShapeKind::Text {
+                spans: vec![tracedraw_core::TextSpan::new("A", "Arial", 72.0)],
+                origin: tracedraw_core::Point::new(20.0, 100.0),
+                frame: None,
+                align: tracedraw_core::TextAlign::Left,
+                para: Default::default(),
+                on_path: None,
+            })
+            .expect("text");
+        app.run(tracedraw_core::Command::SetStroke {
+            shapes: vec![a],
+            stroke: None,
+        });
+        app.select(vec![a]);
+        let stroke = |app: &App| app.doc().find_shape(a).and_then(|s| s.stroke.clone());
+        assert!(stroke(&app).is_none());
+        let steps = app.engine.history_labels();
+        // Dark pixels of the page: the black outline adds some.
+        let dark = |app: &App| {
+            let pm = tracedraw_render::render_page_image(app.doc(), app.page, 72.0).expect("img");
+            pm.pixels()
+                .iter()
+                .filter(|p| p.alpha() > 200 && p.red() < 60)
+                .count()
+        };
+        let dark_before = dark(&app);
+        app.open_outline_pen();
+        frame(&ctx, &mut app);
+        assert!(stroke(&app).is_none(), "nothing changed yet");
+        let renders = app.raster.borrow().render_count();
+        {
+            let crate::ui::dialogs::Dialog::OutlinePen(st) = &mut app.dialog else {
+                panic!("the dialog");
+            };
+            st.stroke.width = 12.0 * 25.4 / 72.0;
+            st.stroke.behind_fill = true;
+            touch(st, StrokeField::Width);
+            touch(st, StrokeField::BehindFill);
+        }
+        frame(&ctx, &mut app);
+        assert!(dark(&app) > dark_before + 500, "the outline is drawn");
+        // The canvas drew it in the same frame.
+        assert!(app.raster.borrow().render_count() > renders);
+        let s = stroke(&app).expect("the outline shows at once");
+        assert!((s.width - 12.0 * 25.4 / 72.0).abs() < 1e-9, "{}", s.width);
+        assert!(s.behind_fill);
+        app.dialog = crate::ui::dialogs::Dialog::None;
+        frame(&ctx, &mut app);
+        assert!(stroke(&app).is_none(), "taken back");
+        assert_eq!(app.engine.history_labels(), steps);
+    }
+
     /// The dialog's outline shows on the selection while the dialog is
     /// open, made again only when a value changes (not every frame);
     /// Esc takes it back, history and all, and OK keeps it as one step
@@ -1361,5 +1494,63 @@ mod tests {
         let turned = nib_corners(c, 20.0, 1.0, 90.0);
         // A quarter turn: the right side's corner goes up.
         assert!((turned[1].x - 30.0).abs() < 1e-3 || (turned[1].y - 30.0).abs() < 1e-3);
+    }
+
+    /// F12 opens the dialog with the width selected: a number typed
+    /// replaces it and Enter applies it, as in the reference program
+    /// (#2597).
+    #[test]
+    fn the_dialog_opens_with_the_width_ready_to_type() {
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        app.show_welcome = false;
+        let a = app
+            .new_shape(ShapeKind::Rect {
+                rect: tracedraw_core::geometry::Rect::new(10.0, 10.0, 60.0, 40.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("rect");
+        app.select(vec![a]);
+        app.open_outline_pen();
+        for _ in 0..3 {
+            frame(&ctx, &mut app);
+        }
+        let units = crate::ui::line_style::OutlineLib::of(&app).units;
+        let send = |app: &mut App, events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1600.0, 1000.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| crate::ui::root(app, ui));
+            out.textures_delta.clear();
+        };
+        send(&mut app, vec![egui::Event::Text("3".into())]);
+        let key = |pressed| egui::Event::Key {
+            key: egui::Key::Enter,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        send(&mut app, vec![key(true), key(false)]);
+        for _ in 0..2 {
+            frame(&ctx, &mut app);
+        }
+        assert!(
+            matches!(app.dialog, crate::ui::dialogs::Dialog::None),
+            "Enter is OK"
+        );
+        let w = app
+            .doc()
+            .find_shape(a)
+            .and_then(|s| s.stroke.clone())
+            .expect("outline")
+            .width;
+        assert!((w - units.to_mm(3.0)).abs() < 1e-6, "{w}");
     }
 }

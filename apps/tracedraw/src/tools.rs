@@ -18,11 +18,13 @@ pub enum Tool {
     Smudge,
     Roughen,
     VariableOutline,
+    Join,
     // Crop group
     Crop,
     Knife,
     SegmentDelete,
     Eraser,
+    ShapeBuilder,
     // Zoom group
     Zoom,
     Pan,
@@ -51,6 +53,7 @@ pub enum Tool {
     Spiral,
     CommonShapes,
     ActionLines,
+    Balloon,
     GraphPaper,
     // Text group
     Text,
@@ -68,6 +71,7 @@ pub enum Tool {
     AnchorEditing,
     // Effect group
     DropShadow,
+    InnerShadow,
     Contour,
     Blend,
     Distort,
@@ -103,6 +107,7 @@ pub const GROUPS: &[ToolGroup] = &[
     ToolGroup {
         tools: &[
             Tool::Shape,
+            Tool::Join,
             Tool::Smooth,
             Tool::Smear,
             Tool::Twirl,
@@ -113,7 +118,13 @@ pub const GROUPS: &[ToolGroup] = &[
         hidden: false,
     },
     ToolGroup {
-        tools: &[Tool::Crop, Tool::Knife, Tool::SegmentDelete, Tool::Eraser],
+        tools: &[
+            Tool::Crop,
+            Tool::Knife,
+            Tool::SegmentDelete,
+            Tool::Eraser,
+            Tool::ShapeBuilder,
+        ],
         hidden: false,
     },
     ToolGroup {
@@ -141,6 +152,12 @@ pub const GROUPS: &[ToolGroup] = &[
         ],
         hidden: false,
     },
+    // The Variable Outline tool has a button of its own, under the brush
+    // tools.
+    ToolGroup {
+        tools: &[Tool::VariableOutline],
+        hidden: false,
+    },
     ToolGroup {
         tools: &[Tool::Rectangle, Tool::ThreePointRectangle],
         hidden: false,
@@ -156,6 +173,7 @@ pub const GROUPS: &[ToolGroup] = &[
             Tool::Spiral,
             Tool::CommonShapes,
             Tool::ActionLines,
+            Tool::Balloon,
             Tool::GraphPaper,
         ],
         hidden: false,
@@ -186,6 +204,7 @@ pub const GROUPS: &[ToolGroup] = &[
     ToolGroup {
         tools: &[
             Tool::DropShadow,
+            Tool::InnerShadow,
             Tool::Contour,
             Tool::Blend,
             Tool::Distort,
@@ -207,11 +226,6 @@ pub const GROUPS: &[ToolGroup] = &[
         tools: &[Tool::InteractiveFill, Tool::AreaFill, Tool::MeshFill],
         hidden: false,
     },
-    // The Variable Outline tool has a button of its own at the bottom.
-    ToolGroup {
-        tools: &[Tool::VariableOutline],
-        hidden: false,
-    },
     ToolGroup {
         tools: &[Tool::OutlinePen, Tool::OutlineColor],
         hidden: true,
@@ -219,7 +233,7 @@ pub const GROUPS: &[ToolGroup] = &[
 ];
 
 impl Tool {
-    pub const ALL: [Tool; 64] = [
+    pub const ALL: [Tool; 68] = [
         Tool::Pick,
         Tool::FreeformPick,
         Tool::FreeTransform,
@@ -231,10 +245,12 @@ impl Tool {
         Tool::Smudge,
         Tool::Roughen,
         Tool::VariableOutline,
+        Tool::Join,
         Tool::Crop,
         Tool::Knife,
         Tool::SegmentDelete,
         Tool::Eraser,
+        Tool::ShapeBuilder,
         Tool::Zoom,
         Tool::Pan,
         Tool::Freehand,
@@ -257,6 +273,7 @@ impl Tool {
         Tool::Spiral,
         Tool::CommonShapes,
         Tool::ActionLines,
+        Tool::Balloon,
         Tool::GraphPaper,
         Tool::Text,
         Tool::Table,
@@ -270,6 +287,7 @@ impl Tool {
         Tool::RoundedConnector,
         Tool::AnchorEditing,
         Tool::DropShadow,
+        Tool::InnerShadow,
         Tool::Contour,
         Tool::Blend,
         Tool::Distort,
@@ -300,10 +318,12 @@ impl Tool {
             Tool::Smudge => "smudge",
             Tool::Roughen => "roughen",
             Tool::VariableOutline => "variable_outline",
+            Tool::Join => "join",
             Tool::Crop => "crop",
             Tool::Knife => "knife",
             Tool::SegmentDelete => "segment_delete",
             Tool::Eraser => "eraser",
+            Tool::ShapeBuilder => "shape_builder",
             Tool::Zoom => "zoom",
             Tool::Pan => "pan",
             Tool::Freehand => "freehand",
@@ -326,6 +346,7 @@ impl Tool {
             Tool::Spiral => "spiral",
             Tool::CommonShapes => "common_shapes",
             Tool::ActionLines => "action_lines",
+            Tool::Balloon => "balloon",
             Tool::GraphPaper => "graph_paper",
             Tool::Text => "text",
             Tool::Table => "table",
@@ -339,6 +360,7 @@ impl Tool {
             Tool::RoundedConnector => "rounded_connector",
             Tool::AnchorEditing => "anchor_editing",
             Tool::DropShadow => "drop_shadow",
+            Tool::InnerShadow => "inner_shadow",
             Tool::Contour => "contour",
             Tool::Blend => "blend",
             Tool::Distort => "distort",
@@ -467,6 +489,7 @@ impl Tool {
                     | Tool::RoundedConnector
                     | Tool::Blend
                     | Tool::BlockShadow
+                    | Tool::InnerShadow
                     | Tool::ShapeRecognition
                     | Tool::Sketch
                     | Tool::Smooth
@@ -476,6 +499,21 @@ impl Tool {
                     | Tool::Smudge
                     | Tool::Roughen
             )
+    }
+
+    /// The shaping brushes, which work with a round nib: Smooth, Smear,
+    /// Twirl, Attract and Repel, Smudge and Roughen. Shift+drag and the
+    /// wheel size their nib (see `brushes.rs`).
+    pub fn is_shaping_brush(self) -> bool {
+        matches!(
+            self,
+            Tool::Smooth
+                | Tool::Smear
+                | Tool::Twirl
+                | Tool::AttractRepel
+                | Tool::Smudge
+                | Tool::Roughen
+        )
     }
 
     /// Tools that draw by dragging a bounding box.
@@ -488,7 +526,22 @@ impl Tool {
                 | Tool::Star
                 | Tool::GraphPaper
                 | Tool::ActionLines
+                | Tool::Balloon
         )
+    }
+
+    /// Drawing tools whose drag from a handle of the selection resizes it
+    /// instead of starting a new shape (the handles show right after a
+    /// shape is drawn).
+    pub fn resizes_by_handles(self) -> bool {
+        self.is_box_tool()
+            || matches!(
+                self,
+                Tool::ThreePointRectangle
+                    | Tool::ThreePointEllipse
+                    | Tool::Spiral
+                    | Tool::CommonShapes
+            )
     }
 
     /// Tools that are listed but not implemented yet (shown greyed).

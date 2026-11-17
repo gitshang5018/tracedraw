@@ -55,12 +55,35 @@ contorno padrão. Partes que devem parecer separadas, como as faces de um cubo,
 são partes separadas da curva, e furos como o meio de um anel continuam furos
 seja qual for o preenchimento.
 
+### Minhas formas {#my-shapes}
+
+A última aba do seletor de formas, **Minhas formas**, guarda formas suas.
+Selecione os objetos que darão origem à forma e clique em
+[[menu.object.add_common_shape]] nessa aba (também está em
+[[menu.object > menu.object.create]] e no menu do botão direito). Os
+contornos deles viram uma forma, que fica escolhida na hora. Desenhe-a
+como qualquer outra forma comum arrastando uma caixa; segure
+<kbd>Ctrl</kbd> para manter as proporções. Para tirar uma forma, escolha-a
+e clique em [[shapes.mine_remove]], ou clique nela com o botão direito. As
+formas incluídas não podem ser removidas.
+
+Suas formas ficam guardadas com as suas configurações, então continuam lá
+na próxima vez que o TraceDraw abrir.
+
 ## Linhas de ação {#action-lines}
 
 A ferramenta [[tool.action_lines]] desenha linhas de velocidade no estilo de
 história em quadrinhos: um grupo de **linhas** (2 a 500, 12 de início)
 **paralelas** (de início) ou **radiais**. Os comprimentos variam, mas a mesma
 caixa sempre dá as mesmas linhas.
+
+## Balão de fala {#speech-balloons}
+
+[[tool.balloon]]: Desenha balões de fala para quadrinhos: corpo e rabicho numa só curva, o rabicho arrastado para apontar para qualquer um.
+
+1. Escolha o estilo na barra de propriedades: Fala, Pensamento, Sussurro, Grito ou Legenda.
+2. Arraste uma caixa: o balão a preenche, com o rabicho soldado numa só curva.
+3. Arraste o losango na ponta do rabicho para apontá-lo para alguém; ajuste a largura e a curva na barra.
 
 ## Papel milimetrado {#graph-paper}
 

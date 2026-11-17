@@ -5,14 +5,15 @@
 //! dragged is one of them); an
 //! ellipse's node opens a pie when the pointer is inside the ellipse and
 //! an arc outside it; a polygon's nodes move with all their mirrored
-//! counterparts (vertices together, the points between them together).
+//! counterparts (vertices together, the points between them together;
+//! the points between them can cross the centre into an inverted star).
 //! A B-spline shows its control points instead of its nodes: dragging
 //! one reshapes the spline, a double-click on the control polygon adds
 //! one there and a double-click on a control point removes it.
 
 use tracedraw_core::{
     document::{axis_scale, EllipseArc, Shape, ShapeKind},
-    geometry::{Point, Rect, Vec2},
+    geometry::{self, Affine, Point, Rect, Vec2},
 };
 
 /// A node of a rectangle, ellipse or polygon.
@@ -21,6 +22,10 @@ pub enum KindNode {
     /// The end of a rectangle corner's cut on the vertical edge
     /// (`vertical`) or on the horizontal one. A square corner has one node.
     Corner { corner: usize, vertical: bool },
+    /// The middle of a rectangle's edge (`edge` as in
+    /// [`tracedraw_core::Corners::bulge`]): dragging it out bows the
+    /// edges (#2188).
+    Edge { edge: usize },
     /// The node of a whole ellipse, or the start of a pie or arc.
     EllipseStart,
     /// The end of a pie or arc.
@@ -47,32 +52,7 @@ pub fn nodes(s: &Shape) -> Vec<(KindNode, Point)> {
             let Some((rect, c)) = s.kind.rect_corners() else {
                 return out;
             };
-            for (corner, (p, v, h)) in c.ends(rect, axis_scale(t)).into_iter().enumerate() {
-                if (v - p).hypot() < 1e-12 && (h - p).hypot() < 1e-12 {
-                    out.push((
-                        KindNode::Corner {
-                            corner,
-                            vertical: true,
-                        },
-                        t * p,
-                    ));
-                } else {
-                    out.push((
-                        KindNode::Corner {
-                            corner,
-                            vertical: true,
-                        },
-                        t * v,
-                    ));
-                    out.push((
-                        KindNode::Corner {
-                            corner,
-                            vertical: false,
-                        },
-                        t * h,
-                    ));
-                }
-            }
+            out = rect_nodes(rect, &c, t);
         }
         ShapeKind::Ellipse { rect, arc } => {
             let at = |deg: f64| t * on_ellipse(*rect, deg);
@@ -123,9 +103,83 @@ pub fn nodes(s: &Shape) -> Vec<(KindNode, Point)> {
     out
 }
 
+/// The corner nodes of a rectangle in page space: one on a square
+/// corner, two (the ends of its cut) on a cut one. A node that falls on
+/// another is left out (#1851): a corner rounded as far as its
+/// neighbours leave it room ends on their nodes, and two nodes stacked
+/// there could not be told apart. The end of the cut stays and the
+/// square corner's node goes, so the rounding can still be dragged back;
+/// of two ends that meet, the first stays.
+fn rect_nodes(rect: Rect, c: &tracedraw_core::Corners, t: Affine) -> Vec<(KindNode, Point)> {
+    // Closer than this (local units) is the same place.
+    const SAME: f64 = 1e-9;
+    let ends = c.ends(rect, axis_scale(t));
+    let cut: Vec<bool> = ends
+        .iter()
+        .map(|(p, v, h)| (*v - *p).hypot() >= 1e-12 || (*h - *p).hypot() >= 1e-12)
+        .collect();
+    let mut local: Vec<(KindNode, Point)> = Vec::new();
+    for (corner, (_, v, h)) in ends.into_iter().enumerate() {
+        if cut[corner] {
+            for (vertical, q) in [(true, v), (false, h)] {
+                if !local.iter().any(|(_, o)| (*o - q).hypot() < SAME) {
+                    local.push((KindNode::Corner { corner, vertical }, q));
+                }
+            }
+        }
+    }
+    let mut out = Vec::new();
+    for (corner, (p, _, _)) in ends.into_iter().enumerate() {
+        let node = if cut[corner] {
+            local
+                .iter()
+                .filter(|(n, _)| matches!(n, KindNode::Corner { corner: c, .. } if *c == corner))
+                .copied()
+                .collect()
+        } else if local.iter().any(|(_, o)| (*o - p).hypot() < SAME) {
+            Vec::new()
+        } else {
+            vec![(
+                KindNode::Corner {
+                    corner,
+                    vertical: true,
+                },
+                p,
+            )]
+        };
+        out.extend(node.into_iter().map(|(n, q)| (n, t * q)));
+    }
+    out
+}
+
+/// The nodes of `s` and, on a rectangle, the handle in the middle of
+/// each edge that bows it (#2188), in page space.
+pub fn handles(s: &Shape) -> Vec<(KindNode, Point)> {
+    let mut out = nodes(s);
+    out.extend(edge_handles(s));
+    out
+}
+
+/// A rectangle's edge handles (#2188): the middle of each edge as it is
+/// drawn, in page space; none for other objects.
+pub fn edge_handles(s: &Shape) -> Vec<(KindNode, Point)> {
+    if s.spline.is_some() || !matches!(s.kind, ShapeKind::Rect { .. }) {
+        return Vec::new();
+    }
+    let Some((rect, c)) = s.kind.rect_corners() else {
+        return Vec::new();
+    };
+    (0..4)
+        .map(|edge| {
+            let (mid, _) = c.edge_middle(edge, rect);
+            (KindNode::Edge { edge }, s.transform * mid)
+        })
+        .collect()
+}
+
 /// The node of `s` within `tol` (page mm) of `p`.
 pub fn node_at(s: &Shape, p: Point, tol: f64) -> Option<KindNode> {
-    nodes(s)
+    handles(s)
         .into_iter()
         .map(|(n, q)| (n, (q - p).hypot()))
         .filter(|(_, d)| *d <= tol)
@@ -151,10 +205,10 @@ fn vertex_angle(n: usize, i: usize) -> f64 {
 
 /// Distance of the points between vertices from the centre, as a part of
 /// the vertices' distance: the star's inner points, or the middle of a
-/// polygon's sides.
+/// polygon's sides. Negative past the centre: an inverted star.
 fn inner_ratio(n: usize, sharpness: f64) -> f64 {
-    if sharpness > 0.0 {
-        1.0 - sharpness.clamp(0.0, 1.0)
+    if geometry::is_star_sharpness(sharpness) {
+        geometry::star_inner_ratio(sharpness)
     } else {
         (std::f64::consts::PI / n as f64).cos()
     }
@@ -185,6 +239,7 @@ fn wrap(deg: f64) -> f64 {
 /// all four do. `turn` carries the angle (degrees)
 /// a whole ellipse's node has turned through since the drag began, which
 /// tells clockwise from counter-clockwise.
+#[cfg(test)]
 pub fn drag(
     start: &Shape,
     node: KindNode,
@@ -193,13 +248,36 @@ pub fn drag(
     chosen: [bool; 4],
     turn: &mut f64,
 ) -> Option<ShapeKind> {
+    drag_constrained(start, node, p, single, chosen, turn, 15.0)
+}
+
+/// [`drag`] with Ctrl (`single`) held: one rectangle corner, a polygon's
+/// points keeping their turn, and an ellipse's pie or arc angle in steps
+/// of `step` degrees (the constrain angle, #1340).
+pub fn drag_constrained(
+    start: &Shape,
+    node: KindNode,
+    p: Point,
+    single: bool,
+    chosen: [bool; 4],
+    turn: &mut f64,
+    step: f64,
+) -> Option<ShapeKind> {
+    let snap = |deg: f64| {
+        if single && step.is_finite() && step > 0.01 {
+            (deg / step).round() * step
+        } else {
+            deg
+        }
+    };
     let inv = start.transform.inverse();
     let lp = inv * p;
     match (&start.kind, node) {
         (ShapeKind::Rect { .. }, KindNode::Corner { corner, vertical }) => {
             let (rect, c) = start.kind.rect_corners()?;
             let rect = rect.abs();
-            let page = start.page_corners()?;
+            // From the corners as drawn, where the nodes are.
+            let page = start.drawn_page_corners()?;
             let (sx, sy) = axis_scale(start.transform);
             let (cp, _, _) = *c.ends(rect, (sx, sy)).get(corner)?;
             // Edge directions from the corner towards the rectangle's middle.
@@ -233,7 +311,45 @@ pub fn drag(
                     }
                 }
             }
-            start.with_page_corners(next)
+            let kind = start.with_page_corners(next)?;
+            let (_, mut c) = kind.rect_corners()?;
+            if single {
+                // One corner goes as far as its neighbours leave it room on
+                // both its sides, past half the shorter side (#1757); the
+                // others keep their size.
+                let room = c.room(corner, rect, (sx, sy));
+                if let Some(r) = c.radii.get_mut(corner) {
+                    *r = r.min(room);
+                }
+            } else {
+                // Corners growing together stop where they fill a side.
+                c = c.fitted(rect, (sx, sy));
+            }
+            Some(ShapeKind::rect_with_corners(rect, c))
+        }
+        (ShapeKind::Rect { .. }, KindNode::Edge { edge }) => {
+            // The edge's middle follows the pointer out from the straight
+            // edge: every edge bows by the same amount, the one dragged
+            // alone with Ctrl (#2188).
+            let (rect, mut c) = start.kind.rect_corners()?;
+            let rect = rect.abs();
+            let straight = tracedraw_core::Corners {
+                bulge: [0.0; 4],
+                ..c
+            };
+            let (base, out) = straight.edge_middle(edge, rect);
+            let value = tracedraw_core::Corners::bulge_for(edge, rect, (lp - base).dot(out));
+            if single {
+                c.bulge[edge] = value;
+            } else {
+                let delta = value - c.edge_bulge(edge);
+                let was = c;
+                for (i, b) in c.bulge.iter_mut().enumerate() {
+                    *b = (was.edge_bulge(i) + delta).clamp(0.0, 1.0);
+                }
+                c.bulge[edge] = value;
+            }
+            Some(ShapeKind::rect_with_corners(rect, c))
         }
         (ShapeKind::Ellipse { rect, arc }, KindNode::EllipseStart | KindNode::EllipseEnd) => {
             let c = rect.center();
@@ -249,18 +365,20 @@ pub fn drag(
                     // The node starts at the top; the side it turns to
                     // decides which end it becomes.
                     *turn += wrap(angle - (90.0 + *turn));
-                    if turn.abs() < 0.5 {
+                    // With Ctrl the node goes in steps from the top.
+                    let t = snap(*turn);
+                    if t.abs() < 0.5 {
                         return Some(start.kind.clone());
                     }
-                    if *turn < 0.0 {
+                    if t < 0.0 {
                         EllipseArc {
                             start_deg: 90.0,
-                            end_deg: 90.0 + *turn,
+                            end_deg: 90.0 + t,
                             pie,
                         }
                     } else {
                         EllipseArc {
-                            start_deg: 90.0 + *turn,
+                            start_deg: 90.0 + t,
                             end_deg: 90.0,
                             pie,
                         }
@@ -269,9 +387,9 @@ pub fn drag(
                 Some(a) => {
                     let mut a = *a;
                     if node == KindNode::EllipseStart {
-                        a.start_deg = angle;
+                        a.start_deg = snap(angle);
                     } else {
-                        a.end_deg = angle;
+                        a.end_deg = snap(angle);
                     }
                     a.pie = pie;
                     a
@@ -340,33 +458,50 @@ pub fn drag(
                 Some(ShapeKind::Polygon {
                     rect: grown,
                     points: *points,
-                    sharpness: (1.0 - k).clamp(0.001, 0.999),
+                    sharpness: geometry::star_sharpness_for_ratio(k),
                     complex: None,
                     twist: *twist,
                 })
             } else if complex.is_some() {
                 None
             } else {
-                // In or out sharpens the star; around the centre turns the
+                // In or out sharpens the star, and through the centre
+                // inverts it: the points come out on the far side (a
+                // negative sharpness, #1331). Around the centre turns the
                 // points between the vertices (a twisted star), unless
                 // Ctrl keeps the turn they have.
-                let twist = if single {
-                    *twist
+                let untwisted = vertex_angle(n, index) - std::f64::consts::PI / n as f64;
+                let at = ((lp.y - c.y) / ry).atan2((lp.x - c.x) / rx);
+                let was = clamp_twist(*twist);
+                let (ratio, twist) = if single {
+                    // Which side of the centre, along the points' turn.
+                    let along = (at - untwisted - was).cos();
+                    (if along < 0.0 { -rho } else { rho }, *twist)
                 } else {
-                    let untwisted = vertex_angle(n, index) - std::f64::consts::PI / n as f64;
-                    let at = ((lp.y - c.y) / ry).atan2((lp.x - c.x) / rx);
+                    // The pointer's turn read on this side of the centre
+                    // or, inverted, on the far side: whichever is nearer
+                    // the turn the points had, so a drag through the
+                    // centre inverts the star rather than turning it
+                    // half a turn.
                     let turn = wrap((at - untwisted).to_degrees()).to_radians();
+                    let far = wrap((at - untwisted).to_degrees() + 180.0).to_radians();
+                    let off = |t: f64| wrap((t - was).to_degrees()).abs();
+                    let (ratio, turn) = if off(far) < off(turn) {
+                        (-rho, far)
+                    } else {
+                        (rho, turn)
+                    };
                     // A drag straight in or out stays untwisted.
                     if turn.abs() < 1f64.to_radians() {
-                        0.0
+                        (ratio, 0.0)
                     } else {
-                        clamp_twist(turn)
+                        (ratio, clamp_twist(turn))
                     }
                 };
                 Some(ShapeKind::Polygon {
                     rect: *rect,
                     points: *points,
-                    sharpness: (1.0 - rho).clamp(0.001, 0.999),
+                    sharpness: geometry::star_sharpness_for_ratio(ratio),
                     complex: None,
                     twist,
                 })
@@ -377,9 +512,12 @@ pub fn drag(
 }
 
 /// The undo step's name for dragging a node of `s`.
-pub fn label(s: &Shape) -> &'static str {
+pub fn label_for(s: &Shape, node: Option<KindNode>) -> &'static str {
     if s.spline.is_some() {
         return "Edit B-Spline";
+    }
+    if matches!(node, Some(KindNode::Edge { .. })) {
+        return "Edge Bulge";
     }
     match s.kind {
         ShapeKind::Rect { .. } => "Corner Radius",
@@ -388,9 +526,10 @@ pub fn label(s: &Shape) -> &'static str {
     }
 }
 
-/// The node whose drag changes one corner only: a corner node with Ctrl.
+/// The node whose drag changes one corner (or one edge's bow) only: a
+/// corner or edge node with Ctrl.
 pub fn single_corner(node: KindNode, ctrl: bool) -> bool {
-    matches!(node, KindNode::Corner { .. }) && ctrl
+    matches!(node, KindNode::Corner { .. } | KindNode::Edge { .. }) && ctrl
 }
 
 /// The corners of the rectangle `s` a drag of `node` changes together:
@@ -530,6 +669,33 @@ pub fn spline_without_many(s: &Shape, indices: &[usize]) -> Option<Vec<Point>> {
     (out.len() >= 2).then_some(out)
 }
 
+/// The fixed flags for the B-spline `s` given the control points
+/// `points`, made from its own by adding or removing points (#1758):
+/// each point kept keeps its flag, a new one floats. `None` (keep the
+/// flags) when the number of points stays.
+pub fn spline_fixed_for(s: &Shape, points: &[Point]) -> Option<Vec<bool>> {
+    let old = s.spline.as_ref()?;
+    if old.len() == points.len() {
+        return None;
+    }
+    let flag = |j: usize| s.spline_fixed.get(j).copied().unwrap_or(false);
+    let mut out = Vec::with_capacity(points.len());
+    let mut j = 0;
+    for p in points {
+        // Points removed from the old list are skipped; a point not in
+        // it is new.
+        let next = (j..old.len()).find(|&k| old[k] == *p);
+        match next {
+            Some(k) if old.len() > points.len() || k == j => {
+                out.push(flag(k));
+                j = k + 1;
+            }
+            _ => out.push(false),
+        }
+    }
+    Some(out)
+}
+
 /// The control points of the B-spline `s` without the point `index`;
 /// `None` when two would not remain.
 pub fn spline_without(s: &Shape, index: usize) -> Option<Vec<Point>> {
@@ -552,6 +718,46 @@ mod tests {
             ShapeId(1),
             ShapeKind::rect_with_corners(Rect::new(0.0, 0.0, 40.0, 20.0), corners),
         )
+    }
+
+    /// The handle in the middle of an edge bows every edge by the same
+    /// amount; with Ctrl only the edge dragged (#2188). The handle sits
+    /// on the bowed edge, and a drag back inside straightens it.
+    #[test]
+    fn an_edge_handle_bows_the_edges() {
+        let s = rect(Corners::default());
+        let top = KindNode::Edge {
+            edge: Corners::EDGE_TOP,
+        };
+        assert!(handles(&s).contains(&(top, Point::new(20.0, 20.0))));
+        assert_eq!(node_at(&s, Point::new(20.0, 20.2), 0.5), Some(top));
+        // Top edge 40 long: a quarter circle lifts its middle by
+        // (sqrt 2 - 1) * 20.
+        let full = (std::f64::consts::SQRT_2 - 1.0) * 20.0;
+        let mut turn = 0.0;
+        let p = Point::new(20.0, 20.0 + full / 2.0);
+        let kind = drag(&s, top, p, false, [false; 4], &mut turn).unwrap();
+        let (_, c) = kind.rect_corners().unwrap();
+        assert!(c.bulge.iter().all(|b| (b - 0.5).abs() < 1e-9), "{c:?}");
+        let kind = drag(&s, top, p, true, [false; 4], &mut turn).unwrap();
+        let (_, c) = kind.rect_corners().unwrap();
+        assert!((c.bulge[Corners::EDGE_TOP] - 0.5).abs() < 1e-9);
+        assert_eq!(c.bulge[Corners::EDGE_BOTTOM], 0.0);
+        let bowed = Shape::new(ShapeId(1), kind);
+        let (_, at) = edge_handles(&bowed)[Corners::EDGE_TOP];
+        assert!((at.y - p.y).abs() < 1e-9, "{at:?}");
+        let kind = drag(
+            &bowed,
+            top,
+            Point::new(20.0, 15.0),
+            true,
+            [false; 4],
+            &mut turn,
+        )
+        .unwrap();
+        let (_, c) = kind.rect_corners().unwrap();
+        assert_eq!(c.bulge, [0.0; 4]);
+        assert_eq!(label_for(&bowed, Some(top)), "Edge Bulge");
     }
 
     #[test]
@@ -577,6 +783,104 @@ mod tests {
             },
             Point::new(5.0, 20.0)
         )));
+    }
+
+    /// A corner rounded as far as its neighbours leave it room ends on
+    /// their nodes: those are left out rather than stacked under the ends
+    /// (#1851). A square with its top right corner at the most shows 3
+    /// nodes, not 5; the ends of the arc stay, so the rounding can be
+    /// dragged back. Two rounded corners meeting in the middle of a side
+    /// share one node there.
+    #[test]
+    fn a_corner_rounded_to_the_most_leaves_no_stacked_nodes() {
+        let distinct = |n: &[(KindNode, Point)]| {
+            for (i, (_, a)) in n.iter().enumerate() {
+                for (_, b) in &n[i + 1..] {
+                    assert!((*a - *b).hypot() > 1e-6, "stacked at {a:?}: {n:?}");
+                }
+            }
+        };
+        let square = |c: Corners| {
+            Shape::new(
+                ShapeId(1),
+                ShapeKind::rect_with_corners(Rect::new(0.0, 0.0, 20.0, 20.0), c),
+            )
+        };
+        // Through the property bar: the corner set to the room it has.
+        let mut c = Corners::uniform(0.0, CornerKind::Round);
+        let room = c.room(
+            Corners::TOP_RIGHT,
+            Rect::new(0.0, 0.0, 20.0, 20.0),
+            (1.0, 1.0),
+        );
+        assert!((room - 20.0).abs() < 1e-9);
+        c.radii[Corners::TOP_RIGHT] = room;
+        let s = square(c);
+        let n = nodes(&s);
+        assert_eq!(n.len(), 3, "{n:?}");
+        distinct(&n);
+        let at = |p: Point| node_at(&s, p, 0.5).expect("a node");
+        // The ends of the arc on the bottom right and top left corners.
+        assert_eq!(
+            at(Point::new(20.0, 0.0)),
+            KindNode::Corner {
+                corner: Corners::TOP_RIGHT,
+                vertical: true
+            }
+        );
+        assert_eq!(
+            at(Point::new(0.0, 20.0)),
+            KindNode::Corner {
+                corner: Corners::TOP_RIGHT,
+                vertical: false
+            }
+        );
+        assert_eq!(
+            at(Point::new(0.0, 0.0)),
+            KindNode::Corner {
+                corner: Corners::BOTTOM_LEFT,
+                vertical: true
+            }
+        );
+        // The curve it converts to has those 3 nodes too.
+        let path = s.local_path();
+        assert_eq!(tracedraw_core::nodes::nodes(&path).len(), 3, "{path:?}");
+        // By dragging, with Ctrl, past the far corner: the same.
+        let mut turn = 0.0;
+        let node = KindNode::Corner {
+            corner: Corners::TOP_RIGHT,
+            vertical: true,
+        };
+        let plain = square(Corners::uniform(0.0, CornerKind::Round));
+        let mut dragged = plain.clone();
+        dragged.kind = drag(
+            &plain,
+            node,
+            Point::new(20.0, -30.0),
+            true,
+            [false; 4],
+            &mut turn,
+        )
+        .expect("rounds");
+        assert!((page_radius(&dragged, Corners::TOP_RIGHT) - 20.0).abs() < 1e-9);
+        let n = nodes(&dragged);
+        assert_eq!(n.len(), 3, "{n:?}");
+        distinct(&n);
+        // A wider rectangle: one side taken whole, 4 nodes.
+        let mut c = Corners::uniform(0.0, CornerKind::Round);
+        c.radii[Corners::TOP_RIGHT] = 20.0;
+        let n = nodes(&rect(c));
+        assert_eq!(n.len(), 4, "{n:?}");
+        distinct(&n);
+        // Two corners meeting in the middle of the top: 3 nodes.
+        c.radii[Corners::TOP_LEFT] = 20.0;
+        let n = nodes(&rect(c));
+        assert_eq!(n.len(), 3, "{n:?}");
+        distinct(&n);
+        // Short of the most, every corner keeps its nodes.
+        let mut c = Corners::uniform(0.0, CornerKind::Round);
+        c.radii[Corners::TOP_RIGHT] = 19.0;
+        assert_eq!(nodes(&square(c)).len(), 5);
     }
 
     #[test]
@@ -642,6 +946,41 @@ mod tests {
         .unwrap();
         moved.kind = k;
         assert_eq!(page_radius(&moved, 0), 0.0);
+    }
+
+    /// With Ctrl one corner goes past half the shorter side as far as its
+    /// neighbours leave it room; the others keep their size (#1757).
+    #[test]
+    fn one_corner_dragged_takes_what_its_neighbours_leave() {
+        let mut c = Corners::uniform(0.0, CornerKind::Round);
+        c.radii[Corners::TOP_RIGHT] = 5.0;
+        c.radii[Corners::TOP_LEFT] = 4.0;
+        let s = rect(c);
+        let node = KindNode::Corner {
+            corner: Corners::TOP_RIGHT,
+            vertical: true,
+        };
+        let mut turn = 0.0;
+        let dragged = |c: &Shape, y: f64, turn: &mut f64| {
+            let mut moved = c.clone();
+            moved.kind = drag(c, node, Point::new(40.0, y), true, [false; 4], turn).unwrap();
+            moved
+        };
+        // Down the right side to 16 mm from the top: more than half the
+        // 20 mm side.
+        let moved = dragged(&s, 4.0, &mut turn);
+        assert!((page_radius(&moved, Corners::TOP_RIGHT) - 16.0).abs() < 1e-9);
+        assert_eq!(page_radius(&moved, Corners::TOP_LEFT), 4.0);
+        // Past the bottom: the whole side, and no further.
+        let moved = dragged(&s, -10.0, &mut turn);
+        assert!((page_radius(&moved, Corners::TOP_RIGHT) - 20.0).abs() < 1e-9);
+        assert_eq!(page_radius(&moved, Corners::TOP_LEFT), 4.0);
+        // A bottom right corner of 6 leaves it 14.
+        let mut c2 = c;
+        c2.radii[Corners::BOTTOM_RIGHT] = 6.0;
+        let moved = dragged(&rect(c2), -10.0, &mut turn);
+        assert!((page_radius(&moved, Corners::TOP_RIGHT) - 14.0).abs() < 1e-9);
+        assert_eq!(page_radius(&moved, Corners::BOTTOM_RIGHT), 6.0);
     }
 
     #[test]
@@ -758,6 +1097,77 @@ mod tests {
         assert!(
             matches!(k, ShapeKind::Ellipse { arc: Some(a), .. } if (a.end_deg - 90.0).abs() < 1e-9 && a.pie)
         );
+    }
+
+    /// A live test of 0.41: an ellipse whose node was dragged outward with
+    /// the Shape tool became an arc that kept its fill. An arc is an open
+    /// curve: with Fill open curves off it draws no fill and is picked on
+    /// its outline only; a pie keeps its fill.
+    #[test]
+    fn an_ellipse_made_an_arc_draws_no_fill_unless_open_curves_are_filled() {
+        use tracedraw_core::{Color, Command, Fill};
+        let mut app = crate::app::App::headless();
+        app.settings.treat_all_filled = false;
+        let id = app
+            .new_shape(ShapeKind::Ellipse {
+                rect: Rect::new(80.0, 80.0, 120.0, 120.0),
+                arc: None,
+            })
+            .expect("ellipse");
+        app.select(vec![id]);
+        app.apply_fill(Fill::Solid(Color::rgb8(255, 0, 0)));
+        assert!(!app.doc().metadata.fill_open_curves);
+        let centre = Point::new(100.0, 100.0);
+        assert_eq!(app.hit_test(centre), Some(id));
+        // The node dragged outward, counter-clockwise round to the left.
+        let s = app.doc().find_shape(id).cloned().expect("shape");
+        let mut turn = 0.0;
+        let mut kind = None;
+        for deg in [120.0f64, 160.0, 200.0] {
+            let p =
+                centre + Vec2::new(30.0 * deg.to_radians().cos(), 30.0 * deg.to_radians().sin());
+            kind = drag(&s, KindNode::EllipseStart, p, false, [false; 4], &mut turn);
+        }
+        let kind = kind.expect("an arc");
+        assert!(kind.is_open_curve(), "{kind:?}");
+        app.run(Command::SetShapeKind { shape: id, kind });
+        let red_at = |app: &crate::app::App, p: Point| {
+            let pm = tracedraw_render::render_page_image(app.doc(), app.page, 25.4).expect("page");
+            let h = pm.height() as f64;
+            let px = pm
+                .pixel(p.x.round() as u32, (h - p.y).round() as u32)
+                .expect("pixel")
+                .demultiply();
+            px.alpha() > 0 && px.red() > 200 && px.green() < 60
+        };
+        // Neither drawn filled nor picked inside.
+        assert!(!red_at(&app, centre));
+        assert_eq!(app.hit_test(centre), None);
+        // A document that fills open curves fills the arc.
+        let fill_open = |app: &mut crate::app::App, on: bool| {
+            let mut metadata = app.doc().metadata.clone();
+            metadata.fill_open_curves = on;
+            app.run(Command::SetMetadata { metadata });
+        };
+        fill_open(&mut app, true);
+        assert!(red_at(&app, centre));
+        assert_eq!(app.hit_test(centre), Some(id));
+        fill_open(&mut app, false);
+        // A pie is closed: filled.
+        let ShapeKind::Ellipse {
+            rect,
+            arc: Some(mut a),
+        } = app.doc().find_shape(id).expect("shape").kind.clone()
+        else {
+            panic!("an arc");
+        };
+        a.pie = true;
+        app.run(Command::SetShapeKind {
+            shape: id,
+            kind: ShapeKind::Ellipse { rect, arc: Some(a) },
+        });
+        assert!(red_at(&app, centre + Vec2::new(5.0, -8.0)));
+        assert_eq!(app.hit_test(centre + Vec2::new(5.0, -8.0)), Some(id));
     }
 
     #[test]
@@ -891,6 +1301,109 @@ mod tests {
         .expect("vertex");
         assert!(
             matches!(k, ShapeKind::Polygon { twist, .. } if (twist - (at - untwisted)).abs() < 1e-9)
+        );
+    }
+
+    /// #1331: an inner node dragged through the centre comes out on the
+    /// other side: an inverted star (negative sharpness), not a star
+    /// turned half a turn, and not stopped at the centre.
+    #[test]
+    fn inner_nodes_cross_the_centre_into_an_inverted_star() {
+        let s = Shape::new(
+            ShapeId(1),
+            ShapeKind::Polygon {
+                rect: Rect::new(-10.0, -10.0, 10.0, 10.0),
+                points: 5,
+                sharpness: 0.5,
+                complex: None,
+                twist: 0.0,
+            },
+        );
+        let between = KindNode::Polygon {
+            outer: false,
+            index: 0,
+        };
+        let untwisted = std::f64::consts::FRAC_PI_2 - std::f64::consts::PI / 5.0;
+        // Through the centre to 3 mm on the other side, with and without
+        // Ctrl.
+        let p = Point::new(-3.0 * untwisted.cos(), -3.0 * untwisted.sin());
+        for ctrl in [false, true] {
+            let mut turn = 0.0;
+            let k = drag(&s, between, p, ctrl, [false; 4], &mut turn).expect("dragged");
+            let ShapeKind::Polygon {
+                sharpness, twist, ..
+            } = k
+            else {
+                panic!("{k:?}");
+            };
+            assert!((sharpness + 0.7).abs() < 1e-9, "ctrl {ctrl}: {sharpness}");
+            assert_eq!(twist, 0.0, "ctrl {ctrl}");
+            let inverted = Shape {
+                kind: k.clone(),
+                ..s.clone()
+            };
+            // Every inner node sits on the far side of the centre, the
+            // dragged one under the pointer; the outer ones stay put.
+            for (node, q) in nodes(&inverted) {
+                let KindNode::Polygon { outer, index } = node else {
+                    panic!("{node:?}");
+                };
+                let a = vertex_angle(5, index);
+                let want = if outer {
+                    Point::new(10.0 * a.cos(), 10.0 * a.sin())
+                } else {
+                    let b = a - std::f64::consts::PI / 5.0;
+                    Point::new(-3.0 * b.cos(), -3.0 * b.sin())
+                };
+                assert!((q - want).hypot() < 1e-9, "{node:?}: {q:?} {want:?}");
+            }
+            assert!((nodes(&inverted)[1].1 - p).hypot() < 1e-9);
+            // The outline draws the same points.
+            let path = inverted.page_path();
+            let drawn: Vec<Point> = path
+                .elements()
+                .iter()
+                .filter_map(|e| e.end_point())
+                .collect();
+            for (_, q) in nodes(&inverted) {
+                assert!(drawn.iter().any(|d| (*d - q).hypot() < 1e-9), "{q:?}");
+            }
+            // Dragged back through the centre: a plain star again.
+            let back = Point::new(4.0 * untwisted.cos(), 4.0 * untwisted.sin());
+            let k = drag(&inverted, between, back, ctrl, [false; 4], &mut turn).expect("back");
+            assert!(
+                matches!(k, ShapeKind::Polygon { sharpness, twist, .. } if (sharpness - 0.6).abs() < 1e-9 && twist == 0.0),
+                "{k:?}"
+            );
+        }
+        // A vertex pulled out keeps the inverted inner points where they are.
+        let inverted = Shape {
+            kind: ShapeKind::Polygon {
+                rect: Rect::new(-10.0, -10.0, 10.0, 10.0),
+                points: 5,
+                sharpness: -0.7,
+                complex: None,
+                twist: 0.0,
+            },
+            ..s.clone()
+        };
+        let top = KindNode::Polygon {
+            outer: true,
+            index: 0,
+        };
+        let mut turn = 0.0;
+        let k = drag(
+            &inverted,
+            top,
+            Point::new(0.0, 20.0),
+            false,
+            [false; 4],
+            &mut turn,
+        )
+        .unwrap();
+        assert!(
+            matches!(k, ShapeKind::Polygon { sharpness, .. } if (sharpness + 0.85).abs() < 1e-9),
+            "{k:?}"
         );
     }
 

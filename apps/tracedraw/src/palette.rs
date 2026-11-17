@@ -32,119 +32,135 @@ impl Palette {
     }
 }
 
-/// The default CMYK palette, in its order: the greys, the process
-/// colours and their overprints, then tints in 20% steps.
+/// The default CMYK palette (94 swatches), in this order:
+///
+/// 1. The basics (22): Black, 90% to 10% Black, White, the six process
+///    colours (Blue, Cyan, Green, Yellow, Red, Magenta), then Purple,
+///    Orange, Pink, Dark Brown and Powder Blue.
+/// 2. The mixes after them, in the classic order: the blues, the greens,
+///    the yellows and browns, the reds and pinks, the violets and
+///    purples, ending with the deep blues. They are tints, shades and
+///    muted mixes in 20% steps of the inks, and every one has a plain
+///    descriptive name ("Dusty Blue", "Olive Green").
+///
+/// Among the first 50 swatches, after the basics, every fourth or fifth
+/// swatch (4 kept, 1 left out, 5 kept, 1 left out and so on) is left out
+/// of that order, five in all, so the list is 94 long. Every value is a
+/// whole percentage. Documents keep the colours they store, so changing
+/// the palette changes nothing in a saved drawing.
 pub fn default_cmyk() -> Vec<(String, Color)> {
-    let mut v: Vec<(String, Color)> = Vec::with_capacity(99);
-    let mut add = |n: &str, c: f32, m: f32, y: f32, k: f32| {
-        v.push((n.to_string(), Color::cmyk_pct(c, m, y, k)));
+    let mut v: Vec<(String, Color)> = Vec::with_capacity(94);
+    let mut add = |n: &str, c: u32, m: u32, y: u32, k: u32| {
+        v.push((
+            n.to_string(),
+            Color::cmyk_pct(c as f32, m as f32, y as f32, k as f32),
+        ));
     };
-    add("Black", 0.0, 0.0, 0.0, 100.0);
-    add("90% Black", 0.0, 0.0, 0.0, 90.0);
-    add("80% Black", 0.0, 0.0, 0.0, 80.0);
-    add("70% Black", 0.0, 0.0, 0.0, 70.0);
-    add("60% Black", 0.0, 0.0, 0.0, 60.0);
-    add("50% Black", 0.0, 0.0, 0.0, 50.0);
-    add("40% Black", 0.0, 0.0, 0.0, 40.0);
-    add("30% Black", 0.0, 0.0, 0.0, 30.0);
-    add("20% Black", 0.0, 0.0, 0.0, 20.0);
-    add("10% Black", 0.0, 0.0, 0.0, 10.0);
-    add("White", 0.0, 0.0, 0.0, 0.0);
-    add("Blue", 100.0, 100.0, 0.0, 0.0);
-    add("Cyan", 100.0, 0.0, 0.0, 0.0);
-    add("Green", 100.0, 0.0, 100.0, 0.0);
-    add("Yellow", 0.0, 0.0, 100.0, 0.0);
-    add("Red", 0.0, 100.0, 100.0, 0.0);
-    add("Magenta", 0.0, 100.0, 0.0, 0.0);
-    add("Purple", 20.0, 80.0, 0.0, 20.0);
-    add("Orange", 0.0, 60.0, 100.0, 0.0);
-    add("Pink", 0.0, 40.0, 20.0, 0.0);
-    add("Dark Brown", 0.0, 20.0, 20.0, 60.0);
-    add("Powder Blue", 20.0, 20.0, 0.0, 0.0);
-    add("Pastel Blue", 40.0, 40.0, 0.0, 0.0);
-    add("Baby Blue", 60.0, 40.0, 0.0, 0.0);
-    add("Electric Blue", 60.0, 60.0, 0.0, 0.0);
-    add("Twilight Blue", 40.0, 40.0, 0.0, 20.0);
-    add("Navy Blue", 60.0, 40.0, 0.0, 40.0);
-    add("Deep Navy Blue", 40.0, 40.0, 0.0, 60.0);
-    add("Desert Blue", 40.0, 20.0, 0.0, 40.0);
-    add("Sky Blue", 100.0, 20.0, 0.0, 0.0);
-    add("Ice Blue", 40.0, 0.0, 0.0, 0.0);
-    add("Light BlueGreen", 20.0, 0.0, 0.0, 20.0);
-    add("Ocean Green", 20.0, 0.0, 0.0, 40.0);
-    add("Moss Green", 20.0, 0.0, 0.0, 60.0);
-    add("Dark Green", 20.0, 0.0, 0.0, 80.0);
-    add("Forest Green", 40.0, 0.0, 20.0, 60.0);
-    add("Grass Green", 60.0, 0.0, 40.0, 40.0);
-    add("Kentucky Green", 40.0, 0.0, 20.0, 40.0);
-    add("Light Green", 60.0, 0.0, 40.0, 20.0);
-    add("Spring Green", 60.0, 0.0, 60.0, 20.0);
-    add("Turquoise", 60.0, 0.0, 20.0, 0.0);
-    add("Sea Green", 60.0, 0.0, 20.0, 20.0);
-    add("Faded Green", 20.0, 0.0, 20.0, 20.0);
-    add("Ghost Green", 20.0, 0.0, 20.0, 0.0);
-    add("Mint Green", 40.0, 0.0, 40.0, 0.0);
-    add("Army Green", 20.0, 0.0, 20.0, 40.0);
-    add("Avocado Green", 20.0, 0.0, 40.0, 40.0);
-    add("Martian Green", 20.0, 0.0, 60.0, 20.0);
-    add("Dull Green", 20.0, 0.0, 40.0, 20.0);
-    add("Chartreuse", 40.0, 0.0, 100.0, 0.0);
-    add("Moon Green", 20.0, 0.0, 60.0, 0.0);
-    add("Murky Green", 0.0, 0.0, 20.0, 80.0);
-    add("Olive Drab", 0.0, 0.0, 20.0, 60.0);
-    add("Khaki", 0.0, 0.0, 20.0, 40.0);
-    add("Olive", 0.0, 0.0, 40.0, 40.0);
-    add("Banana Yellow", 0.0, 0.0, 60.0, 20.0);
-    add("Light Yellow", 0.0, 0.0, 60.0, 0.0);
-    add("Chalk", 0.0, 0.0, 40.0, 0.0);
-    add("Pale Yellow", 0.0, 0.0, 20.0, 0.0);
-    add("Brown", 0.0, 20.0, 40.0, 40.0);
-    add("Red Brown", 0.0, 40.0, 60.0, 20.0);
-    add("Gold", 0.0, 20.0, 60.0, 20.0);
-    add("Autumn Orange", 0.0, 60.0, 80.0, 0.0);
-    add("Light Orange", 0.0, 40.0, 80.0, 0.0);
-    add("Peach", 0.0, 40.0, 60.0, 0.0);
-    add("Deep Yellow", 0.0, 20.0, 100.0, 0.0);
-    add("Sand", 0.0, 20.0, 40.0, 0.0);
-    add("Walnut", 0.0, 20.0, 40.0, 60.0);
-    add("Ruby Red", 0.0, 60.0, 60.0, 40.0);
-    add("Brick Red", 0.0, 60.0, 80.0, 20.0);
-    add("Tropical Pink", 0.0, 60.0, 60.0, 0.0);
-    add("Soft Pink", 0.0, 40.0, 40.0, 0.0);
-    add("Faded Pink", 0.0, 20.0, 20.0, 0.0);
-    add("Crimson", 0.0, 100.0, 60.0, 20.0);
-    add("Regal Red", 0.0, 100.0, 100.0, 20.0);
-    add("Deep Rose", 0.0, 100.0, 60.0, 0.0);
-    add("Neon Red", 0.0, 100.0, 80.0, 0.0);
-    add("Deep Pink", 0.0, 60.0, 40.0, 0.0);
-    add("Hot Pink", 0.0, 80.0, 40.0, 0.0);
-    add("Dusty Rose", 0.0, 40.0, 20.0, 20.0);
-    add("Plum", 0.0, 60.0, 0.0, 40.0);
-    add("Deep Violet", 0.0, 60.0, 0.0, 60.0);
-    add("Light Violet", 0.0, 40.0, 0.0, 0.0);
-    add("Violet", 0.0, 40.0, 0.0, 20.0);
-    add("Dusty Plum", 0.0, 20.0, 0.0, 20.0);
-    add("Pale Purple", 0.0, 20.0, 0.0, 0.0);
-    add("Majestic Purple", 20.0, 60.0, 0.0, 20.0);
-    add("Neon Purple", 20.0, 80.0, 0.0, 0.0);
-    add("Light Purple", 20.0, 60.0, 0.0, 0.0);
-    add("Twilight Violet", 20.0, 40.0, 0.0, 20.0);
-    add("Easter Purple", 20.0, 40.0, 0.0, 0.0);
-    add("Deep Purple", 20.0, 40.0, 0.0, 60.0);
-    add("Grape", 20.0, 40.0, 0.0, 40.0);
-    add("Blue Violet", 40.0, 60.0, 0.0, 0.0);
-    add("Blue Purple", 40.0, 100.0, 0.0, 0.0);
-    add("Deep River", 60.0, 60.0, 0.0, 20.0);
-    add("Deep Azure", 60.0, 60.0, 0.0, 40.0);
-    add("Storm Blue", 40.0, 40.0, 0.0, 40.0);
-    add("Deep Blue", 60.0, 60.0, 0.0, 60.0);
+    add("Black", 0, 0, 0, 100);
+    add("90% Black", 0, 0, 0, 90);
+    add("80% Black", 0, 0, 0, 80);
+    add("70% Black", 0, 0, 0, 70);
+    add("60% Black", 0, 0, 0, 60);
+    add("50% Black", 0, 0, 0, 50);
+    add("40% Black", 0, 0, 0, 40);
+    add("30% Black", 0, 0, 0, 30);
+    add("20% Black", 0, 0, 0, 20);
+    add("10% Black", 0, 0, 0, 10);
+    add("White", 0, 0, 0, 0);
+    add("Blue", 100, 100, 0, 0);
+    add("Cyan", 100, 0, 0, 0);
+    add("Green", 100, 0, 100, 0);
+    add("Yellow", 0, 0, 100, 0);
+    add("Red", 0, 100, 100, 0);
+    add("Magenta", 0, 100, 0, 0);
+    add("Purple", 20, 80, 0, 20);
+    add("Orange", 0, 60, 100, 0);
+    add("Pink", 0, 40, 20, 0);
+    add("Dark Brown", 0, 20, 20, 60);
+    add("Powder Blue", 20, 20, 0, 0);
+    add("Pastel Blue", 40, 40, 0, 0);
+    add("Baby Blue", 60, 40, 0, 0);
+    add("Bright Blue", 60, 60, 0, 0);
+    add("Dusty Blue", 40, 40, 0, 20);
+    add("Dark Navy Blue", 40, 40, 0, 60);
+    add("Slate Blue", 40, 20, 0, 40);
+    add("Sky Blue", 100, 20, 0, 0);
+    add("Ice Blue", 40, 0, 0, 0);
+    add("Pale Slate", 20, 0, 0, 20);
+    add("Moss Green", 20, 0, 0, 60);
+    add("Dark Green", 20, 0, 0, 80);
+    add("Forest Green", 40, 0, 20, 60);
+    add("Grass Green", 60, 0, 40, 40);
+    add("Light Green", 60, 0, 40, 20);
+    add("Spring Green", 60, 0, 60, 20);
+    add("Turquoise", 60, 0, 20, 0);
+    add("Sea Green", 60, 0, 20, 20);
+    add("Grey Green", 20, 0, 20, 20);
+    add("Mint Green", 40, 0, 40, 0);
+    add("Dark Grey Green", 20, 0, 20, 40);
+    add("Olive Green", 20, 0, 40, 40);
+    add("Lime", 20, 0, 60, 20);
+    add("Chartreuse", 40, 0, 100, 0);
+    add("Pale Lime", 20, 0, 60, 0);
+    add("Dark Olive", 0, 0, 20, 80);
+    add("Olive Drab", 0, 0, 20, 60);
+    add("Khaki", 0, 0, 20, 40);
+    add("Olive", 0, 0, 40, 40);
+    add("Soft Yellow", 0, 0, 60, 20);
+    add("Light Yellow", 0, 0, 60, 0);
+    add("Cream", 0, 0, 40, 0);
+    add("Pale Yellow", 0, 0, 20, 0);
+    add("Brown", 0, 20, 40, 40);
+    add("Red Brown", 0, 40, 60, 20);
+    add("Gold", 0, 20, 60, 20);
+    add("Dark Orange", 0, 60, 80, 0);
+    add("Light Orange", 0, 40, 80, 0);
+    add("Peach", 0, 40, 60, 0);
+    add("Deep Yellow", 0, 20, 100, 0);
+    add("Sand", 0, 20, 40, 0);
+    add("Dark Tan", 0, 20, 40, 60);
+    add("Maroon", 0, 60, 60, 40);
+    add("Brick Red", 0, 60, 80, 20);
+    add("Salmon", 0, 60, 60, 0);
+    add("Soft Pink", 0, 40, 40, 0);
+    add("Faded Pink", 0, 20, 20, 0);
+    add("Crimson", 0, 100, 60, 20);
+    add("Dark Red", 0, 100, 100, 20);
+    add("Deep Rose", 0, 100, 60, 0);
+    add("Bright Red", 0, 100, 80, 0);
+    add("Deep Pink", 0, 60, 40, 0);
+    add("Hot Pink", 0, 80, 40, 0);
+    add("Dusty Rose", 0, 40, 20, 20);
+    add("Plum", 0, 60, 0, 40);
+    add("Deep Violet", 0, 60, 0, 60);
+    add("Light Violet", 0, 40, 0, 0);
+    add("Violet", 0, 40, 0, 20);
+    add("Dusty Plum", 0, 20, 0, 20);
+    add("Pale Purple", 0, 20, 0, 0);
+    add("Medium Purple", 20, 60, 0, 20);
+    add("Bright Purple", 20, 80, 0, 0);
+    add("Light Purple", 20, 60, 0, 0);
+    add("Dusty Violet", 20, 40, 0, 20);
+    add("Lilac", 20, 40, 0, 0);
+    add("Deep Purple", 20, 40, 0, 60);
+    add("Dark Violet", 20, 40, 0, 40);
+    add("Blue Violet", 40, 60, 0, 0);
+    add("Blue Purple", 40, 100, 0, 0);
+    add("Royal Blue", 60, 60, 0, 20);
+    add("Dark Blue", 60, 60, 0, 40);
+    add("Steel Blue", 40, 40, 0, 40);
+    add("Deep Blue", 60, 60, 0, 60);
     v
 }
 
 /// The default palette of an RGB drawing: the same colours as
 /// [`default_cmyk`], in the same order and with the same names, as clean
-/// RGB values defined directly (multiples of 51 and 10% greys), not
-/// converted from the inks (#620).
+/// RGB values defined directly (multiples of 17 and 10% greys), not
+/// converted from the inks: each channel of a colour is the plain ink
+/// formula (255 times one minus the ink plus black, to 1) rounded to the
+/// nearest multiple of 17 (#620). No two swatches have the same value:
+/// Deep Blue is set to 0 0 68, a step darker than the formula gives,
+/// which is also the value of Dark Navy Blue.
 pub fn default_rgb() -> Vec<(String, Color)> {
     DEFAULT_RGB
         .iter()
@@ -158,7 +174,7 @@ pub fn default_rgb() -> Vec<(String, Color)> {
 }
 
 /// [`default_rgb`]'s names and 0xRRGGBB values.
-const DEFAULT_RGB: [(&str, u32); 99] = [
+const DEFAULT_RGB: [(&str, u32); 94] = [
     ("Black", 0x000000),
     ("90% Black", 0x1A1A1A),
     ("80% Black", 0x333333),
@@ -183,81 +199,76 @@ const DEFAULT_RGB: [(&str, u32); 99] = [
     ("Powder Blue", 0xCCCCFF),
     ("Pastel Blue", 0x9999FF),
     ("Baby Blue", 0x6699FF),
-    ("Electric Blue", 0x6666FF),
-    ("Twilight Blue", 0x6666CC),
-    ("Navy Blue", 0x003399),
-    ("Deep Navy Blue", 0x000066),
-    ("Desert Blue", 0x336699),
+    ("Bright Blue", 0x6666FF),
+    ("Dusty Blue", 0x6666CC),
+    ("Dark Navy Blue", 0x000066),
+    ("Slate Blue", 0x336699),
     ("Sky Blue", 0x00CCFF),
     ("Ice Blue", 0x99FFFF),
-    ("Light BlueGreen", 0x99CCCC),
-    ("Ocean Green", 0x669999),
+    ("Pale Slate", 0x99CCCC),
     ("Moss Green", 0x336666),
     ("Dark Green", 0x003333),
     ("Forest Green", 0x006633),
     ("Grass Green", 0x009933),
-    ("Kentucky Green", 0x339966),
     ("Light Green", 0x33CC66),
     ("Spring Green", 0x33CC33),
     ("Turquoise", 0x66FFCC),
     ("Sea Green", 0x33CC99),
-    ("Faded Green", 0x99CC99),
-    ("Ghost Green", 0xCCFFCC),
+    ("Grey Green", 0x99CC99),
     ("Mint Green", 0x99FF99),
-    ("Army Green", 0x669966),
-    ("Avocado Green", 0x669933),
-    ("Martian Green", 0x99CC33),
-    ("Dull Green", 0x99CC66),
+    ("Dark Grey Green", 0x669966),
+    ("Olive Green", 0x669933),
+    ("Lime", 0x99CC33),
     ("Chartreuse", 0x99FF00),
-    ("Moon Green", 0xCCFF66),
-    ("Murky Green", 0x333300),
+    ("Pale Lime", 0xCCFF66),
+    ("Dark Olive", 0x333300),
     ("Olive Drab", 0x666633),
     ("Khaki", 0x999966),
     ("Olive", 0x999933),
-    ("Banana Yellow", 0xCCCC33),
+    ("Soft Yellow", 0xCCCC33),
     ("Light Yellow", 0xFFFF66),
-    ("Chalk", 0xFFFF99),
+    ("Cream", 0xFFFF99),
     ("Pale Yellow", 0xFFFFCC),
     ("Brown", 0x996633),
     ("Red Brown", 0xCC6633),
     ("Gold", 0xCC9933),
-    ("Autumn Orange", 0xFF6633),
+    ("Dark Orange", 0xFF6633),
     ("Light Orange", 0xFF9933),
     ("Peach", 0xFF9966),
     ("Deep Yellow", 0xFFCC00),
     ("Sand", 0xFFCC99),
-    ("Walnut", 0x663300),
-    ("Ruby Red", 0x990000),
+    ("Dark Tan", 0x663300),
+    ("Maroon", 0x990000),
     ("Brick Red", 0xCC3300),
-    ("Tropical Pink", 0xFF6666),
+    ("Salmon", 0xFF6666),
     ("Soft Pink", 0xFF9999),
     ("Faded Pink", 0xFFCCCC),
-    ("Crimson", 0x993366),
-    ("Regal Red", 0xCC3366),
-    ("Deep Rose", 0xCC3399),
-    ("Neon Red", 0xFF0066),
+    ("Crimson", 0xCC0033),
+    ("Dark Red", 0xCC0000),
+    ("Deep Rose", 0xFF0066),
+    ("Bright Red", 0xFF0033),
     ("Deep Pink", 0xFF6699),
     ("Hot Pink", 0xFF3399),
     ("Dusty Rose", 0xCC6699),
-    ("Plum", 0x660066),
-    ("Deep Violet", 0x990099),
+    ("Plum", 0x990099),
+    ("Deep Violet", 0x660066),
     ("Light Violet", 0xFF99FF),
     ("Violet", 0xCC66CC),
-    ("Dusty Plum", 0x996699),
-    ("Pale Purple", 0xCC99CC),
-    ("Majestic Purple", 0x9933CC),
-    ("Neon Purple", 0xCC33FF),
+    ("Dusty Plum", 0xCC99CC),
+    ("Pale Purple", 0xFFCCFF),
+    ("Medium Purple", 0x9933CC),
+    ("Bright Purple", 0xCC33FF),
     ("Light Purple", 0xCC66FF),
-    ("Twilight Violet", 0x9966CC),
-    ("Easter Purple", 0xCC99FF),
+    ("Dusty Violet", 0x9966CC),
+    ("Lilac", 0xCC99FF),
     ("Deep Purple", 0x330066),
-    ("Grape", 0x663399),
+    ("Dark Violet", 0x663399),
     ("Blue Violet", 0x9966FF),
     ("Blue Purple", 0x9900FF),
-    ("Deep River", 0x6600CC),
-    ("Deep Azure", 0x6633FF),
-    ("Storm Blue", 0x330099),
-    ("Deep Blue", 0x3300CC),
+    ("Royal Blue", 0x3333CC),
+    ("Dark Blue", 0x000099),
+    ("Steel Blue", 0x333399),
+    ("Deep Blue", 0x000044),
 ];
 
 /// Process colours in 10% steps of C, M, Y and K combinations (a subset).
@@ -337,17 +348,27 @@ pub fn load_palette(path: &std::path::Path) -> Result<Palette, String> {
         .and_then(|e| e.to_str())
         .unwrap_or("")
         .to_ascii_lowercase();
-    let name = path
+    let mut name = path
         .file_stem()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| "Palette".into());
     let colors = match ext.as_str() {
-        "gpl" => parse_gpl(&crate::files::read_to_string(path).map_err(|e| e.to_string())?),
+        "gpl" => {
+            let src = crate::files::read_to_string(path).map_err(|e| e.to_string())?;
+            if let Some(n) = stored_name(&src) {
+                name = n;
+            }
+            parse_gpl(&src)
+        }
         "ase" => parse_ase(&crate::files::read(path).map_err(|e| e.to_string())?),
         "aco" => parse_aco(&crate::files::read(path).map_err(|e| e.to_string())?),
         "xml" => parse_xml(&crate::files::read(path).map_err(|e| e.to_string())?)?,
         "tdpal" | "json" => {
-            parse_tdpal(&crate::files::read_to_string(path).map_err(|e| e.to_string())?)?
+            let src = crate::files::read_to_string(path).map_err(|e| e.to_string())?;
+            if let Some(n) = stored_name(&src) {
+                name = n;
+            }
+            parse_tdpal(&src)?
         }
         other => return Err(format!("unsupported palette format: {other}")),
     };
@@ -358,6 +379,26 @@ pub fn load_palette(path: &std::path::Path) -> Result<Palette, String> {
         builtin: false,
         path: Some(path.to_path_buf()),
     })
+}
+
+/// The name a palette file keeps for its palette: a GIMP palette's
+/// `Name:` line or the `name` of a TraceDraw palette; None when it keeps
+/// none (or an empty one).
+pub fn stored_name(src: &str) -> Option<String> {
+    let name = if src.trim_start().starts_with('{') {
+        serde_json::from_str::<serde_json::Value>(src)
+            .ok()?
+            .get("name")?
+            .as_str()?
+            .to_string()
+    } else {
+        src.lines()
+            .take(8)
+            .find_map(|l| l.trim().strip_prefix("Name:"))?
+            .to_string()
+    };
+    let name: String = name.trim().chars().take(120).collect();
+    (!name.is_empty()).then_some(name)
 }
 
 pub fn save_palette(p: &Palette, path: &std::path::Path) -> Result<(), String> {
@@ -400,6 +441,21 @@ fn parse_tdpal(src: &str) -> Result<Vec<(String, Color)>, String> {
                 .to_string();
             if let Some(c) = e.get("color") {
                 if let Ok(c) = serde_json::from_value::<Color>(c.clone()) {
+                    // A spot colour's ink goes by its name, whatever
+                    // number the file kept (a name edited by hand).
+                    let c = match c {
+                        Color::Spot {
+                            tint, c, m, y, k, ..
+                        } => Color::Spot {
+                            ink: spot_ink_id(&name),
+                            tint,
+                            c,
+                            m,
+                            y,
+                            k,
+                        },
+                        other => other,
+                    };
                     out.push((name, c));
                 }
             }
@@ -412,14 +468,53 @@ fn parse_tdpal(src: &str) -> Result<Vec<(String, Color)>, String> {
 /// `<color cs="CMYK" name="Green" tints="1,0,1,0"/>` per colour, the
 /// layout of the document palette `.cdr` files carry (see
 /// `docs/cdr-format.md`). CMYK, RGB, grey, CMY, HSB, HLS, Lab and YIQ
-/// colours are read with their names; spot colours and unknown colour
-/// spaces are skipped. A file with no colour that can be read is an error,
-/// so the status bar says why nothing was added (#882).
+/// colours are read with their names.
+///
+/// A spot colour library (a Pantone palette) first names its inks in
+/// `<colorspaces>`: one `<cs name="PANTONE 100 C">` each, holding the
+/// ink's look as `<color cs="LAB" ..>` and `<color cs="CMYK" ..>`; the
+/// page's colours then name the ink as their colour space,
+/// `<color cs="PANTONE 100 C" tints="1"/>`. Each becomes the spot colour
+/// of that ink (its CMYK look as the stand-in, else the first look given),
+/// named after it, at the tint given. The looks inside `<colorspaces>`
+/// are not colours of the palette: read as such, they made every colour
+/// twice, without a name and in process inks (#882). Unknown colour
+/// spaces are skipped. A file with no colour that can be read is an
+/// error, so the status bar says why nothing was added (#882).
 pub fn parse_xml(bytes: &[u8]) -> Result<Vec<(String, Color)>, String> {
     let text = String::from_utf8_lossy(bytes);
-    let colors = tracedraw_cdr::container::parse_palette_xml(&text);
+    let (inks, page) = xml_colorspaces(&text);
+    let mut colors = Vec::new();
+    let mut rest = page.as_str();
+    while let Some(at) = rest.find("<color ") {
+        let tail = &rest[at..];
+        let end = tail.find('>').map_or(tail.len(), |e| e + 1);
+        let tag = &tail[..end];
+        rest = &tail[end..];
+        let cs = xml_attribute(tag, "cs").unwrap_or_default();
+        if let Some(look) = inks.get(&cs.trim().to_lowercase()) {
+            let name = xml_attribute(tag, "name")
+                .filter(|n| !n.trim().is_empty())
+                .unwrap_or_else(|| cs.trim().to_string());
+            let tint = xml_attribute(tag, "tints")
+                .and_then(|t| {
+                    t.split(',')
+                        .next()
+                        .and_then(|v| v.trim().parse::<f32>().ok())
+                })
+                .filter(|v| v.is_finite())
+                .map_or(1.0, |v| v.clamp(0.0, 1.0));
+            let mut c = spot_color(cs.trim(), *look);
+            if let Color::Spot { tint: t, .. } = &mut c {
+                *t = tint;
+            }
+            colors.push((name, c));
+        } else {
+            colors.extend(tracedraw_cdr::container::parse_palette_xml(tag));
+        }
+    }
     if colors.is_empty() {
-        let entries = text.matches("<color ").count();
+        let entries = page.matches("<color ").count();
         return Err(if entries == 0 {
             "no <color> entries in this XML palette".into()
         } else {
@@ -429,6 +524,70 @@ pub fn parse_xml(bytes: &[u8]) -> Result<Vec<(String, Color)>, String> {
         });
     }
     Ok(colors)
+}
+
+/// The spot inks an XML palette names in `<colorspaces>`, by their names
+/// in lower case, each with its look (CMYK when given, else the first look
+/// that can be read), and the rest of the file without that section.
+fn xml_colorspaces(text: &str) -> (std::collections::HashMap<String, Color>, String) {
+    let mut inks = std::collections::HashMap::new();
+    let Some(start) = text.find("<colorspaces") else {
+        return (inks, text.to_string());
+    };
+    let end = text[start..]
+        .find("</colorspaces>")
+        .map_or(text.len(), |e| start + e + "</colorspaces>".len());
+    let section = &text[start..end];
+    let mut rest = section;
+    while let Some(at) = rest.find("<cs ") {
+        let tail = &rest[at..];
+        let open_end = tail.find('>').map_or(tail.len(), |e| e + 1);
+        let open = &tail[..open_end];
+        let body_end = if open.ends_with("/>") {
+            open_end
+        } else {
+            tail.find("</cs>").unwrap_or(tail.len())
+        };
+        let body = &tail[open_end.min(body_end)..body_end];
+        rest = &tail[body_end..];
+        let Some(name) = xml_attribute(open, "name").filter(|n| !n.trim().is_empty()) else {
+            continue;
+        };
+        let looks = tracedraw_cdr::container::parse_palette_xml(body);
+        let look = looks
+            .iter()
+            .find(|(_, c)| matches!(c, Color::Cmyk { .. }))
+            .or(looks.first())
+            .map(|(_, c)| *c);
+        if let Some(look) = look {
+            inks.entry(name.trim().to_lowercase()).or_insert(look);
+        }
+    }
+    let page = format!("{}{}", &text[..start], &text[end..]);
+    (inks, page)
+}
+
+/// The value of `key="..."` in an XML tag, the five entities decoded.
+fn xml_attribute(tag: &str, key: &str) -> Option<String> {
+    let pat = format!("{key}=\"");
+    let mut search = tag;
+    loop {
+        let at = search.find(&pat)?;
+        let ok = at == 0 || search[..at].ends_with(char::is_whitespace);
+        let after = &search[at + pat.len()..];
+        if ok {
+            let end = after.find('"')?;
+            return Some(
+                after[..end]
+                    .replace("&quot;", "\"")
+                    .replace("&apos;", "'")
+                    .replace("&lt;", "<")
+                    .replace("&gt;", ">")
+                    .replace("&amp;", "&"),
+            );
+        }
+        search = after;
+    }
 }
 
 /// GIMP palette: `r g b [name]` per line after the header.
@@ -687,6 +846,82 @@ impl Harmony {
 mod tests {
     use super::*;
 
+    /// The default palette follows its rule: the basics first (what the
+    /// strip always began with), 94 swatches, unique names, whole
+    /// percentages, and an RGB twin with the same names and no repeated
+    /// value.
+    #[test]
+    fn the_default_palette_follows_its_rule() {
+        let cmyk = default_cmyk();
+        assert_eq!(cmyk.len(), 94);
+        let names: Vec<&str> = cmyk.iter().map(|(n, _)| n.as_str()).collect();
+        let distinct: std::collections::HashSet<&&str> = names.iter().collect();
+        assert_eq!(distinct.len(), 94, "names are unique");
+        // The first part is the basics, in order.
+        let basics: [(&str, [f32; 4]); 22] = [
+            ("Black", [0.0, 0.0, 0.0, 100.0]),
+            ("90% Black", [0.0, 0.0, 0.0, 90.0]),
+            ("80% Black", [0.0, 0.0, 0.0, 80.0]),
+            ("70% Black", [0.0, 0.0, 0.0, 70.0]),
+            ("60% Black", [0.0, 0.0, 0.0, 60.0]),
+            ("50% Black", [0.0, 0.0, 0.0, 50.0]),
+            ("40% Black", [0.0, 0.0, 0.0, 40.0]),
+            ("30% Black", [0.0, 0.0, 0.0, 30.0]),
+            ("20% Black", [0.0, 0.0, 0.0, 20.0]),
+            ("10% Black", [0.0, 0.0, 0.0, 10.0]),
+            ("White", [0.0, 0.0, 0.0, 0.0]),
+            ("Blue", [100.0, 100.0, 0.0, 0.0]),
+            ("Cyan", [100.0, 0.0, 0.0, 0.0]),
+            ("Green", [100.0, 0.0, 100.0, 0.0]),
+            ("Yellow", [0.0, 0.0, 100.0, 0.0]),
+            ("Red", [0.0, 100.0, 100.0, 0.0]),
+            ("Magenta", [0.0, 100.0, 0.0, 0.0]),
+            ("Purple", [20.0, 80.0, 0.0, 20.0]),
+            ("Orange", [0.0, 60.0, 100.0, 0.0]),
+            ("Pink", [0.0, 40.0, 20.0, 0.0]),
+            ("Dark Brown", [0.0, 20.0, 20.0, 60.0]),
+            ("Powder Blue", [20.0, 20.0, 0.0, 0.0]),
+        ];
+        for (i, (name, [c, m, y, k])) in basics.iter().enumerate() {
+            assert_eq!(names[i], *name);
+            assert_eq!(cmyk[i].1, Color::cmyk_pct(*c, *m, *y, *k));
+        }
+        // Five swatches are left out of the first 50: the 27th, 33rd,
+        // 38th, 44th and 49th of the classic order (Navy Blue, Ocean
+        // Green, and so on), and none of the fanciful names remain.
+        for gone in [
+            "Navy Blue",
+            "Kentucky Green",
+            "Martian Green",
+            "Easter Purple",
+        ] {
+            assert!(!names.contains(&gone), "{gone}");
+        }
+        assert_eq!(names[22], "Pastel Blue");
+        assert_eq!(names[26], "Dark Navy Blue");
+        assert_eq!(names[93], "Deep Blue");
+        let find = |n: &str| cmyk.iter().find(|(m, _)| m == n).map(|(_, c)| *c);
+        assert_eq!(
+            find("Dusty Blue"),
+            Some(Color::cmyk_pct(40.0, 40.0, 0.0, 20.0))
+        );
+        // Every ink is a whole percentage.
+        for (n, c) in &cmyk {
+            let Color::Cmyk { c, m, y, k } = *c else {
+                panic!("{n} is not CMYK");
+            };
+            for v in [c, m, y, k] {
+                assert!(((v * 100.0).round() - v * 100.0).abs() < 0.01, "{n}");
+            }
+        }
+        let rgb = default_rgb();
+        let rgb_names: Vec<&str> = rgb.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(rgb_names, names);
+        let values: std::collections::HashSet<[u8; 3]> =
+            rgb.iter().map(|(_, c)| c.to_rgb8()).collect();
+        assert_eq!(values.len(), 94, "RGB values are unique");
+    }
+
     /// Open Palette lists the extensions it accepts, XML among them,
     /// and a small XML palette comes in with its names and values (#882).
     #[test]
@@ -728,6 +963,57 @@ mod tests {
         );
         assert_eq!(p.colors[1].1.to_rgb8(), [255, 128, 0]);
         assert!(matches!(p.colors[2].1, Color::Lab { .. }));
+    }
+
+    /// A spot colour library as CorelDRAW writes it (a Pantone palette):
+    /// the inks named in `<colorspaces>` with their looks, the page's
+    /// colours naming the ink as their colour space. Each colour comes in
+    /// once, named, as the spot colour of its ink with its CMYK look as the
+    /// stand-in; the looks were read as colours of their own, so every
+    /// colour came twice, nameless and in process inks (#882).
+    #[test]
+    fn spot_libraries_in_xml_open_as_named_spot_colours() {
+        let xml = br#"<?xml version="1.0"?>
+<palette guid="a74d62e5-0000-0000-0000-000000000000" fixedID="36" name="Inks.xml" prefix="INK "><colorspaces><cs name="INK Yellow C" fixedID="1" version="1500"><color cs="CMYK" tints="0,0.01,1,0"/><color cs="LAB" tints="0.8898,0.4968,0.9367"/><color cs="sRGB" tints="0.996,0.867,0"/></cs><cs name="INK Trans. White" fixedID="19" version="1500"><color cs="LAB" tints="1.0,0.5,0.5"/><color cs="CMYK" tints="0,0,0,0"/></cs><cs name="INK Lab Only" fixedID="20" version="1500"><color cs="LAB" tints="0.5,0.5,0.5"/></cs></colorspaces><colors><page><color cs="INK Trans. White" name="INK Trans. White" tints="1"/><color cs="INK Yellow C" name="INK Yellow C" tints="1"/><color cs="INK Lab Only" tints="0.5"/><color cs="CMYK" name="Process" tints="1,0,0,0"/></page></colors></palette>"#;
+        let colors = parse_xml(xml).unwrap();
+        let names: Vec<&str> = colors.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "INK Trans. White",
+                "INK Yellow C",
+                "INK Lab Only",
+                "Process"
+            ]
+        );
+        match colors[1].1 {
+            Color::Spot {
+                ink,
+                tint,
+                c,
+                m,
+                y,
+                k,
+            } => {
+                assert_eq!(ink, spot_ink_id("INK Yellow C"));
+                assert_eq!(tint, 1.0);
+                assert_eq!([c, m, y, k], [0.0, 0.01, 1.0, 0.0]);
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(matches!(colors[0].1, Color::Spot { c, m, y, k, .. } if [c, m, y, k] == [0.0; 4]));
+        // An ink with a Lab look only: still the spot colour, at the tint
+        // the page gives.
+        assert!(matches!(colors[2].1, Color::Spot { tint, .. } if tint == 0.5));
+        assert_eq!(
+            colors[3].1,
+            Color::Cmyk {
+                c: 1.0,
+                m: 0.0,
+                y: 0.0,
+                k: 0.0
+            }
+        );
     }
 
     /// XML that holds no colour that can be read says so instead of
@@ -802,6 +1088,36 @@ mod tests {
     }
 
     #[test]
+    fn tdpal_spot_colours_keep_their_ink_by_name() {
+        let dir = std::env::temp_dir().join(format!("td_spot_pal_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("uv.tdpal");
+        let white = spot_color("Spot_1_W", Color::cmyk_pct(0.0, 0.0, 0.0, 20.0));
+        let pal = Palette {
+            name: "UV".into(),
+            key: "",
+            colors: vec![("Spot_1_W".into(), white), ("Plain".into(), Color::BLACK)],
+            builtin: false,
+            path: None,
+        };
+        save_palette(&pal, &path).expect("saved");
+        let back = load_palette(&path).expect("loaded");
+        assert_eq!(back.colors[0], ("Spot_1_W".to_string(), white));
+        assert_eq!(back.colors[1].1, Color::BLACK);
+        // A name edited in the file gives the ink of the new name.
+        let text = std::fs::read_to_string(&path)
+            .expect("read")
+            .replace("Spot_1_W", "Spot_3_K");
+        std::fs::write(&path, text).expect("written");
+        let back = load_palette(&path).expect("loaded");
+        let Color::Spot { ink, .. } = back.colors[0].1 else {
+            panic!("not a spot colour: {:?}", back.colors[0]);
+        };
+        assert_eq!(ink, spot_ink_id("Spot_3_K"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn colour_book_spot_entries_are_spot_colours() {
         let v = parse_ase(&ase_spot("Gold 871", [0.0, 0.2, 0.8, 0.1], 1));
         assert_eq!(v.len(), 1);
@@ -819,6 +1135,42 @@ mod tests {
         }
         assert_eq!(spot_ink_id(" Gold 871 "), spot_ink_id("Gold 871"));
         assert_ne!(spot_ink_id("Gold 871"), spot_ink_id("Gold 872"));
+    }
+
+    /// Opening a palette file adds that one palette in a strip of its
+    /// own, the default palette staying first; the same file again adds
+    /// nothing more. A locked palette keeps its colours (#1343).
+    #[test]
+    fn opening_a_palette_adds_one_and_a_locked_one_keeps_its_colours() {
+        let mut app = crate::app::App::headless();
+        let before = app.palettes.len();
+        let main = app.palette.clone();
+        let file = |c: Color| Palette {
+            name: "Mine".into(),
+            key: "",
+            colors: vec![("One".into(), c)],
+            builtin: false,
+            path: Some(std::path::PathBuf::from("/palettes/mine.xml")),
+        };
+        app.add_palette(file(Color::rgb8(255, 0, 0)));
+        assert_eq!(app.palettes.len(), before + 1);
+        assert_eq!(app.visible_palettes, vec![0, before]);
+        assert_eq!(app.palette, main, "the default palette stays first");
+        assert_eq!(app.extra_palettes.len(), 1);
+        // The same file again: still one, with its colours read anew.
+        app.add_palette(file(Color::rgb8(0, 255, 0)));
+        assert_eq!(app.palettes.len(), before + 1);
+        assert_eq!(app.visible_palettes, vec![0, before]);
+        assert_eq!(app.palettes[before].colors[0].1, Color::rgb8(0, 255, 0));
+        // Locked, the palette keeps its colours; unlocked, it takes them.
+        app.toggle_palette_lock(before);
+        assert!(app.palette_locked(before));
+        app.add_palette(file(Color::rgb8(0, 0, 255)));
+        assert_eq!(app.palettes[before].colors[0].1, Color::rgb8(0, 255, 0));
+        app.toggle_palette_lock(before);
+        assert!(!app.palette_locked(before));
+        app.add_palette(file(Color::rgb8(0, 0, 255)));
+        assert_eq!(app.palettes[before].colors[0].1, Color::rgb8(0, 0, 255));
     }
 
     #[test]

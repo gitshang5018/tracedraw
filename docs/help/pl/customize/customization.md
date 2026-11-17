@@ -1,5 +1,7 @@
 # Opcje dostosowywania
 
+> *Tłumaczenie maszynowe: ta strona może być mniej aktualna niż wersja angielska.*
+
 [[menu.tools > menu.tools.options > menu.tools.options_customization]] ustawia
 wygląd interfejsu, własne skróty klawiaturowe, widoczne paski i działanie palety
 kolorów.
@@ -12,6 +14,9 @@ kolorów.
   wyłączeniu otwierają się tam, gdzie je zostawiono.
 - [[options.ui_shadows]] (mniej cieni pomaga przy wolniejszej grafice).
 - [[options.colored_icons]]: każda grupa narzędzi otrzymuje własny kolor.
+- [[options.docker_tabs_icons_only]]: karty paneli po bokach okna pokazują
+  tylko obrazek, a nazwę w podpowiedzi. Wyłączone pokazują obrazek i nazwę,
+  a kolumna z większą liczbą kart, niż się mieści, przewija się.
 - [[options.ui_size]]: wielkość menu, pasków, ikon i paneli względem skalowania,
   jakie system nadaje monitorowi (domyślnie 100%).
   [[options.reset_to_default]] przywraca 100%. Rozmiar interfejsu nigdy nie
@@ -41,6 +46,14 @@ pokazują Twój skrót. **x** obok skrótu usuwa go, a przywrócenie ustawień
 domyślnych usuwa je wszystkie. Klawisze narzędzi to litera lub <kbd>Shift</kbd>
 i litera. Zobacz [Skróty klawiaturowe](../reference/keyboard-shortcuts.md).
 
+Polecenie może mieć kilka skrótów: nowy klawisz dołącza do tych, które już ma
+(wbudowany klawisz nadal działa obok), a każdy klawisz ma własny przycisk
+usuwania. Skróty przyjmują też przyciski pasków uruchamiające polecenie menu
+(Nowy, Otwórz, Zapisz, Cofnij, Powiększ i inne), te same klawisze co ich
+polecenie menu, a także wiersze, które menu pokazują tylko czasami. Lista
+**Przyciski pasków narzędzi** zawiera wszystkie przyciski pasków Standardowy i
+Powiększenie: przeciągnij stamtąd z powrotem na pasek usunięty przycisk.
+
 ## Paski poleceń {#command-bars}
 
 ![Strona Paski poleceń opcji dostosowywania](../../img/customize-customization-command-bars.png)
@@ -61,6 +74,9 @@ i litera. Zobacz [Skróty klawiaturowe](../reference/keyboard-shortcuts.md).
 
 - [[options.palette_auto_update]] i [[options.palette_show_document]] (obie
   włączone).
+- [[options.palette_position]] (Góra, Dół, Lewo, Prawo lub Swobodna)
+  domyślnej palety, tak jak ustawia ją jej własne menu; nie zmienia się,
+  gdy paski narzędzi są zablokowane.
 - [[options.palette_swatches]]: [[options.palette_no_color]] (włączone) oraz
   działanie opcji [[options.palette_right_button]]: [[options.palette_set_outline]]
   (domyślnie) lub otwarcie menu [[options.palette_context_menu]].

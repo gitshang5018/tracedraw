@@ -24,16 +24,21 @@ The product name is **TraceDraw** in prose; machine names are `tracedraw`
    software are never used. File formats go by their usual names (`.cdr`,
    `.ai`, `.psd`, a format owner's name in a file dialog filter, a header
    string a format requires) only to describe compatibility; copyright
-   notices that a license requires stay in `ATTRIBUTION.md`. Never decompile any program and never use
+   notices that a license requires stay in `ATTRIBUTION.md`. The one
+   exception is the trademark notice (README, `PRIVACY.md`, the About
+   box, the web page and the store listings), which names the owner of
+   the `.cdr` format's trademark to state that TraceDraw is independent
+   of it; keep its wording the same everywhere. Never decompile any program and never use
    decompiled code or dumps, not even in conversations with AI tools.
    Format readers come from public format notes and from inspecting files
    we own; never port code from libcdr or any other implementation.
    Record each piece of format knowledge, its source and date in
    `CLEANROOM.md` and the details in `docs/cdr-format.md`. Bundle only
    original or openly licensed assets and list them in `ATTRIBUTION.md`.
-4. **Layering is enforced by review.** `core` has no workspace deps; `cdr`,
-   `text` and `render` depend on `core` only; `io` depends on `core` and
-   `render` (rasterised fills in exports); egui stays in `apps/`.
+4. **Layering is enforced by review.** `core` and `cdr-format` have no
+   workspace deps; `cdr` depends on `cdr-format` and `core`; `text`,
+   `render` and `tracecut` depend on `core` only; `io` depends on `core` and `render`
+   (rasterised fills in exports); egui stays in `apps/`.
 5. **Tests are the gate.** Every change comes with tests. Format code
    gets round-trip and malformed-input tests.
 6. **Units.** Millimetres everywhere in the model. CDR files use
@@ -54,10 +59,14 @@ The product name is **TraceDraw** in prose; machine names are `tracedraw`
 ```text
 crates/core   geometry.rs, document.rs, command.rs, engine.rs, style.rs,
               color.rs, nodes.rs, shaping.rs, effects.rs, id.rs
-crates/cdr    container.rs (RIFF/ZIP), riff.rs (chunk tree), parse.rs
+crates/cdr-format  container.rs (RIFF/ZIP), riff.rs (chunk tree), eot.rs,
+                   ole.rs: the file structure, no document model
+crates/cdr    parse.rs (chunks to Document), write.rs, text.rs, cmx.rs
 crates/text   font database, shaping, outlines
 crates/render CPU rasteriser
 crates/io     svg.rs, pdf.rs, lib.rs (native format)
+crates/tracecut  TraceCut geometry: cut/ (HPGL, weeding, bridges, cut
+              order, marks), nest/, calc/ (time, cost), measure.rs
 apps/tracedraw    main.rs, app.rs, interaction.rs, canvas.rs, ops.rs,
                   tools.rs, tools2.rs, ui/ (menus, toolbar, toolbox,
                   dockers, palette, status, dialogs, icons)
@@ -99,10 +108,28 @@ behind it, and never add a feature without updating the row.
 
 - `cargo test --workspace` before every commit.
 - Commits carry a `Signed-off-by:` line (DCO, see `CONTRIBUTING.md`).
+  Commits keep their author's own name and address, maintainers
+  included; only the project's own account (the organization's owner)
+  commits and signs off as `TraceDraw Maintainers <contact@tracedraw.org>`.
+  No personal name or address goes into the repository's files, packages
+  or listings (contributors' GitHub handles in `CONTRIBUTORS.md` aside).
 - `cargo build -p tracedraw` and `cargo clippy --workspace` must stay
   warning-free (CI runs clippy with `-D warnings` on the library crates,
   on the pinned toolchain 1.97.0; use the same version locally so the
   lint set matches).
+- **Never undo merged work.** Branch from a freshly fetched `origin/main`
+  (`git fetch origin main` right before creating the branch or worktree)
+  and rebase on a fresh `origin/main` before pushing when the work took
+  long. Never copy whole files from an older checkout, another worktree,
+  a stash or a patch made on an older base, and never
+  `git checkout <old> -- <file>`: edit only the lines the change needs.
+  Two merged features were lost this way, together with their tests.
+- Never delete or weaken a test silently. When a change must remove a
+  test, list it under "Removed tests:" in the pull request description
+  with the reason; when it deliberately replaces another pull request's
+  work, list that pull request under "Replaces:". The `merged-work` CI
+  check (`scripts/ci/check_merged_work.py`, see `CONTRIBUTING.md`) fails
+  otherwise; run it before opening the pull request.
 - Keep `docs/roadmap.md` honest: a feature is "done" when it has tests
   and works on a real file, not when the menu item exists.
 

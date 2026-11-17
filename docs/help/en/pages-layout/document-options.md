@@ -5,7 +5,7 @@ active drawing: page size, layout, background, bleed, rulers, grid and
 guidelines. Double-clicking a ruler or the page border also opens it. Choose a
 page from the list on the left. Changes show at once; [[dialog.ok]] keeps
 them and [[dialog.cancel]] puts everything back. **Save as default** keeps the
-grid, ruler and guideline settings for new drawings.
+grid, ruler and guideline settings and the page spacing for new drawings.
 
 ## General {#general}
 
@@ -14,11 +14,13 @@ grid, ruler and guideline settings for new drawings.
 - [[options.rendering_resolution]]: the resolution of effects that are
   turned into pixels, such as drop shadows and bitmap effects.
 - [[options.fill_open_curves]] (off at first): when on, open curves show their
-  fill as if they were closed.
+  fill as if they were closed. An ellipse made an arc is an open curve too.
 - [[options.auto_inflate_bitmaps]] (on at first): bitmaps grow to make room
   for effects that spread past their edges.
-- [[options.duplicate_offset]]: how far [[menu.edit.duplicate]] places the
-  copy.
+- [[options.duplicate_offset]] (none at first): how far
+  [[menu.edit.duplicate]] places the copy. Move, scale or turn the copy
+  while it stays selected, and each next [[menu.edit.duplicate]] does the
+  same again.
 
 ## Page size {#page-size}
 
@@ -28,7 +30,11 @@ grid, ruler and guideline settings for new drawings.
   [[options.label_presets]] for sheets of labels, which set the page to the
   sheet size and add guidelines around each label.
 - [[options.size]], [[dialog.width]] and [[dialog.height]], and
-  [[options.portrait]] or [[options.landscape]].
+  [[options.portrait]] or [[options.landscape]]. The save button next to
+  [[options.size]] keeps a custom size under a name you type, and the delete
+  button forgets the saved size shown. Saved sizes appear in every page size
+  list: the property bar, the Page Size dialog box, these options and the new
+  document dialog box.
 - [[options.apply_current_only]]: change the current page only.
 - [[options.show_page_border]], and [[options.add_page_frame]], which adds a
   rectangle the size of the page.
@@ -45,6 +51,8 @@ the [[options.master_layers]], each shown on [[options.scope_all]],
 [[options.scope_odd]] or [[options.scope_even]]. The buttons add a new master
 layer for all, odd or even pages. See
 [Master layers](../objects/objects-and-layers.md#master-layers).
+[[options.page_spacing]] (30 mm at first) is the space between the pages of
+the [Multipage view](multipage-view.md#page-spacing), in the drawing's units.
 
 ## Background {#background}
 

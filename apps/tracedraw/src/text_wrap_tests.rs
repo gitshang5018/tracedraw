@@ -125,6 +125,7 @@ fn alignment_and_spacing_apply_to_the_paragraphs_being_edited() {
         anchor: 8,
         goal_x: None,
         step: None,
+        created: None,
     });
     app.apply_text_align(TextAlign::Center);
     app.edit_paragraph_style(id, |p| p.space_before = 3.0);
@@ -150,6 +151,7 @@ fn alignment_and_spacing_apply_to_the_paragraphs_being_edited() {
         anchor: 9,
         goal_x: None,
         step: None,
+        created: None,
     });
     app.apply_text_align(TextAlign::Right);
     let st = styles(&app, id);
@@ -200,8 +202,8 @@ fn a_file_without_paragraph_formats_gives_every_paragraph_the_object_ones() {
     let json = app.doc().to_json().expect("json");
     // An older file: the object's alignment and spacing.
     let old = json
-        .replace("\"align\": \"left\"", "\"align\": \"center\"")
-        .replace("\"space_after\": 0.0", "\"space_after\": 2.0");
+        .replace("\"align\":\"left\"", "\"align\":\"center\"")
+        .replace("\"space_after\":0.0", "\"space_after\":2.0");
     let doc = Document::from_json(&old).expect("opens");
     let ShapeKind::Text {
         spans, align, para, ..

@@ -26,23 +26,58 @@ parallel, or Small back when they have a vanishing point.
 - The outline is flattened (0.05 mm) subpath by subpath (at most 400
   points each); a subpath that ends where it started counts as closed.
   Every edge gives a quad to its copy.
+- The outline is the object's as its outline warps leave it: an
+  envelope, perspective or distortion bends the body with the object,
+  also when it comes after the extrusion in the object's effects (it is
+  then put on the outline before the body is built; #2214, see
+  `envelope.md`).
 - A face shows when its normal (pointing away from the filled side, so a
   hole's walls face into the hole) points along the way the body runs
   at that face (back types) or against it (front types). Open subpaths
   show both sides.
 - Faces between corners (where the outline turns by more than 20
-  degrees) make one surface: its faces are filled and edged with a
-  hairline of their own colour, and the surface is outlined once with
-  the object's outline (at most 0.1 mm wide), so a curved side is
-  smooth, not a row of slats.
+  degrees) make one surface, drawn as one object: the outline of its
+  faces filled with their colour (a curved side, whose faces the light
+  shades differently, with a linear fountain across it through their
+  colours, at most a dozen stops) and outlined with the object's
+  outline (at most 0.1 mm wide), or with a hairline of its own colour
+  when the object has none. A square's body is its two sides, a
+  circle's its one curved side: each side breaks apart and takes a
+  colour or a fill as one part, not as a row of slats (#1281).
+- The flattened edges only decide which sides show, where they are cut
+  and how they are lit. What is drawn keeps the outline's curves: the
+  copy is the outline moved (parallel) or scaled about the vanishing
+  point, node for node, and a side runs along the outline's own curves
+  from where it starts to where it ends, then back along the copy's, so
+  a circle's side has a handful of nodes and breaks apart into curves,
+  not into a node for each flattened edge (#2208). A body turned in
+  space keeps the curves in its two caps (each lies at one depth, where
+  the turn and the view only move and scale the outline); its walls are
+  drawn face by face, and the near cap of a bevelled body is the
+  outline drawn in, kept as flattened.
 - Surfaces are drawn farthest first: along the offset for parallel
   bodies, by distance from the vanishing point for the others (nearer
   is farther for Small back and Big front, the other way for Big back
   and Small front).
 - A back body draws its copy first (the far face, in the darkest
-  colour), then the surfaces, then the object; a front body draws the
-  object, the surfaces, then the copy looking like the object (its fill
-  and outline).
+  colour), then the surfaces, then the object: behind a filled object
+  the far face is hidden, through an object without a fill or with open
+  outlines it shows, and it is a part of its own when the body breaks
+  apart (#1281). A front body draws the object, the surfaces, then the
+  copy looking like the object (its fill and outline).
+- Outline only: an object without a fill whose body takes the object's
+  colour is drawn as a wire frame. Every side, the ones turned away
+  included, and the copy are outlines with no fill, so a box shows all
+  twelve edges and a cylinder its two ends and the two lines along its
+  side (#1281). A Solid or Shade body keeps its filled faces.
+- Area Fill takes the lines that show: an outline under an opaque fill
+  (the object behind a front body, the far face behind a back body) does
+  not cut the area, so a click in a side fills the whole side; through
+  an object without a fill every line counts. The curved side of a
+  circle with a Back type fills as one area too: the outlines cut by the
+  filled circle come back a hair off its outline, and the lines that
+  close such gaps cross it whichever way the ends round (#1281, see
+  `area-fill.md`).
 
 ## Colour and light
 
@@ -61,8 +96,23 @@ parallel, or Small back when they have a vanishing point.
   as the vanishing point. One undo step per drag.
 - The selected extrusion's handle is a square with a cross, joined to
   the object's middle by a dashed line: the vanishing point, or the
-  middle of a parallel body's copy. A drag that starts on it (within 6
-  pixels) moves it.
+  middle of a parallel body's copy. A drag that starts on it (within the
+  pick distance of Options > Nodes and Handles, 6 pixels at first)
+  moves it to the pointer. A drag that starts on the dashed line, away
+  from the handle, moves the handle by the pointer's way, so the line
+  keeps its length and angle from where it is (its other end stays on
+  the object's middle); Ctrl keeps that move horizontal or vertical,
+  and the pointer is the move cursor over the line. Each drag is one
+  undo step (`effect_line_tests::the_extrusion_line_moves_its_vanishing_point`).
+- A body toward or away from a vanishing point (the four Small and Big
+  types) also has a depth slider: a bar across the line where its far
+  face's middle is, `middle + (vanishing point - middle) * depth` for
+  Small and `middle - (vanishing point - middle) * depth` for Big (the
+  line drawn on past the middle to it). A drag that starts on it sets
+  the depth from the pointer's place along the line, 1 to 99 %, the
+  vanishing point staying where it is; the bar is filled while dragged
+  and each drag is one undo step (#1280,
+  `extrude_tool::tests::the_depth_slider_sets_the_depth_along_the_line`).
 - A click selects the object under the pointer (or nothing). Groups and
   bitmaps are not extruded.
 
@@ -116,6 +166,9 @@ The panel shows these under the other controls; the bar has them in its
   seen from the vanishing point (Small: a perspective that puts the copy
   where the flat body has it, `s = t d / (t d + 1 - d)` of the way to the
   vanishing point at depth share `t`; Big: `d t` of the way away from it).
+  The depth share is a point's own depth in the body over `L` (0 at the
+  object, 1 at the copy), whatever the turn, so the faces stay by the
+  object however near the vanishing point is.
 - The turn is about the middle of the body, by x (the top tips away),
   then y (the right side turns away), then z (counterclockwise). The
   object itself becomes the turned front face; turned away, the far face
@@ -127,7 +180,12 @@ The panel shows these under the other controls; the bar has them in its
   `0.55 + 0.45 (k (n . l + 1) / 2 + 1 - k)`; each further light adds
   `0.3 k max(0, n . l)`; the result stays within 0.2 to 1. A face's
   normal is worked out as if the body ran straight back, so an untouched
-  body is lit as the flat one.
+  body is lit as the flat one. Along a smooth stretch of the outline
+  (no corner sharper than 20 degrees) each face is shaded from the
+  light where it meets the face before to the light where it meets the
+  next (the mean of the two faces' lights), a fountain across the
+  face, so a round side shades smoothly instead of in flat bands
+  (#2706, `extrude3d::tests::a_bevelled_round_side_shades_smoothly`).
 - Bevel: the front face shrinks by the width (each corner along its
   bisector, at most three widths) and a band slopes from it to the
   outline one width deep; at most 0.9 of the depth and of half the
@@ -143,16 +201,23 @@ The panel shows these under the other controls; the bar has them in its
 - `extrude::tests::every_subpath_extrudes_and_holes_show_their_far_walls`
 - `extrude::tests::a_curved_side_is_one_outlined_surface`
 - `extrude::tests::odd_values_give_no_faces`
+- `live::warped_extrusion_tests::an_envelope_on_an_extruded_object_bends_its_body`
+- `extrude::tests::area_fill_reaches_the_side_of_a_back_cylinder`
+- `extrude_tool::tests::area_fill_takes_the_side_of_a_back_cylinder`
 - `extrude_tool::tests::a_drag_extrudes_toward_the_pointer`
 - `extrude_tool::tests::the_bar_edits_the_selected_extrusion`
+- `extrude_tool::tests::the_depth_slider_sets_the_depth_along_the_line`
 - `extrude_tool::tests::settings_read_older_effects_and_stay_in_range`
 - `ui::extrude_bar::tests::the_bar_and_the_panel_draw_for_every_kind` (with the turn, lights and bevel, which go to the effect and back)
 - `extrude3d::tests::untouched_with_a_raised_light_it_draws_as_the_flat_body`
 - `extrude3d::tests::turning_shows_the_side_turned_toward_the_viewer`
 - `extrude3d::tests::a_half_turn_hides_the_object_and_shows_the_far_cap`
 - `extrude3d::tests::a_bevel_shrinks_the_near_cap_and_adds_a_band`
+- `extrude3d::tests::a_bevelled_round_side_shades_smoothly`
 - `extrude3d::tests::further_lights_brighten_the_faces_they_reach`
 - `extrude3d::tests::broken_values_never_panic`
+- `extrude3d::tests::a_turned_body_stays_by_the_object_with_the_vanishing_point_near`
+- `extrude3d::tests::a_turned_parallel_body_keeps_every_corner_in_its_reach`
 - Given a 20 mm square, Back parallel, offset (10, 10), then the far
   face is the square at (10, 10) and only the top and right faces show,
   the top one lighter with the light from the top left.

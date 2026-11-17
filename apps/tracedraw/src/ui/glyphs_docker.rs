@@ -61,6 +61,22 @@ pub const ALTERNATE_FEATURES: [&str; 9] = [
 /// How many glyphs the Recent glyphs box keeps.
 const RECENT: usize = 24;
 
+/// A recent glyph's cell, and how many rows of them the Recent glyphs box
+/// is tall: the box keeps that height, empty or full, and scrolls when the
+/// glyphs take more rows (#1320).
+const RECENT_CELL: f32 = 34.0;
+const RECENT_ROWS: f32 = 2.0;
+
+/// The grid's cell, at the zoom slider's start, and the slider's range.
+pub const CELL: f32 = 44.0;
+pub const CELL_RANGE: std::ops::RangeInclusive<f32> = 28.0..=96.0;
+
+/// The inside height of the Recent glyphs box.
+pub fn recent_box_height() -> f32 {
+    // A cell is its glyph and the strip of its alternates' arrow.
+    RECENT_ROWS * (RECENT_CELL + 6.0) + (RECENT_ROWS - 1.0)
+}
+
 /// The glyphs of `chars` in range `range`.
 pub fn in_range(chars: &[char], range: usize) -> Vec<char> {
     let spans = RANGES.get(range).map_or(RANGES[0].1, |r| r.1);
@@ -76,8 +92,45 @@ pub fn in_range(chars: &[char], range: usize) -> Vec<char> {
 
 /// The glyphs of `chars` a search finds: a code point in hexadecimal
 /// (`20AC`, `U+20AC`, `0x20ac`) finds that character and those whose code
-/// starts with it; other text finds the characters it holds (#375).
+/// starts with it; a word of three Latin letters or more finds the
+/// characters whose Unicode name holds every word typed (`euro`,
+/// `arrow left`, #1328); other text finds the characters it holds (#375).
 pub fn search(chars: &[char], query: &str) -> Vec<char> {
+    search_named(chars, query, char_name)
+}
+
+/// The Unicode name of `c` in capitals ("EURO SIGN"), empty when it has
+/// none.
+pub fn char_name(c: char) -> String {
+    unicode_names2::name(c)
+        .map(|n| n.to_string())
+        .unwrap_or_default()
+}
+
+/// The words of `query` a name search looks for, in capitals: none when
+/// the query is a character or two (`A`, `aB`), which finds those
+/// characters only.
+fn name_words(query: &str) -> Vec<String> {
+    let words: Vec<String> = query.split_whitespace().map(|w| w.to_uppercase()).collect();
+    // Unicode names are in ASCII capitals, so characters typed or pasted
+    // in another script ("αβγ") stay a search for those characters.
+    if words.iter().all(|w| w.is_ascii())
+        && words
+            .iter()
+            .any(|w| w.chars().filter(|c| c.is_ascii_alphabetic()).count() >= 3)
+    {
+        words
+    } else {
+        Vec::new()
+    }
+}
+
+/// [`search`] with the names given by `name` (cached by the docker).
+pub fn search_named(
+    chars: &[char],
+    query: &str,
+    mut name: impl FnMut(char) -> String,
+) -> Vec<char> {
     let q = query.trim();
     if q.is_empty() {
         return chars.to_vec();
@@ -103,6 +156,17 @@ pub fn search(chars: &[char], query: &str) -> Vec<char> {
             .collect();
     }
     let wanted: Vec<char> = q.chars().filter(|c| !c.is_whitespace()).collect();
+    let words = name_words(q);
+    if !words.is_empty() {
+        return chars
+            .iter()
+            .copied()
+            .filter(|c| {
+                let n = name(*c);
+                words.iter().all(|w| n.contains(w.as_str()))
+            })
+            .collect();
+    }
     chars
         .iter()
         .copied()
@@ -110,47 +174,15 @@ pub fn search(chars: &[char], query: &str) -> Vec<char> {
         .collect()
 }
 
-/// The characters of Windows code page 1252 at 0x80 to 0x9F (the rest
-/// of the page is Latin-1); `None` where the page has none.
-const CP1252_HIGH: [Option<char>; 32] = [
-    Some('\u{20AC}'),
-    None,
-    Some('\u{201A}'),
-    Some('\u{0192}'),
-    Some('\u{201E}'),
-    Some('\u{2026}'),
-    Some('\u{2020}'),
-    Some('\u{2021}'),
-    Some('\u{02C6}'),
-    Some('\u{2030}'),
-    Some('\u{0160}'),
-    Some('\u{2039}'),
-    Some('\u{0152}'),
-    None,
-    Some('\u{017D}'),
-    None,
-    None,
-    Some('\u{2018}'),
-    Some('\u{2019}'),
-    Some('\u{201C}'),
-    Some('\u{201D}'),
-    Some('\u{2022}'),
-    Some('\u{2013}'),
-    Some('\u{2014}'),
-    Some('\u{02DC}'),
-    Some('\u{2122}'),
-    Some('\u{0161}'),
-    Some('\u{203A}'),
-    Some('\u{0153}'),
-    None,
-    Some('\u{017E}'),
-    Some('\u{0178}'),
-];
-
 /// The character code page 1252 has at `b`.
 pub fn from_cp1252(b: u8) -> Option<char> {
     match b {
-        0x80..=0x9F => CP1252_HIGH[(b - 0x80) as usize],
+        // The five places the page leaves empty are read as the control
+        // characters of the same number, as fonts with a script at the
+        // page's places map them (#1358).
+        0x80..=0x9F => tracedraw_text::CP1252_HIGH
+            .get((b - 0x80) as usize)
+            .copied(),
         _ => Some(b as char),
     }
 }
@@ -162,9 +194,9 @@ pub fn keystroke(ch: char) -> Option<String> {
     let b = if cp < 0x80 || (0xA0..=0xFF).contains(&cp) {
         Some(cp as u8)
     } else {
-        CP1252_HIGH
+        tracedraw_text::CP1252_HIGH
             .iter()
-            .position(|c| *c == Some(ch))
+            .position(|c| *c == ch)
             .map(|i| 0x80 + i as u8)
     }?;
     (b >= 0x20).then(|| format!("Alt+{:04}", b))
@@ -203,6 +235,52 @@ fn coverage(ui: &Ui, family: &str) -> Arc<Vec<char>> {
     c
 }
 
+/// The Unicode names of the characters `family` draws, read once per
+/// font the first time a name is searched in it.
+fn names(ui: &Ui, family: &str) -> Arc<std::collections::HashMap<char, String>> {
+    let key = egui::Id::new(("glyph_names", family.to_string()));
+    if let Some(n) = ui.data(|d| d.get_temp::<Arc<std::collections::HashMap<char, String>>>(key)) {
+        return n;
+    }
+    let n: std::collections::HashMap<char, String> = coverage(ui, family)
+        .iter()
+        .map(|c| (*c, char_name(*c)))
+        .collect();
+    let n = Arc::new(n);
+    ui.data_mut(|d| d.insert_temp(key, n.clone()));
+    n
+}
+
+/// The glyphs the grid shows: those of `family` in `range` that `query`
+/// finds, worked out again only when one of them changes, so typing and
+/// redrawing stay smooth in a font of tens of thousands of glyphs.
+fn found(ui: &Ui, family: &str, range: usize, query: &str) -> Arc<Vec<char>> {
+    type Found = (String, usize, String, Arc<Vec<char>>);
+    let key = egui::Id::new("glyphs_found");
+    if let Some((f, r, q, chars)) = ui.data(|d| d.get_temp::<Found>(key)) {
+        if f == family && r == range && q == query {
+            return chars;
+        }
+    }
+    let in_it = in_range(&coverage(ui, family), range);
+    let chars = if name_words(query.trim()).is_empty() {
+        search(&in_it, query)
+    } else {
+        let names = names(ui, family);
+        search_named(&in_it, query, |c| {
+            names.get(&c).cloned().unwrap_or_default()
+        })
+    };
+    let chars = Arc::new(chars);
+    ui.data_mut(|d| {
+        d.insert_temp::<Found>(
+            key,
+            (family.to_string(), range, query.to_string(), chars.clone()),
+        )
+    });
+    chars
+}
+
 /// The alternates of `ch` in `family`, cached for the session.
 fn variants(ui: &Ui, family: &str, ch: char) -> Arc<Vec<String>> {
     let key = egui::Id::new(("glyph_variants", family.to_string(), ch));
@@ -221,9 +299,7 @@ pub fn insert_glyph(app: &mut App, font: &str, ch: char, feature: Option<&str>) 
     let style = |sp: &mut tracedraw_core::TextSpan, font: &str, feature: Option<&str>| {
         sp.font_family = font.to_string();
         if let Some(f) = feature {
-            if !sp.features.iter().any(|x| x == f) {
-                sp.features.push(f.to_string());
-            }
+            sp.set_feature(f, Some(true));
         }
     };
     if app.text_edit.is_some() {
@@ -257,6 +333,13 @@ pub fn insert_glyph(app: &mut App, font: &str, ch: char, feature: Option<&str>) 
     recent.truncate(RECENT);
 }
 
+/// Put `ch` on the system clipboard as text.
+fn copy_glyph(ch: char) {
+    if !crate::clipboard::write_text(&ch.to_string()) {
+        log::warn!("the glyph could not go on the clipboard");
+    }
+}
+
 /// A glyph cell: the glyph large, and a small arrow under it when it has
 /// alternates. Returns (clicked, arrow response).
 fn cell(
@@ -266,11 +349,21 @@ fn cell(
     family: &str,
     size: f32,
     has_alternates: bool,
+    picked: bool,
 ) -> (egui::Response, Option<egui::Response>) {
     let mobile = crate::ui::mobile::phone();
     let pad_bottom = if mobile { 10.0 } else { 6.0 };
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(size, size + pad_bottom), Sense::click());
-    if resp.hovered() {
+    if picked {
+        ui.painter()
+            .rect_filled(rect, 2.0, Tokens::selected_row().gamma_multiply(0.35));
+        ui.painter().rect_stroke(
+            rect,
+            2.0,
+            egui::Stroke::new(1.0, Tokens::selected_row_line()),
+            egui::StrokeKind::Inside,
+        );
+    } else if resp.hovered() {
         ui.painter().rect_filled(rect, 2.0, Tokens::tool_hover());
     }
     let ppp = ui.ctx().pixels_per_point();
@@ -332,36 +425,54 @@ pub fn glyphs(app: &mut App, ui: &mut Ui) {
     ui.label(tr("glyphs.recent"));
     // The theme's field colour (white in the light themes, dark in the
     // dark ones), so the cells, tinted with the text colour, stay readable
-    // (#660).
+    // (#660). The box is two rows of glyphs tall, empty too, so the font,
+    // the ranges and the grid show under it at once (#1320).
+    let box_h = recent_box_height();
     egui::Frame::new()
         .fill(Tokens::field())
         .stroke(egui::Stroke::new(1.0, Tokens::control_border()))
         .inner_margin(egui::Margin::same(4))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.set_min_height(80.0);
             if app.settings.recent_glyphs.is_empty() {
-                ui.centered_and_justified(|ui| {
-                    ui.label(
+                let (rect, _) =
+                    ui.allocate_exact_size(Vec2::new(ui.available_width(), box_h), Sense::hover());
+                ui.put(
+                    rect,
+                    egui::Label::new(
                         egui::RichText::new(tr("glyphs.recent_hint"))
                             .italics()
                             .color(Tokens::text_dim()),
-                    );
-                });
+                    ),
+                );
             } else {
-                ui.horizontal_wrapped(|ui| {
-                    ui.spacing_mut().item_spacing = Vec2::splat(1.0);
-                    let recent_sz = if crate::ui::mobile::phone() { 38.0 } else { 34.0 };
-                    for (font, c) in app.settings.recent_glyphs.clone() {
-                        let Some(ch) = c.chars().next() else {
-                            continue;
-                        };
-                        let (r, _) = cell(ui, &mut app.font_previews, ch, &font, recent_sz, false);
-                        if r.clicked() {
-                            insert = Some((font.clone(), ch, None));
-                        }
-                    }
-                });
+                egui::ScrollArea::vertical()
+                    .id_salt("glyphs_recent")
+                    .min_scrolled_height(box_h)
+                    .max_height(box_h)
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.spacing_mut().item_spacing = Vec2::splat(1.0);
+                            for (font, c) in app.settings.recent_glyphs.clone() {
+                                let Some(ch) = c.chars().next() else {
+                                    continue;
+                                };
+                                let (r, _) = cell(
+                                    ui,
+                                    &mut app.font_previews,
+                                    ch,
+                                    &font,
+                                    RECENT_CELL,
+                                    false,
+                                    false,
+                                );
+                                if r.clicked() {
+                                    insert = Some((font.clone(), ch, None));
+                                }
+                            }
+                        });
+                    });
             }
         });
     ui.add_space(4.0);
@@ -369,29 +480,31 @@ pub fn glyphs(app: &mut App, ui: &mut Ui) {
     // its previews (#447).
     let current = app.glyph_font.clone();
     let width = ui.available_width() - 8.0;
-    let (pick, _) = crate::ui::font_list::font_list_live(app, ui, "glyphs_font", &current, width);
+    let (pick, _) = crate::ui::tips::tip_over(ui, crate::ui::tips::keyed("toolbar.font"), |ui| {
+        crate::ui::font_list::font_list_live(app, ui, "glyphs_font", &current, width)
+    });
     if let Some(p) = pick {
         app.glyph_font = p.family;
     }
-    egui::ComboBox::from_id_salt("glyphs_range")
+    crate::ui::keynav::ComboBox::from_id_salt("glyphs_range")
         .width(ui.available_width() - 8.0)
         .selected_text(tr(RANGES[app.glyph_range.min(RANGES.len() - 1)].0))
         .show_ui(ui, |ui| {
             for (i, (key, _)) in RANGES.iter().enumerate() {
                 ui.selectable_value(&mut app.glyph_range, i, tr(key));
             }
-        });
+        })
+        .response
+        .rich_tip(tr(RANGES[app.glyph_range.min(RANGES.len() - 1)].0));
     ui.add(
         egui::TextEdit::singleline(&mut app.glyph_search)
             .hint_text(tr("glyphs.search_hint"))
             .desired_width(ui.available_width() - 8.0),
-    );
+    )
+    .rich_tip(tr("glyphs.search_hint"));
     ui.add_space(4.0);
     let family = app.glyph_font.clone();
-    let chars = search(
-        &in_range(&coverage(ui, &family), app.glyph_range),
-        &app.glyph_search,
-    );
+    let chars = found(ui, &family, app.glyph_range, &app.glyph_search);
     let info_id = egui::Id::new("glyphs_info");
     let mut hovered: Option<char> = None;
     // The glyph last under the pointer: its code point, the character and
@@ -406,11 +519,22 @@ pub fn glyphs(app: &mut App, ui: &mut Ui) {
         ui.label(egui::RichText::new(tr("glyphs.none")).color(Tokens::text_dim()));
     }
     let mobile = crate::ui::mobile::phone();
-    let size = if mobile { 50.0 } else { 44.0 };
+    let size = if mobile {
+        50.0
+    } else {
+        app.glyph_size.clamp(*CELL_RANGE.start(), *CELL_RANGE.end())
+    };
     let row_height = size + if mobile { 11.0 } else { 7.0 };
     let per_row = ((ui.available_width() / (size + 1.0)).floor() as usize).max(1);
     let rows = chars.len().div_ceil(per_row);
+    let sp = ui.spacing().clone();
+    let bottom = 2.0 * sp.interact_size.y.max(20.0) + 3.0 * sp.item_spacing.y + 8.0;
+    let grid_h = (ui.available_height() - bottom).max(size + 7.0);
+    let picked = app.glyph_picked;
     egui::ScrollArea::vertical()
+        .id_salt("glyphs_grid")
+        .max_height(grid_h)
+        .min_scrolled_height(grid_h)
         .auto_shrink([false, false])
         .show_rows(ui, row_height, rows, |ui, range| {
             for row in range {
@@ -425,12 +549,14 @@ pub fn glyphs(app: &mut App, ui: &mut Ui) {
                             &family,
                             size,
                             !alts.is_empty(),
+                            picked == Some(ch),
                         );
                         if r.hovered() {
                             hovered = Some(ch);
                         }
                         if r.clicked() {
                             insert = Some((family.clone(), ch, None));
+                            app.glyph_picked = Some(ch);
                         }
                         if let Some(a) = arrow {
                             egui::Popup::menu(&a)
@@ -454,6 +580,40 @@ pub fn glyphs(app: &mut App, ui: &mut Ui) {
                 });
             }
         });
+    // Under the grid: its zoom (a small and a large A at the slider's
+    // ends) and Copy, which puts the glyph last clicked on the clipboard
+    // as text.
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        let a = |ui: &mut Ui, size: f32| {
+            ui.label(
+                egui::RichText::new("A")
+                    .size(size)
+                    .color(Tokens::text_dim()),
+            )
+            .rich_tip(tr("glyphs.size"))
+        };
+        a(ui, 10.0);
+        let w = (ui.available_width() - 24.0).max(40.0);
+        ui.add(
+            crate::ui::Slider::new(&mut app.glyph_size, CELL_RANGE)
+                .show_value(false)
+                .ticks(false)
+                .width(w),
+        )
+        .rich_tip(tr("glyphs.size"));
+        a(ui, 17.0);
+    });
+    let copy = ui.add_enabled(
+        app.glyph_picked.is_some(),
+        egui::Button::new(tr("menu.edit.copy"))
+            .min_size(Vec2::new(ui.available_width(), sp.interact_size.y)),
+    );
+    if copy.clicked() {
+        if let Some(ch) = app.glyph_picked {
+            copy_glyph(ch);
+        }
+    }
     if let Some(h) = hovered {
         ui.data_mut(|d| d.insert_temp(info_id, h));
     }
@@ -478,6 +638,20 @@ mod tests {
         assert_eq!(search(&chars, "004"), vec!['A', 'B']);
         // A bare letter or word finds those characters, not codes.
         assert_eq!(search(&chars, "aB"), vec!['a', 'B']);
+        // A word of three letters or more finds the characters whose
+        // Unicode name holds every word typed, in any case (#1328).
+        assert_eq!(search(&chars, "euro"), vec!['€']);
+        assert_eq!(search(&chars, "Acute"), vec!['é']);
+        assert_eq!(search(&chars, "latin capital"), vec!['A', 'B']);
+        let arrows = ['\u{2190}', '\u{2192}', '\u{2191}', 'x'];
+        assert_eq!(search(&arrows, "arrow right"), vec!['\u{2192}']);
+        assert_eq!(search(&arrows, "ARROW").len(), 3);
+        assert_eq!(char_name('€'), "EURO SIGN");
+        assert!(search(&chars, "nothing named so").is_empty());
+        // Letters of another script typed or pasted find themselves.
+        let greek = ['\u{3B1}', '\u{3B2}', '\u{3B3}', '\u{3B4}'];
+        assert_eq!(search(&greek, "\u{3B1}\u{3B2}\u{3B3}"), greek[..3].to_vec());
+        assert_eq!(search(&greek, "alpha"), vec!['\u{3B1}']);
         assert!(describe('€').starts_with("U+20AC"));
         // The keystroke of the code page the reference program shows
         // (#447), and back.
@@ -488,6 +662,10 @@ mod tests {
         assert_eq!(from_cp1252(0x80), Some('€'));
         assert_eq!(from_cp1252(169), Some('©'));
         assert!(describe('©').contains("Alt+0169"));
+        // The places the page leaves empty (#1358).
+        assert_eq!(from_cp1252(0x81), Some('\u{81}'));
+        assert_eq!(from_cp1252(0x9D), Some('\u{9D}'));
+        assert_eq!(keystroke('\u{8D}').as_deref(), Some("Alt+0141"));
     }
 
     #[test]
@@ -571,6 +749,83 @@ mod tests {
             .expect("the recent box");
         assert_eq!(fill, Tokens::field());
         assert_eq!(ink, Tokens::text());
+    }
+
+    /// One frame of the docker in a panel 300 x 900; the shapes drawn.
+    fn draw(app: &mut App, events: Vec<egui::Event>) -> Vec<egui::epaint::ClippedShape> {
+        let ctx = crate::theme::ui_context();
+        let mut shapes = Vec::new();
+        for i in 0..2 {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(300.0, 900.0),
+                )),
+                events: if i == 1 { events.clone() } else { Vec::new() },
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| glyphs(app, ui));
+            out.textures_delta.clear();
+            shapes = out.shapes;
+        }
+        shapes
+    }
+
+    /// The Recent glyphs box: the topmost framed box in the field colour.
+    fn recent_box(shapes: &[egui::epaint::ClippedShape]) -> egui::Rect {
+        shapes
+            .iter()
+            .filter_map(|c| match &c.shape {
+                egui::Shape::Rect(r) if r.stroke.width > 0.0 && r.fill == Tokens::field() => {
+                    Some(r.rect)
+                }
+                _ => None,
+            })
+            .min_by(|a, b| a.top().total_cmp(&b.top()))
+            .expect("the recent box")
+    }
+
+    /// #1320: with no glyph used yet the Recent glyphs box is two rows of
+    /// glyphs tall, not the whole panel, so the font list and the grid
+    /// show under it at once; full, it keeps that height.
+    #[test]
+    fn the_recent_box_is_two_rows_tall_empty_or_full() {
+        let mut app = App::headless();
+        app.settings.recent_glyphs.clear();
+        let empty = recent_box(&draw(&mut app, Vec::new()));
+        // The rows, the 4-point margins and the 1-point frame.
+        let want = recent_box_height() + 10.0;
+        assert!((empty.height() - want).abs() < 1.0, "{empty:?}");
+        assert!(empty.bottom() < 150.0, "{empty:?}");
+        app.settings.recent_glyphs = (0..RECENT as u32)
+            .map(|i| {
+                (
+                    "Arial".to_string(),
+                    char::from_u32(0x41 + i).unwrap_or('A').to_string(),
+                )
+            })
+            .collect();
+        let full = recent_box(&draw(&mut app, Vec::new()));
+        assert!((full.height() - want).abs() < 1.0, "{full:?}");
+    }
+
+    /// #1320: the grid fills the panel down to the zoom slider and the
+    /// Copy button, which copies the glyph last clicked and waits for one.
+    #[test]
+    fn the_grid_ends_above_the_zoom_and_copy() {
+        let mut app = App::headless();
+        app.settings.recent_glyphs.clear();
+        let shapes = draw(&mut app, Vec::new());
+        let copy = tr("menu.edit.copy");
+        let copy_at = shapes
+            .iter()
+            .find_map(|c| match &c.shape {
+                egui::Shape::Text(t) if t.galley.text() == copy => Some(t.pos.y),
+                _ => None,
+            })
+            .expect("the Copy button");
+        assert!(copy_at > 820.0 && copy_at < 900.0, "{copy_at}");
+        assert_eq!(app.glyph_picked, None);
     }
 
     #[test]

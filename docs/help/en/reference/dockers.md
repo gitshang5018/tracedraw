@@ -13,7 +13,7 @@ the page that explains it.
 | [[docker.hints]] |  | [→](../get-started/hints.md) |
 | [[docker.transformations]] | <kbd>Alt+F7</kbd> | [→](../objects/transforming.md#transformations-docker) |
 | [[docker.undo]] |  | [→](../get-started/undo-and-views.md#undo-docker) |
-| [[docker.align_distribute]] | <kbd>Ctrl+Shift+A</kbd> | [→](../objects/align-distribute.md) |
+| [[docker.align_distribute]] |  | [→](../objects/align-distribute.md) |
 | [[docker.shaping]] |  | [→](../lines-shapes/shaping.md) |
 | [[docker.step_and_repeat]] | <kbd>Ctrl+Shift+D</kbd> | [→](../objects/step-and-repeat.md) |
 | [[docker.text]] | <kbd>Ctrl+T</kbd> | [→](../text/adding-text.md#text-docker) |
@@ -55,7 +55,8 @@ the page that explains it.
 - Click a tab to bring its panel to the front; click the tab in front to fold
   the panels away.
 - The close button in a panel's title bar takes it out of the tabs; the
-  collapse button folds the panel area.
+  collapse button folds the panel area; its arrows point to the side of the
+  window the panels fold toward (left for panels docked at the left).
 - The panels you leave open come back the next time TraceDraw starts.
 - Panel shortcuts toggle: pressing one when its panel is in front hides the
   panels.

@@ -474,6 +474,128 @@ mod tests {
         t
     }
 
+    /// #2423: editing a text fitted to a path, the caret, the selection
+    /// and clicks are where the letters stand on the path. The caret
+    /// stayed where the text was before it was fitted (here 70 mm above
+    /// the line), and moved along that straight line as letters were
+    /// typed.
+    #[test]
+    fn the_caret_of_a_text_on_a_path_stands_on_the_path() {
+        let mut app = App::headless();
+        app.settings.autocorrect.enabled = false;
+        let t = fitted_on_line(&mut app);
+        app.selection = vec![t];
+        app.begin_text_edit(t);
+        app.text_set_caret_at(2, false);
+        let (top, bottom, _) = app.text_caret_geometry().expect("caret");
+        for p in [top, bottom] {
+            assert!((45.0..60.0).contains(&p.y), "{top:?} {bottom:?}");
+            assert!((10.0..40.0).contains(&p.x), "{top:?} {bottom:?}");
+        }
+        // Typing moves it along the path.
+        app.text_insert("XX");
+        let (after, _, _) = app.text_caret_geometry().expect("caret");
+        assert!(
+            after.x > top.x + 1.0 && (45.0..60.0).contains(&after.y),
+            "{after:?}"
+        );
+        // A click on the first letter puts the caret before or after it.
+        let hit = app.text_hit_char(Point::new(11.0, 52.0));
+        assert!(matches!(hit, Some(0 | 1)), "{hit:?}");
+        // The selection lies on the path too.
+        app.text_select_all();
+        let (_, _, quads) = app.text_caret_geometry().expect("caret");
+        assert!(!quads.is_empty());
+        assert!(
+            quads.iter().flatten().all(|p| (40.0..65.0).contains(&p.y)),
+            "{quads:?}"
+        );
+    }
+
+    /// #2714: round a circle the letters that go on past the path's
+    /// start (the right half of a text centred on the top) could not be
+    /// clicked or selected: a click there was taken a whole round back.
+    /// A click on each letter now puts the caret beside that letter.
+    #[test]
+    fn every_letter_round_a_circle_can_be_clicked() {
+        tracedraw_text::install();
+        if tracedraw_text::fonts().families().is_empty() {
+            return;
+        }
+        let mut app = App::headless();
+        app.settings.autocorrect.enabled = false;
+        let e = app
+            .new_shape(ShapeKind::Ellipse {
+                rect: Rect::new(40.0, 100.0, 140.0, 200.0),
+                arc: None,
+            })
+            .expect("circle");
+        app.start_text(Point::new(10.0, 20.0), None);
+        let text = "ABCDEFGHIJKLMNOPQRSTUV";
+        app.text_insert(text);
+        app.finish_text();
+        let t = app.selection[0];
+        app.selection = vec![t, e];
+        app.fit_text_to_path();
+        app.selection = vec![t];
+        app.begin_text_edit(t);
+        let (layout, to_page) = app.text_layout_of(t).expect("layout");
+        let line = layout.lines.first().expect("line").clone();
+        assert_eq!(line.starts.len(), text.chars().count());
+        let mut xs = Vec::new();
+        for i in 0..line.starts.len() {
+            let x = (line.starts[i] + line.ends[i]) / 2.0;
+            let local = Point::new(x, line.baseline + line.ascent * 0.3);
+            let page = to_page * layout.placed(local);
+            xs.push(page.x);
+            let hit = app.text_hit_char(page);
+            assert!(
+                hit == Some(i) || hit == Some(i + 1),
+                "letter {i} at {page:?}: {hit:?}"
+            );
+        }
+        // The letters run across both sides of the circle.
+        let (lo, hi) = xs
+            .iter()
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), x| {
+                (a.min(*x), b.max(*x))
+            });
+        assert!(lo < 80.0 && hi > 100.0, "{lo} to {hi}");
+    }
+
+    /// #2423: on a path going up the page the letters lie on their side,
+    /// and so does the caret: across the path, not upright.
+    #[test]
+    fn the_caret_turns_with_the_path() {
+        let mut app = App::headless();
+        app.settings.autocorrect.enabled = false;
+        let mut line = BezPath::new();
+        line.move_to((50.0, 10.0));
+        line.line_to((50.0, 110.0));
+        let l = app
+            .new_shape(ShapeKind::Path {
+                path: line,
+                closed: false,
+            })
+            .expect("line");
+        app.start_text(Point::new(100.0, 150.0), None);
+        app.text_insert("Path");
+        app.finish_text();
+        let t = app.selection[0];
+        app.selection = vec![t, l];
+        app.begin_fit_text_to_path();
+        app.selection = vec![t];
+        app.begin_text_edit(t);
+        app.text_set_caret_at(2, false);
+        let (top, bottom, _) = app.text_caret_geometry().expect("caret");
+        assert!((top.y - bottom.y).abs() < 0.5, "{top:?} {bottom:?}");
+        assert!((top.x - bottom.x).abs() > 1.0, "{top:?} {bottom:?}");
+        assert!(
+            (35.0..60.0).contains(&top.x) && (10.0..40.0).contains(&top.y),
+            "{top:?}"
+        );
+    }
+
     #[test]
     fn the_bar_settings_edit_the_text_with_undo_and_come_back_on_reselect() {
         let mut app = App::headless();
@@ -815,5 +937,75 @@ mod tests {
             let b = app.visual_bounds(&sh);
             assert!((b.center().x - 90.0).abs() < 1.0, "{bottom} {b:?}");
         }
+    }
+
+    /// #2962: scaling a text fitted to a path with the handles scales its
+    /// letters, and the text stays on the path; the path was scaled with
+    /// it, so the letters left the curve they were fitted to. With the
+    /// curve selected too, both scale as before.
+    #[test]
+    fn scaling_a_text_on_a_path_scales_its_letters_not_the_path() {
+        let mut app = App::headless();
+        app.settings.autocorrect.enabled = false;
+        let t = fitted_on_line(&mut app);
+        let line = app.doc().pages[0]
+            .layers
+            .iter()
+            .flat_map(|l| l.shapes.iter())
+            .map(|s| s.id)
+            .find(|id| *id != t)
+            .expect("line");
+        let before = app.doc().shape(t).expect("text").1.clone();
+        let (size, page_path) = match &before.kind {
+            ShapeKind::Text {
+                spans,
+                on_path: Some(p),
+                ..
+            } => (spans[0].size_pt, before.transform * p.path.clone()),
+            _ => panic!("a fitted text"),
+        };
+        app.select(vec![t]);
+        let corner = Affine::translate((10.0, 50.0))
+            * Affine::scale(2.0)
+            * Affine::translate((-10.0, -50.0));
+        assert!(app.resizes_fitted_text(t, corner, &[t]));
+        app.transform_selection(corner);
+        let after = app.doc().shape(t).expect("text").1.clone();
+        assert_eq!(after.transform, before.transform);
+        match &after.kind {
+            ShapeKind::Text {
+                spans,
+                on_path: Some(p),
+                ..
+            } => {
+                assert!(
+                    (spans[0].size_pt - 2.0 * size).abs() < 1e-9,
+                    "{}",
+                    spans[0].size_pt
+                );
+                assert_eq!(after.transform * p.path.clone(), page_path);
+            }
+            _ => panic!("still fitted"),
+        }
+        // One undo step; a side handle scales by its own side.
+        app.undo();
+        let side = Affine::scale_non_uniform(1.5, 1.0);
+        app.select(vec![t]);
+        app.transform_selection(side);
+        match &app.doc().shape(t).expect("text").1.kind {
+            ShapeKind::Text { spans, .. } => assert!((spans[0].size_pt - 1.5 * size).abs() < 1e-9),
+            _ => panic!("text"),
+        }
+        app.undo();
+        // A mirror, a turn, or the curve scaled along: as before.
+        assert!(!app.resizes_fitted_text(t, Affine::scale_non_uniform(-1.0, 1.0), &[t]));
+        assert!(!app.resizes_fitted_text(t, Affine::rotate(0.3), &[t]));
+        assert!(!app.resizes_fitted_text(t, corner, &[t, line]));
+        app.select(vec![t, line]);
+        app.transform_selection(corner);
+        assert_eq!(
+            app.doc().shape(t).expect("text").1.transform,
+            corner * before.transform
+        );
     }
 }

@@ -1,5 +1,7 @@
 # O espaço de trabalho
 
+> *Tradução automática: esta página pode estar atrasada em relação à versão em inglês.*
+
 A janela do TraceDraw contém seus desenhos e tudo o que é preciso para
 trabalhar neles. Esta página dá nome às suas partes, para que as outras páginas
 desta Ajuda façam sentido.
@@ -9,8 +11,8 @@ desta Ajuda façam sentido.
 De cima para baixo e da esquerda para a direita:
 
 - A **barra de menus** contém todos os comandos, nos menus [[menu.file]],
-  [[menu.edit]], [[menu.view]], [[menu.layout]], [[menu.object]],
-  [[menu.effects]], [[menu.bitmaps]], [[menu.text]], [[menu.table]],
+  [[menu.edit]], [[menu.view]], [[menu.object]], [[menu.text]],
+  [[menu.bitmaps]], [[menu.effects]], [[menu.layout]],
   [[menu.tools]], [[menu.window]] e [[menu.help]]. Cada comando mostra seu
   atalho ao lado. Sem nenhum desenho aberto, só aparecem [[menu.file]],
   [[menu.tools]], [[menu.window]] e [[menu.help]]. A página
@@ -45,8 +47,7 @@ A barra de ferramentas padrão contém, em grupos:
    pressionados quando ativos.
 7. Desativar o encaixe (<kbd>Alt+Q</kbd>) e a lista do que encaixar.
 8. Opções, que abre a lista de páginas de opções.
-9. Iniciar: Gerenciador de fontes, Tela de boas-vindas e Gerenciamento de
-   cores.
+9. Iniciar: Gerenciador de fontes, TraceCut e Tela de boas-vindas.
 
 Passe o ponteiro sobre um botão para ver o nome, o atalho e o que ele faz.
 
@@ -62,6 +63,9 @@ ferramenta.
 
 Nos campos numéricos você pode digitar uma conta como `10+5`, ou um valor em
 outra unidade como `1 in`, que é convertido para as unidades de desenho.
+Arraste para a esquerda ou para a direita sobre as setas de um campo, ou sobre
+o rótulo dele, para diminuir ou aumentar o valor (<kbd>Shift</kbd> para passos
+maiores, <kbd>Ctrl</kbd> para menores).
 
 ## A caixa de ferramentas e os submenus {#toolbox}
 
@@ -87,8 +91,11 @@ Os painéis guardam configurações que ficam abertas enquanto você trabalha,
 como [[docker.properties]], [[docker.objects]] e [[docker.hints]], que vêm
 abertos. Os painéis abertos são guias à direita; clique em uma guia para trazer
 o painel para a frente, ou na guia da frente para recolher os painéis. Abra
-outros em [[menu.window > menu.window.dockers]] ou pelos atalhos; o **+**
-abaixo das guias acrescenta um. Cada painel tem botões de recolher e fechar na
+outros em [[menu.window > menu.window.dockers]] ou pelos atalhos; o botão de
+três pontos abaixo das guias lista todos os painéis, cada um com a imagem,
+para mostrar ou ocultar. Quando há mais painéis abertos do que cabem na coluna
+de guias, a coluna desliza: use as setas no topo e no pé dela ou a roda do
+mouse sobre ela. Cada painel tem botões de recolher e fechar na
 barra de título. A página [Painéis](../reference/dockers.md) lista todos os
 painéis.
 
@@ -134,6 +141,37 @@ barras ou restaurar suas posições. Para mostrar ou ocultar uma barra, use
 [[menu.window > menu.window.toolbars]]. Você também pode salvar toda a
 disposição como um espaço de trabalho; veja
 [Espaços de trabalho](../customize/workspaces.md).
+
+Uma caixa de ferramentas flutuante pode ser redimensionada pelas bordas e
+pelos cantos da janela, e os botões acompanham: uma janela alta e estreita os
+mostra dois por linha, uma mais larga mostra mais por linha em menos linhas,
+uma larga e baixa os mostra em uma ou duas linhas, mantendo as divisões entre
+os grupos de ferramentas. O tamanho fica guardado. Quando o nome de uma barra
+flutuante não cabe no título, ele é encurtado com reticências; passe o
+ponteiro sobre o título para lê-lo inteiro.
+
+Segure <kbd>Ctrl</kbd> e gire a roda do mouse sobre uma barra de ferramentas
+ou sobre a caixa de ferramentas para aumentar (roda para cima) ou diminuir
+(roda para baixo) os botões; o mesmo sobre a paleta de cores aumenta ou
+diminui as amostras. Os tamanhos ficam guardados. A roda sem Ctrl continua
+rolando uma barra que não cabe.
+
+A barra de ferramentas padrão, a barra de propriedades, as barras Texto, Zoom
+e Transformar e o controle de tempo podem dividir uma linha quando encaixados
+no alto ou embaixo: arraste a alça de uma barra até a linha de outra para
+pô-la ao lado dela, ou até a divisa entre duas linhas para lhe dar uma linha
+própria. As linhas ficam guardadas nas suas preferências. Um clique com o
+botão direito em qualquer parte de uma barra encaixada abre o menu dela.
+Menus mais altos que a janela rolam com a roda do mouse.
+
+Todo controle deslizante das barras, painéis e caixas de diálogo funciona do
+mesmo jeito: o rótulo acima, um sulco com marcas, e o valor numa caixa à
+direita em que você pode digitar ou avançar com as setas. Clicar no sulco
+leva o cursor até ali sem tomar o teclado, então os atalhos da tela continuam
+funcionando; depois que <kbd>Tab</kbd> lhe dá o foco, as setas o avançam
+(<kbd>Page Up</kbd> e <kbd>Page Down</kbd> de dez em dez, <kbd>Home</kbd> e
+<kbd>End</kbd> até as pontas). Todo controle mostra um título e uma descrição
+quando você passa o ponteiro.
 
 ## Trabalhar com vários desenhos {#several-drawings}
 

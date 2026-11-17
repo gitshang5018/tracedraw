@@ -20,13 +20,14 @@ later, and removing the last one gives the original back.
 - The native `.tdraw` file stores the list; a bitmap without effects
   writes no `fx` field, and older files load unchanged.
 - Changes that rework the pixels themselves (colour modes, Resample,
-  Manually Inflate Bitmap, Straighten Image, Bitmap Color Mask, Update
+  Bitmap Padding > Custom, Straighten Image, Color Mask, Update
   From Link, Effects > Flatten Effects) keep what the bitmap shows and
   drop the list.
 
 ## Effects menu
 
-- Flatten Effects first, then a line, then the groups in alphabetical
+- Flatten Effects first, then Apply to Pictures on All Pages (see "All
+  pages"), then a line, then the groups in alphabetical
   order of their English names: 3D Effects, Adjust, Art Strokes, Blur,
   Camera, Color Transform, Contour, Correction, Creative, Custom,
   Distort, Noise, Sharpen, Texture, Transform. Each item shows the
@@ -69,9 +70,14 @@ later, and removing the last one gives the original back.
   failed are not made again until a value changes. In the browser the
   preview is made on the interface thread, so the box starts cleared
   there and opening an effect never stalls the page.
-- Before and after previews of the first selected bitmap side by side:
-  a copy at most 240 pixels across, worked out again only when a setting
-  changes. Settings measured in pixels (radius, size, width, height,
+- Every effect dialog is a window the user sizes with the shared Before
+  and After preview of the first selected bitmap at the left
+  (`before-after-preview.md`: the Preview list with Before and After
+  stacked, side by side, Before or After, zoom and pan, the copy as
+  large as the panes show, at most 768 pixels across) and the settings
+  at the right; the result is worked out again only when a setting
+  changes (on a copy at most 240 pixels across while a slider is
+  dragged). Settings measured in pixels (radius, size, width, height,
   distance, period, amplitude, spacing and the like) are scaled with the
   copy, never below their minimum, so the preview looks like the result.
   The before view is the bitmap without the effect being set up (its
@@ -79,7 +85,35 @@ later, and removing the last one gives the original back.
   drawing.
 - Settings: sliders for numbers, a dial and a number for directions
   (degrees counter-clockwise from the right), lists, check boxes and
-  colour buttons. Reset puts every setting back to its default.
+  colour buttons, in the shared settings panel at the right (each
+  slider under its label, stretched to the panel's width;
+  `before-after-preview.md`). Under it the Reset, undo and redo row:
+  Reset puts every setting back to its default, the arrows step
+  through the settings states made in the dialog (a slider's drag is
+  one step on release, a list, a box, a colour, Reset), and the history
+  starts afresh when the dialog opens.
+- Settings only (#2799): a box under Preview. Ticked, every effect
+  dialog opens as a small window (380 x 600 points at first, 320 x 380
+  at least, sized by the user) with the settings alone and no Before and
+  After panes; the effect is seen on the drawing itself (ticking the box
+  ticks Preview). The choice is kept between sessions
+  (`fx_settings_only` in the settings). While any effect dialog is open
+  the wheel over the drawing outside it zooms the drawing, so the result
+  can be looked at closely. Eyedroppers that pick from the panes have
+  nothing to pick from in this window.
+- Show Original (#1129): a button beside Settings only, enabled with
+  Preview. While it is held down the drawing shows the objects without
+  the effect; let go, the preview made before comes back at once, not
+  made again (the last preview's steps are kept until the dialog
+  closes).
+- Presets (#1129): a list above Preview with the presets saved for this
+  effect; choosing one puts its settings in the dialog (the list shows
+  the preset whose settings the dialog holds, "(none)" otherwise). A
+  name box and Save keep the dialog's settings as a preset of the effect
+  (a blank name gets "Preset n", the first n free; the same name
+  replaces that preset's settings), and the cross deletes the preset
+  shown. Presets are kept in the settings (`fx_presets`, at most 300),
+  for every drawing.
 - Editing an effect from the FX section previews from what the effects
   before it made, and the after view also runs the visible effects after
   it; OK changes that effect in place ("Edit Effect").
@@ -113,14 +147,13 @@ later, and removing the last one gives the original back.
 Effects > Adjust > Image Adjustments opens a larger dialog instead of
 the plain one:
 
-- A 600 x 420 preview of a copy at most 720 pixels across. Tools above
-  it: Rotate left and Rotate right (the view, a quarter turn), Pan (drag;
-  the default tool), Zoom in and Zoom out (click a point to zoom by 1.5
-  about it), Zoom to fit, 100% (one bitmap pixel per screen point); the
-  wheel zooms about the pointer with any tool. Preview modes: Full
-  preview, Before and after full preview (side by side, same view) and
-  Before and after split preview (the original left of a dashed divider,
-  the result right; drag the divider).
+- The shared Before and After preview (`before-after-preview.md`),
+  showing After at first, with Before and After stacked, side by side,
+  Before, and Before and After split (the original left of a dashed
+  divider, the result right; drag the divider) in its Preview list;
+  Zoom to fit, Zoom out, Zoom in and Pan, then Rotate left and Rotate
+  right (the view, a quarter turn) and 100% (one bitmap pixel per
+  screen point); the wheel zooms about the pointer.
 - Auto adjust sets the black and white points to the levels that cut
   0.5 % of the opaque pixels at either end. Select white point and Select
   black point turn the preview into a picker: a click sets that point
@@ -136,6 +169,37 @@ the plain one:
 - OK adds one Image Adjustments effect (or changes the one being
   edited) with the settings, which the FX section can edit later.
 
+## All pages
+
+An effect can go to the pictures of every page at once (#1551):
+
+- Every effect dialog (Image Adjustments too) shows an All pages box
+  under Preview while an effect is being added (not edited from the FX
+  section), the drawing has more than one page and a picture (bitmap
+  object) is selected. It starts cleared. Ticked, OK gives the effect
+  with the dialog's values to every picture on every page and master
+  layer, in groups and clip frames too, that the selection left out;
+  locked pictures and pictures on locked layers are left as they are.
+  The pictures changed join the undo step of the selection ("Add
+  Effect", the live preview kept as before), so one Undo takes all of
+  it back; the status bar counts the other pictures
+  (`App::add_bitmap_effect_on_all_pages`).
+- Effects > Apply to Pictures on All Pages (below Flatten Effects; on
+  with more than one page and a selected picture that has effects)
+  gives every other picture on every page the effect list of the first
+  selected picture that has one, replacing their own list (their
+  original pixels kept), as one undo step "Effects on All Pages".
+  Pictures that already have the same list are not touched; with
+  nothing to change no step is recorded. This covers the effects that
+  apply at once without a dialog (Auto Adjust, Desaturate, Invert
+  Colors).
+- The other pictures are made on the interface thread when OK is
+  pressed (the live preview shows the selection only).
+- Checks: `fx::preview::tests::all_pages_gives_the_effect_to_every_picture_in_one_step`
+  (with and without the live preview; a locked picture stays; one Undo
+  takes both pages back),
+  `fx::preview::tests::the_selected_pictures_effects_go_to_all_pages`.
+
 ## Properties panel: FX
 
 A bitmap's Properties show an FX section listing its effects, first
@@ -146,8 +210,8 @@ the original pixels.
 
 ## Auto inflate
 
-Document Options > General > Auto inflate bitmaps for effects, also
-Bitmaps > Inflate Bitmap > Auto Inflate Bitmap (a check mark), is on by
+Document Setup > General > Pad bitmaps for effects automatically, also
+Image > Bitmap Padding > Automatic (a check mark), is on by
 default. When on, the visible effects that spread past the edges grow the
 original first by their reach (summed, at most the larger side), with a
 transparent margin, and the bitmap's place grows by the same amount in
@@ -156,9 +220,9 @@ millimetres, so a blur is not cut off at the edges. Reach: Gaussian Blur
 `Strength / 2` pixels. The switch is stored in the document and applies
 to effects rendered from then on.
 
-Bitmaps > Inflate Bitmap > Manually Inflate Bitmap grows the selected
-bitmaps' canvas by hand: for Width and Height, Inflate to (pixels, from
-the first selected bitmap) or Inflate by (100 to 1000 %, default 100),
+Image > Bitmap Padding > Custom grows the selected
+bitmaps' canvas by hand: for Width and Height, Pad to (pixels, from
+the first selected bitmap) or Pad by (100 to 1000 %, default 100),
 which follow each other; Maintain aspect ratio (on) moves both
 percentages together. Every selected bitmap grows by the percentages,
 centred, with transparent margins, keeping its resolution, in one undo
@@ -367,6 +431,9 @@ through the master curve, then its channel's curve.
 
 ## Checks
 
+- `fx::preview::tests::show_original_and_the_settings_only_window`
+- `ui::effect_dialog::tests::effect_presets_are_saved_by_effect_and_name`
+
 - Given any effect, when it runs with its defaults, its maximums or its
   minimums, then the image keeps its size and every name, setting and
   list item has a translation (`fx::tests::every_effect_runs_keeps_size_and_has_names`).
@@ -407,9 +474,10 @@ through the master curve, then its channel's curve.
 - Given the Image Adjustments, then undo and redo walk the recorded
   steps and a new change drops the undone ones, snapshots are numbered
   from 1, Auto adjust finds 60 and 200 on columns of grays from 60 to
-  200 with two outliers, the pickers keep the points apart, and every
-  quarter turn maps preview points back to the same pixel
-  (`ui::lab_dialog::tests`).
+  200 with two outliers, the pickers keep the points apart
+  (`ui::lab_dialog::tests`), and every quarter turn of the shared
+  preview maps preview points back to the same point of the picture
+  (`ui::before_after::tests::turned_points_map_back`).
 - Given gray 64, then Contrast Enhancement with input high 128 doubles
   only red when Red is chosen and every channel for Master, and
   Target Color Balance from 64 to 128 changes only green when Green is
@@ -457,7 +525,7 @@ The Effects menu's bitmap effects work on any object, not only bitmaps.
 A vector object keeps its shape, fill and outlines; its effects are kept
 with it (`Shape::raster_fx`) and it is drawn as the picture they make:
 the object alone, drawn in its own space at the drawing's rendering
-resolution (Layout > Page Setup, 72 to 1200 dpi; 300 when none is set;
+resolution (Page > Page Setup, 72 to 1200 dpi; 300 when none is set;
 fewer pixels when it would pass 16 million) with a margin of 2 mm, its outline width and 8 % of
 its size, then the visible effects in order. The picture is kept in the
 drawing, so the screen, PDF, SVG, EPS and EMF draw it without the
@@ -495,12 +563,38 @@ its default settings to a 64-pixel landscape, and its name below.
 
 ## Save Bitmap As
 
-The bitmap's context menu writes its pixels, the effects in its stack
-included, to a PNG file (a download in the browser).
+The bitmap's context menu writes the picture to a PNG, JPEG or TIFF
+file (a download in the browser, of the kind offered first). The kind
+is the file name's extension (`.png`; `.jpg` or `.jpeg`; `.tif` or
+`.tiff`); the dialog offers first, and gives the name, the kind of the
+file the picture is linked to or was imported from (its name), else
+TIFF for a CMYK picture, else PNG (#1834).
 
-## Bitmap Mask docker
+- PNG: the pixels as the drawing keeps them, the effects in its stack
+  included (RGB, or grey for a Grayscale picture).
+- A CMYK picture (a `.cdr` CMYK image, or one in the CMYK colour mode)
+  as JPEG or TIFF is written in CMYK: the ink channels it keeps
+  (`Shape::picture_inks`, #1659) as they are, else its pixels through
+  the colour management, as its separation plates print them; a spot
+  ink it keeps goes in as its process mix. The TIFF is a separated
+  image, the JPEG a four-component file, both with the picture's
+  resolution and the CMYK profile in use (the writers of the CMYK
+  export, #1763). The TIFF of a picture with see-through pixels keeps
+  them: a fifth channel, an unassociated alpha (ExtraSamples 2), beside
+  each pixel's full inks (#1925); an opaque picture stays four
+  channels. The JPEG holds no transparency: a see-through pixel holds
+  that much less ink.
+- Any other picture as JPEG is RGB (grey for a Grayscale picture) at
+  quality 92 over white paper, with its resolution; as TIFF it is RGB,
+  with its alpha when a pixel is see-through.
 
-Bitmaps > Bitmap Mask opens the docker:
+`bitmap_file::tests::save_bitmap_as_keeps_the_inks_of_a_cmyk_picture`,
+`bitmap_file::tests::save_bitmap_as_writes_an_rgb_picture_as_jpeg_or_tiff`,
+`bitmap_file::tests::a_cmyk_picture_keeps_its_transparency_in_tiff_and_edit_bitmap`.
+
+## Color Mask docker
+
+Image > Color Mask opens the docker:
 
 - An eyedropper (the Color Eyedropper tool; each colour it samples
   fills the selected slot and ticks it) and "Select colours from

@@ -13,9 +13,21 @@ painel [[docker.bevel]]; abra-o com [[menu.effects > menu.effects.bevel]].
    - [[docker.soft_edge]]: a borda desce para dentro do objeto, iluminada de um
      lado e sombreada do outro;
    - [[docker.emboss]]: o objeto parece saltar da página.
-3. Defina a [[docker.distance]] (até onde o chanfro entra no objeto), o
-   [[docker.light_angle]], a [[docker.intensity]] da luz, a
-   [[docker.shadow_color]] e a [[docker.light_color]].
+   - [[docker.bevel_center]]: A faixa do bisel metade dentro e metade fora do contorno.
+3. Defina o visual do chanfro:
+   - [[docker.depth]]: até onde o chanfro chega a partir da borda, para
+     dentro do objeto na borda suave e para fora no relevo;
+   - [[docker.level]]: em quantas etapas a luz e a sombra são divididas ao
+     longo do chanfro. 1 dá dois tons chapados; mais etapas os degradam
+     suavemente da borda para dentro;
+   - [[docker.light_angle]]: a direção de onde vem a luz;
+   - [[docker.intensity]]: a força da luz e da sombra;
+   - [[docker.bevel_smooth_light]]: A luz cai ao redor da borda pela direção, cada parte tão iluminada quanto está voltada para a luz, em vez de duas metades.
+   - [[docker.light_color]] e [[docker.shadow_color]]: as cores do lado
+     iluminado e do lado sombreado;
+   - [[docker.emboss_color]]: a cor a partir da qual o chanfro é
+     tonalizado. Marque a caixa e escolha uma cor própria; desligada, usa o
+     preenchimento do objeto.
 4. Clique em [[docker.apply]].
 
 Para copiar o chanfro de outro objeto, use

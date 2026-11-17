@@ -27,6 +27,11 @@ mengatur cara kerja program. Pilih halaman dari daftar di sebelah kiri.
 - [[options.full_screen_preview]]: [[options.show_page_border]].
 - [[options.wheel_default_action]]: [[options.wheel_zoom]] (bawaan) atau
   [[options.wheel_scroll]].
+- [[options.open_view]]: [[options.open_view_page]] (bawaan),
+  [[options.open_view_objects]], [[options.open_view_width]],
+  [[options.open_view_height]], [[options.open_view_actual]], [[options.open_view_percent]] atau
+  [[options.open_view_saved]] (halaman, posisi, dan zoom yang disimpan
+  setiap kali berkas TraceDraw disimpan).
 - [[options.ruler_calibration]]: tempelkan penggaris ke layar dan ubah
   [[options.screen_resolution]] sampai tandanya cocok, agar zum 100%
   menampilkan ukuran sebenarnya. [[options.reset]] mengembalikan nilai 96.
@@ -105,6 +110,7 @@ Halaman ini punya lima tab.
 - [[options.paragraph_text]]: [[menu.text.show_text_frames]],
   [[menu.text.use_hyphenation]] dan [[options.hyphenation_patterns]]
   (bawaan, atau kamus pemenggalan untuk bahasa Anda).
+  - [[options.default_tab_spacing]]: ke mana <kbd>Tab</kbd> melompat dalam paragraf tanpa stop tab sendiri (12,7 mm, setengah inci).
 - [[docker.fonts]]: [[options.show_recent_fonts]] di atas daftar font,
   [[options.recent_font_count]] (5, hingga 20) dan
   [[options.font_sample_size]].
@@ -114,3 +120,13 @@ Halaman ini punya lima tab.
   dipakai, lihat [Kamus](../text/writing-tools.md#dictionaries).
 - [[dialog.autocorrect]]: apa yang dikoreksi saat mengetik; lihat
   [Koreksi otomatis](../text/writing-tools.md#autocorrect).
+
+## [[benchmark.title]] {#benchmark}
+
+[[menu.help > menu.help.benchmark]]: [[menu.help.benchmark_tip]]
+
+[[benchmark.intro]]
+
+[[benchmark.compare_how]]
+
+[[options.light_zoom]]: [[options.light_zoom_tip]]

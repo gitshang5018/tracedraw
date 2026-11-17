@@ -2,10 +2,11 @@
 
 A grid of nodes over an object, each node with a colour and an opacity;
 the colours flow between the nodes and the object's outline clips them.
-The grid lines between the nodes are straight for meshes made here, and
-curves where a file gives the nodes handles (`MeshNode::handles`: towards
-the next and the previous column, the next and the previous row); every
-cell is then the Coons patch bounded by its four grid lines.
+The grid lines between the nodes are straight for meshes made here
+until a handle bends them, and curves where a file gives the nodes
+handles (`MeshNode::handles`: towards the next and the previous column,
+the next and the previous row); every cell is then the Coons patch
+bounded by its four grid lines.
 
 ## Mesh Fill tool
 
@@ -13,11 +14,25 @@ cell is then the Coons patch bounded by its four grid lines.
   columns, spread over its bounds, every node in the colour its fill
   had (white when it had none); a click on an object that has a mesh
   selects it. A click on nothing clears the selection.
-- A click on a node selects it; dragging a node moves it (one undo step
-  for the drag).
+- A click on a node selects it; dragging a node moves it, the nodes on
+  the mesh's edge too, and its colour goes with it (one undo step for
+  the drag). The drag takes the node under the press, within the pick
+  distance (Options > Nodes and Handles, never less than the node's
+  marker reaches), and the node keeps its offset from the pointer and
+  snaps where it lands as the pointer does (objects, guidelines, the
+  grid, the page; discussion #2073, #2004).
+- The selected node shows a handle on each grid line that leaves it (a
+  round mark joined to the node; two on a corner of the mesh, three on
+  its edge, four inside), a third of the way to the next node while the
+  line is straight. Dragging a handle bends that grid line, and the
+  patches on both sides of it follow; the node stays selected
+  (`Mesh::handle_point`, `Mesh::move_handle`, discussion #2073).
 - With a node selected, a click on a colour in the colour palette
   colours that node (the fill stays a mesh); with the Pick tool the same
-  click fills the whole object as usual.
+  click fills the whole object as usual. Ctrl+click on a colour mixes
+  a tenth of it into each chosen node's own colour, one undo step a
+  click, so repeated clicks move the nodes towards it (discussion #2616,
+  `mesh_tool::tests::ctrl_click_on_a_colour_mixes_it_into_the_chosen_mesh_nodes`).
 - Double-click inside the mesh puts a node where it was: a new column
   and a new row through that point, their nodes placed and coloured as
   the cell's patch is there (the point's place `u`, `v` in the cell
@@ -97,6 +112,46 @@ cell a double-click lands in, and where in it, are found on the curved
 patch. Changing the rows and columns from the property bar spreads a
 straight grid anew.
 
+## Text typed over
+
+A mesh made over a text (its grid's box is the text's box, within a
+hundredth of its size, as the Mesh Fill tool makes it) stretches with
+the text's box when the text changes: typed over with a wider letter (a
+T made a C) or more letters, the grid still covers all of it. The part
+past the old grid was left without fill, so a block shadow behind
+showed through it along the grid's straight edge and an inner shadow
+seemed to miss a piece (#2892, #2894). A mesh moved off its text's box
+stays where it is
+(`command::tests::a_texts_mesh_follows_the_text_when_it_is_typed_over`).
+
+A file saved before that, with a text whose grid lies inside the text's
+box but no longer covers it, opens with the grid stretched over the
+whole box again, so nothing has to be done by hand. A grid reaching
+past the text's box is left as it is
+(`document::tests::a_texts_mesh_left_over_its_old_box_covers_it_when_the_file_opens`).
+
+## Weld, Combine and the other shaping operations
+
+Their result lies in page space: a mesh fill it takes goes there with
+it, nodes and handles. A mesh paints nothing outside its grid, so a
+result that reaches past the grid (a Weld with an object outside the
+mesh, a Combine with objects elsewhere) takes the mesh's mean colour
+instead (`Fill::for_result`, `Mesh::covers`); it was left empty or in
+the wrong place (a live test of 0.41,
+`command::tests::combine_keeps_a_mesh_fill_or_its_mean_colour`,
+`ops::smoke_tests::weld_and_combine_keep_a_mesh_fill_or_its_mean_colour`).
+
+## Saving as `.cdr`
+
+The mesh fill records of `.cdr` files are known only as far as reading
+them needs (`docs/cdr-format.md`, object type 0x20), so a mesh fill is
+saved as one uniform fill of the mesh's mean colour (the nodes' colours
+averaged, each weighed by its opacity; the one colour when all nodes
+share it), and after saving the status bar says how many mesh fills
+went out that way (`status.saved_mesh_as_colour`). The object itself,
+its outline and its place are saved as usual. A `.tdraw` file keeps the
+mesh.
+
 ## Checks
 
 - `tracedraw_core::style::tests::meshes_regrid_and_lose_lines_keeping_their_colours`
@@ -107,6 +162,9 @@ straight grid anew.
 - `tracedraw_render::tests::band_threads_share_one_mesh_picture`
 - `tracedraw_core::style::tests::a_double_click_puts_the_new_mesh_node_where_it_was`
 - `pick_drag_tests::mesh_nodes_land_where_they_are_clicked_and_dragged`
+- `pick_drag_tests::mesh_nodes_and_their_handles_are_dragged`
+- `tracedraw_core::style::tests::mesh_handles_lie_on_the_grid_lines_and_bend_them`
+- `tracedraw_cdr::write::tests::a_mesh_fill_goes_out_as_its_mean_colour_and_is_counted`
 - `tracedraw_render::tests::mesh_fill_blends_corner_colours`
 - `tracedraw_render::tests::smooth_mesh_colour_flows_through_the_nodes`
 - `mesh_tool::tests::the_mesh_tool_builds_colours_and_clears_meshes`

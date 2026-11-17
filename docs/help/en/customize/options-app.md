@@ -15,6 +15,12 @@ sets how the program works. Choose a page from the list on the left.
 - [[options.hardware_acceleration]] (on): draw the window with the graphics card chosen beside it ([[options.gpu_automatic]] at first); off, with the computer's software renderer. It takes effect at the next start. If the window cannot open that way, TraceDraw starts again with the software renderer, then with OpenGL, and keeps the one that worked.
 - [[options.undo_levels]]: how many steps you can undo (150 at first).
 
+On a computer, the page also has a choice that puts Minimize, Maximize and
+Close buttons at the right end of the menu bar (off at first). It is for a
+window without a title bar, such as under a tiling window manager. With it
+on, dragging the empty part of the menu bar moves the window, and a double
+click there maximizes or restores it.
+
 ## Display {#display}
 
 ![The Display page of the TraceDraw options](../../img/customize-options-app-display.png)
@@ -26,6 +32,13 @@ sets how the program works. Choose a page from the list on the left.
 - [[options.full_screen_preview]]: [[options.show_page_border]].
 - [[options.wheel_default_action]]: [[options.wheel_zoom]] (at first) or
   [[options.wheel_scroll]].
+- [[options.open_view]]: [[options.open_view_page]] (at first),
+  [[options.open_view_objects]], [[options.open_view_width]],
+  [[options.open_view_height]], [[options.open_view_actual]],
+  [[options.open_view_percent]] (a zoom of your own, typed beside the list,
+  with the page in the middle of the window) or
+  [[options.open_view_saved]] (the page, place and zoom kept each time a
+  TraceDraw file is saved).
 - [[options.ruler_calibration]]: hold a ruler against the screen and change
   the [[options.screen_resolution]] until the marks match, so that zoom 100%
   shows real sizes. [[options.reset]] puts back 96.
@@ -103,6 +116,7 @@ The page has five tabs.
 - [[options.paragraph_text]]: [[menu.text.show_text_frames]],
   [[menu.text.use_hyphenation]] and the [[options.hyphenation_patterns]]
   (built-in, or a hyphenation dictionary for your language).
+  - [[options.default_tab_spacing]]: where <kbd>Tab</kbd> goes in a paragraph without tab stops of its own (12.7 mm, half an inch).
 - [[docker.fonts]]: [[options.show_recent_fonts]] at the top of the font lists,
   the [[options.recent_font_count]] (5, up to 20) and the
   [[options.font_sample_size]].
@@ -112,3 +126,13 @@ The page has five tabs.
   see [Dictionaries](../text/writing-tools.md#dictionaries).
 - [[dialog.autocorrect]]: what is corrected as you type; see
   [Autocorrect](../text/writing-tools.md#autocorrect).
+
+## [[benchmark.title]] {#benchmark}
+
+[[menu.help > menu.help.benchmark]]: [[menu.help.benchmark_tip]]
+
+[[benchmark.intro]]
+
+[[benchmark.compare_how]]
+
+[[options.light_zoom]]: [[options.light_zoom_tip]]

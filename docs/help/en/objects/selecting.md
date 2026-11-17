@@ -1,7 +1,8 @@
 # Selecting objects
 
 Before you change an object, you select it. The [[tool.pick]] tool
-(<kbd>Space</kbd> switches to it from most tools) selects, moves and resizes
+(<kbd>Space</kbd> switches to it from most tools, and <kbd>Space</kbd> again
+takes you back to the tool you were using) selects, moves and resizes
 objects; the [[tool.freehand_pick]] tool does the same but selects with a
 freehand loop.
 
@@ -13,11 +14,16 @@ freehand loop.
 - <kbd>Shift</kbd>+click adds an object to the selection or takes it out.
 - **Drag** around objects, starting on an empty spot: the objects wholly
   inside the dashed frame are selected. Hold <kbd>Alt</kbd> as you finish the
-  drag to select every object the frame touches. Hold <kbd>Shift</kbd> to
+  drag to select every object the frame touches; held from the start, the
+  frame can start over an object too (a background, or the object in front
+  of a hidden one), selected or not. Hold <kbd>Shift</kbd> to
   turn over the objects the frame takes: those selected are deselected and
   the others added. Hold <kbd>Ctrl</kbd> to keep the frame square.
 - <kbd>Ctrl</kbd>+click selects an object inside a group, one level further
-  in at each click. Its handles are round, and changes act on it alone.
+  in at each click. Its handles are round, and changes act on it alone; drag
+  it from anywhere on it to move it alone. <kbd>Ctrl</kbd>+click on a clip
+  frame starts editing its contents instead (see
+  [Clip frames](clip-frames.md#edit-contents)).
 - <kbd>Alt</kbd>+click selects the object beneath the selected one, to reach
   objects that are covered.
 - <kbd>Tab</kbd> and <kbd>Shift+Tab</kbd> select the next or previous object.
@@ -27,6 +33,21 @@ freehand loop.
 
 The selected objects show eight square handles around them and a small cross
 in the middle. The status bar says what is selected and on which layer.
+
+The pointer shows the move arrows only over what is selected. Over any other
+object it keeps the plain arrow, since a press there picks that object first;
+dragging an unselected object still picks and moves it. While you drag a
+selection frame, hold the right mouse button as well to move the frame
+without changing its size, so that it sits exactly round the objects you
+want; let go of the right button to size it again. The frame selects when
+you let go of the left button.
+
+Drawing and shaping tools whose click has no job of its own (the rectangle,
+ellipse, polygon and other shape tools, the Knife, the connectors, Blend and
+others) select too: click an object to select it, <kbd>Shift</kbd>+click to
+add or take it away, <kbd>Ctrl</kbd>+click to reach into groups, and click
+empty space to select nothing. A drag still draws. The line tools and the
+Text tool keep their clicks.
 
 ### Moving, resizing and turning {#transform-with-pick}
 
@@ -40,7 +61,12 @@ in the middle. The status bar says what is selected and on which layer.
 - Click a selected object again to show the rotation handles: drag a curved
   corner arrow to rotate, a side arrow to skew. Hold <kbd>Ctrl</kbd> for steps
   of 15 degrees. Drag the ring in the middle to turn about another point;
-  double-click it to put it back in the middle.
+  double-click it to put it back in the middle. In this rotate mode, a node of
+  the selection (or the middle of a segment) dragged turns the selection
+  about the ring; let go near another object's edge or a guideline and
+  the node lands exactly on it, so an arc turned about one end can be laid
+  onto a line. The rotate handle still snaps to other objects' nodes,
+  midpoints and centres to aim the turn at one.
 - While dragging, press <kbd>Space</kbd> or click the right button to leave
   a copy where the objects were; <kbd>Esc</kbd> cancels the drag.
 - The arrow keys nudge the selection by the nudge distance (2.54 mm at
@@ -55,6 +81,10 @@ Drag a selected object with the right mouse button. When you release, a menu
 offers to move it there, copy it there, copy its fill, outline or all its
 properties to the object under the pointer, or place it inside that object
 as a [clip frame](clip-frames.md).
+
+Hold a key as you release over another object to skip the menu: `Shift`
+copies the outline to that object, `Alt` the fill, and `Ctrl` (`Cmd` on a
+Mac) both.
 
 ### The property bar {#pick-property-bar}
 
@@ -73,6 +103,35 @@ Press <kbd>Ctrl</kbd> and a number from 0 to 9 to remember the selection under
 that number. Press the number alone to select those objects again, and again
 to zoom to them. <kbd>Alt</kbd> and the number add the selection to the
 group. Groups are saved with the drawing.
+
+### Invert Selection and Select Similar {#select-similar}
+
+[[menu.edit > menu.edit.invert_selection]] selects every object of the
+page that [[menu.edit.select_all]] would take and is not selected now, and
+deselects the selected ones. With nothing selected it selects everything.
+
+[[menu.edit > menu.edit.select_similar]] selects the objects of the page
+that are like the selected ones:
+
+- [[menu.edit.similar_fill]]: the same fill (the same colour, gradient,
+  pattern or no fill).
+- [[menu.edit.similar_outline]]: the same outline (width, colour and
+  style), or no outline when the selected object has none.
+- [[menu.edit.similar_text_format]]: text that uses the same font and
+  size as the selected text (in any of its characters).
+- [[menu.edit.similar_kind]]: the same kind of object (rectangles,
+  ellipses, curves, artistic text, paragraph text, groups, bitmaps...).
+
+With several objects selected, an object like any of them is taken. The
+objects inside groups are compared too, each on its own, and a selected
+group stands for the objects in it (with
+[[menu.edit.similar_kind]], a selected group finds the other groups).
+Objects on locked layers stay out, as with [[menu.edit.select_all]].
+
+Each of these commands is one step of [[menu.edit.undo]]: right after
+it, with nothing changed in the drawing, Undo puts the selection back as
+it was and Redo makes it again. Once the drawing changes, Undo goes back
+to the drawing's own steps.
 
 ## The Freehand Pick tool {#freehand-pick}
 

@@ -319,9 +319,12 @@ impl App {
         }
     }
 
-    /// The join distance in page millimetres.
+    /// The join distance in page millimetres: as far as the end node
+    /// takes a press (the Pen with automatic adding and deleting reaches
+    /// as far as a node is picked), so a press that misses the end by a
+    /// few pixels goes on from it instead of deleting it (#2988).
     fn join_tolerance(&self) -> f64 {
-        self.settings.curves.join_px() / f64::from(self.view.zoom.max(1e-6))
+        self.curve_end_reach_px() / f64::from(self.view.zoom.max(1e-6))
     }
 
     /// `p` (page) is on an end node of the selected open curve, where a new
@@ -345,6 +348,17 @@ impl App {
     }
 
     pub fn add_drawn_line(&mut self, line: BezPath) -> Option<ShapeId> {
+        self.add_drawn_line_with_widths(line, Vec::new())
+    }
+
+    /// `add_drawn_line`, with `widths` along the new line's outline (a
+    /// pen's pressure, #850); a line that continues a curve keeps that
+    /// curve's outline.
+    pub fn add_drawn_line_with_widths(
+        &mut self,
+        line: BezPath,
+        widths: Vec<tracedraw_core::style::WidthNode>,
+    ) -> Option<ShapeId> {
         if let Some(curve) = self.join_candidate() {
             if let Some(path) = joined(&curve.page_path(), &line, self.join_tolerance()) {
                 let det = curve.transform.determinant();
@@ -363,10 +377,17 @@ impl App {
                 }
             }
         }
-        let id = self.new_shape(ShapeKind::Path {
-            path: line,
-            closed: false,
-        })?;
+        let id = self.new_shape_styled(
+            ShapeKind::Path {
+                path: line,
+                closed: false,
+            },
+            |shape| {
+                if let Some(st) = shape.stroke.as_mut().filter(|_| !widths.is_empty()) {
+                    st.widths = widths;
+                }
+            },
+        )?;
         self.select(vec![id]);
         Some(id)
     }

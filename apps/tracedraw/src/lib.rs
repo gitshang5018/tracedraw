@@ -5,53 +5,79 @@
     clippy::enum_variant_names,
     clippy::wrong_self_convention
 )]
+// The Android app starts from android.rs and does not use the desktop
+// start-up (instance, gpu, startup_log, mcp ...), which is compiled all
+// the same; the desktop and browser builds keep the warnings on.
+#![cfg_attr(target_os = "android", allow(dead_code))]
 
-//! TraceDraw application library: a thin egui shell over the engine.
-//!
-//! The desktop and browser builds start from `main.rs`; the Android build
-//! starts from `android_main` in `apps/tracedraw-android`, which calls
-//! [`android_run`]. Every platform draws the same interface; `ui::mobile`
-//! re-arranges it for a phone screen.
+//! TraceDraw app: a thin egui shell over the engine. The library holds
+//! the whole app; `main.rs` is the desktop and browser program that calls
+//! [`run`], and on Android the library is the app itself (`android.rs`,
+//! loaded by the system as a shared library).
 
-#[cfg(target_os = "android")]
-mod android_system;
+mod action_lines;
 mod ai;
 mod ai_image;
-mod ai_tools;
+mod ai_retry;
+// Custom modules for TraceDraw fork
+pub mod ai_tools;
+pub mod android_system;
+pub mod arrange;
+pub mod banner;
+pub mod curves_cdr;
+pub mod fonts_folder;
+pub mod matting;
+pub mod native_vectorize;
+pub mod nesting;
+pub mod nfp;
+
+mod ai_vectorize;
 mod anchors;
+#[cfg(target_os = "android")]
+mod android;
+#[cfg(any(target_os = "android", test))]
+mod android_end;
+#[cfg(test)]
+mod android_package;
 mod app;
-mod arrange;
-mod banner;
 mod autocorrect;
 mod barcode;
+pub mod benchmark;
 mod bg_remove;
+mod bitmap_file;
 mod bitmap_fx;
 mod bitmap_modes;
 mod blend_link;
 mod blend_tool;
 mod border_grommet;
 mod brushes;
+mod balloons;
 mod callouts;
+mod captions;
+mod chinese;
 mod canvas;
 mod clipboard;
 mod clone_effect;
 mod color_drop;
 mod color_policy;
+mod color_styles;
 mod comments;
 mod common_shapes;
 mod connectors;
+mod content_link;
 mod contour_tool;
 mod coords;
 mod copy_effect;
+mod copy_props;
 mod corner_widgets;
 mod corners;
 mod crop_tool;
-mod curves_cdr;
 mod curve_join;
 mod defaults;
 mod describe;
 #[cfg(test)]
 mod devanagari_join_tests;
+mod dictionary_download;
 mod dimensions;
 mod distort_tool;
 mod doc_stats;
@@ -59,6 +85,9 @@ mod documents;
 mod drawing_scale;
 mod drop_files;
 mod drop_menu;
+mod effect_line;
+#[cfg(test)]
+mod effect_line_tests;
 mod effects_ui;
 mod encode;
 mod envelope_edit;
@@ -67,19 +96,26 @@ mod export;
 mod export_assets;
 mod extrude_tool;
 mod eyedropper;
+mod file_hold;
+mod file_presence;
 mod files;
+mod fill_page;
 mod fill_tool;
+mod fit_path;
 mod focus;
+mod formula;
 #[cfg(any(target_arch = "wasm32", test))]
 mod font_folder;
-mod fonts_folder;
 #[cfg(not(target_arch = "wasm32"))]
 mod frame_stats;
 mod frame_type;
 mod fx;
+mod gather_pages;
 mod github;
 #[cfg(not(target_arch = "wasm32"))]
 mod gpu;
+#[cfg(not(target_arch = "wasm32"))]
+mod gpu_fx;
 mod gradient_presets;
 mod grammar;
 mod guides;
@@ -89,6 +125,8 @@ mod help_shots;
 mod hunspell;
 mod i18n;
 mod image_dpi;
+mod insert_object;
+mod import_place;
 mod imposition;
 #[cfg(test)]
 mod input_method_tests;
@@ -96,13 +134,15 @@ mod input_method_tests;
 mod instance;
 mod interaction;
 mod interaction2;
+mod join_tool;
 mod kind_nodes;
 mod knife;
 mod lens;
 mod live_guides;
+#[cfg(test)]
+mod macos_package;
 mod macro_forms;
 mod macros;
-mod matting;
 mod mcp;
 #[cfg(not(target_arch = "wasm32"))]
 mod mcp_link;
@@ -112,23 +152,32 @@ mod mixed;
 #[cfg(test)]
 mod mockup_tests;
 mod multipage;
-mod native_vectorize;
+mod my_shapes;
 mod net;
-mod nesting;
 mod new_document;
-mod nfp;
 mod node_edit;
 mod object_clone;
+mod object_thumbs;
+mod offset_shadow_handle;
 mod ops;
 mod ops2;
+mod opening;
+mod package;
+mod page_drop;
+mod page_names;
 mod painterly_tool;
 mod palette;
+mod palm;
+mod pen;
 mod pen_look;
 mod perspective_draw;
 #[cfg(test)]
 mod pick_drag_tests;
 mod picture_mosaic;
+mod picture_plates;
 mod placeholder;
+mod plugins;
+mod pmd_open;
 mod preflight;
 mod prefs;
 mod print_merge;
@@ -143,24 +192,44 @@ mod script_filters;
 mod scripting;
 mod segment_delete;
 mod select_region;
+mod select_similar;
 mod settings;
 mod shadow_tool;
+#[cfg(test)]
+mod shadow_split_tests;
+mod shape_builder;
 mod shape_tool;
+#[cfg(test)]
+mod shaping_tests;
 mod shelf;
 mod shortcuts;
+mod sizes;
 mod snap;
 mod snap_points;
+mod soft_canvas;
+mod soft_keyboard;
 mod spell;
+#[cfg(windows)]
+mod spell_windows;
 #[cfg(not(target_arch = "wasm32"))]
 mod splash;
 #[cfg(not(target_arch = "wasm32"))]
 mod startup_log;
+mod step_merge;
+mod step_repeat;
+mod storage_full;
 mod straighten;
+mod style_presets;
 mod styles;
 mod symbol_paste;
 mod symmetry_edit;
 mod system_chars;
+mod system_locale;
 mod system_prefs;
+#[cfg(any(target_os = "macos", test))]
+mod system_quit;
+mod tab_ruler;
+mod spreadsheet_import;
 mod table;
 mod table_tool;
 mod templates;
@@ -170,6 +239,7 @@ mod text_effect_tests;
 mod text_frames;
 mod text_nodes;
 mod text_path;
+mod toc;
 #[cfg(test)]
 mod text_wrap_tests;
 mod textflow;
@@ -177,38 +247,117 @@ mod theme;
 mod thesaurus;
 mod thumbnails;
 mod time_tracker;
+#[cfg(any(target_os = "linux", test))]
+mod title_bar;
 mod tools;
 mod tools2;
+mod touch_bars;
+mod touch_modifiers;
+mod touch_taps;
 mod trace;
+mod trace_blend;
+mod trace_fine;
+mod trace_fit;
+mod trace_fonts;
+mod trace_job;
+mod trace_preview;
+mod trace_progress;
+mod trace_strokes;
+mod trace_text;
+mod tracecut;
+mod tracecut_cut;
+mod tracecut_make;
+mod tracecut_nest;
+mod tracecut_send;
 mod ui;
 mod updates;
+mod upscale;
+#[cfg(not(target_arch = "wasm32"))]
+mod upscale_net;
 mod variable_outline;
 mod vector_mosaic;
 mod view;
+mod view_motion;
+#[cfg(all(unix, not(any(target_os = "macos", target_os = "android"))))]
+mod wayland_copy;
 #[cfg(target_arch = "wasm32")]
 mod web;
 #[cfg(any(target_arch = "wasm32", test))]
 mod web_page;
+#[cfg(windows)]
+mod win_clipboard;
+mod window_buttons;
+#[cfg(all(unix, not(any(target_os = "macos", target_os = "android"))))]
+mod x11_clipboard;
+#[cfg(all(unix, not(any(target_os = "macos", target_os = "android"))))]
+mod x11_copy;
+// The pen pressure helper of the patched winit copy, with its tests
+// (vendor/README.md), so that the gate runs them.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "../../../vendor/winit/src/pen_pressure.rs"]
+mod winit_pen_pressure;
+// The size bounds of the patched winit copy on Windows, with their tests
+// (vendor/README.md, #2487).
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "../../../vendor/winit/src/size_bounds.rs"]
+mod winit_size_bounds;
+// The pointer pixels and scale of the same copy on Linux (#2871).
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "../../../vendor/winit/src/cursor_pixels.rs"]
+mod winit_cursor_pixels;
+// The pen pressure of the patched eframe's web layer, with its tests
+// (vendor/README.md, #1410), so that the gate runs them.
+#[cfg(test)]
+#[path = "../../../vendor/eframe/src/web/pen_pressure.rs"]
+mod eframe_web_pen_pressure;
+// The queue of files macOS asks to open, of the same copy (#646).
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "../../../vendor/winit/src/opened_files.rs"]
+mod winit_opened_files;
+// The program's say on a quit of the application on macOS, of the same
+// copy (#1669).
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "../../../vendor/winit/src/quit_request.rs"]
+mod winit_quit_request;
+// Files dragged over a window on Wayland, of the same copy (#1142).
+#[cfg(all(test, unix, not(target_arch = "wasm32")))]
+#[allow(dead_code)]
+#[path = "../../../vendor/winit/src/file_drop.rs"]
+mod winit_file_drop;
+// Pictures dragged in from other programs, of the same copy (#2349): the
+// mark of a dropped picture's file and the bitmap reading of the Windows
+// clipboard, with its tests.
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+#[allow(dead_code)]
+#[path = "../../../vendor/winit/src/picture_drop.rs"]
+pub(crate) mod winit_picture_drop;
+// The pointer kept on a shortcut with Alt on Windows, of the same copy
+// (#1922).
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "../../../vendor/winit/src/alt_shortcuts.rs"]
+mod winit_alt_shortcuts;
+// A graphics tablet's pen on Wayland, of the same copy (#1841).
+#[cfg(all(test, unix, not(target_arch = "wasm32")))]
+#[allow(dead_code)]
+#[path = "../../../vendor/winit/src/tablet_tool.rs"]
+mod winit_tablet_tool;
+// A finger or a pen on the window's frame on Wayland, of the same copy
+// (#2070).
+#[cfg(all(test, unix, not(target_arch = "wasm32")))]
+#[allow(dead_code)]
+#[path = "../../../vendor/winit/src/frame_input.rs"]
+mod winit_frame_input;
+// A mouse's buttons, wheel and hover on Android, of the same copy
+// (#2152, #2161).
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "../../../vendor/winit/src/android_mouse.rs"]
+mod winit_android_mouse;
 mod workspace_file;
 
-/// Read the system fonts on a worker thread, so that this takes place
-/// while the window opens. Whoever needs the fonts first waits for the
-/// same read (`tracedraw_text::fonts` starts once), so nothing is read
-/// twice and a failed thread costs nothing but the overlap.
-#[cfg(not(target_arch = "wasm32"))]
-fn warm_up_fonts() {
-    if let Err(e) = std::thread::Builder::new()
-        .name("tracedraw-font-scan".into())
-        .spawn(|| {
-            tracedraw_text::fonts();
-        })
-    {
-        log::warn!("font scan thread: {e}");
-    }
-}
-
+/// The desktop program: the window, with the command line's files and
+/// options (see `docs/behavior/about-and-startup.md`).
 #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
-pub fn desktop_main() -> eframe::Result<()> {
+pub fn run() -> eframe::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     // One window for every start (#646): files given to a start while
     // TraceDraw runs go to its window, in tabs of their own, and this
@@ -226,10 +375,10 @@ pub fn desktop_main() -> eframe::Result<()> {
     // The log in a file too and panics reported: the Windows build has no
     // console to show them (#570).
     startup_log::init();
+    updates::clean_leftovers();
     tracedraw_text::install();
     tracedraw_io::emf::install();
-    // Fonts kept in a folder of the user's own (see fonts_folder.rs).
-    fonts_folder::scan();
+    fonts_folder::install();
     // `tracedraw --mcp`: no window, a Model Context Protocol server on
     // stdin/stdout (see mcp.rs and docs/behavior/mcp.md).
     if args.iter().any(|a| a == "--mcp") {
@@ -242,10 +391,31 @@ pub fn desktop_main() -> eframe::Result<()> {
         mcp_link::bridge();
         return Ok(());
     }
+    // `tracedraw --x11`: the window opens through X11 (XWayland on a
+    // Wayland desktop), where a graphics tablet's pen moves the pointer
+    // (#850). The patched windowing layer reads a pen on Wayland too
+    // since #1841, so this is for compositors without the tablet
+    // protocol (see docs/behavior/pen-pressure.md).
+    // Without an X server there is no window to open: say so and stop,
+    // rather than let every renderer fail in turn.
+    #[cfg(target_os = "linux")]
+    let x11_asked = args.iter().any(|a| a == "--x11");
+    #[cfg(target_os = "linux")]
+    if x11_asked && !title_bar::env_set("DISPLAY") {
+        // The log writes to stderr as well as to its file.
+        log::error!(
+            "tracedraw --x11: DISPLAY is not set, so there is no X server to open the window \
+             on. --x11 needs XWayland (on a Wayland desktop) or an X11 session; start \
+             TraceDraw without --x11 to use Wayland."
+        );
+        std::process::exit(2);
+    }
     // The system font list is read while the window and the graphics
     // driver start up, not after them: the editor needs it (the font
-    // lists, the text in drawings) and used to wait for it alone.
-    warm_up_fonts();
+    // lists, the text in drawings). The window never waits for it on its
+    // own thread: the splash screen (or a plain window) is drawn until it
+    // is in (#1388).
+    tracedraw_text::load_in_background();
     // `--no-splash` or TRACEDRAW_NO_SPLASH (automation, the visual
     // checks): straight into a plain window at the default size.
     let plain = args.iter().any(|a| a == "--no-splash")
@@ -258,6 +428,26 @@ pub fn desktop_main() -> eframe::Result<()> {
         let _ = inbox.send(rest);
     }
     let wake = primary.as_ref().map(|p| p.wake.clone());
+    // macOS sends the files opened from Finder (double click, Open With,
+    // the Dock icon) as an "open documents" event, at launch and while
+    // TraceDraw runs, never on the command line (#646): they join the
+    // files handed over and open in tabs of this window.
+    #[cfg(target_os = "macos")]
+    let wake = {
+        let wake = wake.unwrap_or_default();
+        let (sink, ctx) = (inbox.clone(), wake.clone());
+        winit::platform::macos::set_open_files_handler(move |files| {
+            instance::deliver_opened(&sink, ctx.get(), files);
+        });
+        // Command+Q, the application menu's and the Dock's Quit, a
+        // log-out: with unsaved drawings TraceDraw takes the quit over
+        // and asks about each, as File > Exit does (#1669).
+        let ctx = wake.clone();
+        winit::platform::macos::set_quit_handler(move || {
+            system_quit::SYSTEM_QUIT.system_asks(ctx.get())
+        });
+        Some(wake)
+    };
     let mut settings = settings::Settings::load();
     // `--reset-settings`: every preference back to how TraceDraw comes
     // (the recent drawings and the window's size are kept).
@@ -265,16 +455,36 @@ pub fn desktop_main() -> eframe::Result<()> {
         settings = settings.reset_keeping_history();
         settings.save();
     }
-    i18n::set_language(&if settings.language.is_empty() {
-        i18n::system_language().to_string()
-    } else {
-        settings.language.clone()
-    });
-    // The phone layout on a desktop (`TRACEDRAW_MOBILE=1`, the visual
-    // checks): a phone's window, and no splash screen in front of it.
+    // The language picked in Options, else the installer's, else the
+    // system's (docs/behavior/language.md).
+    i18n::set_language(i18n::startup_language_here(&settings.language));
+    // Options > General > "Use the desktop's title bar": through XWayland
+    // when the Wayland compositor draws no title bars (#2070), on by
+    // default so that file drops arrive there (#2486). `--wayland` keeps
+    // the native Wayland window for one start.
+    #[cfg(target_os = "linux")]
+    let wayland_asked = args.iter().any(|a| a == "--wayland");
+    #[cfg(target_os = "linux")]
+    let x11 = x11_asked
+        || title_bar::through_x11(
+            settings.system_title_bar && !wayland_asked,
+            title_bar::env_set("WAYLAND_DISPLAY"),
+            title_bar::env_set("DISPLAY"),
+            title_bar::compositor_offers_title_bars,
+        );
+    #[cfg(target_os = "linux")]
+    if x11 && !x11_asked {
+        log::info!("opening the window through X11 for the desktop's title bar");
+    }
     let phone = ui::mobile::preview_size();
     let splash = settings.show_splash && !plain && phone.is_none();
-    let viewport = if splash {
+    let viewport = if let Some(size) = phone {
+        egui::ViewportBuilder::default()
+            .with_inner_size(size)
+            .with_min_inner_size(egui::vec2(240.0, 320.0))
+            .with_title("TraceDraw")
+            .with_app_id(splash::APP_ID)
+    } else if splash {
         // The splash has no frame, so it cannot be dragged larger; it is
         // still created resizable: some window managers (Xfwm4) keep a
         // window made not resizable at its size for good, and the main
@@ -284,30 +494,30 @@ pub fn desktop_main() -> eframe::Result<()> {
             .with_decorations(false)
             .with_resizable(true)
             .with_title("TraceDraw")
-    } else if let Some(size) = phone {
-        egui::ViewportBuilder::default()
-            .with_inner_size(size)
-            .with_min_inner_size(egui::vec2(240.0, 320.0))
-            .with_title("TraceDraw")
+            .with_app_id(splash::APP_ID)
     } else {
         splash::main_window_builder(&settings, plain)
     };
     // The graphics card, or its software adapter with hardware
     // acceleration off; `--renderer=` when a start before could not open
     // the window (#445, #439).
-    // A start before that never got its window (the driver crashed or
-    // hung it) goes on with the next renderer (#570).
+    // A start before that never showed a frame (the driver crashed or
+    // hung it, before the window was made or while it drew the first
+    // frame) goes on with the next renderer (#570, #1999).
+    let last_failed = gpu::failed_attempt();
+    if let Some(f) = last_failed {
+        log::warn!("the last start did not show the window with {f:?}");
+    }
     let failed = gpu::Mode::from_args(&args)
         .is_none()
-        .then(gpu::failed_attempt)
+        .then_some(last_failed)
         .flatten();
-    if let Some(f) = failed {
-        log::warn!("the last start did not open the window with {f:?}");
-    }
     let mode = gpu::Mode::for_start(&args, &settings, failed);
     let first = gpu::Mode::first(&settings);
     let next = mode.next(first);
     gpu::note_next(next);
+    // Said in the status bar once a frame is shown (#1999).
+    gpu::note_fallback(gpu::fell_back(mode, first, last_failed));
     log::info!("opening the window with {mode:?} (Options asks for {first:?})");
     gpu::begin_attempt(mode);
     // A renderer that hangs never returns here to hand over (#570).
@@ -327,6 +537,15 @@ pub fn desktop_main() -> eframe::Result<()> {
         // would lose (#1151).
         #[cfg(windows)]
         event_loop_builder: Some(Box::new(system_chars::install)),
+        // `--x11`: the window through X11, chosen from the windowing
+        // layer, so the environment children inherit stays as it was.
+        #[cfg(target_os = "linux")]
+        event_loop_builder: x11.then(|| -> eframe::EventLoopBuilderHook {
+            Box::new(|builder| {
+                use winit::platform::x11::EventLoopBuilderExtX11 as _;
+                builder.with_x11();
+            })
+        }),
         ..Default::default()
     };
     // A panic before the window opens is this renderer failing (eframe's
@@ -339,6 +558,9 @@ pub fn desktop_main() -> eframe::Result<()> {
             options,
             Box::new(move |cc| {
                 gpu::note_renderer(cc, mode);
+                // A paste shortcut reads the clipboard's text only when it
+                // offers text (#1488).
+                eframe::set_paste_text_gate(clipboard::paste_may_read_text);
                 system_chars::set_context(&cc.egui_ctx);
                 if let Some(w) = &wake {
                     let _ = w.set(cc.egui_ctx.clone());
@@ -348,7 +570,7 @@ pub fn desktop_main() -> eframe::Result<()> {
                 } else {
                     Shell::new(cc, open_path)
                 };
-                shell.handed_over = Some(handed_over);
+                shell.handed_over = Some(instance::Inbox::new(handed_over));
                 Ok(Box::new(shell))
             }),
         )
@@ -403,9 +625,9 @@ pub fn desktop_main() -> eframe::Result<()> {
 }
 
 /// The browser build starts from `web::start` (the page loads the module,
-/// which runs `main`).
+/// which runs the program's `main`, which calls this).
 #[cfg(target_arch = "wasm32")]
-pub fn web_main() {
+pub fn run() {
     web::start();
 }
 
@@ -417,9 +639,6 @@ pub fn web_main() {
 pub fn android_run(android_app: winit::platform::android::activity::AndroidApp) -> eframe::Result<()> {
     tracedraw_text::install();
     tracedraw_io::emf::install();
-    // The app's own folders: preferences, logs, autosaves, and the
-    // documents the file list of `files.rs` shows. A phone grants no
-    // access to the rest of the storage without asking the user.
     let internal = android_app.internal_data_path();
     let external = android_app.external_data_path();
     let config = internal
@@ -428,22 +647,12 @@ pub fn android_run(android_app: winit::platform::android::activity::AndroidApp) 
         .unwrap_or_else(|| std::path::PathBuf::from("/data/local/tmp"));
     let documents = external.unwrap_or_else(|| config.clone()).join("Documents");
     let _ = std::fs::create_dir_all(&documents);
-    // A drawing the system handed the app to open — a .cdr or a .tdraw
-    // tapped in a file manager — is copied in here and opened at once.
     let shared = android_system::shared_drawing(&android_app, &documents);
     settings::set_android_folders(config, documents.clone());
     files::set_android_documents(documents);
-    // The log comes after the folders are known: it goes in one of them, and
-    // started before that it had no folder to go in and wrote nothing at all.
     startup_log::init();
-    // The folder the phone saves to, once it lets the app see the storage:
-    // drawings and fonts both live there, and the grant is often already in
-    // place at start.
     files::refresh_android_documents();
-    // Fonts dropped into `Fonts` in that folder (see fonts_folder.rs).
     fonts_folder::scan();
-    // The system bars, the keyboard and the language are read through the
-    // activity (see `android_system`).
     android_system::set_phone(android_app.clone());
     ui::mobile::set_android_app(android_app.clone());
     if let Some(locale) = android_system::system_locale(android_app.vm_as_ptr()) {
@@ -456,7 +665,6 @@ pub fn android_run(android_app: winit::platform::android::activity::AndroidApp) 
     } else {
         settings.language.clone()
     });
-    // OpenGL ES: the one renderer every phone offers.
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_title("TraceDraw"),
         renderer: eframe::Renderer::Glow,
@@ -480,7 +688,7 @@ pub struct Shell {
     open: Option<std::path::PathBuf>,
     /// Files later starts handed over (see instance.rs).
     #[cfg(not(target_arch = "wasm32"))]
-    handed_over: Option<std::sync::mpsc::Receiver<Vec<std::path::PathBuf>>>,
+    handed_over: Option<instance::Inbox>,
     /// Frames paced on a software adapter (#616).
     #[cfg(not(target_arch = "wasm32"))]
     pacer: gpu::Pacer,
@@ -488,6 +696,10 @@ pub struct Shell {
     /// `splash::WindowSettle`).
     #[cfg(not(target_arch = "wasm32"))]
     window_settle: splash::WindowSettle,
+    /// The splash window growing into the main window: drawn plain until
+    /// it has its size (see `splash::WindowGrow`, #1673).
+    #[cfg(not(target_arch = "wasm32"))]
+    window_grow: Option<splash::WindowGrow>,
     /// Where the check of the OpenGL renderer stands (see
     /// `check_renderer`).
     #[cfg(not(target_arch = "wasm32"))]
@@ -504,6 +716,11 @@ pub struct Shell {
     /// bundled ones until they are in.
     #[cfg(not(target_arch = "wasm32"))]
     fonts: theme::FontLoad,
+    /// Without the splash screen: the editor, with the file it opens,
+    /// waits for the system font list, which it cannot be built without;
+    /// the window is drawn plain meanwhile, never held (#1388).
+    #[cfg(not(target_arch = "wasm32"))]
+    deferred: Option<Option<std::path::PathBuf>>,
 }
 
 /// Where the check of the OpenGL renderer stands (`Shell::check_renderer`).
@@ -520,14 +737,36 @@ enum RendererCheck {
 }
 
 impl Shell {
-    /// The editor at once (the browser build, or no splash screen).
-    fn new(cc: &eframe::CreationContext<'_>, open: Option<std::path::PathBuf>) -> Self {
+    /// The editor at once (the browser build, or no splash screen); on
+    /// the desktop as soon as the system font list is in (see
+    /// `deferred`).
+    pub(crate) fn new(cc: &eframe::CreationContext<'_>, open: Option<std::path::PathBuf>) -> Self {
+        // The system's text size and contrast, followed from now on (#1412).
+        system_prefs::watch(&cc.egui_ctx);
         #[cfg(target_arch = "wasm32")]
         theme::install_fonts(&cc.egui_ctx);
         #[cfg(not(target_arch = "wasm32"))]
-        let fonts = theme::install_fonts_in_background(&cc.egui_ctx);
+        let wait = !tracedraw_text::fonts_loaded() && tracedraw_text::load_in_background();
+        #[cfg(not(target_arch = "wasm32"))]
+        let fonts = if wait {
+            // The bundled fonts now, the full ones once read.
+            cc.egui_ctx.set_fonts(theme::bundled_font_definitions());
+            cc.egui_ctx.set_visuals(theme::visuals());
+            theme::FontLoad::start()
+        } else {
+            theme::install_fonts_in_background(&cc.egui_ctx)
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        let (app, deferred) = if wait {
+            log::info!("the editor waits for the system font list");
+            (None, Some(open))
+        } else {
+            (Some(app::App::new(&cc.egui_ctx, open)), None)
+        };
+        #[cfg(target_arch = "wasm32")]
+        let app = Some(app::App::new(&cc.egui_ctx, open));
         Shell {
-            app: Some(app::App::new(&cc.egui_ctx, open)),
+            app,
             #[cfg(not(target_arch = "wasm32"))]
             splash: None,
             #[cfg(not(target_arch = "wasm32"))]
@@ -539,6 +778,8 @@ impl Shell {
             #[cfg(not(target_arch = "wasm32"))]
             window_settle: Default::default(),
             #[cfg(not(target_arch = "wasm32"))]
+            window_grow: None,
+            #[cfg(not(target_arch = "wasm32"))]
             renderer_check: RendererCheck::At(gpu::CHECKED_FRAME),
             #[cfg(not(target_arch = "wasm32"))]
             blind_reads: 0,
@@ -546,6 +787,8 @@ impl Shell {
             check_frames: 0,
             #[cfg(not(target_arch = "wasm32"))]
             fonts,
+            #[cfg(not(target_arch = "wasm32"))]
+            deferred,
         }
     }
 
@@ -559,11 +802,41 @@ impl Shell {
             handed_over: None,
             pacer: gpu::Pacer::new(cc),
             window_settle: Default::default(),
+            #[cfg(not(target_arch = "wasm32"))]
+            window_grow: None,
             renderer_check: RendererCheck::At(gpu::CHECKED_FRAME),
             blind_reads: 0,
             check_frames: 0,
             fonts: theme::FontLoad::default(),
+            deferred: None,
         }
+    }
+
+    /// Without the splash screen: build the editor once the system font
+    /// list (and, for a language that needs one, the system font of its
+    /// script) is in; until then draw the plain window and look again a
+    /// little later. True while the editor is still waited for.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn build_deferred(&mut self, ui: &mut egui::Ui) -> bool {
+        let Some(open) = self.deferred.as_mut() else {
+            return false;
+        };
+        let script = theme::needs_system_font(&i18n::language());
+        if !editor_can_start(tracedraw_text::fonts_loaded(), script, &self.fonts) {
+            ui.painter()
+                .rect_filled(ui.max_rect(), 0.0, ui.visuals().panel_fill);
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(30));
+            return true;
+        }
+        let open = open.take();
+        self.deferred = None;
+        if script {
+            ui.ctx().set_fonts(self.fonts.finish());
+        }
+        self.app = Some(app::App::new(ui.ctx(), open));
+        ui.ctx().request_repaint();
+        false
     }
 
     /// The OpenGL renderer is checked once it draws: a frame of the main
@@ -660,6 +933,44 @@ impl Shell {
     }
 }
 
+/// Whether the editor can be built without waiting on the window's
+/// thread: the system font list is in (`fonts_loaded`), and when the
+/// interface language needs a system font for its `script`, the
+/// interface fonts are read too (#1388).
+#[cfg(not(target_arch = "wasm32"))]
+fn editor_can_start(fonts_loaded: bool, script: bool, ui_fonts: &theme::FontLoad) -> bool {
+    fonts_loaded && (!script || ui_fonts.is_finished())
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod start_tests {
+    use super::*;
+
+    /// Without the splash screen the editor is built only once the
+    /// system font list is in, and for a language that needs a system
+    /// font once the interface fonts are read too; until then the window
+    /// is drawn plain instead of waiting on its thread (#1388).
+    #[test]
+    fn the_editor_starts_once_the_fonts_are_in() {
+        let done = theme::FontLoad::default();
+        assert!(done.is_finished());
+        assert!(!editor_can_start(false, false, &done));
+        assert!(!editor_can_start(false, true, &done));
+        assert!(editor_can_start(true, false, &done));
+        assert!(editor_can_start(true, true, &done));
+        // Interface fonts still being read hold back only a language that
+        // needs them.
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        let pending = theme::FontLoad::from_thread(std::thread::spawn(move || {
+            let _ = rx.recv();
+            egui::FontDefinitions::default()
+        }));
+        assert!(editor_can_start(true, false, &pending));
+        assert!(!editor_can_start(true, true, &pending));
+        let _ = tx.send(());
+    }
+}
+
 /// Draw the probe of `Shell::check_renderer`, a light square
 /// `gpu::PROBE_SIDE` points wide near the window's bottom right corner,
 /// on the topmost layer, so that it is the last mesh of the frame; the
@@ -683,14 +994,63 @@ fn paint_probe(ctx: &egui::Context) -> [usize; 2] {
 #[cfg(not(target_arch = "wasm32"))]
 const RENDERER_CHECK: &str = "renderer-check";
 
+/// The end of a step of the frame, named for the slow-frame log
+/// (`frame_stats::mark`, d#2729).
+#[inline]
+pub(crate) fn frame_mark(name: &'static str) {
+    #[cfg(not(target_arch = "wasm32"))]
+    frame_stats::mark(name);
+    #[cfg(target_arch = "wasm32")]
+    let _ = name;
+}
+
 impl eframe::App for Shell {
     /// Characters the windowing layer lost (input methods on Windows,
-    /// #1151) join the frame's input as typed text.
-    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+    /// #1151) and what Android's on-screen keyboard typed (#1309) join the
+    /// frame's input. A graphics tablet's
+    /// pressure is read from the touch events, and the pen's touches that
+    /// only move are taken out, so egui never takes the pen for a touch
+    /// screen (#850, see `pen.rs`).
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
         system_chars::take_into(raw_input);
+        // What Android's on-screen keyboard typed (#1309).
+        soft_keyboard::take_into(raw_input);
+        pen::filter_raw_input(ctx, raw_input);
+        interaction::release_chorded_left(ctx, raw_input);
+        // The screen's safe area on Android (#1917).
+        if let Some(app) = self.app.as_ref() {
+            ui::screen_margins::apply(ctx, &app.settings, raw_input);
+        }
+        // Shift, Ctrl and Alt held from the keys on the drawing by a
+        // finger, tapped (#1499) or held down while another finger draws
+        // (#2362).
+        if let Some(app) = self.app.as_mut() {
+            touch_modifiers::fingers_on_keys(app, raw_input);
+            touch_bars::second_finger_copies(app, raw_input);
+            app.touch_mods.apply(ctx, raw_input);
+        }
+    }
+
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Files a later start handed over bring the window up, minimized
+        // too: a minimized window runs this and no ui (#2129).
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(inbox) = &mut self.handed_over {
+            if instance::bring_up_for_handed_over(ctx, inbox) {
+                ctx.request_repaint();
+            }
+        }
+        #[cfg(target_arch = "wasm32")]
+        let _ = ctx;
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        // The start works once a frame reached the screen, not when the
+        // window was made (#1999).
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(mode) = gpu::mode_in_use() {
+            gpu::note_frame(ui.ctx(), mode);
+        }
         #[cfg(not(target_arch = "wasm32"))]
         self.pacer.pace();
         #[cfg(not(target_arch = "wasm32"))]
@@ -708,13 +1068,35 @@ impl eframe::App for Shell {
                 "the editor was built in {:.0} ms",
                 built.elapsed().as_secs_f64() * 1000.0
             );
-            splash::open_main_window(ui.ctx(), &app.settings);
+            // This frame shows plain, not the splash: the window system
+            // may grow the window before the next frame is drawn, and the
+            // last splash frame stayed in its corner meanwhile (#1673).
+            let fill = ui.ctx().global_style().visuals.panel_fill;
+            ui.painter().rect_filled(ui.max_rect(), 0.0, fill);
+            self.window_grow = Some(splash::open_main_window(ui.ctx(), &app.settings));
             // F8 held while TraceDraw started: ask before resetting.
             if reset {
                 app.dialog = ui::dialogs::Dialog::ConfirmResetSettings;
             }
             self.app = Some(app);
             ui.ctx().request_repaint();
+            return;
+        }
+        // The window growing from the splash's size: drawn plain, the
+        // editor's first frame waits for the window's own size (#1673).
+        #[cfg(not(target_arch = "wasm32"))]
+        if let (Some(grow), Some(app)) = (self.window_grow.as_mut(), self.app.as_ref()) {
+            if !grow.step(ui) {
+                // A window that starts maximized is maximized meanwhile.
+                if self.window_settle.settling() {
+                    self.window_settle.step(ui.ctx(), &app.settings);
+                }
+                return;
+            }
+            self.window_grow = None;
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.build_deferred(ui) {
             return;
         }
         if self.app.is_none() {
@@ -735,32 +1117,56 @@ impl eframe::App for Shell {
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(50));
         }
+        // Spelling dictionaries being downloaded (#1405).
+        dictionary_download::fetch_kept(&app.settings.spelling.downloaded_dictionaries);
+        for finished in dictionary_download::poll() {
+            app.status = dictionary_download::status(&finished);
+        }
         // Fonts text asked for (browser build), and fonts that arrived.
         #[cfg(target_arch = "wasm32")]
         web::sync_ui_fonts(ui.ctx());
         #[cfg(target_arch = "wasm32")]
         web::fetch_requested_fonts();
+        // Fonts the browser kept from earlier visits (#1400).
+        #[cfg(target_arch = "wasm32")]
+        ui::font_manager::take_stored_fonts(app);
         app.sync_fonts();
+        // What the browser could not keep (#1414).
+        app.tell_storage_refusals();
         app.sync_document_colors();
+        // File dialogs that finished in the background (browser build).
+        files::run_finished(app);
+        // Pictures, files and text a browser handed over for a paste.
+        app.take_handed_pastes();
+        // Files a later start handed over (one try_recv when none came).
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(inbox) = &mut self.handed_over {
+            if instance::take_handed_over(app, ui.ctx(), inbox) {
+                ui.ctx().request_repaint();
+            }
+        }
+        // Files the system opened with the installed browser app (#646).
+        #[cfg(target_arch = "wasm32")]
+        if !app.closing_all && matches!(app.dialog, crate::ui::dialogs::Dialog::None) {
+            for path in web::take_launched_files() {
+                app.open_path(path);
+            }
+        }
         // What the phone's keyboard typed, and whether it should be up.
         #[cfg(target_os = "android")]
         {
             let wants = app.text_edit.is_some() || ui.ctx().memory(|m| m.focused().is_some());
             android_system::pump_typing(ui.ctx(), wants);
         }
-        // File dialogs that finished in the background (browser build).
-        files::run_finished(app);
-        // Files a later start handed over (one try_recv when none came).
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(rx) = &self.handed_over {
-            if instance::open_handed_over(app, ui.ctx(), rx) {
-                ui.ctx().request_repaint();
-            }
-        }
         // Requests of AI agents for the open drawing (MCP).
         #[cfg(not(target_arch = "wasm32"))]
         if app.sync_mcp_link(ui.ctx()) {
             ui.ctx().request_repaint();
+        }
+        // A large drawing being opened off the interface's thread (#2849).
+        if app.poll_opening() {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(50));
         }
         // An answer from GitHub (File > GitHub).
         if app.poll_github() {
@@ -777,12 +1183,24 @@ impl eframe::App for Shell {
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(100));
         }
+        // Curves from the vectorization service (Vectorize with AI).
+        if app.poll_ai_vectorize() {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(100));
+        }
         // A Picture Mosaic library indexed on worker threads.
         if app.poll_picture_mosaic_index() {
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(100));
         }
+        frame_mark("before the interface");
         ui::root(app, ui);
+        frame_mark("the dialogs");
+        // The frame around the safe area (#1917).
+        ui::screen_margins::paint(ui.ctx(), &app.settings);
+        // The emulator check's typing test (Android, soft_keyboard.rs).
+        #[cfg(target_os = "android")]
+        soft_keyboard::check::frame(app);
         // Dimensions moved or scaled this frame show their new values.
         app.bake_dimensions();
         // Bitmap effects on vector objects follow what changed them.
@@ -806,15 +1224,57 @@ impl eframe::App for Shell {
         app.autosave_settings(Some(ui.ctx()));
         // Bitmaps edited outside follow their files.
         app.watch_linked_bitmaps(Some(ui.ctx()), web_time::Instant::now());
+        // A pointer left hidden shows as a blank image on Windows, where
+        // hiding it waits for the mouse to move (#1124).
+        ui::cursors::finish_frame(ui.ctx());
         #[cfg(not(target_arch = "wasm32"))]
         frame_stats::end(ui.ctx(), began);
     }
 
-    /// Keep the toolbox, dockers and other preferences for the next session.
+    /// Back up the drawings with unsaved changes at once (#1395). eframe
+    /// calls this when the Android app goes to the background (its window
+    /// goes, and the system may end the process there without another
+    /// word), when the program closes, and in a browser when the page
+    /// loses the focus, is hidden or is about to be left: a page about to
+    /// be left backs up while the browser asks, a hidden one (another
+    /// tab, a minimized window, a phone's home screen, a tab being
+    /// closed) because it may be discarded with no other event, and a
+    /// page left for good ends its session as a closing program does.
+    fn save(&mut self, _storage: &mut dyn eframe::Storage) {
+        let Some(app) = self.app.as_mut() else {
+            return;
+        };
+        #[cfg(target_arch = "wasm32")]
+        {
+            if web::backups::left() {
+                app.leave_session();
+                return;
+            }
+            // Both asked: the flag is cleared either way.
+            let unloading = web::backups::take_unloading();
+            if !(unloading || web::backups::page_hidden()) {
+                return;
+            }
+        }
+        app.backup_now();
+    }
+
+    /// No saves on a timer: `save` is for the moments above only, and
+    /// the auto-backup keeps its own minutes.
+    fn auto_save_interval(&self) -> std::time::Duration {
+        std::time::Duration::MAX
+    }
+
+    /// Keep the toolbox, dockers and other preferences for the next
+    /// session; drawings left unsaved stay backed up for it.
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         if let Some(app) = self.app.as_mut() {
             app.save_settings();
-            app.end_session();
+            app.leave_session();
+            // Restart after an update: the new version starts last, when
+            // the settings and the session are written.
+            #[cfg(not(target_arch = "wasm32"))]
+            app.installer.run_pending();
         }
     }
 }

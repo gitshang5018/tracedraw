@@ -239,6 +239,7 @@ fn poster(dir: &Path) -> Document {
         to_center: false,
         fill_to: hex("#EE8F86"),
         outline_to: None,
+        fill_end_to: None,
         color_blend: 0,
         corners: None,
         accel_objects: 0.0,
@@ -532,6 +533,7 @@ fn effects(dir: &Path) {
         to_center: false,
         fill_to: hex("#FF3D7F"),
         outline_to: None,
+        fill_end_to: None,
         color_blend: 0,
         corners: None,
         accel_objects: 0.0,
@@ -845,6 +847,7 @@ fn fills(dir: &Path) {
                 front: hex("#3D7BFF"),
                 back: hex("#E8F0FF"),
                 size_mm: 8.0,
+                placement: Default::default(),
             }),
             6 => Fill::Texture(Texture {
                 kind: TextureKind::Marble,

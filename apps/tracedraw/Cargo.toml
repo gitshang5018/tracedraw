@@ -12,11 +12,13 @@ description = "TraceDraw: an open-source vector illustration editor"
 name = "tracedraw"
 path = "src/main.rs"
 
-# The application as a library: `main.rs` starts the desktop and browser
-# builds, `apps/tracedraw-android` starts the Android one.
+# The whole app is the library (the program is a thin `main`; on Android
+# the system loads the library itself, see src/android.rs). Its doc
+# comments hold prose and paths, not examples to run.
 [lib]
 name = "tracedraw"
 path = "src/lib.rs"
+doctest = false
 
 [build-dependencies]
 winresource = "0.1"
@@ -26,9 +28,12 @@ tracedraw-core.workspace = true
 tracedraw-cdr.workspace = true
 tracedraw-io.workspace = true
 tracedraw-text.workspace = true
+# Letters of the fonts the trace compares small print with (trace_text.rs).
+ttf-parser.workspace = true
 tracedraw-render.workspace = true
 tracedraw-vba.workspace = true
 tracedraw-vba-project.workspace = true
+tracedraw-tracecut.workspace = true
 kurbo.workspace = true
 tiny-skia.workspace = true
 serde.workspace = true
@@ -38,22 +43,40 @@ boa_engine = "0.20"
 sha2 = "0.10"
 base64 = "0.22"
 qrcode = { version = "0.14", default-features = false }
-rqrr = "0.9"
+rqrr = "0.11"
 csv = "1"
-i_overlay = "9"
 eframe.workspace = true
 egui.workspace = true
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp", "gif", "webp", "tiff"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp", "gif", "ico", "webp", "tiff"] }
+# Reading CMYK TIFF files with their inks (Edit Bitmap, #1834); the same
+# version the image crate reads TIFF with.
+tiff = "0.11"
+# Reading the four channels of a CMYK JPEG as they are stored, to show
+# them through the colour management and keep them as inks (#2163); the
+# same versions the image crate reads JPEG with.
+zune-jpeg = "0.5"
+zune-core = { version = "0.5", default-features = false }
 log.workspace = true
 env_logger.workspace = true
 flate2 = "1"
+# File > Package as one zip file where the system's picker says (Android, #1401).
+zip.workspace = true
 web-time = "1"
+# The Unicode names of characters, for the Glyphs docker's search by
+# name (#1328).
+unicode_names2 = "2"
 # Local dates and times (Time Tracker), with the system time zone.
 jiff = "0.2"
 
+# The file dialogs: the system's natively, the browser's in the browser.
+# Android uses the system's document picker through JNI (src/android.rs,
+# docs/behavior/android.md).
+[target.'cfg(not(target_os = "android"))'.dependencies]
+rfd.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The AI matting models are ONNX, and this reads them with no runtime to
 # carry: the browser build has no models to read, so it does without.
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tract-onnx = "0.23"
 
 # The desktop windows: system file dialogs, the system clipboard, and the
@@ -63,38 +86,66 @@ tract-onnx = "0.23"
 rfd.workspace = true
 eframe = { workspace = true, features = ["wgpu", "wayland", "x11"] }
 pollster = "0.4"
-arboard = { version = "3", default-features = false, features = ["wayland-data-control"] }
 # AI Drawing: HTTPS requests to the AI service the user sets up.
 ureq = { version = "3", features = ["platform-verifier"] }
 # Lossy WebP export (libwebp, BSD licence): the pure-Rust encoder writes
 # lossless files only (#592).
 webp = { version = "0.3", default-features = false }
+# Enlarge before tracing: the matrix products of the AI enlargement
+# (MIT OR Apache-2.0, pure Rust).
+matrixmultiply = "0.3"
 
-# Android: the same interface in a native activity, drawn with OpenGL ES.
-# File dialogs and the system clipboard come from the interface itself
-# (`files.rs`, `clipboard.rs`); there is no desktop window system.
+# The system clipboard (text, images, copied files): the desktop builds;
+# a browser hands over clipboard contents in paste events only and
+# Android reaches the system's clipboard service through JNI.
+[target.'cfg(not(any(target_arch = "wasm32", target_os = "android")))'.dependencies]
+arboard = { version = "3", default-features = false, features = ["wayland-data-control"] }
+
+# The X11 clipboard's picture read with its list of types and time for a
+# picture sent in parts (#1488, x11_clipboard.rs): the X11 library the
+# clipboard library already uses.
+[target.'cfg(all(unix, not(any(target_os = "macos", target_os = "android"))))'.dependencies]
+x11rb = "0.13"
+# A copy offered on a Wayland clipboard as SVG, picture and text (#2288,
+# wayland_copy.rs): the Wayland clipboard library the clipboard library
+# already uses.
+wl-clipboard-rs = "0.9"
+
+# The Android app (docs/behavior/android.md): the system loads the library
+# into the app's activity, eframe drives egui through winit's Android
+# backend and draws with wgpu; the document picker, content URIs and the
+# clipboard are reached through JNI. Exact versions: the glue must match
+# the one winit was built with, and jni the one android-activity uses.
 [target.'cfg(target_os = "android")'.dependencies]
 eframe = { workspace = true, features = ["wgpu", "android-native-activity"] }
-winit = { version = "0.30", default-features = false, features = ["android-native-activity"] }
-# The system bars' insets, the keyboard and the language of the phone.
-jni = "0.21"
-android-activity = "0.6"
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp", "gif", "webp", "tiff"] }
-log.workspace = true
-env_logger.workspace = true
-flate2 = "1"
-web-time = "1"
-jiff = "0.2"
-pollster = "0.4"
-ureq = { version = "3", features = ["platform-verifier"] }
-webp = { version = "0.3", default-features = false }
+android-activity = { version = "=0.6.1", features = ["native-activity"] }
+android_logger = "=0.15.1"
+jni = "=0.22.4"
+# The tool of each pointer (finger, pen) for palm rejection (#1832,
+# palm.rs): the patched winit eframe uses asks the app about each one.
+winit = { version = "0.30", default-features = false }
 
 # Where the pointer is while files are dragged over the window: the
 # system drag sends no pointer moves (#1142).
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.52", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
+# The spell checker of Windows (COM, #1405).
+windows-sys = { version = "0.52", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_System_Com", "Win32_UI_Input_KeyboardAndMouse"] }
 # The window's message hook: characters input methods send that the
 # windowing layer drops (#1151). The same winit eframe uses.
+winit = { version = "0.30", default-features = false }
+
+# `--x11`: the window opened through X11 on a Wayland desktop (#850). The
+# same winit eframe uses.
+[target.'cfg(target_os = "linux")'.dependencies]
+winit = { version = "0.30", default-features = false, features = ["x11"] }
+# Whether the Wayland compositor draws title bars, for Options > General >
+# "Use the desktop's title bar" (#2070, title_bar.rs). The same Wayland
+# library winit uses.
+wayland-client = "0.31"
+
+# Files opened from Finder arrive as an event of the windowing layer
+# (#646). The same winit eframe uses.
+[target.'cfg(target_os = "macos")'.dependencies]
 winit = { version = "0.30", default-features = false }
 
 # The browser build: WebGL canvas, file pickers and downloads through the
@@ -103,21 +154,28 @@ winit = { version = "0.30", default-features = false }
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 js-sys = "0.3"
-web-sys = { version = "0.3", features = ["Window", "Document", "Element", "HtmlCanvasElement", "HtmlAnchorElement", "Blob", "BlobPropertyBag", "Url", "Location", "Storage", "Event", "EventTarget", "KeyboardEvent", "MouseEvent", "Response", "Request", "RequestInit", "RequestMode", "Headers"] }
+web-sys = { version = "0.3", features = ["Window", "Document", "Element", "HtmlCanvasElement", "HtmlAnchorElement", "Blob", "BlobPropertyBag", "Url", "Location", "Storage", "Event", "EventTarget", "KeyboardEvent", "MouseEvent", "Response", "Request", "RequestInit", "RequestMode", "Headers", "BeforeUnloadEvent", "PageTransitionEvent", "IdbFactory", "IdbOpenDbRequest", "IdbRequest", "IdbDatabase", "IdbObjectStore", "IdbTransaction", "IdbTransactionMode", "Navigator", "Clipboard", "ClipboardItem", "ClipboardEvent", "DataTransfer", "FileList", "File", "MediaQueryList", "CssStyleDeclaration"] }
 getrandom02 = { package = "getrandom", version = "0.2", features = ["js"] }
 getrandom03 = { package = "getrandom", version = "0.3", features = ["wasm_js"] }
 boa_engine = { version = "0.20", features = ["js"] }
 jiff = { version = "0.2", features = ["js"] }
+# Lossy WebP export in the browser (#592): a pure-Rust VP8 encoder (MIT OR
+# Apache-2.0); libwebp, which the desktop uses, is C.
+vaam_webp = { package = "vaam-image-webp", version = "0.1" }
 
-# Reads back the PDFs the tests publish; ICC profiles built for tests.
+# Reads back the PDFs the tests publish; ICC profiles built for tests;
+# the browser's lossy WebP encoder, run natively by the tests (#592).
 [dev-dependencies]
-lopdf = { version = "0.36", default-features = false }
+vaam_webp = { package = "vaam-image-webp", version = "0.1" }
+lopdf = { version = "0.46", default-features = false }
+roxmltree = "0.21"
+ttf-parser.workspace = true
 tracedraw-core = { workspace = true, features = ["test-profiles"] }
 
 [package.metadata.deb]
 name = "tracedraw"
-maintainer = "TraceDraw contributors <noreply@tracedraw.dev>"
-copyright = "2026, Ighor Toth and the TraceDraw contributors"
+maintainer = "TraceDraw contributors <contact@tracedraw.org>"
+copyright = "2026, TraceDraw members and contributors"
 license-file = ["../../LICENSE-MIT", "0"]
 extended-description = "Open-source vector illustration editor with a classic desktop workflow and a .cdr reader."
 section = "graphics"
@@ -127,6 +185,8 @@ assets = [
     ["target/release/tracedraw", "usr/bin/", "755"],
     ["target/release/tracedraw-cli", "usr/bin/", "755"],
     ["../../packaging/linux/tracedraw.desktop", "usr/share/applications/", "644"],
+    ["../../packaging/linux/tracedraw-mime.xml", "usr/share/mime/packages/tracedraw.xml", "644"],
+    ["../../packaging/linux/tracedraw.thumbnailer", "usr/share/thumbnailers/", "644"],
     ["../../assets/icon/tracedraw-256.png", "usr/share/icons/hicolor/256x256/apps/tracedraw.png", "644"],
     ["../../README.md", "usr/share/doc/tracedraw/README", "644"],
 ]

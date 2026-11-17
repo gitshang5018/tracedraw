@@ -132,22 +132,89 @@ impl BorderGrommetState {
         let b = self.border_mm();
         Size::new(page.width + 2.0 * b, page.height + 2.0 * b)
     }
+
+    /// Whether the grommets, when they are on, have room on the final
+    /// page of `size`; false is why no mark gets placed (#1332).
+    pub fn grommets_have_room(&self, size: Size) -> bool {
+        !self.grommets || grommets_fit(size, &self.grommet, self.border_mm())
+    }
+}
+
+/// How far in from the outer edge the grommet centres sit: the middle
+/// of the border when they go in it, else the margin plus the radius.
+fn grommet_inset(g: &GrommetParams, border_mm: f64) -> f64 {
+    if g.use_border && border_mm > 0.0 {
+        border_mm / 2.0
+    } else {
+        g.margin_mm.max(0.0) + g.diameter_mm.max(0.0) / 2.0
+    }
+}
+
+/// Whether grommets fit on a page of `size`: the inset from one edge
+/// must not pass the inset from the opposite one, or there is no edge
+/// to run along and no mark is placed (#1332).
+pub fn grommets_fit(size: Size, g: &GrommetParams, border_mm: f64) -> bool {
+    let m = grommet_inset(g, border_mm);
+    size.width - m >= m && size.height - m >= m
+}
+
+/// The marks the dialog's preview draws in a border band `b` wide round
+/// a page of `size` (final page millimetres, y up), one every `step` mm,
+/// so the kinds of border can be told apart (#1332): for stretched
+/// edges lines running straight out from the page's edge to the outer
+/// edge (the edge drawn outwards), for mirrored edges diagonal hatching
+/// (the design flipped over the edge); a solid border has none, its
+/// colour shows.
+pub fn band_marks(kind: BorderKind, size: Size, b: f64, step: f64) -> Vec<(Point, Point)> {
+    let mut out = Vec::new();
+    if b <= 0.0 || step <= 1e-9 {
+        return out;
+    }
+    let (w, h) = (size.width, size.height);
+    match kind {
+        BorderKind::Solid => {}
+        BorderKind::Stretch => {
+            let mut x = b + step / 2.0;
+            while x < w + b {
+                out.push((Point::new(x, h + b), Point::new(x, h + 2.0 * b)));
+                out.push((Point::new(x, 0.0), Point::new(x, b)));
+                x += step;
+            }
+            let mut y = b + step / 2.0;
+            while y < h + b {
+                out.push((Point::new(0.0, y), Point::new(b, y)));
+                out.push((Point::new(w + b, y), Point::new(w + 2.0 * b, y)));
+                y += step;
+            }
+        }
+        BorderKind::Mirror => {
+            // Lines `x - y = c` across each piece of the band.
+            for r in border_rects(size, b) {
+                let mut c = ((r.x0 - r.y1) / step).ceil() * step;
+                while c < r.x1 - r.y0 {
+                    let lo = r.y0.max(r.x0 - c);
+                    let hi = r.y1.min(r.x1 - c);
+                    if hi - lo > 1e-9 {
+                        out.push((Point::new(lo + c, lo), Point::new(hi + c, hi)));
+                    }
+                    c += step;
+                }
+            }
+        }
+    }
+    out
 }
 
 /// Grommet centres for a page of `size` with a border of `border_mm`,
 /// corners first, then the chosen edges, without duplicates. Empty when
-/// the page is too small for the margin.
+/// the page is too small for the margin ([`grommets_fit`]).
 pub fn grommet_centers(size: Size, g: &GrommetParams, border_mm: f64) -> Vec<Point> {
-    let m = if g.use_border && border_mm > 0.0 {
-        border_mm / 2.0
-    } else {
-        g.margin_mm.max(0.0) + g.diameter_mm.max(0.0) / 2.0
-    };
-    let (x0, x1) = (m, size.width - m);
-    let (y0, y1) = (m, size.height - m);
-    if x1 < x0 || y1 < y0 {
+    if !grommets_fit(size, g, border_mm) {
         return Vec::new();
     }
+    let m = grommet_inset(g, border_mm);
+    let (x0, x1) = (m, size.width - m);
+    let (y0, y1) = (m, size.height - m);
     let mut out: Vec<Point> = Vec::new();
     let mut push = |p: Point| {
         if !out
@@ -286,35 +353,43 @@ fn edge_images(img: &image::RgbaImage, bpx: u32, mirror: bool) -> Vec<image::Rgb
     }
 }
 
-/// Rasterise the current page (white background) at a resolution that
-/// keeps the longest side at or under about 4000 pixels, cut to `area`
-/// (page millimetres, y up) when it is not the whole page.
+/// Rasterise `area` of the current page (page millimetres, y up) on
+/// white, at a resolution that keeps its longest side at or under about
+/// 4000 pixels. The area is drawn as it is, also where it reaches past
+/// the page: a selection larger than the page (a big imported photo)
+/// mirrors its own edges, not what the page shows of it (#1283).
 fn render_page(app: &App, area: Rect) -> Option<(image::RgbaImage, f64)> {
-    let size = app.page_size();
-    let longest = size.width.max(size.height).max(1.0);
-    let dpi = (4000.0 * 25.4 / longest).clamp(10.0, 150.0);
-    let pm = tracedraw_render::render_page_image(app.doc(), app.page, dpi)?;
-    let (w, h) = (pm.width(), pm.height());
-    // The background is opaque white, so premultiplied data is plain RGBA.
-    let img = image::RgbaImage::from_raw(w, h, pm.data().to_vec())?;
-    let page = Rect::new(0.0, 0.0, size.width, size.height);
-    if area == page {
-        return Some((img, dpi));
-    }
-    let a = area.intersect(page);
-    let px = |mm: f64| (mm * dpi / 25.4).round().max(0.0) as u32;
-    let (x, y) = (px(a.x0).min(w), px(size.height - a.y1).min(h));
-    let (cw, ch) = (
-        px(a.width()).min(w - x).max(1),
-        px(a.height()).min(h - y).max(1),
-    );
-    if x >= w || y >= h {
+    let longest = area.width().max(area.height());
+    if !(longest.is_finite() && longest > 0.0) {
         return None;
     }
-    Some((
-        image::imageops::crop_imm(&img, x, y, cw, ch).to_image(),
-        dpi,
-    ))
+    let dpi = (4000.0 * 25.4 / longest).clamp(10.0, 150.0);
+    let zoom = dpi / 25.4;
+    let w = (area.width() * zoom).ceil().max(1.0) as u32;
+    let h = (area.height() * zoom).ceil().max(1.0) as u32;
+    let objects = tracedraw_render::render_page(
+        app.doc(),
+        app.page,
+        &tracedraw_render::RenderOptions {
+            width: w,
+            height: h,
+            view: tracedraw_render::ViewTransform {
+                zoom,
+                origin_x: -area.x0 * zoom,
+                origin_y: area.y1 * zoom,
+                stretch_y: 1.0,
+            },
+            ..Default::default()
+        },
+    )?;
+    let mut img = image::RgbaImage::from_pixel(w, h, image::Rgba([255, 255, 255, 255]));
+    // Premultiplied colours over white.
+    for (px, src) in img.pixels_mut().zip(objects.pixels()) {
+        let a = src.alpha() as u32;
+        let over = |c: u8| (c as u32 + (255 - a) * 255 / 255).min(255) as u8;
+        *px = image::Rgba([over(src.red()), over(src.green()), over(src.blue()), 255]);
+    }
+    Some((img, dpi))
 }
 
 /// What the border goes around, in page millimetres: the page, or the
@@ -536,6 +611,70 @@ mod tests {
         assert!(pts.contains(&Point::new(290.0, 100.0)));
     }
 
+    /// #1332: the dialog can say why no grommet is placed, and its
+    /// preview tells mirrored edges from stretched ones.
+    #[test]
+    fn grommets_without_room_say_so_and_the_preview_tells_the_border_kinds_apart() {
+        // 10 mm grommets 5 mm in: 10 mm from each edge to the centre, so
+        // a 20 mm page is the smallest with room.
+        let g = params(true);
+        assert!(grommets_fit(Size::new(20.0, 20.0), &g, 0.0));
+        assert!(!grommets_fit(Size::new(19.0, 40.0), &g, 0.0));
+        assert!(!grommets_fit(Size::new(40.0, 19.0), &g, 0.0));
+        // In a border: half the border in, so the border's width is the
+        // least page.
+        let in_border = GrommetParams {
+            use_border: true,
+            ..params(true)
+        };
+        assert!(grommets_fit(Size::new(40.0, 40.0), &in_border, 40.0));
+        assert!(!grommets_fit(Size::new(39.0, 40.0), &in_border, 40.0));
+        let mut st = BorderGrommetState {
+            grommets: true,
+            grommet: g,
+            ..Default::default()
+        };
+        assert!(!st.grommets_have_room(Size::new(19.0, 40.0)));
+        assert!(st.grommets_on(Size::new(19.0, 40.0)).is_empty());
+        assert!(st.grommets_have_room(Size::new(300.0, 200.0)));
+        st.grommets = false;
+        assert!(
+            st.grommets_have_room(Size::new(1.0, 1.0)),
+            "nothing to place"
+        );
+        // The preview's marks: a solid border has none; stretched edges
+        // are streaks straight across the band, one every step along
+        // each edge; mirrored edges are diagonal hatching, inside the
+        // band only.
+        let size = Size::new(300.0, 200.0);
+        assert!(band_marks(BorderKind::Solid, size, 20.0, 10.0).is_empty());
+        assert!(band_marks(BorderKind::Stretch, size, 0.0, 10.0).is_empty());
+        let streaks = band_marks(BorderKind::Stretch, size, 20.0, 10.0);
+        // 30 along the top and the bottom each, 20 along each side.
+        assert_eq!(streaks.len(), 100, "{}", streaks.len());
+        for (a, c) in &streaks {
+            let straight = (a.x - c.x).abs() < 1e-9 || (a.y - c.y).abs() < 1e-9;
+            assert!(
+                straight && ((*c - *a).hypot() - 20.0).abs() < 1e-9,
+                "{a:?} {c:?}"
+            );
+        }
+        let hatch = band_marks(BorderKind::Mirror, size, 20.0, 10.0);
+        assert!(hatch.len() > 50);
+        let inner = Rect::new(20.0, 20.0, 320.0, 220.0);
+        let outer = Rect::new(0.0, 0.0, 340.0, 240.0);
+        for (a, c) in &hatch {
+            let d = *c - *a;
+            assert!(
+                (d.x - d.y).abs() < 1e-9 && d.x > 0.0,
+                "diagonal: {a:?} {c:?}"
+            );
+            let mid = Point::new((a.x + c.x) / 2.0, (a.y + c.y) / 2.0);
+            assert!(outer.contains(mid) && !inner.contains(mid), "{mid:?}");
+        }
+        assert_ne!(streaks, hatch);
+    }
+
     #[test]
     fn too_small_a_page_gives_nothing() {
         assert!(grommet_centers(Size::new(10.0, 10.0), &params(true), 0.0).is_empty());
@@ -672,5 +811,67 @@ mod tests {
         assert_eq!(n, 4);
         // Nothing to do: neither a border nor grommets.
         assert!(!BorderGrommetState::default().does_something());
+    }
+
+    /// #1283: a selection reaching past the page gets its mirrored edges
+    /// from itself, not from what the page shows of it (the first run on
+    /// a big imported photo used to take the strips from inside it).
+    #[test]
+    fn a_selection_past_the_page_mirrors_its_own_edges() {
+        let mut app = App::headless();
+        let page = app.page_size();
+        let solid = |app: &mut App, r: Rect, c: Color| {
+            let id = app
+                .new_shape(ShapeKind::Rect {
+                    rect: r,
+                    radius: 0.0,
+                    corners: None,
+                })
+                .expect("a rectangle");
+            app.select(vec![id]);
+            app.apply_fill(Fill::Solid(c));
+            id
+        };
+        // Green, wider than the page; red over the part on the page.
+        let wide = Rect::new(-60.0, 50.0, page.width + 60.0, 150.0);
+        let green = solid(&mut app, wide, Color::rgb8(0, 200, 0));
+        solid(
+            &mut app,
+            Rect::new(-20.0, 40.0, page.width + 20.0, 160.0),
+            Color::rgb8(220, 0, 0),
+        );
+        // Only the green one selected; the red one lies over its middle.
+        app.select(vec![green]);
+        let st = BorderGrommetState {
+            source: Source::Selection,
+            add_border: true,
+            border: BorderKind::Mirror,
+            width_mm: 10.0,
+            ..Default::default()
+        };
+        apply(&mut app, &st);
+        let strips: Vec<image::RgbaImage> = app
+            .doc()
+            .page(app.page)
+            .ok()
+            .and_then(|p| p.layers.last())
+            .map(|l| {
+                l.shapes
+                    .iter()
+                    .filter_map(|s| match &s.kind {
+                        ShapeKind::Bitmap { png, .. } => {
+                            image::load_from_memory(png).ok().map(|i| i.to_rgba8())
+                        }
+                        _ => None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        assert_eq!(strips.len(), 8);
+        // The left and right strips (in the order of `border_rects`).
+        for strip in &strips[2..4] {
+            let p = strip.get_pixel(strip.width() / 2, strip.height() / 2);
+            assert!(p[1] > 150 && p[0] < 60, "green edge, got {p:?}");
+        }
     }
 }

@@ -238,7 +238,9 @@ fn community_macro_resize_the_selection() {
     run(
         &mut app,
         "ActiveDocument.Unit = cdrMillimeter;
-         for (let i = 0; i < 3; i++) ActiveLayer.CreateEllipse2(20 + i * 30, 50, 5 + i).AddToSelection();",
+         const made = [];
+         for (let i = 0; i < 3; i++) made.push(ActiveLayer.CreateEllipse2(20 + i * 30, 50, 5 + i));
+         for (const e of made) e.AddToSelection();",
     );
     run(
         &mut app,
@@ -286,7 +288,9 @@ fn community_macro_grid_layout() {
         &mut app,
         "ActiveDocument.Unit = cdrMillimeter;
          ActiveDocument.ReferencePoint = cdrTopLeft;
-         for (let i = 0; i < 9; i++) ActiveLayer.CreateEllipse2(100, 100, 4 + i % 3).AddToSelection();
+         const made = [];
+         for (let i = 0; i < 9; i++) made.push(ActiveLayer.CreateEllipse2(100, 100, 4 + i % 3));
+         for (const e of made) e.AddToSelection();
          const sr = ActiveSelectionRange;
          let i = 0;
          for (const s of sr) {
@@ -481,11 +485,11 @@ fn power_clip_contents_and_parent() {
         "ActiveDocument.Unit = cdrMillimeter;
          const frame = ActiveLayer.CreateRectangle2(0, 0, 50, 50); frame.Name = 'frame';
          const inside = ActiveLayer.CreateEllipse2(25, 25, 40); inside.Name = 'inside';
-         inside.AddToPowerClip(frame);
+         inside.AddToClipFrame(frame);
          const f = ActivePage.Shapes.Item('frame');
-         f.PowerClip.EnterEditMode(); f.PowerClip.LeaveEditMode();
-         print(f.PowerClip.Shapes.Count, f.PowerClip.Shapes.Item(1).Name, f.PowerClip.Shapes.Item(1).PowerClipParent.Name);
-         print(ActivePage.Shapes.Count, ActiveLayer.CreateRectangle2(0, 0, 1, 1).PowerClip === null);",
+         f.ClipFrame.EnterEditMode(); f.ClipFrame.LeaveEditMode();
+         print(f.ClipFrame.Shapes.Count, f.ClipFrame.Shapes.Item(1).Name, f.ClipFrame.Shapes.Item(1).ClipFrameParent.Name);
+         print(ActivePage.Shapes.Count, ActiveLayer.CreateRectangle2(0, 0, 1, 1).ClipFrame === null);",
     );
     assert_eq!(out[0], "1 inside frame");
     assert_eq!(out[1], "1 true");
@@ -646,7 +650,7 @@ fn documents_pages_layers_and_settings() {
 #[test]
 fn members_without_a_counterpart_raise_named_errors() {
     for (src, member) in [
-        ("ActiveLayer.Paste();", "Layer.Paste"),
+        ("ActiveLayer.PasteSpecial();", "Layer.PasteSpecial"),
         (
             "Application.FrameWork.ShowDocker('x');",
             "Application.FrameWork",
@@ -724,4 +728,140 @@ fn align_and_distribute_take_the_reference_methods() {
     assert_eq!(out[2], "true true");
     assert_eq!(out[3], "150 150");
     assert_eq!(out[4], "true");
+}
+
+#[test]
+fn contours_separate_into_offset_copies_and_the_object_keeps_its_id() {
+    // How underlay macros offset a silhouette: a copy, a one-step contour
+    // outside or inside, separated, the ring kept and the copy deleted.
+    let mut app = App::headless();
+    let out = run(
+        &mut app,
+        "ActiveDocument.Unit = cdrMillimeter;
+         const r = ActiveLayer.CreateRectangle2(10, 10, 20, 10);
+         r.Fill.UniformColor.CMYKAssign(0, 100, 100, 0);
+         function offset(mm, name) {
+           const d = r.Duplicate();
+           const eff = mm > 0 ? d.CreateContour(cdrContourOutside, mm, 1)
+                              : d.CreateContour(cdrContourInside, -mm, 1);
+           const sep = eff.Separate();
+           let ring = null;
+           for (const s of sep) if (s.StaticID !== d.StaticID) ring = s;
+           d.Delete();
+           ring.Name = name;
+           return ring;
+         }
+         offset(0.2, 'out');
+         offset(-0.1, 'in');
+         print(ActiveLayer.Shapes.Count);",
+    );
+    assert_eq!(out, vec!["3".to_string()]);
+    let find = |n: &str| {
+        all(&app)
+            .into_iter()
+            .find(|s| s.name.as_deref() == Some(n))
+            .expect(n)
+    };
+    let base = all(&app)
+        .into_iter()
+        .find(|s| s.name.is_none())
+        .expect("the rectangle");
+    let b = page_bounds(&app, base.id);
+    let o = page_bounds(&app, find("out").id);
+    let i = page_bounds(&app, find("in").id);
+    let near = |a: f64, b: f64| (a - b).abs() < 0.01;
+    assert!(
+        near(o.width(), b.width() + 0.4) && near(o.height(), b.height() + 0.4),
+        "{o:?} {b:?}"
+    );
+    assert!(
+        near(i.width(), b.width() - 0.2) && near(i.height(), b.height() - 0.2),
+        "{i:?} {b:?}"
+    );
+    assert!(near(o.center().x, b.center().x) && near(i.center().y, b.center().y));
+}
+
+#[test]
+fn outlines_become_objects_and_shapes_copy_to_another_layer() {
+    let mut app = App::headless();
+    let out = run(
+        &mut app,
+        "ActiveDocument.Unit = cdrMillimeter;
+         const r = ActiveLayer.CreateRectangle2(10, 10, 20, 10);
+         r.Outline.Width = 1;
+         const o = r.Outline.ConvertToObject();
+         print(r.Outline.Type === cdrNoOutline, o.Fill.Type === cdrUniformFill);
+         const l = ActivePage.CreateLayer('Copies');
+         const c = ActiveLayer.Shapes.All().CopyToLayer(l);
+         print(c.Count, l.Shapes.Count);",
+    );
+    assert_eq!(out, vec!["true true".to_string(), "2 2".to_string()]);
+}
+
+#[test]
+fn queries_test_names_with_starts_ends_and_contains() {
+    let mut app = App::headless();
+    let out = run(
+        &mut app,
+        "for (const n of ['UNDERLAY_Spot_1_W', 'UNDERLAY_Spot_2_L', 'Logo']) {
+           const r = ActiveLayer.CreateRectangle2(10, 10, 10, 10); r.Name = n;
+         }
+         const g = ActiveLayer.Shapes.All().Group();
+         print(ActivePage.Shapes.FindShapes(undefined, undefined, true, \"@name.StartsWith('UNDERLAY_')\").Count,
+               ActivePage.Shapes.FindShapes(undefined, undefined, true, \"@name.EndsWith('_L')\").Count,
+               ActivePage.Shapes.FindShapes(undefined, undefined, true, \"@name.Contains('go')\").Count);",
+    );
+    assert_eq!(out, vec!["2 1 1".to_string()]);
+}
+
+#[test]
+fn pdf_settings_publish_the_current_page_alone() {
+    let mut app = App::headless();
+    let dir = std::env::temp_dir().join(format!("td_pdfset_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let all = dir.join("all.pdf");
+    let one = dir.join("one.pdf");
+    let src = format!(
+        "ActiveLayer.CreateRectangle2(10, 10, 10, 10);
+         ActiveDocument.AddPages(1);
+         const ps = ActiveDocument.PDFSettings;
+         print(ps.Load('UVDTF'), ps.PublishRange === pdfWholeDocument);
+         ActiveDocument.PublishToPDF({all:?});
+         ps.PublishRange = pdfCurrentPage;
+         ActiveDocument.PublishToPDF({one:?});",
+        all = all.display().to_string(),
+        one = one.display().to_string()
+    );
+    let out = run(&mut app, &src);
+    assert_eq!(out, vec!["true true".to_string()]);
+    let pages = |p: &std::path::Path| {
+        let t = String::from_utf8_lossy(&std::fs::read(p).unwrap()).to_string();
+        t.split("/Type /Pages")
+            .nth(1)
+            .and_then(|r| r.split("/Count ").nth(1))
+            .and_then(|r| r.split(|c: char| !c.is_ascii_digit()).next())
+            .unwrap_or("")
+            .to_string()
+    };
+    assert_eq!(pages(&all), "2");
+    assert_eq!(pages(&one), "1");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The other names macros call members by (#2968) are known by the
+/// FNV-1a hash of their lowercase spelling: the hash is the standard one
+/// (reference values of plain strings), and every entry names a member
+/// shapes have.
+#[test]
+fn other_member_names_are_known_by_hash_and_name_real_members() {
+    let mut app = App::headless();
+    let out = run(
+        &mut app,
+        "print(__nameHash(''), __nameHash('Shape'), __nameHash('AddToClipFrame'));
+         const r = ActiveLayer.CreateRectangle2(0, 0, 1, 1);
+         const missing = [...__memberAliases.values()].filter(m => !(m in r));
+         print(__memberAliases.size, missing.length, __member_alias('AddToClipFrame') === undefined);",
+    );
+    assert_eq!(out[0], "2166136261 2646858022 4187151640");
+    assert_eq!(out[1], "3 0 true");
 }

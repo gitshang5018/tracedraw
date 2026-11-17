@@ -3,50 +3,200 @@
 
 use crate::app::App;
 use crate::i18n::{tr, trf};
-use crate::ui::dialogs::{ExportState, PrintState, EXPORT_FORMATS};
+use crate::ui::dialogs::{
+    ExportColorMode, ExportState, FindReplaceState, PrintState, PropertyFind, EXPORT_FORMATS,
+};
 use std::path::Path;
+use tracedraw_core::find::{self as objfind, ColorQuery, Hit, ObjectQuery, ObjectType};
 use tracedraw_core::{
     document::ShapeKind,
     geometry::{Affine, Rect, Size},
     Command, Document, ShapeId, TextSpan,
 };
 
+/// Document limited to the selection, sized to what it covers, and that
+/// box. Empty selection: the page, as it was.
+///
+/// One reading of what "the selection" means for an export, used by the
+/// Export dialog and by the MCP server's `export` with `selection`, so the
+/// two cannot come out different.
+pub(crate) fn selection_document(app: &App) -> (Document, Rect) {
+    let doc = app.engine.document();
+    let bounds = selection_export_bounds(app).unwrap_or(app.page_rect());
+    let mut tmp = Document::new(
+        doc.title.clone(),
+        Size::new(bounds.width().max(0.1), bounds.height().max(0.1)),
+    );
+    tmp.symbols = doc.symbols.clone();
+    // The drawing's spot inks and colour profile go along: without
+    // its ink, a spot colour exports as its process stand-in.
+    tmp.inks = doc.inks.clone();
+    tmp.cmyk_profile = doc.cmyk_profile.clone();
+    tmp.color_styles = doc.color_styles.clone();
+    let l = tmp.pages[0].layers[0].id;
+    for s in app.selected_shapes() {
+        let mut c = s.clone();
+        let shift = Affine::translate((-bounds.x0, -bounds.y0));
+        c.transform_by(shift);
+        carry_blend_ends(&mut c, shift);
+        if let Ok(layer) = tmp.layer_mut(l) {
+            layer.shapes.push(c);
+        }
+    }
+    (tmp, bounds)
+}
+
+/// The box a selection exported alone is sized to: what each selected
+/// object draws, its outline included. The selection's own box leaves the
+/// outline out (an outline straddles the path), so a selected rectangle
+/// came out of an SVG, PDF or PNG export with half its outline cut off at
+/// every edge (#2290).
+fn selection_export_bounds(app: &App) -> Option<Rect> {
+    app.selected_shapes()
+        .iter()
+        .map(|s| {
+            let r = outline_reach_within(s, s.transform);
+            app.own_visual_bounds(s).inflate(r, r)
+        })
+        .reduce(|a, b| a.union(b))
+}
+
+/// How far the outline of `s`, or of any object inside it (a group's),
+/// reaches past its path on the page ([`crate::interaction::outline_reach`]).
+fn outline_reach_within(s: &tracedraw_core::Shape, to_page: Affine) -> f64 {
+    let own = crate::interaction::outline_reach(s, to_page);
+    match &s.kind {
+        ShapeKind::Group { children } => children
+            .iter()
+            .map(|c| outline_reach_within(c, to_page * c.transform))
+            .fold(own, f64::max),
+        _ => own,
+    }
+}
+
 /// Document limited to the selection or the current page, for exports.
 pub(crate) fn export_document(app: &App, st: &ExportState) -> (Document, Rect) {
     let doc = app.engine.document();
     if st.selection_only {
-        let bounds = app.selection_bounds().unwrap_or(app.page_rect());
-        let mut tmp = Document::new(
-            doc.title.clone(),
-            Size::new(bounds.width().max(0.1), bounds.height().max(0.1)),
-        );
-        tmp.symbols = doc.symbols.clone();
-        let l = tmp.pages[0].layers[0].id;
-        for s in app.selected_shapes() {
-            let mut c = s.clone();
-            c.transform_by(Affine::translate((-bounds.x0, -bounds.y0)));
-            if let Ok(layer) = tmp.layer_mut(l) {
-                layer.shapes.push(c);
-            }
-        }
-        (tmp, bounds)
-    } else if st.all_pages {
-        (doc.clone(), app.page_rect())
+        selection_document(app)
     } else {
-        let mut tmp = doc.clone();
-        tmp.pages.retain(|p| p.id == app.page);
+        // Facing pages (#1972): each spread as one page, or each page
+        // with what its facing page holds across the spine (and in the
+        // bleed beside it).
+        if exports_spreads(app, st) {
+            return (
+                doc.spreads_document(&export_page_indexes(app, st)),
+                app.page_rect(),
+            );
+        }
+        // The pages chosen, in the order chosen (#1382).
+        let mut tmp = doc.with_spread_overhangs(st.bleed_mm.max(doc.metadata.bleed));
+        let mut all: Vec<_> = std::mem::take(&mut tmp.pages)
+            .into_iter()
+            .map(Some)
+            .collect();
+        tmp.pages = export_page_indexes(app, st)
+            .into_iter()
+            .filter_map(|i| all.get_mut(i).and_then(Option::take))
+            .collect();
         (tmp, app.page_rect())
     }
 }
 
+/// `st` exports the spreads of facing pages as pages (#1972).
+pub(crate) fn exports_spreads(app: &App, st: &ExportState) -> bool {
+    st.spreads && !st.selection_only && app.engine.document().facing().is_some()
+}
+
+/// The indexes of the pages `st` exports from the drawing (#1382).
+pub(crate) fn export_page_indexes(app: &App, st: &ExportState) -> Vec<usize> {
+    let doc = app.engine.document();
+    let current = doc.pages.iter().position(|p| p.id == app.page).unwrap_or(0);
+    st.page_indexes(doc.pages.len(), current)
+}
+
+/// Where page `number` of a export to `path` that writes one file per
+/// page goes: "name-3.png" for page 3 (#1382).
+pub fn numbered_path(path: &Path, number: usize, ext: &str) -> std::path::PathBuf {
+    let stem = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let ext = path
+        .extension()
+        .map_or(ext.to_string(), |e| e.to_string_lossy().to_string());
+    path.with_file_name(format!("{stem}-{number}.{ext}"))
+}
+
 pub fn export(app: &mut App, path: &Path, st: &ExportState) -> Result<String, String> {
     let (_, ext) = EXPORT_FORMATS[st.format];
-    let (doc, _) = export_document(app, st);
-    match ext {
-        "svg" => {
-            let svg = tracedraw_io::svg::page_to_svg(&doc, 0);
-            crate::files::write(path, svg).map_err(|e| e.to_string())?;
-        }
+    let (mut doc, _) = export_document(app, st);
+    if ext == "ai" && st.classic_ai() {
+        // The classic AI file's `%%Title`, as the PDF-compatible one's.
+        doc.title = if st.title.trim().is_empty() {
+            app.document_title().trim_end_matches('*').to_string()
+        } else {
+            st.title.trim().to_string()
+        };
+    }
+    if st.one_file_holds_the_pages(ext) {
+        let bytes = document_file(app, &doc, ext, st)?;
+        crate::files::write(path, bytes).map_err(|e| e.to_string())?;
+        return Ok(trf(
+            "status.exported",
+            &[("path", &path.display().to_string())],
+        ));
+    }
+    // The other formats hold one page: one file per page, numbered by
+    // the page it shows when there are several (#1382).
+    let numbers: Vec<usize> = if exports_spreads(app, st) {
+        (1..=doc.pages.len()).collect()
+    } else {
+        export_page_indexes(app, st)
+            .into_iter()
+            .map(|i| i + 1)
+            .collect()
+    };
+    let many = doc.pages.len() > 1;
+    let mut written = Vec::with_capacity(doc.pages.len());
+    // A CMYK bitmap carries the profile its inks are in (#1763).
+    let icc = (st.color_mode_for(ext) == ExportColorMode::Cmyk)
+        .then(|| export_cmyk_profile(app))
+        .flatten();
+    for k in 0..doc.pages.len() {
+        let bytes = page_file(&doc, k, ext, st, icc.as_deref())?;
+        let target = if many {
+            numbered_path(path, numbers.get(k).copied().unwrap_or(k + 1), ext)
+        } else {
+            path.to_path_buf()
+        };
+        crate::files::write(&target, bytes).map_err(|e| e.to_string())?;
+        written.push(target);
+    }
+    Ok(match (written.first(), written.last()) {
+        (Some(first), Some(last)) if many => trf(
+            "status.exported_pages",
+            &[
+                ("count", &written.len().to_string()),
+                ("first", &first.display().to_string()),
+                ("last", &last.display().to_string()),
+            ],
+        ),
+        _ => trf("status.exported", &[("path", &path.display().to_string())]),
+    })
+}
+
+/// The file of a format that holds every page (PDF, AI, PostScript, PRN,
+/// HTML) for the pages of `doc`.
+fn document_file(
+    app: &App,
+    doc: &Document,
+    ext: &str,
+    st: &ExportState,
+) -> Result<Vec<u8>, String> {
+    let output = tracedraw_io::for_output(doc);
+    let doc = output.as_ref();
+    Ok(match ext {
         "pdf" | "ai" => {
             use tracedraw_io::pdf::{PdfOptions, PdfStandard};
             let standard = match (ext, st.pdf_standard) {
@@ -67,96 +217,96 @@ pub fn export(app: &mut App, path: &Path, st: &ExportState) -> Result<String, St
                 }),
                 keywords: (!st.tags.trim().is_empty()).then(|| st.tags.trim().to_string()),
                 flatten_dpi: st.dpi.max(72.0),
+                text: tracedraw_io::pdf::PdfText {
+                    as_curves: ext == "pdf" && st.text_as_curves,
+                    ..Default::default()
+                },
                 ..Default::default()
             };
-            let pdf = tracedraw_io::pdf::document_to_pdf_with(&doc, &opts);
-            crate::files::write(path, pdf).map_err(|e| e.to_string())?;
+            tracedraw_io::pdf::document_to_pdf_with(doc, &opts)
         }
-        "eps" => {
-            let eps = tracedraw_io::eps::page_to_eps(&doc, 0);
-            crate::files::write(path, eps).map_err(|e| e.to_string())?;
-        }
-        "ps" | "prn" => {
-            // Every exported page; a print file is the same PostScript.
-            let ps = tracedraw_io::eps::document_to_ps(&doc);
-            crate::files::write(path, ps).map_err(|e| e.to_string())?;
-        }
-        "dxf" => {
-            let dxf = tracedraw_io::dxf::page_to_dxf(&doc, 0);
-            crate::files::write(path, dxf).map_err(|e| e.to_string())?;
-        }
-        "emf" => {
-            let emf = tracedraw_io::emf::page_to_emf(&doc, 0);
-            crate::files::write(path, emf).map_err(|e| e.to_string())?;
-        }
-        "wmf" => {
-            let wmf = tracedraw_io::emf::page_to_wmf(&doc, 0);
-            crate::files::write(path, wmf).map_err(|e| e.to_string())?;
-        }
-        "plt" => {
-            let plt = tracedraw_io::plt::page_to_plt(&doc, 0);
-            crate::files::write(path, plt).map_err(|e| e.to_string())?;
-        }
-        "psd" => {
-            let psd =
-                tracedraw_io::psd::page_to_psd(&doc, 0, st.render_dpi()).ok_or("render failed")?;
-            crate::files::write(path, psd).map_err(|e| e.to_string())?;
-        }
-        "html" => {
-            let html = tracedraw_io::html::document_to_html(&doc);
-            crate::files::write(path, html).map_err(|e| e.to_string())?;
-        }
+        // Every exported page; a print file is the same PostScript.
+        "ps" | "prn" => tracedraw_io::eps::document_to_ps(doc).into_bytes(),
+        "html" => tracedraw_io::html::document_to_html(doc).into_bytes(),
+        other => return Err(format!("{other}: not a format of several pages")),
+    })
+}
+
+/// The file of page `k` of `doc` in a format that holds one page; `icc`
+/// is the profile a CMYK bitmap carries.
+fn page_file(
+    doc: &Document,
+    k: usize,
+    ext: &str,
+    st: &ExportState,
+    icc: Option<&[u8]>,
+) -> Result<Vec<u8>, String> {
+    let output = tracedraw_io::for_output(doc);
+    let doc = output.as_ref();
+    Ok(match ext {
+        "svg" => tracedraw_io::svg::page_to_svg_with(doc, k, &st.svg_options()).into_bytes(),
+        "eps" => tracedraw_io::eps::page_to_eps(doc, k).into_bytes(),
+        // The classic AI file: one artboard, so one page per file (#1728).
+        "ai" if st.classic_ai() => tracedraw_io::ai::page_to_ai8(doc, k).into_bytes(),
+        "dxf" => tracedraw_io::dxf::page_to_dxf(doc, k).into_bytes(),
+        "emf" => tracedraw_io::emf::page_to_emf(doc, k),
+        "wmf" => tracedraw_io::emf::page_to_wmf(doc, k),
+        "plt" => tracedraw_io::plt::page_to_plt_with(doc, k, &st.plt_options()).into_bytes(),
+        "psd" => tracedraw_io::psd::page_to_psd(doc, k, st.render_dpi()).ok_or("render failed")?,
         _ => {
-            // Raster: every page when all_pages, numbered files.
-            let pages: Vec<_> = doc.pages.iter().map(|p| p.id).collect();
-            for (i, pid) in pages.iter().enumerate() {
-                let mut pm = tracedraw_render::render_page_image(&doc, *pid, st.render_dpi())
-                    .ok_or("render failed")?;
-                if st.transparent && matches!(ext, "png" | "webp" | "gif") {
-                    // Re-render on a transparent background.
-                    let p = doc.page(*pid).map_err(|e| e.to_string())?;
-                    let zoom = st.render_dpi() / 25.4;
-                    let w = (p.size.width * zoom).ceil() as u32;
-                    let h = (p.size.height * zoom).ceil() as u32;
-                    pm = tracedraw_render::render_page(
-                        &doc,
-                        *pid,
-                        &tracedraw_render::RenderOptions {
-                            width: w,
-                            height: h,
-                            view: tracedraw_render::ViewTransform {
-                                zoom,
-                                origin_x: 0.0,
-                                origin_y: h as f64,
-                            },
-                            preview: None,
-                            wireframe: false,
-                            ..tracedraw_render::RenderOptions::default()
-                        },
-                    )
-                    .ok_or("render failed")?;
+            let pid = doc.pages.get(k).ok_or("no page")?.id;
+            match st.color_mode_for(ext) {
+                // The inks of the page, as its separations print them
+                // (#1763).
+                ExportColorMode::Cmyk => {
+                    let (w, h, ink) =
+                        cmyk_pixels(doc, pid, st.render_dpi()).ok_or("render failed")?;
+                    let bytes = if ext == "jpg" {
+                        tracedraw_io::cmyk_bitmap::cmyk_jpeg(w, h, &ink, st.quality, st.dpi, icc)
+                    } else {
+                        tracedraw_io::cmyk_bitmap::cmyk_tiff(w, h, &ink, st.dpi, icc)
+                    };
+                    return bytes.ok_or_else(|| "CMYK encoding failed".to_string());
                 }
-                let target = if pages.len() > 1 {
-                    let stem = path
-                        .file_stem()
-                        .map(|s| s.to_string_lossy().to_string())
-                        .unwrap_or_default();
-                    path.with_file_name(format!("{stem}-{}.{ext}", i + 1))
-                } else {
-                    path.to_path_buf()
-                };
-                let bytes = encode_raster_with(&pm, ext, st.quality, st.webp_lossless)?;
-                // The file says its resolution, so it opens at the size
-                // chosen in the dialog (#617).
-                let bytes = record_dpi(bytes, ext, st.dpi);
-                crate::files::write(&target, bytes).map_err(|e| e.to_string())?;
+                ExportColorMode::Gray => {
+                    let pm = tracedraw_render::render_page_export_image(doc, pid, st.render_dpi())
+                        .ok_or("render failed")?;
+                    let bytes =
+                        encode_gray(&on_white(&pm).ok_or("render failed")?, ext, st.quality)?;
+                    return Ok(record_dpi(bytes, ext, st.dpi));
+                }
+                ExportColorMode::Rgb => {}
             }
+            let mut pm = tracedraw_render::render_page_export_image(doc, pid, st.render_dpi())
+                .ok_or("render failed")?;
+            if st.transparent && matches!(ext, "png" | "webp" | "gif") {
+                // Re-render on a transparent background.
+                let p = doc.page(pid).map_err(|e| e.to_string())?;
+                let (w, h, view) = tracedraw_render::ViewTransform::whole_page(
+                    p.size.width,
+                    p.size.height,
+                    st.render_dpi() / 25.4,
+                );
+                pm = tracedraw_render::render_page(
+                    doc,
+                    pid,
+                    &tracedraw_render::RenderOptions {
+                        width: w,
+                        height: h,
+                        view,
+                        preview: None,
+                        wireframe: false,
+                        ..tracedraw_render::RenderOptions::default()
+                    },
+                )
+                .ok_or("render failed")?;
+            }
+            let bytes = encode_raster_with(&pm, ext, st.quality, st.webp_lossless)?;
+            // The file says its resolution, so it opens at the size
+            // chosen in the dialog (#617).
+            record_dpi(bytes, ext, st.dpi)
         }
-    }
-    Ok(trf(
-        "status.exported",
-        &[("path", &path.display().to_string())],
-    ))
+    })
 }
 
 /// The output intent's profile for a PDF/X file: the CMYK profile picked
@@ -169,6 +319,129 @@ pub(crate) fn pdfx_profile(app: &App, standard: tracedraw_io::pdf::PdfStandard) 
     (!p.is_empty())
         .then(|| crate::files::read(&p).ok())
         .flatten()
+}
+
+/// The CMYK profile a CMYK bitmap export carries (#1763): the one the
+/// colour management converts its colours with, the drawing's own while
+/// it is used, else the one picked under Colour Management; none with
+/// the built-in conversions.
+pub(crate) fn export_cmyk_profile(app: &App) -> Option<Vec<u8>> {
+    let c = &app.settings.color;
+    if c.builtin_engine {
+        return None;
+    }
+    if c.open_cmyk == 0 && crate::app::carried_cmyk_profile(app.doc()).is_some() {
+        return app.doc().cmyk_profile.as_ref().map(|p| p.data.to_vec());
+    }
+    app.settings_cmyk_profile().map(|p| p.data.to_vec())
+}
+
+/// `pm` drawn over white, as a page is printed.
+fn on_white(pm: &tiny_skia::Pixmap) -> Option<tiny_skia::Pixmap> {
+    let mut white = tiny_skia::Pixmap::new(pm.width(), pm.height())?;
+    white.fill(tiny_skia::Color::WHITE);
+    white.draw_pixmap(
+        0,
+        0,
+        pm.as_ref(),
+        &tiny_skia::PixmapPaint::default(),
+        tiny_skia::Transform::identity(),
+        None,
+    );
+    Some(white)
+}
+
+/// Page `pid` of `doc` at `dpi` as ink coverages (#1763): cyan, magenta,
+/// yellow and black of each pixel, 255 = full ink, with its size in
+/// pixels. Each process ink is the page's separation plate for it
+/// ([`plate_page`]) drawn on white: CMYK colours keep their exact
+/// values, other colours go through the drawing's colour management as
+/// on the plates, pictures give the inks they keep (#1659) or their
+/// pixels converted, and spot colours print as their process mix.
+pub(crate) fn cmyk_pixels(
+    doc: &Document,
+    pid: tracedraw_core::PageId,
+    dpi: f64,
+) -> Option<(u32, u32, Vec<u8>)> {
+    let mut page = doc.page(pid).ok()?.clone();
+    for layer in page.layers.iter_mut() {
+        for s in layer.shapes.iter_mut() {
+            map_colors(s, &spot_as_cmyk);
+        }
+    }
+    let mut one = doc.clone();
+    one.pages.retain(|p| p.id == pid);
+    let mut out: Option<(u32, u32, Vec<u8>)> = None;
+    for ink in 0..4 {
+        *one.pages.first_mut()? = plate_page(&page, Plate::Process(ink));
+        let pm = on_white(&tracedraw_render::render_page_export_image(&one, pid, dpi)?)?;
+        let (w, h) = (pm.width(), pm.height());
+        let (ow, oh, buf) =
+            out.get_or_insert_with(|| (w, h, vec![0u8; w as usize * h as usize * 4]));
+        if (*ow, *oh) != (w, h) {
+            return None;
+        }
+        for (px, p) in buf.chunks_exact_mut(4).zip(pm.pixels()) {
+            // The plate is grey: black is full ink.
+            px[ink] = 255 - p.red();
+        }
+    }
+    out
+}
+
+/// The grey of each pixel of an opaque `pm`, through the colour
+/// management's Grayscale conversion, each distinct colour once.
+fn gray_pixels(pm: &tiny_skia::Pixmap) -> Vec<u8> {
+    let mut known: std::collections::HashMap<[u8; 3], u8> = std::collections::HashMap::new();
+    pm.pixels()
+        .iter()
+        .map(|p| {
+            let rgb = [p.red(), p.green(), p.blue()];
+            *known.entry(rgb).or_insert_with(|| {
+                match tracedraw_core::Color::rgb8(rgb[0], rgb[1], rgb[2]).convert_to("Grayscale") {
+                    tracedraw_core::Color::Gray { v } => (v.clamp(0.0, 1.0) * 255.0).round() as u8,
+                    _ => 0,
+                }
+            })
+        })
+        .collect()
+}
+
+/// An opaque rendered page as a one-channel JPEG (at `quality`) or TIFF.
+fn encode_gray(pm: &tiny_skia::Pixmap, ext: &str, quality: u8) -> Result<Vec<u8>, String> {
+    let img = image::GrayImage::from_raw(pm.width(), pm.height(), gray_pixels(pm))
+        .ok_or("image buffer")?;
+    let mut out = std::io::Cursor::new(Vec::new());
+    if ext == "jpg" {
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, quality.clamp(1, 100))
+            .encode_image(&img)
+            .map_err(|e| e.to_string())?;
+    } else {
+        img.write_to(&mut out, image::ImageFormat::Tiff)
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(out.into_inner())
+}
+
+/// The ink coverages of an opaque `pm` through the colour management's
+/// CMYK conversion, each distinct colour once: for the estimate of a
+/// CMYK file's size from the preview.
+fn ink_pixels(pm: &tiny_skia::Pixmap) -> Vec<u8> {
+    let mut known: std::collections::HashMap<[u8; 3], [u8; 4]> = std::collections::HashMap::new();
+    pm.pixels()
+        .iter()
+        .flat_map(|p| {
+            let rgb = [p.red(), p.green(), p.blue()];
+            *known.entry(rgb).or_insert_with(|| {
+                match tracedraw_core::Color::rgb8(rgb[0], rgb[1], rgb[2]).convert_to("CMYK") {
+                    tracedraw_core::Color::Cmyk { c, m, y, k } => {
+                        [c, m, y, k].map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8)
+                    }
+                    _ => [0; 4],
+                }
+            })
+        })
+        .collect()
 }
 
 /// `bytes`, a PNG, JPEG or BMP file, saying it was made at `dpi` dots per
@@ -260,19 +533,15 @@ pub fn preview(app: &App, st: &ExportState, max_px: u32) -> Option<tiny_skia::Pi
     let page = doc.pages.first()?;
     let longest = page.size.width.max(page.size.height).max(0.1);
     let zoom = max_px.max(16) as f64 / longest;
-    let w = (page.size.width * zoom).ceil().max(1.0) as u32;
-    let h = (page.size.height * zoom).ceil().max(1.0) as u32;
+    let (w, h, view) =
+        tracedraw_render::ViewTransform::whole_page(page.size.width, page.size.height, zoom);
     let mut pm = tracedraw_render::render_page(
         &doc,
         page.id,
         &tracedraw_render::RenderOptions {
             width: w,
             height: h,
-            view: tracedraw_render::ViewTransform {
-                zoom,
-                origin_x: 0.0,
-                origin_y: h as f64,
-            },
+            view,
             preview: None,
             wireframe: false,
             ..tracedraw_render::RenderOptions::default()
@@ -291,6 +560,28 @@ pub fn preview(app: &App, st: &ExportState, max_px: u32) -> Option<tiny_skia::Pi
         );
         pm = white;
     }
+    // A CMYK file shows as it will print, a grey one in grey (#1763).
+    match st.color_mode_for(ext) {
+        ExportColorMode::Rgb => {}
+        ExportColorMode::Cmyk => {
+            let mut known: std::collections::HashMap<[u8; 3], [u8; 3]> =
+                std::collections::HashMap::new();
+            for p in pm.pixels_mut() {
+                let rgb = [p.red(), p.green(), p.blue()];
+                let [r, g, b] = *known.entry(rgb).or_insert_with(|| {
+                    tracedraw_core::color::proof_rgb(rgb.map(|v| f32::from(v) / 255.0))
+                        .map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8)
+                });
+                *p = tiny_skia::PremultipliedColorU8::from_rgba(r, g, b, 255)?;
+            }
+        }
+        ExportColorMode::Gray => {
+            let grey = gray_pixels(&pm);
+            for (p, v) in pm.pixels_mut().iter_mut().zip(grey) {
+                *p = tiny_skia::PremultipliedColorU8::from_rgba(v, v, v, 255)?;
+            }
+        }
+    }
     Some(pm)
 }
 
@@ -301,25 +592,39 @@ pub fn preview(app: &App, st: &ExportState, max_px: u32) -> Option<tiny_skia::Pi
 pub fn estimated_size(app: &App, st: &ExportState, preview: &tiny_skia::Pixmap) -> Option<usize> {
     let (_, ext) = EXPORT_FORMATS[st.format.min(EXPORT_FORMATS.len() - 1)];
     let (doc, bounds) = export_document(app, st);
+    // One file per page: the first page's size times the pages (#1382).
+    let pages = doc.pages.len().max(1);
     match ext {
-        "svg" => Some(tracedraw_io::svg::page_to_svg(&doc, 0).len()),
-        "eps" => Some(tracedraw_io::eps::page_to_eps(&doc, 0).len()),
+        "svg" => Some(tracedraw_io::svg::page_to_svg(&doc, 0).len() * pages),
+        "eps" => Some(tracedraw_io::eps::page_to_eps(&doc, 0).len() * pages),
         "ps" | "prn" => Some(tracedraw_io::eps::document_to_ps(&doc).len()),
+        "ai" if st.classic_ai() => Some(tracedraw_io::ai::page_to_ai8(&doc, 0).len() * pages),
         "pdf" | "ai" => Some(tracedraw_io::pdf::document_to_pdf(&doc).len()),
         "png" | "jpg" | "bmp" | "tif" | "webp" | "gif" | "psd" => {
             let enc = if ext == "psd" { "tif" } else { ext };
-            let bytes = encode_raster_with(preview, enc, st.quality, st.webp_lossless)
-                .ok()?
-                .len() as f64;
+            let (w, h) = (preview.width(), preview.height());
+            let bytes = match st.color_mode_for(ext) {
+                ExportColorMode::Rgb => {
+                    encode_raster_with(preview, enc, st.quality, st.webp_lossless).ok()?
+                }
+                ExportColorMode::Gray => encode_gray(preview, ext, st.quality).ok()?,
+                ExportColorMode::Cmyk if ext == "jpg" => tracedraw_io::cmyk_bitmap::cmyk_jpeg(
+                    w,
+                    h,
+                    &ink_pixels(preview),
+                    st.quality,
+                    st.dpi,
+                    None,
+                )?,
+                ExportColorMode::Cmyk => {
+                    tracedraw_io::cmyk_bitmap::cmyk_tiff(w, h, &ink_pixels(preview), st.dpi, None)?
+                }
+            }
+            .len() as f64;
             let dpi = st.render_dpi();
             let full = (bounds.width() / 25.4 * dpi) * (bounds.height() / 25.4 * dpi);
             let shown = (preview.width() as f64 * preview.height() as f64).max(1.0);
-            let pages = if st.all_pages && !st.selection_only {
-                doc.pages.len().max(1) as f64
-            } else {
-                1.0
-            };
-            Some((bytes * full / shown * pages) as usize)
+            Some((bytes * full / shown * pages as f64) as usize)
         }
         _ => None,
     }
@@ -372,9 +677,48 @@ fn webp_lossy(img: &image::RgbaImage, quality: u8) -> Option<Vec<u8>> {
     Some(enc.encode(f32::from(quality.clamp(1, 100))).to_vec())
 }
 
+/// The browser's lossy WebP (#592): libwebp is C and not built for
+/// wasm32, so a pure-Rust VP8 encoder writes the file, at `quality` as
+/// libwebp takes it, alpha kept. `None` (lossless with rounding, as
+/// before) for a size WebP cannot hold or when the encoder fails.
 #[cfg(target_arch = "wasm32")]
-fn webp_lossy(_img: &image::RgbaImage, _quality: u8) -> Option<Vec<u8>> {
-    None
+fn webp_lossy(img: &image::RgbaImage, quality: u8) -> Option<Vec<u8>> {
+    webp_lossy_pure(img, quality)
+}
+
+/// See the browser's `webp_lossy`; the tests run it natively.
+#[cfg(any(target_arch = "wasm32", test))]
+fn webp_lossy_pure(img: &image::RgbaImage, quality: u8) -> Option<Vec<u8>> {
+    use vaam_webp::{ColorType, EncoderParams, WebPEncoder};
+    let (w, h) = img.dimensions();
+    // WebP's largest side.
+    if w == 0 || h == 0 || w > 16383 || h > 16383 {
+        return None;
+    }
+    let opaque = img.pixels().all(|p| p.0[3] == 255);
+    let mut out = Vec::new();
+    let mut enc = WebPEncoder::new(&mut out);
+    let mut params = EncoderParams::default();
+    params.use_lossy = true;
+    params.lossy_quality = quality.clamp(1, 100);
+    enc.set_params(params);
+    let done = if opaque {
+        // No alpha chunk for a picture with no transparency.
+        let rgb: Vec<u8> = img
+            .pixels()
+            .flat_map(|p| [p.0[0], p.0[1], p.0[2]])
+            .collect();
+        enc.encode(&rgb, w, h, ColorType::Rgb8)
+    } else {
+        enc.encode(img.as_raw(), w, h, ColorType::Rgba8)
+    };
+    match done {
+        Ok(()) => Some(out),
+        Err(e) => {
+            log::warn!("lossy WebP: {e}; writing it lossless");
+            None
+        }
+    }
 }
 
 /// Encode a rendered page in the bitmap format `ext`; WebP lossless
@@ -436,13 +780,121 @@ fn encode_raster_with(
     Ok(out.into_inner())
 }
 
+/// Keeps the sheet at `n` alone (the last one when `n` is past the end).
+pub fn keep_one_sheet(doc: &mut Document, n: usize) {
+    if doc.pages.is_empty() {
+        return;
+    }
+    let n = n.min(doc.pages.len() - 1);
+    let page = doc.pages.swap_remove(n);
+    doc.pages = vec![page];
+}
+
 /// Print: build a PDF with the print options and send it to the chosen
 /// system printer, or open it in the system viewer, which owns the
 /// printer dialog.
 pub fn print(app: &mut App, st: &PrintState) -> Result<String, String> {
+    if st.manual_duplex {
+        return print_duplex_side(app, st, false);
+    }
+    print_sheet(app, st, None)
+}
+
+/// The sheets of one side of a manual two-sided print of `n` sheets, in
+/// printing order: the fronts are the odd sheets (1, 3, 5...), the backs
+/// the even ones. Backs in reverse order run from the last; then an odd
+/// count's last front, which has no back, gets a blank one first
+/// (`None`), so each back meets its front in the turned stack.
+pub fn duplex_sides(n: usize, back: bool, reverse: bool) -> Vec<Option<usize>> {
+    if !back {
+        return (0..n).step_by(2).map(Some).collect();
+    }
+    let mut v: Vec<Option<usize>> = (1..n).step_by(2).map(Some).collect();
+    if reverse {
+        if n % 2 == 1 {
+            v.push(None);
+        }
+        v.reverse();
+    }
+    v
+}
+
+/// Keeps the sheets `picked` of `doc` in that order, a blank sheet of the
+/// first one's size for each `None`.
+pub fn keep_sheets(doc: &mut Document, picked: &[Option<usize>]) {
+    let pages = std::mem::take(&mut doc.pages);
+    let blank = |like: &tracedraw_core::document::Page| {
+        let mut p = like.clone();
+        p.background = None;
+        for l in p.layers.iter_mut() {
+            l.shapes.clear();
+        }
+        p
+    };
+    doc.pages = picked
+        .iter()
+        .filter_map(|i| match i {
+            Some(i) => pages.get(*i).cloned(),
+            None => pages.first().map(blank),
+        })
+        .collect();
+}
+
+/// Manual two-sided printing: the fronts (`back` false), after which the
+/// prompt to turn the stack over waits (`App::duplex_backs`), or the
+/// backs. One sheet alone prints as it is.
+pub fn print_duplex_side(app: &mut App, st: &PrintState, back: bool) -> Result<String, String> {
+    let n = print_sheets(app, st).pages.len();
+    if n < 2 {
+        return print_sheet(app, st, None);
+    }
+    let picked = duplex_sides(n, back, st.duplex_reverse);
+    // The sides set their own order; Reverse order would undo it.
+    let side = PrintState {
+        reverse_order: false,
+        ..st.clone()
+    };
+    let r = print_picked(app, &side, &picked);
+    if !back && r.is_ok() {
+        app.duplex_backs = Some(st.clone());
+    }
+    r
+}
+
+/// File > Print with `only` set to one sheet's index: that sheet alone
+/// (with its plates, under separations) goes out, as Print Preview's
+/// Print this sheet sends it; `None` prints every sheet.
+pub fn print_sheet(app: &mut App, st: &PrintState, only: Option<usize>) -> Result<String, String> {
     let mut doc = print_sheets(app, st);
+    if let Some(n) = only {
+        keep_one_sheet(&mut doc, n);
+    }
+    print_doc(app, st, doc)
+}
+
+/// File > Print with only the sheets `picked` (in that order, `None` a
+/// blank sheet): one side of a manual two-sided print.
+fn print_picked(
+    app: &mut App,
+    st: &PrintState,
+    picked: &[Option<usize>],
+) -> Result<String, String> {
+    let mut doc = print_sheets(app, st);
+    keep_sheets(&mut doc, picked);
+    print_doc(app, st, doc)
+}
+
+/// The sheets `doc` printed as `st` asks: separations, copies, and the
+/// destination.
+fn print_doc(app: &mut App, st: &PrintState, mut doc: Document) -> Result<String, String> {
+    // Each plate in a file of its own, named after its ink, beside the
+    // name chosen.
+    if st.separations && st.plate_files && matches!(st.destination, 1 | 2) {
+        return print_plate_files(app, st, &doc);
+    }
+    let plate_names: Vec<String> = plates(&doc).into_iter().map(|(_, n)| n).collect();
     if st.separations {
-        doc = separations_doc_without(&doc, &st.plates_off);
+        doc = separations_doc_without(&doc, &st.plates_off, st.skip_empty_plates);
     }
     let stem = app.document_title().trim_end_matches('*').to_string();
     // Files get their copies inside; the printer (lp) or the system
@@ -459,7 +911,11 @@ pub fn print(app: &mut App, st: &PrintState) -> Result<String, String> {
                 ("pdf", "PDF")
             };
             let bytes = if ps {
-                postscript_level(tracedraw_io::eps::document_to_ps(&doc), st.ps_level).into_bytes()
+                let mut out = tracedraw_io::eps::document_to_ps(&doc);
+                if st.separations && st.screens {
+                    out = with_screens(&out, &page_screens(&doc, &plate_names, st));
+                }
+                postscript_level(out, st.ps_level).into_bytes()
             } else {
                 tracedraw_io::pdf::document_to_pdf(&doc)
             };
@@ -481,11 +937,21 @@ pub fn print(app: &mut App, st: &PrintState) -> Result<String, String> {
                 // thread: a slow or stuck printer leaves the window usable
                 // (#810).
                 let (printer, copies, collate) = (printer.clone(), st.copies, st.collate);
+                // Print as bitmap: the sheets are already pictures of
+                // that resolution, sent as they are.
+                let bitmap_dpi = st.as_bitmap.then(|| st.bitmap_dpi.clamp(36.0, 1200.0));
                 let msg = trf("status.printing_to", &[("name", &printer)]);
                 app.start_print_job(move || {
-                    print_on(&printer, &name, &doc, copies, collate, &stem)
+                    print_on(&printer, &name, &doc, copies, collate, &stem, bitmap_dpi)
                 });
                 return Ok(msg);
+            }
+            // Android's print service, its Save as PDF and the printers'
+            // plugins draw the PDF on a transparent bitmap, and some drop
+            // its alpha: what the sheet leaves unpainted came out black
+            // (#2663). The sheets go out on white paper.
+            if cfg!(target_os = "android") {
+                on_white_paper(&mut doc);
             }
             let pdf = tracedraw_io::pdf::document_to_pdf(&doc);
             if crate::files::WEB {
@@ -499,6 +965,162 @@ pub fn print(app: &mut App, st: &PrintState) -> Result<String, String> {
     }
 }
 
+/// Each sheet of `doc` without a background of its own on opaque white
+/// paper: a reader that draws the PDF on a transparent bitmap and drops
+/// its alpha shows white, not black, where nothing is drawn (#2663).
+fn on_white_paper(doc: &mut Document) {
+    for page in doc.pages.iter_mut().filter(|p| p.background.is_none()) {
+        page.background = Some(tracedraw_core::Fill::Solid(tracedraw_core::Color::WHITE));
+    }
+}
+
+/// Separations with each plate in a file of its own (PDF or PostScript):
+/// the file name chosen gives each its name, the ink's name after it
+/// ("poster - Cyan.pdf").
+fn print_plate_files(app: &mut App, st: &PrintState, sheets: &Document) -> Result<String, String> {
+    let ps = st.destination == 2;
+    let (ext, filter) = if ps {
+        ("ps", "PostScript")
+    } else {
+        ("pdf", "PDF")
+    };
+    let names: Vec<String> = plates(sheets).into_iter().map(|(_, n)| n).collect();
+    let files: Vec<(String, Vec<u8>)> = plate_files(sheets, st)
+        .into_iter()
+        .map(|(name, mut doc)| {
+            if st.copies > 1 {
+                repeat_copies(&mut doc, st.copies.min(999) as usize, st.collate);
+            }
+            let bytes = if ps {
+                let mut out = tracedraw_io::eps::document_to_ps(&doc);
+                if st.screens {
+                    out = with_screens(&out, &page_screens(&doc, &names, st));
+                }
+                postscript_level(out, st.ps_level).into_bytes()
+            } else {
+                tracedraw_io::pdf::document_to_pdf(&doc)
+            };
+            (name, bytes)
+        })
+        .collect();
+    let stem = app.document_title().trim_end_matches('*').to_string();
+    crate::files::Dialog::new()
+        .add_filter(filter, &[ext])
+        .set_file_name(format!("{stem}.{ext}"))
+        .save_file(app, move |app, path| {
+            let mut written = Vec::new();
+            for (name, bytes) in files {
+                let to = plate_file_path(&path, &name);
+                if let Err(e) = crate::files::write(&to, bytes) {
+                    app.status = format!("{}: {e}", tr("dialog.print_failed"));
+                    return;
+                }
+                written.push(to.display().to_string());
+            }
+            app.status = trf("status.exported", &[("path", &written.join(", "))]);
+        });
+    Ok(String::new())
+}
+
+/// The plates of `sheets` as documents of their own, each named after
+/// its ink, in [`plates`] order: the plates unticked in Print Preview
+/// left out, and with Leave out empty plates each plate no sheet puts
+/// ink on. A sheet with no ink on a plate kept prints blank on it, so
+/// every file keeps the sheets in step.
+pub fn plate_files(sheets: &Document, st: &PrintState) -> Vec<(String, Document)> {
+    let all = plates(sheets);
+    let mut out = Vec::new();
+    for (i, (plate, name)) in all.iter().enumerate() {
+        if st.plates_off.contains(&i) {
+            continue;
+        }
+        if st.skip_empty_plates && !sheets.pages.iter().any(|p| plate_has_ink(p, *plate)) {
+            continue;
+        }
+        let others: Vec<usize> = (0..all.len()).filter(|&j| j != i).collect();
+        let mut doc = separations_doc_without(sheets, &others, false);
+        doc.title = format!("{} {name}", sheets.title);
+        out.push((name.clone(), doc));
+    }
+    out
+}
+
+/// The file of the plate `ink` beside `chosen`: its name with the ink's
+/// after it ("poster.pdf" and Cyan give "poster - Cyan.pdf").
+pub fn plate_file_path(chosen: &std::path::Path, ink: &str) -> std::path::PathBuf {
+    let stem = chosen
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let ext = chosen
+        .extension()
+        .map(|e| format!(".{}", e.to_string_lossy()))
+        .unwrap_or_default();
+    chosen.with_file_name(shared_file_name(&format!("{stem} - {ink}{ext}")))
+}
+
+/// The usual screen angle of plate `i` of [`plates`]: cyan 15°, magenta
+/// 75°, yellow 0°, black and the spot inks 45°, angles 30° apart for
+/// the strong inks so their dots make no moiré.
+pub fn default_screen_angle(i: usize) -> f64 {
+    match i {
+        0 => 15.0,
+        1 => 75.0,
+        2 => 0.0,
+        _ => 45.0,
+    }
+}
+
+/// The screen angle of plate `i`, named `name`: the one set by hand in
+/// the Print dialog, or its usual one.
+pub fn screen_angle(st: &PrintState, i: usize, name: &str) -> f64 {
+    st.screen_angles
+        .iter()
+        .find(|(n, _)| n == name)
+        .map(|(_, a)| *a)
+        .unwrap_or_else(|| default_screen_angle(i))
+}
+
+/// The halftone screen (lines per inch, angle) of each page of the
+/// separations `sep`, whose pages are named after their ink (see
+/// `separations_doc_without`); `names` are the ink names of [`plates`].
+/// A page of no ink known gets none.
+pub fn page_screens(sep: &Document, names: &[String], st: &PrintState) -> Vec<Option<(f64, f64)>> {
+    let lpi = st.screen_lpi.clamp(10.0, 600.0);
+    sep.pages
+        .iter()
+        .map(|p| {
+            names
+                .iter()
+                .enumerate()
+                .filter(|(_, n)| p.name == **n || p.name.ends_with(&format!(" {n}")))
+                .max_by_key(|(_, n)| n.len())
+                .map(|(i, n)| (lpi, screen_angle(st, i, n)))
+        })
+        .collect()
+}
+
+/// PostScript `ps` with the halftone screen of each page set at its
+/// start, a round dot at the frequency and angle given.
+pub fn with_screens(ps: &str, screens: &[Option<(f64, f64)>]) -> String {
+    const MARK: &str = "%%EndPageSetup\n";
+    let mut out = String::with_capacity(ps.len() + screens.len() * 80);
+    let mut rest = ps;
+    let mut n = 0;
+    while let Some(i) = rest.find(MARK) {
+        out.push_str(&rest[..i + MARK.len()]);
+        rest = &rest[i + MARK.len()..];
+        if let Some(Some((lpi, angle))) = screens.get(n) {
+            out.push_str(&format!(
+                "{lpi} {angle} {{dup mul exch dup mul add 1 exch sub}} setscreen\n"
+            ));
+        }
+        n += 1;
+    }
+    out.push_str(rest);
+    out
+}
+
 /// The print PDF sent to the system printer `printer` (`lp`), with the
 /// copies the dialog asked for.
 #[cfg(not(target_os = "windows"))]
@@ -509,23 +1131,24 @@ fn print_on(
     copies: u32,
     collate: bool,
     title: &str,
+    _bitmap_dpi: Option<f64>,
 ) -> Result<String, String> {
     let pdf = tracedraw_io::pdf::document_to_pdf(doc);
     let dir = std::env::temp_dir().join("tracedraw-print");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let path = dir.join(name);
+    let path = dir.join(shared_file_name(name));
     crate::files::write(&path, pdf).map_err(|e| e.to_string())?;
     crate::printers::print_pdf(printer, &path, copies, collate, title)?;
     Ok(trf("status.print_sent_printer", &[("name", printer)]))
 }
 
-/// The resolution sheets are drawn at for a Windows printer.
-#[cfg(target_os = "windows")]
-const WINDOWS_PRINT_DPI: f64 = 300.0;
-
-/// The sheets drawn as pictures and sent to the Windows printer
-/// `printer`, local or on the network (#614), with the copies the dialog
-/// asked for.
+/// The sheets drawn at the printer's own resolution and sent to the
+/// Windows printer `printer`, local or on the network (#614), with the
+/// copies the dialog asked for. Each sheet goes as strips of pixels with
+/// its blank parts left out, so fine lines and small text come out as
+/// sharp as from a PDF sent through `lp` and blank paper costs nothing in
+/// the job (#1404); `bitmap_dpi` (Print as bitmap) sends that resolution
+/// instead.
 #[cfg(target_os = "windows")]
 fn print_on(
     printer: &str,
@@ -534,16 +1157,128 @@ fn print_on(
     copies: u32,
     collate: bool,
     title: &str,
+    bitmap_dpi: Option<f64>,
 ) -> Result<String, String> {
-    let sheets: Vec<(Vec<u8>, f64, f64)> = doc
+    let dpi = bitmap_dpi
+        .unwrap_or_else(|| windows_print_dpi(crate::printers::printer_resolution_windows(printer)));
+    let sheets: Vec<crate::printers::Sheet> = doc
         .pages
         .iter()
-        .filter_map(|p| {
-            sheet_png(doc, p.id, WINDOWS_PRINT_DPI).map(|png| (png, p.size.width, p.size.height))
+        .map(|p| crate::printers::Sheet {
+            width: p.size.width,
+            height: p.size.height,
+            tiles: sheet_tiles(doc, p.id, dpi, PRINT_TILE_PIXELS).unwrap_or_default(),
         })
         .collect();
-    crate::printers::print_sheets_windows(printer, &sheets, copies, collate, title)?;
+    crate::printers::print_sheets_windows(printer, &sheets, dpi, copies, collate, title)?;
     Ok(trf("status.print_sent_printer", &[("name", printer)]))
+}
+
+/// The resolution sheets are drawn at for a Windows printer that says
+/// `reported` dots per inch: its own, kept between 300 and 1200 (a
+/// higher one would only make the job larger), 600 when it does not say.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn windows_print_dpi(reported: Option<f64>) -> f64 {
+    match reported {
+        Some(d) if d.is_finite() && d > 0.0 => d.clamp(300.0, 1200.0),
+        _ => 600.0,
+    }
+}
+
+/// The most pixels drawn at once for a printed sheet (64 MB of RGBA).
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+const PRINT_TILE_PIXELS: u64 = 1 << 24;
+
+/// A sheet drawn on white at `dpi` as strips of at most `max_pixels`
+/// pixels each, every strip cut to the part of it that is not blank
+/// (white) and left out when all of it is: the PNGs with where they go on
+/// the sheet. The strips put together give the same pixels as the whole
+/// sheet drawn at once, with no sheet-sized picture in memory.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn sheet_tiles(
+    doc: &Document,
+    id: tracedraw_core::PageId,
+    dpi: f64,
+    max_pixels: u64,
+) -> Option<Vec<crate::printers::Tile>> {
+    let page = doc.page(id).ok()?;
+    let zoom = dpi / 25.4;
+    let w = ((page.size.width * zoom).ceil() as u32).max(1);
+    let h = ((page.size.height * zoom).ceil() as u32).max(1);
+    // Whole multiples of 16 rows, as the coarse grid of procedural fills.
+    let rows = ((max_pixels / w as u64) / 16 * 16).clamp(16, (h as u64).div_ceil(16) * 16) as u32;
+    let opts = tracedraw_render::RenderOptions {
+        width: w,
+        height: h,
+        view: tracedraw_render::ViewTransform {
+            zoom,
+            origin_x: 0.0,
+            origin_y: h as f64,
+            stretch_y: 1.0,
+        },
+        ..Default::default()
+    };
+    let mut tiles = Vec::new();
+    let mut y0 = 0u32;
+    while y0 < h {
+        let band = rows.min(h - y0);
+        let objects = tracedraw_render::render_page_rows(doc, id, &opts, y0, y0 + band)?;
+        let mut strip = tiny_skia::Pixmap::new(w, band)?;
+        strip.fill(tiny_skia::Color::WHITE);
+        strip.draw_pixmap(
+            0,
+            0,
+            objects.as_ref(),
+            &Default::default(),
+            tiny_skia::Transform::identity(),
+            None,
+        );
+        if let Some((x, y, cw, ch)) = inked_area(&strip) {
+            let part =
+                strip.clone_rect(tiny_skia::IntRect::from_xywh(x as i32, y as i32, cw, ch)?)?;
+            tiles.push(crate::printers::Tile {
+                png: part.encode_png().ok()?,
+                x: x as f64 / zoom,
+                y: (y0 + y) as f64 / zoom,
+                width: cw as f64 / zoom,
+                height: ch as f64 / zoom,
+            });
+        }
+        y0 += band;
+    }
+    Some(tiles)
+}
+
+/// The smallest box (x, y, width, height in pixels) holding every pixel of
+/// `pm` that is not white; `None` when all of them are.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn inked_area(pm: &tiny_skia::Pixmap) -> Option<(u32, u32, u32, u32)> {
+    let w = pm.width() as usize;
+    let (mut x0, mut y0, mut x1, mut y1) = (usize::MAX, usize::MAX, 0, 0);
+    for (y, row) in pm.data().chunks_exact(w * 4).enumerate() {
+        let mut first = None;
+        let mut last = 0;
+        for (x, px) in row.chunks_exact(4).enumerate() {
+            if px != [255, 255, 255, 255] {
+                first.get_or_insert(x);
+                last = x;
+            }
+        }
+        if let Some(f) = first {
+            x0 = x0.min(f);
+            x1 = x1.max(last);
+            y0 = y0.min(y);
+            y1 = y;
+        }
+    }
+    (x0 != usize::MAX).then(|| {
+        (
+            x0 as u32,
+            y0 as u32,
+            (x1 - x0 + 1) as u32,
+            (y1 - y0 + 1) as u32,
+        )
+    })
 }
 
 /// Prints sent to the system viewer in this session.
@@ -575,7 +1310,7 @@ fn viewer_print_path(dir: &Path, name: &str, count: u32) -> std::path::PathBuf {
     nth(n)
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 fn print_through_viewer(name: &str, pdf: Vec<u8>) -> Result<String, String> {
     let dir = std::env::temp_dir().join("tracedraw-print");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -587,6 +1322,23 @@ fn print_through_viewer(name: &str, pdf: Vec<u8>) -> Result<String, String> {
         "status.print_sent",
         &[("path", &path.display().to_string())],
     ))
+}
+
+/// On Android the print PDF goes to the system's print service, whose
+/// dialog picks the printer, the copies and the paper (#1398). The file
+/// stays in the app's temporary folder: the service reads it later.
+#[cfg(target_os = "android")]
+fn print_through_viewer(name: &str, pdf: Vec<u8>) -> Result<String, String> {
+    let dir = std::env::temp_dir().join("tracedraw-print");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let path = dir.join(shared_file_name(name));
+    std::fs::write(&path, pdf).map_err(|e| e.to_string())?;
+    let job = name.trim_end_matches(".pdf");
+    if crate::android::outside::print_pdf(&path, job) {
+        Ok(trf("status.print_sent_android", &[("name", job)]))
+    } else {
+        Err(tr("status.print_service_failed"))
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -697,6 +1449,94 @@ pub fn print_area<'a>(shapes: impl Iterator<Item = &'a tracedraw_core::Shape>) -
     ))
 }
 
+/// The copies of their end objects that the blends of `s` (and of the
+/// objects inside it) keep, in page space, moved by `t` along with `s`:
+/// a page-space transformation of the start object alone, with no end
+/// object to bring the copy up to date from (the end was not exported
+/// with the start), would otherwise leave the steps running to where the
+/// end used to be (#1541).
+fn carry_blend_ends(s: &mut tracedraw_core::Shape, t: Affine) {
+    for e in s.effects.iter_mut() {
+        if let tracedraw_core::live::Effect::Blend { end, .. } = e {
+            end.transform_by(t);
+        }
+    }
+    match &mut s.kind {
+        ShapeKind::Group { children } => children.iter_mut().for_each(|c| carry_blend_ends(c, t)),
+        ShapeKind::ClipFrame { frame, contents } => {
+            carry_blend_ends(frame, t);
+            contents.iter_mut().for_each(|c| carry_blend_ends(c, t));
+        }
+        _ => {}
+    }
+}
+
+/// The copies of their end objects that the blends of `doc` keep brought
+/// up to date from the end objects themselves, as the editor does after
+/// every change (`App::refresh_blends`). The sheets are made from a copy
+/// of the drawing whose objects are moved, shrunk and recoloured outside
+/// the editor (Fit to page, the selection as the page, a negative, text
+/// in black, spot inks as CMYK), and a blend evaluated from a stale copy
+/// ran its steps to where the end object used to be, in the colour it
+/// used to have (#1541).
+fn refresh_blend_ends(doc: &mut Document) {
+    use tracedraw_core::live::Effect;
+    fn starts(s: &tracedraw_core::Shape, out: &mut Vec<(ShapeId, ShapeId)>) {
+        for e in &s.effects {
+            if let Effect::Blend {
+                end_id: Some(end), ..
+            } = e
+            {
+                out.push((s.id, *end));
+            }
+        }
+        match &s.kind {
+            ShapeKind::Group { children } => children.iter().for_each(|c| starts(c, out)),
+            ShapeKind::ClipFrame { frame, contents } => {
+                starts(frame, out);
+                contents.iter().for_each(|c| starts(c, out));
+            }
+            _ => {}
+        }
+    }
+    let mut pairs = Vec::new();
+    for layer in doc.all_layers() {
+        for s in &layer.shapes {
+            starts(s, &mut pairs);
+        }
+    }
+    for (start, end) in pairs {
+        // An end object that is not printed (not selected, say) leaves the
+        // copy as it is, as in the editor.
+        let Some(mut copy) = doc.shape_on_page(end) else {
+            continue;
+        };
+        copy.effects.clear();
+        // In the space of the group or frame holding the start object,
+        // where its effects live (#2023).
+        let parent = doc.parent_transform(start).unwrap_or(Affine::IDENTITY);
+        let det = parent.determinant();
+        if det.is_finite() && det.abs() > 1e-12 && parent != Affine::IDENTITY {
+            copy.transform = parent.inverse() * copy.transform;
+        }
+        let Some(s) = doc.find_shape_mut(start) else {
+            continue;
+        };
+        for e in s.effects.iter_mut() {
+            if let Effect::Blend {
+                end: kept,
+                end_id: Some(id),
+                ..
+            } = e
+            {
+                if *id == end {
+                    **kept = copy.clone();
+                }
+            }
+        }
+    }
+}
+
 /// The area the objects left on `page` and in the `master` layers cover
 /// (what prints of them: visible objects of visible, printable layers,
 /// their outlines and live effects included) made the page: the page
@@ -727,10 +1567,30 @@ fn selection_as_page(
     page.size = Size::new(w, h);
 }
 
-pub fn print_sheets(app: &App, st: &PrintState) -> Document {
-    let mut doc = app.engine.document().clone();
+/// The indexes of the drawing's pages the Print dialog's settings print,
+/// in printing order: the whole drawing, the current page, the pages
+/// listed or the selection's page, odd or even ones only when asked
+/// (`PrintState::page_indexes`). `print_sheets` imposes these pages, and
+/// the Layout sketch with the booklet summary under it counts the same
+/// ones, so the counts match what prints (#788).
+pub fn printed_pages(app: &App, st: &PrintState) -> Vec<usize> {
+    let doc = app.engine.document();
     let current = doc.pages.iter().position(|p| p.id == app.page).unwrap_or(0);
-    let keep = st.page_indexes(doc.pages.len(), current);
+    st.page_indexes(doc.pages.len(), current)
+}
+
+pub fn print_sheets(app: &App, st: &PrintState) -> Document {
+    let src = app.engine.document();
+    // Facing pages: each page printed with what its facing page holds
+    // across the spine and in the bleed beside it (#1972); not for the
+    // selection alone.
+    let selection = st.range == 3 && !app.selection.is_empty();
+    let mut doc = if selection {
+        src.clone()
+    } else {
+        src.with_spread_overhangs(src.metadata.bleed)
+    };
+    let keep = printed_pages(app, st);
     let mut i = 0;
     doc.pages.retain(|_| {
         i += 1;
@@ -753,12 +1613,22 @@ pub fn print_sheets(app: &App, st: &PrintState) -> Document {
             selection_as_page(page, &mut doc.master);
         }
     }
-    // Fit to page: objects running off the page (the selection, when
-    // that is printed) shrink to fit inside it, centred, rather than
-    // being cut at its edge (#534).
-    if st.fit_to_page {
+    // The pages' background colour stays on screen when it is not to be
+    // printed (#1651).
+    if !st.page_background {
         for page in doc.pages.iter_mut() {
-            fit_contents_to_page(page, st.range == 3);
+            page.background = None;
+        }
+    }
+    // Fit to page with the selection printed: the selection shrinks to
+    // fit the page, centred, rather than being cut at its edge (#534).
+    // Printing pages, Fit to page scales the page itself to the paper
+    // (`imposition::Options::fit`) and what runs off a page stays cut at
+    // its edge, as on screen: pulling it in shrank the page's own objects
+    // and moved them off their place (#2678).
+    if st.fit_to_page && selection {
+        for page in doc.pages.iter_mut() {
+            fit_contents_to_page(page, true);
         }
     }
     for page in doc.pages.iter_mut() {
@@ -776,6 +1646,8 @@ pub fn print_sheets(app: &App, st: &PrintState) -> Document {
             }
         }
     }
+    // The blends' steps follow the objects as printed (#1541).
+    refresh_blend_ends(&mut doc);
     let options = print_layout(app, st, &doc);
     let mut doc = crate::imposition::impose(&doc, &options);
     for page in doc.pages.iter_mut() {
@@ -820,10 +1692,110 @@ pub fn print_sheets(app: &App, st: &PrintState) -> Document {
         }
         doc.set_ids(ids);
     }
+    // Grayscale composite output (#1657): every colour and picture of
+    // the sheets, marks included, as its grey.
+    if st.grayscale && !st.separations {
+        grayscale_doc(&mut doc);
+    }
+    // Tile: each sheet (fitted to the pages, mirrored or inverted as a
+    // whole) cut into tiles of the paper, a poster.
+    if st.tile {
+        doc = crate::imposition::tile_sheets(&doc, &st.tiling());
+    }
+    // Reverse order (#1394, #1571): the last sheet first, so a stack
+    // printed face up, or the backs of printed sheets, come out in order.
+    if st.reverse_order {
+        doc.pages.reverse();
+    }
     if st.as_bitmap {
         sheets_as_bitmaps(&mut doc, st.bitmap_dpi.clamp(36.0, 1200.0));
     }
     doc
+}
+
+/// The grey a colour prints as in grayscale output: its luminance
+/// (`0.299 R + 0.587 G + 0.114 B`, as Bitmaps > Mode > Grayscale);
+/// the registration colour stays, it prints on every plate.
+fn gray_of(c: tracedraw_core::Color) -> tracedraw_core::Color {
+    use tracedraw_core::Color;
+    match c {
+        Color::Gray { .. } | Color::Registration => c,
+        _ => {
+            let [r, g, b] = c.to_rgb8();
+            let v = (0.299 * f32::from(r) + 0.587 * f32::from(g) + 0.114 * f32::from(b)) / 255.0;
+            Color::Gray {
+                v: v.clamp(0.0, 1.0),
+            }
+        }
+    }
+}
+
+/// Grayscale output (#1657): every colour the sheets hold (fills,
+/// outlines, text, gradients, meshes, patterns, effects, shadows and
+/// lenses) turned to its grey, and every picture to its grey pixels (a
+/// CMYK picture's own inks are left out, so it prints from the grey
+/// pixels). The colours are found wherever the document keeps one, by
+/// walking the objects' serialized form, so no kind of object is missed.
+pub fn grayscale_doc(doc: &mut Document) {
+    fn walk(v: &mut serde_json::Value) {
+        use serde_json::Value;
+        match v {
+            Value::Array(a) => a.iter_mut().for_each(walk),
+            Value::Object(m) => {
+                if m.get("model").is_some_and(Value::is_string) {
+                    if let Ok(c) =
+                        serde_json::from_value::<tracedraw_core::Color>(Value::Object(m.clone()))
+                    {
+                        // A colour can share its object with the tag of
+                        // what holds it (a solid fill is `{"fill":
+                        // "solid", "model": ...}`): only its own keys go.
+                        if let (Ok(Value::Object(was)), Ok(Value::Object(gray))) =
+                            (serde_json::to_value(c), serde_json::to_value(gray_of(c)))
+                        {
+                            for k in was.keys() {
+                                m.remove(k);
+                            }
+                            m.extend(gray);
+                        }
+                        return;
+                    }
+                }
+                m.remove("picture_inks");
+                m.remove("cmyk_bitmap");
+                if let Some(Value::String(b64)) = m.get_mut("png") {
+                    use base64::Engine;
+                    let engine = base64::engine::general_purpose::STANDARD;
+                    let gray = engine
+                        .decode(b64.as_bytes())
+                        .ok()
+                        .and_then(|png| crate::bitmap_fx::decode(&png))
+                        .and_then(|img| crate::bitmap_fx::encode_gray(&img));
+                    if let Some(gray) = gray {
+                        *b64 = engine.encode(gray);
+                        // The picture's effects stay as printed, not
+                        // worked out again from the colour original.
+                        m.remove("fx");
+                    }
+                }
+                m.values_mut().for_each(walk);
+            }
+            _ => {}
+        }
+    }
+    fn gray<T: serde::Serialize + serde::de::DeserializeOwned>(x: &mut T) {
+        let Ok(mut v) = serde_json::to_value(&*x) else {
+            return;
+        };
+        walk(&mut v);
+        match serde_json::from_value(v) {
+            Ok(back) => *x = back,
+            Err(e) => log::warn!("grayscale print: {e}"),
+        }
+    }
+    for page in doc.pages.iter_mut() {
+        gray(page);
+    }
+    gray(&mut doc.master);
 }
 
 /// A spot ink's colour as its CMYK mix at the tint.
@@ -917,12 +1889,6 @@ fn sheet_pixels(
     Some((png, white.width(), white.height()))
 }
 
-/// [`sheet_pixels`]'s PNG.
-#[cfg(target_os = "windows")]
-fn sheet_png(doc: &Document, id: tracedraw_core::PageId, dpi: f64) -> Option<Vec<u8>> {
-    sheet_pixels(doc, id, dpi).map(|(png, _, _)| png)
-}
-
 /// General > Print as bitmap: each sheet becomes one picture of itself.
 fn sheets_as_bitmaps(doc: &mut Document, dpi: f64) {
     let pages: Vec<_> = doc.pages.iter().map(|p| (p.id, p.size)).collect();
@@ -975,6 +1941,8 @@ pub fn plates(doc: &Document) -> Vec<(Plate, String)> {
 
 /// One plate of a page: every colour turned into the grey of the ink's
 /// coverage (black = full ink); registration colour prints on all plates.
+/// Pictures show the coverage of the plate's ink, pixel by pixel, with
+/// their alpha (#1659, `picture_plates`).
 pub fn plate_page(
     page: &tracedraw_core::document::Page,
     plate: Plate,
@@ -1001,12 +1969,18 @@ pub fn plate_page(
         for s in layer.shapes.iter_mut() {
             // Fills the separations cannot split show as their average
             // colour.
-            if matches!(s.fill, Fill::Texture(_) | Fill::Pattern(_)) {
+            if matches!(
+                s.fill,
+                Fill::Texture(_) | Fill::Pattern(_) | Fill::Procedural(_)
+            ) {
                 if let Some(c) = s.fill.preview_color() {
                     s.fill = Fill::Solid(c);
                 }
             }
             map_colors(s, &coverage);
+            crate::picture_plates::swap_pictures(s, &|pic| {
+                crate::picture_plates::plate_picture(pic, plate)
+            });
         }
     }
     p
@@ -1015,12 +1989,20 @@ pub fn plate_page(
 /// A page as printed with only some inks (#571): process colours keep
 /// the channels of the inks on, spot colours show when their ink is on
 /// and are paper otherwise; registration colour prints with every ink.
+/// Pictures keep the inks on, pixel by pixel (#1659); `inks` are the
+/// drawing's spot inks, for the colour a picture's spot channel shows.
 pub fn inks_page(
     page: &tracedraw_core::document::Page,
     process: [bool; 4],
     spots: &[u32],
+    inks: &[tracedraw_core::document::Ink],
 ) -> tracedraw_core::document::Page {
     use tracedraw_core::{Color, Fill};
+    let spot_colors: Vec<(u32, [u8; 3])> = inks
+        .iter()
+        .filter(|i| spots.contains(&i.id))
+        .map(|i| (i.id, i.color(1.0).to_rgb8()))
+        .collect();
     let spots = spots.to_vec();
     let keep = move |c: Color| -> Color {
         let on = |i: usize, v: f32| if process[i] { v } else { 0.0 };
@@ -1047,12 +2029,18 @@ pub fn inks_page(
     let mut p = page.clone();
     for layer in p.layers.iter_mut() {
         for s in layer.shapes.iter_mut() {
-            if matches!(s.fill, Fill::Texture(_) | Fill::Pattern(_)) {
+            if matches!(
+                s.fill,
+                Fill::Texture(_) | Fill::Pattern(_) | Fill::Procedural(_)
+            ) {
                 if let Some(c) = s.fill.preview_color() {
                     s.fill = Fill::Solid(c);
                 }
             }
             map_colors(s, &keep);
+            crate::picture_plates::swap_pictures(s, &|pic| {
+                crate::picture_plates::inks_picture(pic, process, &spot_colors)
+            });
         }
     }
     p
@@ -1074,8 +2062,16 @@ pub fn print_layout(app: &App, st: &PrintState, doc: &Document) -> crate::imposi
     let tz = crate::time_tracker::local_zone();
     crate::imposition::Options {
         layout: st.layout(),
-        sheet: st.sheet_size_for(first),
+        // Tiled, the sheet fits the pages and the paper's size and
+        // margins go to the tiles.
+        sheet: if st.tile {
+            None
+        } else {
+            st.sheet_size_for(first)
+        },
         gutter: st.gutter.max(0.0),
+        gutter_y: Some(st.gutter_y.max(0.0)),
+        order: crate::imposition::PageOrder::from_index(st.page_order),
         bleed,
         scale: if st.fit_to_page {
             1.0
@@ -1085,19 +2081,31 @@ pub fn print_layout(app: &App, st: &PrintState, doc: &Document) -> crate::imposi
         back_side: st.back_side,
         keep_size: st.keep_size,
         info_offset: st.info_offset,
-        paper_margins: st.margins,
+        paper_margins: if st.tile { [0.0; 4] } else { st.margins },
         // Moved and stretched in Print Preview, the whole page with its
         // clip, clear of the printer's margins (#536, #595).
         page_offset: st.art_offset,
         page_stretch: st.art_stretch,
+        page_rotation: st.art_rotation,
+        cell_rotation: st.cell_rotation.clone(),
+        cell_order: st.cell_order.clone(),
         stretch_fit: st.stretch_fit,
+        fit: st.fit_to_page,
+        booklet: st.booklet(),
         marks: crate::imposition::Marks {
             crop: st.crop_marks,
+            bleed: false,
             registration: st.registration_marks,
             color_bars: st.color_bars,
             densitometer: st.densitometer,
             page_info: st.page_info,
             page_numbers: st.page_numbers,
+        },
+        crop: crate::imposition::CropStyle {
+            length: st.crop_length,
+            offset: st.crop_offset,
+            width: st.crop_width,
+            between: st.crop_between,
         },
         title: if st.info_text.trim().is_empty() {
             app.document_name()
@@ -1134,6 +2142,13 @@ pub fn map_colors(
     if let Some(st) = &mut s.stroke {
         st.color = f(st.color);
     }
+    // The copy of its end object a blend keeps: the steps run to the
+    // end's colour as mapped (#1541).
+    for e in s.effects.iter_mut() {
+        if let tracedraw_core::live::Effect::Blend { end, .. } = e {
+            map_colors(end, f);
+        }
+    }
     match &mut s.kind {
         ShapeKind::Group { children } => children.iter_mut().for_each(|c| map_colors(c, f)),
         ShapeKind::ClipFrame { frame, contents } => {
@@ -1162,15 +2177,72 @@ fn invert_colors(s: &mut tracedraw_core::Shape) {
 /// Colour separations with every plate.
 #[cfg(test)]
 fn separations_doc(doc: &Document) -> Document {
-    separations_doc_without(doc, &[])
+    separations_doc_without(doc, &[], false)
+}
+
+/// Whether `plate` of `page` takes any ink: a colour with coverage on
+/// that plate, or a picture (its inks not looked into, so it counts on
+/// every plate); the registration colour the marks are drawn in does not
+/// count.
+pub fn plate_has_ink(page: &tracedraw_core::document::Page, plate: Plate) -> bool {
+    use tracedraw_core::{Color, Fill};
+    let inked = std::cell::Cell::new(false);
+    let look = |c: Color| -> Color {
+        let v = match (plate, c) {
+            (_, Color::Registration) => 0.0,
+            (Plate::Spot(id), Color::Spot { ink, tint, .. }) if ink == id => tint,
+            (Plate::Spot(_), _) | (Plate::Process(_), Color::Spot { .. }) => 0.0,
+            (Plate::Process(i), _) => match c.convert_to("CMYK") {
+                Color::Cmyk { c, m, y, k } => [c, m, y, k].get(i).copied().unwrap_or(0.0),
+                _ => 0.0,
+            },
+        };
+        if v > 1e-6 {
+            inked.set(true);
+        }
+        c
+    };
+    fn has_picture(s: &tracedraw_core::Shape) -> bool {
+        match &s.kind {
+            ShapeKind::Bitmap { .. } => true,
+            ShapeKind::Group { children } => children.iter().any(has_picture),
+            ShapeKind::ClipFrame { frame, contents } => {
+                has_picture(frame) || contents.iter().any(has_picture)
+            }
+            _ => false,
+        }
+    }
+    for layer in &page.layers {
+        for s in &layer.shapes {
+            if has_picture(s) {
+                return true;
+            }
+            let mut s = s.clone();
+            if matches!(
+                s.fill,
+                Fill::Texture(_) | Fill::Pattern(_) | Fill::Procedural(_)
+            ) {
+                if let Some(c) = s.fill.preview_color() {
+                    s.fill = Fill::Solid(c);
+                }
+            }
+            map_colors(&mut s, &look);
+            if inked.get() {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Colour separations: one grey page per sheet and plate (the four
 /// process inks, then each spot ink), each the grey of that ink's
 /// coverage; a spot colour prints on its own plate only, at its tint.
 /// The plates at the indices `off` (in [`plates`] order), those unticked
-/// in Print Preview, are left out (#846).
-fn separations_doc_without(doc: &Document, off: &[usize]) -> Document {
+/// in Print Preview, are left out (#846); with `skip_empty` so is each
+/// sheet's plate that takes no ink ([`plate_has_ink`]), a sheet with no
+/// ink at all keeping its first plate.
+fn separations_doc_without(doc: &Document, off: &[usize], skip_empty: bool) -> Document {
     let size = doc
         .pages
         .first()
@@ -1186,7 +2258,15 @@ fn separations_doc_without(doc: &Document, off: &[usize]) -> Document {
         .map(|(_, p)| p)
         .collect();
     for page in &doc.pages {
-        for (plate, name) in &plates {
+        let inked: Vec<bool> = plates
+            .iter()
+            .map(|(plate, _)| !skip_empty || plate_has_ink(page, *plate))
+            .collect();
+        let any = inked.iter().any(|i| *i);
+        for (n, (plate, name)) in plates.iter().enumerate() {
+            if !inked[n] && (any || n > 0) {
+                continue;
+            }
             let mut p = plate_page(page, *plate);
             p.name = format!("{} {}", page.name, name);
             let mut ids = sep.ids().clone();
@@ -1198,6 +2278,67 @@ fn separations_doc_without(doc: &Document, off: &[usize]) -> Document {
     sep
 }
 
+/// A file name that stays one name inside a folder: no folder
+/// separators, no leading dots, never empty.
+pub fn shared_file_name(name: &str) -> String {
+    let clean: String = name
+        .chars()
+        .filter(|&c| !crate::files::is_direction_mark(c))
+        .map(|c| {
+            if matches!(c, '/' | '\\' | '\0') {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect();
+    let clean = clean.trim().trim_start_matches('.').to_string();
+    if clean.is_empty() {
+        "document".into()
+    } else {
+        clean
+    }
+}
+
+/// Whether `target` is an address with a scheme (`https:`, `mailto:`,
+/// `market:`) rather than a file path.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub fn is_address(target: &str) -> bool {
+    target.split_once(':').is_some_and(|(scheme, _)| {
+        scheme.len() > 1
+            && scheme.starts_with(|c: char| c.is_ascii_alphabetic())
+            && scheme
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+    })
+}
+
+/// Open a file or a web address in the app the system has for it. On
+/// Android (#1398) an address opens in its app, a file of the app (or a
+/// document the picker returned) in the app picked for its type; a
+/// folder cannot be shown there.
+#[cfg(target_os = "android")]
+pub fn open_with_system(path: &Path) -> Result<(), String> {
+    let target = path.to_string_lossy();
+    let opened = if is_address(&target) {
+        crate::android::outside::view(&target, "")
+    } else {
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        let mime = crate::files::mime_for_extension(ext);
+        match crate::files::document_uri(path) {
+            Some(uri) => crate::android::outside::view(&uri, mime),
+            None if path.is_dir() => return Err(tr("status.no_folders_on_android")),
+            None => crate::android::outside::view(&target, mime),
+        }
+    };
+    if opened {
+        Ok(())
+    } else {
+        Err(tr("status.could_not_open_viewer"))
+    }
+}
+
+#[cfg(not(target_os = "android"))]
 pub fn open_with_system(path: &Path) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     let r = std::process::Command::new("cmd")
@@ -1264,18 +2405,9 @@ impl App {
     /// File name for a PDF sent somewhere: the document title, cleaned.
     fn send_to_file_name(&self) -> String {
         let title = self.document_title();
-        let stem: String = title
-            .trim_end_matches('*')
-            .chars()
-            .map(|c| {
-                if c.is_alphanumeric() || c == '-' || c == '_' || c == ' ' {
-                    c
-                } else {
-                    '_'
-                }
-            })
-            .collect();
-        let stem = stem.trim();
+        // The name in its own script, accents and vowel marks included.
+        let stem = crate::files::clean_file_name_for(title.trim_end_matches('*'), true);
+        let stem = stem.trim_start_matches('.').trim();
         let stem = if stem.is_empty() { "Graphic1" } else { stem };
         format!("{stem}.pdf")
     }
@@ -1283,6 +2415,10 @@ impl App {
     /// File > Send To: write the document as PDF into `target` and report
     /// where it went.
     pub fn send_to(&mut self, target: SendTarget) {
+        if crate::files::ANDROID {
+            self.send_to_android(target);
+            return;
+        }
         if crate::files::WEB {
             // No folders in a browser: every target is a PDF download.
             let name = self.send_to_file_name();
@@ -1452,6 +2588,54 @@ impl App {
     }
 }
 
+impl App {
+    /// Send To on Android (#1398): Documents saves the PDF where the
+    /// system's picker says, Mail Recipient hands it to a mail app through
+    /// the share sheet; there is no desktop folder ([`SendTarget::why_not`]).
+    fn send_to_android(&mut self, target: SendTarget) {
+        if let Some(why) = target.why_not() {
+            self.status = tr(why);
+            return;
+        }
+        let name = self.send_to_file_name();
+        let pdf = tracedraw_io::pdf::document_to_pdf(self.engine.document());
+        if target == SendTarget::Documents {
+            crate::files::Dialog::new()
+                .add_filter("PDF", &["pdf"])
+                .set_file_name(name)
+                .save_file(self, move |app, path| {
+                    app.status = match crate::files::write(&path, pdf) {
+                        Ok(()) => trf("status.sent_to", &[("path", &path.display().to_string())]),
+                        Err(e) => trf("status.export_failed", &[("e", &e.to_string())]),
+                    };
+                });
+            return;
+        }
+        let dir = std::env::temp_dir().join("tracedraw-send");
+        let path = dir.join(shared_file_name(&name));
+        self.status = match std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(&path, pdf))
+        {
+            Err(e) => trf("status.export_failed", &[("e", &e.to_string())]),
+            Ok(()) if share_pdf(&path, name.trim_end_matches(".pdf")) => {
+                trf("status.shared", &[("name", &name)])
+            }
+            Ok(()) => tr("status.share_failed"),
+        };
+    }
+}
+
+/// Hand the PDF at `path` to a mail app through the share sheet (Android);
+/// false where there is none.
+fn share_pdf(path: &Path, subject: &str) -> bool {
+    #[cfg(target_os = "android")]
+    return crate::android::outside::share(path, "application/pdf", subject, true);
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = (path, subject);
+        false
+    }
+}
+
 /// Destinations of File > Send To.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SendTarget {
@@ -1461,6 +2645,12 @@ pub enum SendTarget {
 }
 
 impl SendTarget {
+    /// Why this destination cannot be used here, as an i18n key for the
+    /// greyed menu row's tip: Android has no desktop folder.
+    pub fn why_not(self) -> Option<&'static str> {
+        why_not_send_to(self, crate::files::ANDROID)
+    }
+
     /// The folder the PDF is written to; the mail recipient gets it from
     /// the system's temporary folder.
     pub fn dir(self) -> Option<std::path::PathBuf> {
@@ -1474,6 +2664,11 @@ impl SendTarget {
             }
         }
     }
+}
+
+/// [`SendTarget::why_not`] on Android (`android`) or elsewhere.
+pub fn why_not_send_to(target: SendTarget, android: bool) -> Option<&'static str> {
+    (android && target == SendTarget::Desktop).then_some("menu.file.send_to_desktop_android")
 }
 
 /// `$XDG_*_DIR`, then `~/<name>` (created when missing), then the home
@@ -1562,7 +2757,7 @@ pub fn parse_csv(text: &str) -> (Vec<String>, Vec<Vec<String>>) {
 
 // ----- find and replace ----------------------------------------------------------
 
-fn matches_text(hay: &str, needle: &str, match_case: bool, whole_word: bool) -> bool {
+pub(crate) fn matches_text(hay: &str, needle: &str, match_case: bool, whole_word: bool) -> bool {
     if needle.is_empty() {
         return false;
     }
@@ -1689,7 +2884,7 @@ pub fn replace_text(
     }
 }
 
-fn replace_in(
+pub(crate) fn replace_in(
     text: &str,
     needle: &str,
     replacement: &str,
@@ -1740,8 +2935,275 @@ fn replace_in(
     out
 }
 
+// ----- find and replace by properties -----------------------------------------
+
+impl PropertyFind {
+    /// The criteria ticked.
+    pub fn query(&self) -> ObjectQuery {
+        let color = |none: bool, c| {
+            if none {
+                ColorQuery::Nothing
+            } else {
+                ColorQuery::Color(c)
+            }
+        };
+        let font = self.font.trim();
+        ObjectQuery {
+            object_type: self
+                .use_type
+                .then(|| ObjectType::ALL.get(self.object_type).copied())
+                .flatten(),
+            fill: self.use_fill.then(|| color(self.fill_none, self.fill)),
+            outline: self
+                .use_outline
+                .then(|| color(self.outline_none, self.outline)),
+            outline_width: self.use_width.then_some(self.width),
+            font: (self.use_font && !font.is_empty()).then(|| font.to_string()),
+        }
+    }
+
+    /// The replacements ticked.
+    pub fn replacement(&self) -> objfind::Replacement {
+        let font = self.new_font.trim();
+        objfind::Replacement {
+            fill: self.set_fill.then_some(self.new_fill),
+            outline: self.set_outline.then_some(self.new_outline),
+            outline_width: self.set_width.then_some(self.new_width),
+            font: (self.set_font && !font.is_empty()).then(|| font.to_string()),
+            font_chars: self.font_chars,
+            western_digits: self.western_digits,
+        }
+    }
+
+    /// Fill in the criteria from `s` (From Selection): its type, fill,
+    /// outline, outline width and font, ticking the ones it has.
+    pub fn take_from(&mut self, s: &tracedraw_core::Shape) {
+        let q = objfind::query_from(s);
+        self.use_type = false;
+        if let Some(t) = q.object_type {
+            self.object_type = ObjectType::ALL.iter().position(|x| *x == t).unwrap_or(0);
+        }
+        self.use_fill = q.fill.is_some();
+        match q.fill {
+            Some(ColorQuery::Nothing) => self.fill_none = true,
+            Some(ColorQuery::Color(c)) => {
+                self.fill_none = false;
+                self.fill = c;
+            }
+            None => {}
+        }
+        self.use_outline = q.outline.is_some();
+        match q.outline {
+            Some(ColorQuery::Nothing) => self.outline_none = true,
+            Some(ColorQuery::Color(c)) => {
+                self.outline_none = false;
+                self.outline = c;
+            }
+            None => {}
+        }
+        self.use_width = false;
+        if let Some(w) = q.outline_width {
+            self.width = w;
+        }
+        self.use_font = q.font.is_some();
+        if let Some(f) = q.font {
+            self.font = f;
+        }
+    }
+}
+
+/// The objects that meet the ticked criteria, on the current page or in
+/// the whole drawing.
+pub fn find_by_properties(app: &App, pf: &PropertyFind) -> Vec<Hit> {
+    let scope = if pf.whole_drawing {
+        objfind::Scope::Document
+    } else {
+        objfind::Scope::Page
+    };
+    objfind::find(app.doc(), &pf.query(), scope, app.page_index())
+}
+
+/// Find All by properties: select the objects found on the current page.
+/// Returns how many of them are on it.
+pub fn select_found(app: &mut App, st: &mut FindReplaceState) -> usize {
+    st.props.hits = find_by_properties(app, &st.props);
+    // No object shown alone yet: Next starts at the first one.
+    st.cursor = st.props.hits.len();
+    let here = Some(app.page_index());
+    let ids: Vec<ShapeId> = st
+        .props
+        .hits
+        .iter()
+        .filter(|h| h.page.is_none_or(|p| Some(p) == here))
+        .map(|h| h.id)
+        .collect();
+    let n = ids.len();
+    app.select(ids);
+    n
+}
+
+/// The next (or previous) object found: its page comes into view and it
+/// is selected alone. The search runs again first, so it follows edits.
+pub fn step_found(app: &mut App, st: &mut FindReplaceState, forward: bool) {
+    let before = st.props.hits.get(st.cursor).copied();
+    st.props.hits = find_by_properties(app, &st.props);
+    let n = st.props.hits.len();
+    if n == 0 {
+        return;
+    }
+    // Carry on from the object shown last, wherever it is now.
+    let at = before.and_then(|b| st.props.hits.iter().position(|h| h.id == b.id));
+    st.cursor = match (at, forward) {
+        (None, true) => 0,
+        (None, false) => n - 1,
+        (Some(i), true) => (i + 1) % n,
+        (Some(i), false) => (i + n - 1) % n,
+    };
+    let Some(hit) = st.props.hits.get(st.cursor).copied() else {
+        return;
+    };
+    if let Some(p) = hit.page {
+        if p != app.page_index() {
+            app.goto_page(p);
+        }
+    }
+    app.select(vec![hit.id]);
+}
+
+/// Replace All by properties, as one undo step. Returns how many
+/// objects changed.
+pub fn replace_properties(app: &mut App, st: &mut FindReplaceState) -> usize {
+    st.props.hits = find_by_properties(app, &st.props);
+    let cmds = objfind::replace_commands(
+        app.doc(),
+        &st.props.hits,
+        &st.props.query(),
+        &st.props.replacement(),
+    );
+    if cmds.is_empty() {
+        return 0;
+    }
+    let changed: std::collections::HashSet<ShapeId> = cmds
+        .iter()
+        .filter_map(|c| match c {
+            Command::SetFill { shapes, .. } | Command::SetStroke { shapes, .. } => {
+                shapes.first().copied()
+            }
+            Command::SetShapeKind { shape, .. } => Some(*shape),
+            _ => None,
+        })
+        .collect();
+    match app.engine.run_batch("Replace", &cmds) {
+        Ok(()) => changed.len(),
+        Err(e) => {
+            app.status = e.to_string();
+            0
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::{is_address, shared_file_name, why_not_send_to, SendTarget};
+
+    #[test]
+    fn page_exports_omit_excluded_layer_contents_without_changing_the_drawing() {
+        use tracedraw_core::{Color, Document, Fill, Rect, Shape, ShapeKind, Size};
+        let mut doc = Document::new("Excluded", Size::new(10.0, 10.0));
+        let mut shape = Shape::new(
+            doc.ids_mut().shape(),
+            ShapeKind::Rect {
+                rect: Rect::new(1.0, 1.0, 4.0, 4.0),
+                radius: 0.0,
+                corners: None,
+            },
+        );
+        shape.fill = Fill::Solid(Color::rgb8(255, 0, 0));
+        shape.stroke = None;
+        doc.pages[0].layers[0].shapes.push(shape);
+        doc.pages[0].layers[0].printable = false;
+        let before = doc.to_json().unwrap();
+        let st = super::ExportState {
+            dpi: 25.4,
+            transparent: false,
+            ..Default::default()
+        };
+        let png = super::page_file(&doc, 0, "png", &st, None).unwrap();
+        let pm = tiny_skia::Pixmap::decode_png(&png).unwrap();
+        let p = pm.pixel(2, 8).unwrap();
+        assert_eq!((p.red(), p.green(), p.blue()), (255, 255, 255));
+        let svg = super::page_file(&doc, 0, "svg", &st, None).unwrap();
+        assert!(!String::from_utf8(svg).unwrap().contains("#ff0000"));
+        assert_eq!(doc.to_json().unwrap(), before);
+    }
+
+    /// Android (#1398): Send To has no desktop folder there (the row is
+    /// greyed with the reason), while Documents and Mail stay; every
+    /// destination works elsewhere. The file handed to another app keeps
+    /// one name inside its folder, and addresses are told from paths.
+    #[test]
+    fn android_sends_and_opens_through_the_system() {
+        assert_eq!(
+            why_not_send_to(SendTarget::Desktop, true),
+            Some("menu.file.send_to_desktop_android")
+        );
+        assert_eq!(why_not_send_to(SendTarget::Documents, true), None);
+        assert_eq!(why_not_send_to(SendTarget::Mail, true), None);
+        for t in [SendTarget::Desktop, SendTarget::Documents, SendTarget::Mail] {
+            assert_eq!(why_not_send_to(t, false), None);
+            // Not on Android here.
+            assert_eq!(t.why_not(), None);
+        }
+        assert!(crate::i18n::has_english(
+            "menu.file.send_to_desktop_android"
+        ));
+        assert_eq!(shared_file_name("Poster.pdf"), "Poster.pdf");
+        assert_eq!(shared_file_name("a/b\\c.pdf"), "a_b_c.pdf");
+        assert_eq!(shared_file_name("../x.pdf"), "_x.pdf");
+        assert_eq!(shared_file_name(" .. "), "document");
+        assert_eq!(shared_file_name("\u{200F}שלום.pdf"), "שלום.pdf");
+        // Send To names the PDF after the drawing in its own script.
+        let mut app = App::headless();
+        for name in ["שָׁלוֹם", "café", "文件", "a: b?"] {
+            app.file = Some(std::path::PathBuf::from(format!("/x/{name}.tdraw")));
+            let want = name.replace([':', '?'], "_");
+            assert_eq!(app.send_to_file_name(), format!("{want}.pdf"));
+        }
+        for a in [
+            "https://tracedraw.dev/help",
+            "mailto:someone@example.com",
+            "market://details?id=dev.tracedraw.app",
+            "content://com.android.providers/document/1",
+        ] {
+            assert!(is_address(a), "{a}");
+        }
+        for p in [
+            "/data/user/0/dev.tracedraw.app/files/tmp/a.pdf",
+            "C:\\Users\\a.pdf",
+            "notes.txt",
+            "",
+        ] {
+            assert!(!is_address(p), "{p}");
+        }
+        // The Print dialog names the destination after the system's
+        // service: the PDF viewer here, the print service on Android.
+        assert_eq!(crate::ui::dialogs::print_service_key(), "print.dest_viewer");
+        for key in [
+            "print.dest_android",
+            "status.print_sent_android",
+            "status.print_service_failed",
+            "status.shared",
+            "status.share_failed",
+            "status.bitmap_sent_to_app",
+            "status.no_app_edits_pictures",
+            "status.no_folders_on_android",
+            "options.bitmap_editor_android",
+            "options.open_folder_android",
+        ] {
+            assert!(crate::i18n::has_english(key), "{key}");
+        }
+    }
+
     /// Each print to the viewer gets a name of its own, so the viewer
     /// opens it in a new page while the last one is still shown; older
     /// ones are cleared away (#809).
@@ -1788,6 +3250,123 @@ mod tests {
 
     use super::*;
 
+    /// Separations to files: each plate in a document of its own named
+    /// after its ink, every sheet on it; the empty ones left out when asked.
+    #[test]
+    fn each_plate_goes_to_a_file_of_its_own() {
+        use tracedraw_core::Fill;
+        let mut app = App::headless();
+        let id = app
+            .new_shape(ShapeKind::Rect {
+                rect: tracedraw_core::geometry::Rect::new(20.0, 20.0, 80.0, 60.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("rect");
+        app.run(tracedraw_core::Command::SetFill {
+            shapes: vec![id],
+            fill: Fill::Solid(tracedraw_core::Color::Cmyk {
+                c: 0.0,
+                m: 1.0,
+                y: 1.0,
+                k: 0.0,
+            }),
+        });
+        let mut st = PrintState {
+            separations: true,
+            plate_files: true,
+            ..PrintState::default()
+        };
+        let sheets = print_sheets(&app, &st);
+        let names = |files: &[(String, Document)]| -> Vec<String> {
+            files.iter().map(|(n, _)| n.clone()).collect()
+        };
+        let files = plate_files(&sheets, &st);
+        assert_eq!(names(&files), ["Cyan", "Magenta", "Yellow", "Black"]);
+        for (name, doc) in &files {
+            assert_eq!(doc.pages.len(), sheets.pages.len(), "{name}");
+            assert!(doc.pages[0].name.ends_with(name.as_str()), "{name}");
+        }
+        // Unticked in Print Preview, or with no ink when empty plates
+        // are left out (the black outline keeps the black plate).
+        st.plates_off = vec![1];
+        st.skip_empty_plates = true;
+        assert_eq!(names(&plate_files(&sheets, &st)), ["Yellow", "Black"]);
+        let p = plate_file_path(std::path::Path::new("/tmp/out/poster.pdf"), "Spot Red");
+        assert_eq!(
+            p,
+            std::path::PathBuf::from("/tmp/out/poster - Spot Red.pdf")
+        );
+        let p = plate_file_path(std::path::Path::new("card"), "Black/K");
+        assert_eq!(p.parent(), Some(std::path::Path::new("")));
+        assert!(!p.to_string_lossy().contains('/'), "{p:?}");
+    }
+
+    /// Separations to PostScript with screens: each plate's page sets its
+    /// ink's screen, the usual angles unless one is set by hand.
+    #[test]
+    fn each_plate_gets_its_halftone_screen() {
+        let mut app = App::headless();
+        app.new_shape(ShapeKind::Rect {
+            rect: tracedraw_core::geometry::Rect::new(20.0, 20.0, 80.0, 60.0),
+            radius: 0.0,
+            corners: None,
+        })
+        .expect("rect");
+        let mut st = PrintState {
+            separations: true,
+            screens: true,
+            screen_lpi: 133.0,
+            ..PrintState::default()
+        };
+        st.screen_angles.push(("Yellow".into(), 90.0));
+        let sheets = print_sheets(&app, &st);
+        let names: Vec<String> = plates(&sheets).into_iter().map(|(_, n)| n).collect();
+        let sep = separations_doc_without(&sheets, &[], false);
+        let screens = page_screens(&sep, &names, &st);
+        assert_eq!(
+            screens,
+            [
+                Some((133.0, 15.0)),
+                Some((133.0, 75.0)),
+                Some((133.0, 90.0)),
+                Some((133.0, 45.0))
+            ]
+        );
+        let ps = with_screens(&tracedraw_io::eps::document_to_ps(&sep), &screens);
+        assert_eq!(ps.matches(" setscreen").count(), 4);
+        let at = ps.find("133 75 {").expect("magenta screen");
+        assert!(
+            ps[..at].matches("%%Page: ").count() == 2,
+            "on the second page"
+        );
+    }
+
+    #[test]
+    fn manual_two_sided_prints_fronts_then_backs_each_meeting_its_front() {
+        let s = |v: Vec<Option<usize>>| -> Vec<i64> {
+            v.iter().map(|i| i.map_or(-1, |i| i as i64)).collect()
+        };
+        assert_eq!(s(duplex_sides(5, false, false)), [0, 2, 4]);
+        assert_eq!(s(duplex_sides(5, true, false)), [1, 3]);
+        // From the last: the odd count's last front gets a blank back first.
+        assert_eq!(s(duplex_sides(5, true, true)), [-1, 3, 1]);
+        assert_eq!(s(duplex_sides(4, true, true)), [3, 1]);
+        let mut doc = Document::new("t", Size::new(50.0, 50.0));
+        let mut ids = doc.ids().clone();
+        let mut second = doc.pages[0].clone();
+        second.id = ids.page();
+        second.name = "B".into();
+        doc.set_ids(ids);
+        doc.pages[0].name = "A".into();
+        doc.pages.push(second);
+        keep_sheets(&mut doc, &[None, Some(1), Some(0)]);
+        let names: Vec<_> = doc.pages.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["A", "B", "A"]);
+        assert!(doc.pages[0].layers.iter().all(|l| l.shapes.is_empty()));
+        assert!(doc.pages[0].background.is_none());
+    }
+
     /// A spot colour on a rectangle: printed with separations, the sheets
     /// give the four process plates and one for the spot ink, where the
     /// rectangle is full ink; the print preview offers its box (#779).
@@ -1830,7 +3409,7 @@ mod tests {
         let seps = separations_doc(&sheets);
         assert_eq!(seps.pages.len(), 5);
         // Plates unticked in Print Preview do not print (#846).
-        let some = separations_doc_without(&sheets, &[0, 2]);
+        let some = separations_doc_without(&sheets, &[0, 2], false);
         let kept: Vec<&str> = some.pages.iter().map(|p| p.name.as_str()).collect();
         assert_eq!(kept.len(), 3, "{kept:?}");
         assert!(
@@ -1856,9 +3435,115 @@ mod tests {
             }
             out
         };
+        // Empty plates left out: the spot red rectangle with its black
+        // outline takes no cyan, magenta or yellow, so those plates go;
+        // the marks' registration colour does not count.
+        let st_marks = PrintState {
+            separations: true,
+            crop_marks: true,
+            registration_marks: true,
+            ..PrintState::default()
+        };
+        let marked = print_sheets(&app, &st_marks);
+        let inked = separations_doc_without(&marked, &[], true);
+        let kept: Vec<&str> = inked.pages.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(kept, ["1 Black", "1 Spot Red"]);
+        // With nothing on any plate the sheet keeps its first plate.
+        let blank = print_sheets(&App::headless(), &st_marks);
+        let left = separations_doc_without(&blank, &[], true);
+        assert_eq!(left.pages.len(), 1);
+        assert!(
+            left.pages[0].name.ends_with("Cyan"),
+            "{}",
+            left.pages[0].name
+        );
         let full = Fill::Solid(tracedraw_core::Color::Gray { v: 0.0 });
         assert!(fills(spot).contains(&full), "{:?}", fills(spot));
         assert!(!fills(&seps.pages[0]).contains(&full));
+    }
+
+    /// A Windows print goes at the printer's resolution in strips, blank
+    /// ones left out and each cut to its inked part; put back together
+    /// they are the sheet drawn whole, pixel for pixel (#1404).
+    #[test]
+    fn printed_sheet_strips_put_together_are_the_whole_sheet() {
+        use tracedraw_core::Fill;
+        let mut doc = Document::new("s", tracedraw_core::Size::new(50.0, 40.0));
+        let layer = doc.pages[0].layers[0].id;
+        let page = doc.pages[0].id;
+        for (rect, colour) in [
+            (
+                tracedraw_core::Rect::new(3.0, 2.0, 21.5, 9.3),
+                tracedraw_core::Color::rgb8(200, 0, 0),
+            ),
+            (
+                tracedraw_core::Rect::new(10.2, 25.0, 47.0, 38.0),
+                tracedraw_core::Color::rgb8(0, 90, 200),
+            ),
+        ] {
+            let id = doc.ids_mut().shape();
+            let mut s = tracedraw_core::Shape::new(id, ShapeKind::Ellipse { rect, arc: None });
+            s.fill = Fill::Solid(colour);
+            doc.layer_mut(layer).expect("layer").shapes.push(s);
+        }
+        let dpi = 200.0;
+        let whole = tracedraw_render::render_page_image(&doc, page, dpi).expect("whole");
+        let (w, h) = (whole.width(), whole.height());
+        // Strips of 16 rows: many, some blank, some cut.
+        let tiles = sheet_tiles(&doc, page, dpi, w as u64 * 16).expect("tiles");
+        assert!(tiles.len() > 4, "{}", tiles.len());
+        assert!(
+            tiles.len() < h.div_ceil(16) as usize,
+            "the blank strips between the two shapes are left out"
+        );
+        let mut joined = tiny_skia::Pixmap::new(w, h).expect("joined");
+        joined.fill(tiny_skia::Color::WHITE);
+        let zoom = dpi / 25.4;
+        for t in &tiles {
+            assert!(t.width < 50.0 - 1.0, "cut to its inked part");
+            let pm = tiny_skia::Pixmap::decode_png(&t.png).expect("png");
+            assert!(pm.height() <= 16);
+            assert!(((t.width * zoom) - pm.width() as f64).abs() < 1e-6);
+            assert!(((t.height * zoom) - pm.height() as f64).abs() < 1e-6);
+            joined.draw_pixmap(
+                (t.x * zoom).round() as i32,
+                (t.y * zoom).round() as i32,
+                pm.as_ref(),
+                &Default::default(),
+                tiny_skia::Transform::identity(),
+                None,
+            );
+        }
+        // The same pixels, but for an edge's smoothing now and then by a
+        // step of its sixteen samples (each strip's shapes are placed a
+        // whole number of rows apart, which rounds a coordinate the other
+        // way at times): no marks where the strips meet, where outlines
+        // cut at a strip's edge used to leave caps.
+        let differ: Vec<u8> = whole
+            .data()
+            .iter()
+            .zip(joined.data())
+            .map(|(a, b)| a.abs_diff(*b))
+            .filter(|d| *d > 0)
+            .collect();
+        let worst = differ.iter().copied().max().unwrap_or(0);
+        assert!(worst <= 40, "{worst}");
+        assert!(differ.len() < whole.data().len() / 200, "{}", differ.len());
+        // A blank sheet sends nothing but the paper.
+        let blank = Document::new("b", tracedraw_core::Size::new(50.0, 40.0));
+        let tiles = sheet_tiles(&blank, blank.pages[0].id, 300.0, 1 << 24).expect("blank");
+        assert!(tiles.is_empty());
+    }
+
+    /// The printer's own resolution, kept within reason (#1404).
+    #[test]
+    fn windows_prints_at_the_printers_resolution() {
+        assert_eq!(windows_print_dpi(Some(600.0)), 600.0);
+        assert_eq!(windows_print_dpi(Some(1200.0)), 1200.0);
+        assert_eq!(windows_print_dpi(Some(2400.0)), 1200.0);
+        assert_eq!(windows_print_dpi(Some(150.0)), 300.0);
+        assert_eq!(windows_print_dpi(None), 600.0);
+        assert_eq!(windows_print_dpi(Some(f64::NAN)), 600.0);
     }
 
     #[test]
@@ -1891,6 +3576,508 @@ mod tests {
             "{}",
             &text[..text.len().min(400)]
         );
+    }
+
+    /// A drawing of one picture of `rgba` pixels (`w` wide), with `inks`
+    /// as its ink channels when given, and a spot ink with id 7.
+    fn picture_doc(
+        w: u32,
+        rgba: &[u8],
+        inks: Option<(Vec<tracedraw_core::picture_inks::PictureInk>, Vec<u8>)>,
+    ) -> Document {
+        use tracedraw_core::picture_inks::PictureInks;
+        let h = (rgba.len() / 4) as u32 / w;
+        let img = image::RgbaImage::from_raw(w, h, rgba.to_vec()).expect("pixels");
+        let png: tracedraw_core::SharedBytes = crate::bitmap_fx::encode(&img).expect("png").into();
+        let mut doc = Document::new("p", tracedraw_core::Size::new(50.0, 50.0));
+        doc.inks.push(tracedraw_core::document::Ink {
+            id: 7,
+            name: "Gold".into(),
+            cmyk: [0.0, 0.2, 0.8, 0.1],
+        });
+        let id = doc.ids_mut().shape();
+        let mut s = tracedraw_core::Shape::new(
+            id,
+            ShapeKind::Bitmap {
+                rect: Rect::new(0.0, 0.0, 10.0, 10.0),
+                width_px: w,
+                height_px: h,
+                png: png.clone(),
+                fx: None,
+            },
+        );
+        s.fill = tracedraw_core::Fill::None;
+        s.stroke = None;
+        if let Some((inks, planes)) = inks {
+            let n = inks.len() as u32;
+            let gray = image::GrayImage::from_raw(w, h * n, planes).expect("planes");
+            let mut out = std::io::Cursor::new(Vec::new());
+            gray.write_to(&mut out, image::ImageFormat::Png)
+                .expect("png");
+            s.cmyk_bitmap = true;
+            s.picture_inks = Some(Box::new(PictureInks {
+                inks,
+                png: out.into_inner().into(),
+                of: tracedraw_core::picture_inks::fingerprint(&png),
+            }));
+        }
+        doc.pages[0].layers[0].shapes.push(s);
+        doc
+    }
+
+    /// The pixels of the picture on each plate (C, M, Y, K, then the spot
+    /// inks), found inside groups and clip frames.
+    fn plate_pixels(doc: &Document) -> Vec<Vec<[u8; 4]>> {
+        fn find(s: &tracedraw_core::Shape) -> Option<&tracedraw_core::SharedBytes> {
+            match &s.kind {
+                ShapeKind::Bitmap { png, .. } => Some(png),
+                ShapeKind::Group { children } => children.iter().find_map(find),
+                ShapeKind::ClipFrame { contents, .. } => contents.iter().find_map(find),
+                _ => None,
+            }
+        }
+        separations_doc(doc)
+            .pages
+            .iter()
+            .map(|p| {
+                let png = p.layers[0].shapes.iter().find_map(find).expect("picture");
+                let img = crate::bitmap_fx::decode(png).expect("decodes");
+                img.pixels().map(|p| p.0).collect()
+            })
+            .collect()
+    }
+
+    /// Separations split pictures into their inks (#1659): a CMYK
+    /// picture prints each ink it holds on its plate, an RGB or grey one
+    /// is converted to CMYK, a spot channel goes to its spot plate, and
+    /// the picture's alpha stays on every plate.
+    #[test]
+    fn separations_split_pictures_into_their_inks() {
+        use tracedraw_core::picture_inks::PictureInk;
+        let ink = |p: &[u8; 4]| 255 - p[0];
+        // A CMYK picture of cyan ink alone (its screen pixels a cyan
+        // that converts back to some magenta too): only the cyan plate.
+        let process: Vec<PictureInk> = (0..4).map(PictureInk::Process).collect();
+        let doc = picture_doc(
+            1,
+            &[0, 174, 239, 255],
+            Some((process.clone(), vec![255, 0, 0, 0])),
+        );
+        let plates = plate_pixels(&doc);
+        assert_eq!(plates.len(), 5, "C, M, Y, K and the spot plate");
+        let inks: Vec<u8> = plates.iter().map(|p| ink(&p[0])).collect();
+        assert_eq!(inks, [255, 0, 0, 0, 0]);
+        // Black ink alone stays on the black plate.
+        let doc = picture_doc(1, &[35, 31, 32, 255], Some((process, vec![0, 0, 0, 255])));
+        let inks: Vec<u8> = plate_pixels(&doc).iter().map(|p| ink(&p[0])).collect();
+        assert_eq!(inks, [0, 0, 0, 255, 0]);
+        // RGB red: magenta and yellow.
+        let doc = picture_doc(1, &[255, 0, 0, 255], None);
+        let inks: Vec<u8> = plate_pixels(&doc).iter().map(|p| ink(&p[0])).collect();
+        assert!(inks[0] < 26 && inks[3] < 26 && inks[4] == 0, "{inks:?}");
+        assert!(inks[1] > 230 && inks[2] > 230, "{inks:?}");
+        // A grey picture lands on the black plate.
+        let doc = picture_doc(2, &[128, 128, 128, 255, 0, 0, 0, 255], None);
+        let plates = plate_pixels(&doc);
+        for (i, plate) in plates.iter().enumerate() {
+            let inks: Vec<u8> = plate.iter().map(ink).collect();
+            if i == 3 {
+                assert!(inks[0] > 100 && inks[1] == 255, "{inks:?}");
+            } else {
+                assert_eq!(inks, [0, 0], "plate {i}");
+            }
+        }
+        // Transparency: the alpha of every pixel on every plate.
+        let doc = picture_doc(3, &[255, 0, 0, 0, 255, 0, 0, 128, 0, 0, 0, 255], None);
+        for plate in plate_pixels(&doc) {
+            assert_eq!(
+                plate.iter().map(|p| p[3]).collect::<Vec<_>>(),
+                [0, 128, 255]
+            );
+        }
+        // A spot channel prints on its spot plate only.
+        let doc = picture_doc(
+            1,
+            &[200, 160, 60, 255],
+            Some((vec![PictureInk::Spot(7)], vec![204])),
+        );
+        let inks: Vec<u8> = plate_pixels(&doc).iter().map(|p| ink(&p[0])).collect();
+        assert_eq!(inks, [0, 0, 0, 0, 204]);
+        // Channels that no longer fit the pixels (the picture changed)
+        // give way to the pixels: this red is magenta and yellow.
+        let mut doc = picture_doc(
+            1,
+            &[255, 0, 0, 255],
+            Some((
+                (0..4).map(PictureInk::Process).collect(),
+                vec![255, 0, 0, 0],
+            )),
+        );
+        if let Some(inks) = &mut doc.pages[0].layers[0].shapes[0].picture_inks {
+            inks.of ^= 1;
+        }
+        let inks: Vec<u8> = plate_pixels(&doc).iter().map(|p| ink(&p[0])).collect();
+        assert!(inks[0] < 26 && inks[1] > 230, "{inks:?}");
+        // Inside a clip frame (clipped, as it shows) the picture splits too.
+        let mut doc = picture_doc(1, &[255, 0, 0, 255], None);
+        let pic = doc.pages[0].layers[0].shapes.remove(0);
+        let id = doc.ids_mut().shape();
+        let frame = tracedraw_core::Shape::new(
+            id,
+            ShapeKind::Rect {
+                rect: Rect::new(0.0, 0.0, 5.0, 5.0),
+                radius: 0.0,
+                corners: None,
+            },
+        );
+        let id = doc.ids_mut().shape();
+        doc.pages[0].layers[0]
+            .shapes
+            .push(tracedraw_core::Shape::new(
+                id,
+                ShapeKind::ClipFrame {
+                    frame: Box::new(frame),
+                    contents: vec![pic],
+                },
+            ));
+        let inks: Vec<u8> = plate_pixels(&doc).iter().map(|p| ink(&p[0])).collect();
+        assert!(inks[0] < 26 && inks[2] > 230, "{inks:?}");
+    }
+
+    /// File > Export of the current page, every page or a list of pages:
+    /// one numbered file per page for the formats of one page, one file
+    /// with every page chosen for PDF, its text as curves when asked
+    /// (#1382).
+    #[test]
+    fn export_writes_the_pages_chosen() {
+        let mut app = App::headless();
+        // Three pages, each with a rectangle of its own width.
+        for k in 0..3 {
+            if k > 0 {
+                app.add_page();
+            }
+            app.new_shape(ShapeKind::Rect {
+                rect: Rect::new(10.0, 10.0, 20.0 + 10.0 * k as f64, 30.0),
+                radius: 0.0,
+                corners: None,
+            });
+        }
+        let ids: Vec<_> = app.doc().pages.iter().map(|p| p.id).collect();
+        app.page = ids[1];
+        let dir = std::env::temp_dir().join(format!("tracedraw-1382-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let files = |dir: &Path| {
+            let mut names: Vec<String> = std::fs::read_dir(dir)
+                .unwrap()
+                .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
+                .collect();
+            names.sort();
+            names
+        };
+        let png = |range: (bool, bool, &str)| ExportState {
+            format: 2,
+            dpi: 25.4,
+            all_pages: range.0,
+            page_list: range.1,
+            pages: range.2.into(),
+            transparent: false,
+            ..ExportState::default()
+        };
+        // The current page: one file under the name given.
+        let one = dir.join("one");
+        std::fs::create_dir_all(&one).unwrap();
+        export(&mut app, &one.join("a.png"), &png((false, false, ""))).expect("current");
+        assert_eq!(files(&one), ["a.png"]);
+        let img = image::open(one.join("a.png")).unwrap();
+        assert_eq!(img.width(), 210, "page 2, 25.4 dpi: one pixel per mm");
+        // Every page: numbered files.
+        let all = dir.join("all");
+        std::fs::create_dir_all(&all).unwrap();
+        let msg = export(&mut app, &all.join("a.png"), &png((true, false, ""))).expect("all");
+        assert_eq!(files(&all), ["a-1.png", "a-2.png", "a-3.png"]);
+        assert!(msg.contains('3'), "{msg}");
+        // A list: the pages listed, numbered by their page.
+        let list = dir.join("list");
+        std::fs::create_dir_all(&list).unwrap();
+        export(&mut app, &list.join("a.png"), &png((true, true, "3, 1"))).expect("list");
+        assert_eq!(files(&list), ["a-1.png", "a-3.png"]);
+        // Page 3's rectangle is 40 mm wide, page 1's 20 mm: each file
+        // shows its own page.
+        let dark = |p: &Path| {
+            let img = image::open(p).unwrap().to_rgb8();
+            let y = img.height() - 20;
+            let inked: Vec<u32> = (0..img.width())
+                .filter(|x| img.get_pixel(*x, y).0 != [255, 255, 255])
+                .collect();
+            inked.last().unwrap_or(&0) - inked.first().unwrap_or(&0)
+        };
+        assert!(dark(&list.join("a-3.png")) > dark(&list.join("a-1.png")) + 10);
+        // SVG too writes one file per page.
+        let svg = dir.join("svg");
+        std::fs::create_dir_all(&svg).unwrap();
+        let st = ExportState {
+            format: 0,
+            ..png((true, true, "2-3"))
+        };
+        export(&mut app, &svg.join("b.svg"), &st).expect("svg");
+        assert_eq!(files(&svg), ["b-2.svg", "b-3.svg"]);
+        // PDF: one file holding the pages chosen.
+        let pdf = dir.join("pdf");
+        std::fs::create_dir_all(&pdf).unwrap();
+        let st = ExportState {
+            format: 1,
+            ..png((true, true, "1, 3"))
+        };
+        export(&mut app, &pdf.join("c.pdf"), &st).expect("pdf");
+        assert_eq!(files(&pdf), ["c.pdf"]);
+        let text = String::from_utf8_lossy(&std::fs::read(pdf.join("c.pdf")).unwrap()).to_string();
+        assert!(text.contains("/Count 2"), "two pages");
+        let st = ExportState {
+            format: 1,
+            ..png((true, false, ""))
+        };
+        export(&mut app, &pdf.join("c.pdf"), &st).expect("pdf");
+        let text = String::from_utf8_lossy(&std::fs::read(pdf.join("c.pdf")).unwrap()).to_string();
+        assert!(text.contains("/Count 3"), "every page");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Facing pages (#1972): Export > Spreads makes each spread one page
+    /// as wide as both, page 1 alone; every page on its own carries
+    /// what its facing page holds across the spine, in exports and in
+    /// print; a PDF of the spreads has a page per spread.
+    #[test]
+    fn facing_pages_export_spreads_or_pages_with_the_spine_crossing() {
+        let mut app = App::headless();
+        for _ in 0..2 {
+            app.add_page();
+        }
+        app.page = app.doc().pages[1].id;
+        let size = app.doc().pages[1].size;
+        app.new_shape(ShapeKind::Rect {
+            rect: Rect::new(size.width - 20.0, 10.0, size.width + 30.0, 40.0),
+            radius: 0.0,
+            corners: None,
+        });
+        let st = ExportState {
+            format: 1,
+            all_pages: true,
+            ..ExportState::default()
+        };
+        let objects = |d: &Document, k: usize| -> usize {
+            d.pages[k].layers.iter().map(|l| l.shapes.len()).sum()
+        };
+        // Facing pages off: as before.
+        let (plain, _) = export_document(&app, &st);
+        assert_eq!(plain.pages.len(), 3);
+        assert_eq!(objects(&plain, 2), 0);
+        app.set_facing_pages(true, tracedraw_core::spreads::PageSide::Right);
+        // Every page alone: page 3 carries the rectangle's part on it.
+        let (pages, _) = export_document(&app, &st);
+        assert_eq!(pages.pages.len(), 3);
+        assert_eq!(objects(&pages, 2), 1);
+        assert_eq!(objects(&pages, 0), 0);
+        let printed = print_sheets(&app, &PrintState::default());
+        assert_eq!(printed.pages.len(), 3);
+        // Spreads: page 1, then pages 2-3 as one page twice as wide.
+        let spreads = ExportState {
+            spreads: true,
+            ..st.clone()
+        };
+        let (doc, _) = export_document(&app, &spreads);
+        assert_eq!(doc.pages.len(), 2);
+        assert_eq!(doc.pages[0].size, size);
+        assert!((doc.pages[1].size.width - 2.0 * size.width).abs() < 1e-9);
+        assert_eq!(objects(&doc, 1), 1);
+        let dir = std::env::temp_dir().join(format!("td-spreads-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("s.pdf");
+        export(&mut app, &path, &spreads).expect("pdf");
+        let text = String::from_utf8_lossy(&std::fs::read(&path).unwrap()).to_string();
+        assert!(text.contains("/Count 2"), "a page per spread");
+        // One file per spread for a format of one page.
+        let png = ExportState {
+            format: 2,
+            dpi: 20.0,
+            ..spreads.clone()
+        };
+        export(&mut app, &dir.join("s.png"), &png).expect("png");
+        assert!(dir.join("s-1.png").exists() && dir.join("s-2.png").exists());
+        assert!(!dir.join("s-3.png").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The pages an export takes: the current one, every page, or the
+    /// list in its order (every page when it names none); the selection
+    /// comes from the current page (#1382).
+    #[test]
+    fn export_page_choices_pick_pages() {
+        let mut st = ExportState::default();
+        assert_eq!(st.page_indexes(4, 2), vec![2]);
+        st.all_pages = true;
+        assert_eq!(st.page_indexes(4, 2), vec![0, 1, 2, 3]);
+        st.page_list = true;
+        st.pages = "4, 1-2".into();
+        assert_eq!(st.page_indexes(4, 2), vec![3, 0, 1]);
+        st.pages = "9".into();
+        assert_eq!(st.page_indexes(4, 2), vec![0, 1, 2, 3]);
+        st.selection_only = true;
+        assert_eq!(st.page_indexes(4, 2), vec![2]);
+        assert!(ExportState::one_file_for_all_pages("pdf"));
+        assert!(!ExportState::one_file_for_all_pages("svg"));
+        assert!(!ExportState::one_file_for_all_pages("png"));
+        assert_eq!(
+            numbered_path(Path::new("/x/name.jpeg"), 3, "jpg"),
+            Path::new("/x/name-3.jpeg")
+        );
+        assert_eq!(
+            numbered_path(Path::new("/x/name"), 2, "png"),
+            Path::new("/x/name-2.png")
+        );
+    }
+
+    /// "AI" writes the PDF-compatible file by default, and the classic
+    /// version 8 file (PostScript, one page per file) when chosen, for
+    /// programs that read only those (#1728).
+    #[test]
+    fn export_ai_writes_pdf_compatible_or_classic_version_8() {
+        let mut app = App::headless();
+        for k in 0..2 {
+            if k > 0 {
+                app.add_page();
+            }
+            app.new_shape(ShapeKind::Rect {
+                rect: Rect::new(10.0, 10.0, 40.0, 30.0),
+                radius: 0.0,
+                corners: None,
+            });
+        }
+        let dir = std::env::temp_dir().join(format!("tracedraw-1728-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let ai = EXPORT_FORMATS.iter().position(|f| f.1 == "ai").unwrap();
+        let st = |version: usize| ExportState {
+            format: ai,
+            all_pages: true,
+            ai_version: version,
+            title: "Logo (curves)".into(),
+            ..ExportState::default()
+        };
+        // The default: one PDF-compatible file with both pages, as before.
+        assert!(!ExportState::default().classic_ai());
+        export(&mut app, &dir.join("pdf.ai"), &st(0)).expect("pdf-compatible");
+        let bytes = std::fs::read(dir.join("pdf.ai")).unwrap();
+        assert!(bytes.starts_with(b"%PDF"));
+        // Classic: one PostScript file per page, each with the AI header.
+        assert!(st(1).classic_ai() && !st(1).one_file_holds_the_pages("ai"));
+        export(&mut app, &dir.join("old.ai"), &st(1)).expect("classic");
+        for name in ["old-1.ai", "old-2.ai"] {
+            let text = std::fs::read_to_string(dir.join(name)).expect(name);
+            assert!(text.starts_with("%!PS-Adobe-3.0\n"), "{name}");
+            assert!(text.contains("\n%%AI8_CreatorVersion: 8.0\n"));
+            assert!(text.contains("\n%AI5_FileFormat 4.0\n"));
+            assert!(text.contains("\n%%BoundingBox: 0 0 596 842\n"));
+            assert!(text.contains("\n%%Title: (Logo \\(curves\\))\n"), "{text}");
+        }
+        // It opens again as a PostScript-based .ai, with the rectangle.
+        assert_eq!(App::file_kind(&dir.join("old-1.ai")), "eps");
+        let mut ids = tracedraw_core::id::IdSource::default();
+        let bytes = std::fs::read(dir.join("old-1.ai")).unwrap();
+        let back = tracedraw_io::eps_import::parse(&bytes, &mut ids).expect("reads");
+        assert!(!back.shapes.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// SVG's Text choice (#2289): as curves by default, as `<text>`
+    /// naming the font, or with the font file inside.
+    #[test]
+    fn export_svg_text_as_curves_text_or_with_fonts() {
+        tracedraw_text::install();
+        let fonts = tracedraw_text::fonts();
+        let Some(family) = ["DejaVu Sans", "Liberation Sans", "Noto Sans"]
+            .into_iter()
+            .find(|f| fonts.has_family(f))
+        else {
+            return;
+        };
+        let mut app = App::headless();
+        app.new_shape(ShapeKind::Text {
+            spans: vec![TextSpan::new("Editable words", family, 24.0)],
+            origin: tracedraw_core::Point::new(20.0, 50.0),
+            frame: None,
+            align: Default::default(),
+            para: Default::default(),
+            on_path: None,
+        });
+        let dir = std::env::temp_dir().join(format!("tracedraw-2289-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("t.svg");
+        let mut st = ExportState {
+            format: 0,
+            ..ExportState::default()
+        };
+        let mut out = Vec::new();
+        for choice in 0..3 {
+            st.svg_text = choice;
+            export(&mut app, &path, &st).expect("svg");
+            out.push(std::fs::read_to_string(&path).unwrap());
+        }
+        assert!(!out[0].contains("<text"), "{}", out[0]);
+        assert!(out[1].contains(">Editable words</tspan>"), "{}", out[1]);
+        assert!(out[1].contains(family), "{}", out[1]);
+        assert!(!out[1].contains("@font-face"));
+        assert!(out[2].contains("@font-face"));
+        assert!(out[2].contains(">Editable words</tspan>"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Export to PDF with text as curves holds no font (#1382).
+    #[test]
+    fn export_pdf_text_as_curves_holds_no_font() {
+        tracedraw_text::install();
+        let fonts = tracedraw_text::fonts();
+        let Some(family) = ["DejaVu Sans", "Liberation Sans", "Noto Sans"]
+            .into_iter()
+            .find(|f| fonts.has_family(f))
+        else {
+            return;
+        };
+        let mut app = App::headless();
+        app.new_shape(ShapeKind::Text {
+            spans: vec![TextSpan::new("Searchable words", family, 24.0)],
+            origin: tracedraw_core::Point::new(20.0, 50.0),
+            frame: None,
+            align: Default::default(),
+            para: Default::default(),
+            on_path: None,
+        });
+        let dir = std::env::temp_dir().join(format!("tracedraw-1382c-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("t.pdf");
+        let mut st = ExportState {
+            format: 1,
+            ..ExportState::default()
+        };
+        export(&mut app, &path, &st).expect("pdf");
+        let live = std::fs::read(&path).unwrap();
+        st.text_as_curves = true;
+        export(&mut app, &path, &st).expect("pdf");
+        let curves = std::fs::read(&path).unwrap();
+        let words = |bytes: &[u8]| {
+            lopdf::Document::load_mem(bytes)
+                .ok()
+                .and_then(|d| d.extract_text(&[1]).ok())
+                .unwrap_or_default()
+        };
+        assert!(String::from_utf8_lossy(&live).contains("/FontDescriptor"));
+        assert!(words(&live).contains("Searchable"), "live text");
+        assert!(
+            !String::from_utf8_lossy(&curves).contains("/Font"),
+            "no font"
+        );
+        assert!(!words(&curves).contains("Searchable"), "curves");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1972,9 +4159,200 @@ mod tests {
         );
     }
 
-    /// The bitmap size in the Export dialog: in pixels it sets the
-    /// resolution as before, in a length it sets the scale; the other side
-    /// follows and nonsense is ignored (#617).
+    /// The pixel at `(x, y)` of an uncompressed chunky TIFF, read with
+    /// the fields of TIFF 6.0 (image width, strip offsets, rows per
+    /// strip, samples per pixel); also the photometric interpretation.
+    fn tiff_pixel(b: &[u8], x: usize, y: usize) -> (Vec<u8>, u32) {
+        let le16 = |at: usize| u16::from_le_bytes([b[at], b[at + 1]]) as u32;
+        let le32 = |at: usize| u32::from_le_bytes([b[at], b[at + 1], b[at + 2], b[at + 3]]);
+        assert_eq!(&b[..4], b"II*\0");
+        let ifd = le32(4) as usize;
+        let field = |tag: u32| -> Vec<u32> {
+            for i in 0..le16(ifd) as usize {
+                let e = ifd + 2 + 12 * i;
+                if le16(e) == tag {
+                    let (kind, n) = (le16(e + 2), le32(e + 4) as usize);
+                    let size = if kind == 3 { 2 } else { 4 };
+                    let at = if size * n <= 4 {
+                        e + 8
+                    } else {
+                        le32(e + 8) as usize
+                    };
+                    return (0..n)
+                        .map(|k| {
+                            if size == 2 {
+                                le16(at + 2 * k)
+                            } else {
+                                le32(at + 4 * k)
+                            }
+                        })
+                        .collect();
+                }
+            }
+            panic!("no tag {tag}");
+        };
+        let (w, spp, rows) = (field(256)[0], field(277)[0], field(278)[0]);
+        let offsets = field(273);
+        let row = (w * spp) as usize;
+        let strip = y / rows as usize;
+        let at = offsets[strip] as usize + (y % rows as usize) * row + x * spp as usize;
+        (b[at..at + spp as usize].to_vec(), field(262)[0])
+    }
+
+    /// File > Export to JPEG or TIFF in CMYK (#1763): a rectangle filled
+    /// with pure cyan comes out as cyan ink alone, the paper as no ink,
+    /// an RGB red through the colour management as magenta and yellow;
+    /// RGB exports are as before, Grayscale writes one channel, and the
+    /// drawing's CMYK profile goes into the files.
+    #[test]
+    fn cmyk_bitmap_exports_keep_the_inks() {
+        use tracedraw_core::{Color, Fill};
+        let mut app = App::headless();
+        for (rect, color) in [
+            (
+                Rect::new(10.0, 10.0, 100.0, 100.0),
+                Color::cmyk8(255, 0, 0, 0),
+            ),
+            (Rect::new(110.0, 10.0, 200.0, 100.0), Color::rgb8(255, 0, 0)),
+        ] {
+            app.new_shape_styled(
+                ShapeKind::Rect {
+                    rect,
+                    radius: 0.0,
+                    corners: None,
+                },
+                |s| {
+                    s.fill = Fill::Solid(color);
+                    s.stroke = None;
+                },
+            );
+        }
+        let mut doc = app.doc().clone();
+        let profile = tracedraw_core::icc::test_profiles::lut16_cmyk_profile();
+        doc.cmyk_profile = Some(tracedraw_core::DocumentProfile::new(
+            "Press",
+            profile.clone(),
+        ));
+        app.engine.replace(doc);
+        let dir = std::env::temp_dir().join(format!("tracedraw-1763-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let st = |format: usize, color_mode: usize| ExportState {
+            format,
+            dpi: 25.4,
+            quality: 95,
+            color_mode,
+            transparent: false,
+            ..ExportState::default()
+        };
+        // Page coordinates run up from the bottom: the rectangles lie
+        // near the bottom of the 297 mm page, one pixel per mm.
+        let (cyan_at, red_at, paper_at) = ((55, 297 - 55), (155, 297 - 55), (55, 150));
+
+        // CMYK JPEG, read by the decoder TraceDraw opens files with.
+        let jpg = dir.join("cmyk.jpg");
+        export(&mut app, &jpg, &st(3, 1)).expect("cmyk jpeg");
+        let bytes = std::fs::read(&jpg).unwrap();
+        assert!(bytes.windows(5).any(|w| w == b"Adobe"), "Adobe marker");
+        let sof = bytes
+            .windows(2)
+            .position(|w| w == [0xFF, 0xC0])
+            .expect("SOF0");
+        assert_eq!(bytes[sof + 9], 4, "four components");
+        let icc_at = bytes
+            .windows(12)
+            .position(|w| w == b"ICC_PROFILE\0")
+            .expect("profile embedded");
+        assert_eq!(&bytes[icc_at + 14..icc_at + 14 + 64], &profile[..64]);
+        assert_eq!(
+            crate::image_dpi::resolution(&bytes).map(|(x, _)| x.round()),
+            Some(25.0)
+        );
+        let img = image::load_from_memory(&bytes).expect("decodes").to_rgb8();
+        assert_eq!((img.width(), img.height()), (210, 297));
+        // The decoder shows (255 - ink) x (255 - black): only no red, full
+        // green and blue is cyan 100 with magenta, yellow and black 0.
+        let p = img.get_pixel(cyan_at.0, cyan_at.1).0;
+        assert!(p[0] < 6 && p[1] > 249 && p[2] > 249, "cyan: {p:?}");
+        let p = img.get_pixel(paper_at.0, paper_at.1).0;
+        assert!(p.iter().all(|v| *v > 249), "paper: {p:?}");
+
+        // CMYK TIFF: the inks as they are.
+        let tif = dir.join("cmyk.tif");
+        export(&mut app, &tif, &st(5, 1)).expect("cmyk tiff");
+        let bytes = std::fs::read(&tif).unwrap();
+        let (cyan, photometric) = tiff_pixel(&bytes, cyan_at.0 as usize, cyan_at.1 as usize);
+        assert_eq!(photometric, 5, "separated");
+        assert!(
+            cyan[0] > 252 && cyan[1..].iter().all(|v| *v < 3),
+            "{cyan:?}"
+        );
+        let (paper, _) = tiff_pixel(&bytes, paper_at.0 as usize, paper_at.1 as usize);
+        assert_eq!(paper, [0, 0, 0, 0]);
+        let (red, _) = tiff_pixel(&bytes, red_at.0 as usize, red_at.1 as usize);
+        let want = match Color::rgb8(255, 0, 0).convert_to("CMYK") {
+            Color::Cmyk { c, m, y, k } => [c, m, y, k].map(|v| (v * 255.0).round() as i32),
+            other => panic!("{other:?}"),
+        };
+        for (got, want) in red.iter().zip(want) {
+            assert!((*got as i32 - want).abs() <= 2, "red: {red:?} {want:?}");
+        }
+        assert!(
+            red[1] > 200 && red[2] > 200,
+            "red prints magenta and yellow"
+        );
+        assert!(bytes.windows(64).any(|w| w == &profile[..64]), "profile");
+        assert_eq!(
+            crate::image_dpi::resolution(&bytes).map(|(x, _)| x.round()),
+            Some(25.0)
+        );
+
+        // RGB, the default: JFIF with three components, as before.
+        assert_eq!(ExportState::default().color_mode, 0);
+        let rgb = dir.join("rgb.jpg");
+        export(&mut app, &rgb, &st(3, 0)).expect("rgb jpeg");
+        let bytes = std::fs::read(&rgb).unwrap();
+        assert_eq!(&bytes[6..11], b"JFIF\0");
+        assert!(!bytes.windows(5).any(|w| w == b"Adobe"));
+        let img = image::load_from_memory(&bytes).unwrap();
+        assert_eq!(img.color(), image::ColorType::Rgb8);
+        let p = img.to_rgb8().get_pixel(cyan_at.0, cyan_at.1).0;
+        let want = Color::cmyk8(255, 0, 0, 0).to_rgb8();
+        for (a, b) in p.iter().zip(want) {
+            assert!((*a as i32 - b as i32).abs() < 6, "{p:?} {want:?}");
+        }
+        let rgb_tif = dir.join("rgb.tif");
+        export(&mut app, &rgb_tif, &st(5, 0)).expect("rgb tiff");
+        let (_, photometric) = tiff_pixel(&std::fs::read(&rgb_tif).unwrap(), 0, 0);
+        assert_eq!(photometric, 2, "RGB TIFF as before");
+
+        // Grayscale: one channel, the colour's grey.
+        for (format, ext) in [(3, "jpg"), (5, "tif")] {
+            let path = dir.join(format!("gray.{ext}"));
+            export(&mut app, &path, &st(format, 2)).expect(ext);
+            let img = image::open(&path).unwrap();
+            assert_eq!(img.color(), image::ColorType::L8, "{ext}");
+            let v = img.to_luma8().get_pixel(cyan_at.0, cyan_at.1).0[0];
+            let want = Color::cmyk8(255, 0, 0, 0).convert_to("Grayscale");
+            let want = match want {
+                Color::Gray { v } => (v * 255.0).round() as i32,
+                other => panic!("{other:?}"),
+            };
+            assert!((v as i32 - want).abs() < 6, "{ext}: {v} {want}");
+        }
+        // Other formats ignore the colour mode.
+        let png = dir.join("x.png");
+        export(&mut app, &png, &st(2, 1)).expect("png");
+        assert!(matches!(
+            image::open(&png).unwrap().color(),
+            image::ColorType::Rgb8 | image::ColorType::Rgba8
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The bitmap size in the Export dialog: typed in pixels or in a
+    /// length it sets the scale, the resolution staying (#2640: pixels
+    /// set the resolution); the other side follows and nonsense is
+    /// ignored (#617).
     #[test]
     fn the_export_size_is_typed_in_pixels_or_lengths() {
         use crate::ui::dialogs::{export_size_in_unit, set_export_size};
@@ -1998,7 +4376,7 @@ mod tests {
             (2000.0, 1000.0)
         ));
         set_export_size(&mut st, 254.0, 1000.0);
-        assert!((st.dpi - 50.0).abs() < 1e-3 && (st.scale - 2.0).abs() < 1e-9);
+        assert!(st.dpi == 100.0 && (st.scale - 1.0).abs() < 1e-6, "{st:?}");
         assert!(near(
             export_size_in_unit(254.0, 127.0, &st),
             (1000.0, 500.0)
@@ -2015,6 +4393,46 @@ mod tests {
         assert_eq!(st, before);
         st.scale = f64::NAN;
         assert_eq!(st.scale_or_one(), 1.0);
+    }
+
+    /// A resolution typed or picked in the Export dialog leaves the size
+    /// shown: in pixels as many pixels come out, at the new resolution;
+    /// in a length the printed size stays and the pixels follow. A size
+    /// typed leaves the resolution (#2640).
+    #[test]
+    fn the_export_resolution_and_size_change_one_at_a_time() {
+        use crate::ui::dialogs::{export_size_in_unit, set_export_dpi, set_export_size};
+        let mut st = ExportState {
+            dpi: 300.0,
+            size_unit: 0,
+            ..ExportState::default()
+        };
+        // An A4 page: 2481 x 3508 pixels at 300 dpi.
+        let (w, h) = (210.0, 297.0);
+        let before = export_size_in_unit(w, h, &st);
+        assert_eq!(before, (2481.0, 3508.0));
+        set_export_dpi(&mut st, 72.0);
+        assert_eq!(st.dpi, 72.0);
+        assert_eq!(export_size_in_unit(w, h, &st), before, "{st:?}");
+        // A size typed: the resolution stays.
+        set_export_size(&mut st, w, 1000.0);
+        assert_eq!(st.dpi, 72.0);
+        assert_eq!(export_size_in_unit(w, h, &st).0, 1000.0);
+        // In millimetres the printed size stays and the pixels follow.
+        st = ExportState {
+            dpi: 300.0,
+            size_unit: 1,
+            ..ExportState::default()
+        };
+        set_export_dpi(&mut st, 150.0);
+        assert_eq!(export_size_in_unit(w, h, &st), (210.0, 297.0));
+        assert!((st.render_dpi() - 150.0).abs() < 1e-9);
+        // Nonsense changes nothing.
+        let kept = st.clone();
+        for d in [0.0, -1.0, f64::NAN] {
+            set_export_dpi(&mut st, d);
+        }
+        assert_eq!(st, kept);
     }
 
     #[test]
@@ -2286,6 +4704,166 @@ mod tests {
         assert!(ps.starts_with("%!PS-Adobe-3.0\n%%LanguageLevel: 3\n"));
     }
 
+    /// Grayscale output (#1657): every colour on the sheets, an effect's
+    /// too, prints as its grey and a picture as grey pixels; the drawing
+    /// keeps its colours. Reverse order (#1394, #1571): the last sheet
+    /// comes first.
+    #[test]
+    fn grayscale_and_reverse_order_change_the_printed_sheets() {
+        use tracedraw_core::{Color, Fill};
+        let mut app = App::headless();
+        let size = app.doc().pages[0].size;
+        let red = Color::rgb8(220, 20, 20);
+        app.new_shape_styled(
+            ShapeKind::Rect {
+                rect: tracedraw_core::geometry::Rect::new(10.0, 10.0, 60.0, 40.0),
+                radius: 0.0,
+                corners: None,
+            },
+            |s| {
+                s.name = Some("first-page".into());
+                s.fill = Fill::Solid(red);
+                s.effects.push(tracedraw_core::live::Effect::BlockShadow {
+                    offset: tracedraw_core::geometry::Vec2::new(2.0, -2.0),
+                    color: Color::cmyk_pct(100.0, 0.0, 0.0, 0.0),
+                    gap: 0.0,
+                });
+            },
+        )
+        .expect("rect");
+        let img = image::RgbaImage::from_pixel(3, 2, image::Rgba([220, 20, 20, 255]));
+        app.new_shape(ShapeKind::Bitmap {
+            rect: tracedraw_core::geometry::Rect::new(70.0, 10.0, 100.0, 30.0),
+            width_px: 3,
+            height_px: 2,
+            png: crate::bitmap_fx::encode(&img).expect("png").into(),
+            fx: None,
+        })
+        .expect("bitmap");
+        app.run(tracedraw_core::Command::AddPage {
+            name: None,
+            size,
+            layer: None,
+        });
+        app.page = app.doc().pages[1].id;
+        app.new_shape_styled(
+            ShapeKind::Rect {
+                rect: tracedraw_core::geometry::Rect::new(10.0, 10.0, 30.0, 30.0),
+                radius: 0.0,
+                corners: None,
+            },
+            |s| {
+                s.name = Some("second-page".into());
+                s.fill = Fill::Solid(Color::rgb8(20, 200, 20));
+            },
+        )
+        .expect("rect");
+
+        let json = |doc: &Document| serde_json::to_string(&doc.pages).expect("json");
+        let models = |doc: &Document| {
+            let text = json(doc);
+            let mut found: Vec<String> = text
+                .match_indices("\"model\":\"")
+                .map(|(i, m)| {
+                    text[i + m.len()..]
+                        .split('"')
+                        .next()
+                        .unwrap_or_default()
+                        .to_string()
+                })
+                .collect();
+            found.sort();
+            found.dedup();
+            found
+        };
+        let pictures = |doc: &Document| {
+            use base64::Engine;
+            let text = json(doc);
+            text.match_indices("\"png\":\"")
+                .filter_map(|(i, m)| {
+                    let b64 = text[i + m.len()..].split('"').next()?;
+                    base64::engine::general_purpose::STANDARD.decode(b64).ok()
+                })
+                .collect::<Vec<_>>()
+        };
+
+        let plain = print_sheets(&app, &PrintState::default());
+        assert!(models(&plain)
+            .iter()
+            .any(|m| m != "gray" && m != "registration"));
+        let names: Vec<bool> = plain
+            .pages
+            .iter()
+            .map(|p| {
+                serde_json::to_string(p)
+                    .expect("json")
+                    .contains("first-page")
+            })
+            .collect();
+        assert_eq!(names, [true, false], "in the drawing's order");
+
+        let st = PrintState {
+            grayscale: true,
+            crop_marks: true,
+            color_bars: true,
+            ..PrintState::default()
+        };
+        let gray = print_sheets(&app, &st);
+        for m in models(&gray) {
+            assert!(m == "gray" || m == "registration", "{m} left in grayscale");
+        }
+        let pics = pictures(&gray);
+        assert_eq!(pics.len(), 1);
+        assert!(crate::bitmap_fx::png_is_gray(&pics[0]), "a grey picture");
+        let px = image::load_from_memory(&pics[0]).expect("png").to_luma8();
+        let want = (0.299f32 * 220.0 + 0.587 * 20.0 + 0.114 * 20.0).round() as i32;
+        assert!((i32::from(px.get_pixel(1, 1).0[0]) - want).abs() <= 1);
+        // The red fill as its luminance.
+        assert!(json(&gray).contains("first-page"));
+        assert!(
+            models(&app.doc().clone()).iter().any(|m| m == "rgb"),
+            "the drawing keeps its colours"
+        );
+        // Separations print from the colours, whatever the box says.
+        let sep = print_sheets(
+            &app,
+            &PrintState {
+                grayscale: true,
+                separations: true,
+                ..PrintState::default()
+            },
+        );
+        assert!(models(&sep).iter().any(|m| m == "rgb"));
+
+        let st = PrintState {
+            reverse_order: true,
+            ..PrintState::default()
+        };
+        let rev = print_sheets(&app, &st);
+        let names: Vec<bool> = rev
+            .pages
+            .iter()
+            .map(|p| {
+                serde_json::to_string(p)
+                    .expect("json")
+                    .contains("first-page")
+            })
+            .collect();
+        assert_eq!(names, [false, true], "the last page first");
+        let both = print_sheets(
+            &app,
+            &PrintState {
+                reverse_order: true,
+                grayscale: true,
+                ..PrintState::default()
+            },
+        );
+        assert_eq!(both.pages.len(), 2);
+        assert!(serde_json::to_string(&both.pages[1])
+            .expect("json")
+            .contains("first-page"));
+    }
+
     #[test]
     fn the_print_dialog_settings_make_the_layout() {
         let app = App::headless();
@@ -2380,6 +4958,66 @@ mod tests {
 
     /// WebP takes the quality: lower values make smaller files (colours
     /// rounded, near-lossless), 100 keeps the image exact (#544).
+    /// The browser's lossy WebP (#592): the pure-Rust encoder writes a
+    /// lossy (VP8) file that follows Quality, far smaller than the
+    /// lossless file the browser wrote before with Lossless off, which
+    /// decodes to the picture with its transparency; an empty picture
+    /// falls back to lossless.
+    #[test]
+    fn the_browsers_lossy_webp_follows_the_quality() {
+        // A photograph-like picture: smooth shades with grain.
+        let (w, h) = (256u32, 128u32);
+        let mut img = image::RgbaImage::new(w, h);
+        let mut seed = 12345u32;
+        for (x, y, p) in img.enumerate_pixels_mut() {
+            seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12345);
+            let grain = ((seed >> 16) % 24) as i32 - 12;
+            let c = |v: i32| (v + grain).clamp(0, 255) as u8;
+            *p = image::Rgba([c(x as i32), c(2 * y as i32), c(((x + y) / 2) as i32), 255]);
+        }
+        let low = webp_lossy_pure(&img, 10).expect("lossy");
+        let high = webp_lossy_pure(&img, 90).expect("lossy");
+        assert!(low.len() < high.len(), "{} vs {}", low.len(), high.len());
+        // A lossy bitstream ("VP8 "), not a lossless one ("VP8L").
+        assert_eq!(&low[0..4], b"RIFF");
+        assert_eq!(&low[8..12], b"WEBP");
+        assert!(low.windows(4).any(|c| c == b"VP8 "));
+        assert!(!low.windows(4).any(|c| c == b"VP8L"));
+        let back = image::load_from_memory(&high).expect("decodes").to_rgba8();
+        assert_eq!(back.dimensions(), (w, h));
+        let (a, b) = (back.get_pixel(100, 60).0, img.get_pixel(100, 60).0);
+        for k in 0..3 {
+            assert!((a[k] as i32 - b[k] as i32).abs() < 40, "{a:?} vs {b:?}");
+        }
+        // What the browser wrote before with Lossless off: near-lossless.
+        let mut rounded = img.clone();
+        near_lossless(&mut rounded, 10);
+        let mut before = std::io::Cursor::new(Vec::new());
+        rounded
+            .write_to(&mut before, image::ImageFormat::WebP)
+            .expect("lossless");
+        let before = before.into_inner();
+        assert!(
+            low.len() * 3 < before.len(),
+            "{} vs {}",
+            low.len(),
+            before.len()
+        );
+        // Transparency is kept.
+        let mut clear = img.clone();
+        for (x, _, p) in clear.enumerate_pixels_mut() {
+            if x < 64 {
+                p.0[3] = 0;
+            }
+        }
+        let t = webp_lossy_pure(&clear, 75).expect("lossy with alpha");
+        let back = image::load_from_memory(&t).expect("decodes").to_rgba8();
+        assert_eq!(back.get_pixel(10, 10).0[3], 0);
+        assert_eq!(back.get_pixel(200, 10).0[3], 255);
+        // Nothing to encode: no lossy file.
+        assert!(webp_lossy_pure(&image::RgbaImage::new(0, 0), 50).is_none());
+    }
+
     #[test]
     fn webp_quality_shrinks_the_file() {
         let mut pm = tiny_skia::Pixmap::new(256, 128).expect("pixmap");
@@ -2621,6 +5259,56 @@ mod tests {
             .all(|c| (c.trim.width() - w).abs() < 1e-6));
     }
 
+    /// Print page background off: the page's colour does not print,
+    /// though the page keeps it on screen (#1651).
+    #[test]
+    fn the_page_background_prints_only_when_asked() {
+        use tracedraw_core::{Color, Fill};
+        let (mut app, _) = selection_drawing();
+        app.selection.clear();
+        let blue = format!("{:?}", Fill::Solid(Color::rgb8(0, 0, 255)));
+        let sheets = print_sheets(&app, &PrintState::default());
+        assert!(format!("{sheets:?}").contains(&blue));
+        let st = PrintState {
+            page_background: false,
+            ..PrintState::default()
+        };
+        let sheets = print_sheets(&app, &st);
+        assert!(!format!("{sheets:?}").contains(&blue));
+        assert!(app.doc().pages[0].background.is_some());
+    }
+
+    /// A sheet printed through Android's print service lies on opaque
+    /// white paper: a printer plugin that draws the PDF on a transparent
+    /// bitmap and drops its alpha printed what nothing covers black
+    /// (#2663). A page's own background is kept.
+    #[test]
+    fn android_prints_go_out_on_white_paper() {
+        use tracedraw_core::{Color, Fill};
+        let mut app = App::headless();
+        app.new_shape(ShapeKind::Rect {
+            rect: Rect::new(20.0, 20.0, 80.0, 60.0),
+            radius: 0.0,
+            corners: None,
+        })
+        .expect("rect");
+        let mut doc = print_sheets(&app, &PrintState::default());
+        assert_eq!(doc.pages[0].background, None);
+        // A second sheet with a blue page keeps it.
+        let mut blue = doc.pages[0].clone();
+        blue.background = Some(Fill::Solid(Color::rgb8(0, 0, 255)));
+        doc.pages.push(blue);
+        on_white_paper(&mut doc);
+        assert_eq!(doc.pages[0].background, Some(Fill::Solid(Color::WHITE)));
+        assert_eq!(
+            doc.pages[1].background,
+            Some(Fill::Solid(Color::rgb8(0, 0, 255)))
+        );
+        if let Some(out) = std::env::var_os("TRACEDRAW_DUMP_PRINT_PDF") {
+            std::fs::write(out, tracedraw_io::pdf::document_to_pdf(&doc)).expect("dump");
+        }
+    }
+
     /// Keep size: the selection never prints smaller than it is, even on
     /// a sheet too small for it; without it, it shrinks to fit (#1001).
     #[test]
@@ -2690,6 +5378,355 @@ mod tests {
         let before = page.clone();
         fit_contents_to_page(&mut page, false);
         assert_eq!(page, before);
+    }
+
+    /// Fit to page on facing pages (#2678): an object across the spine
+    /// prints split between the two pages, as without Fit to page.
+    /// Fitted page by page, it shrank onto its own page and the facing
+    /// page printed empty.
+    #[test]
+    fn fit_to_page_keeps_an_object_across_the_spine_on_both_pages() {
+        fn shapes(s: &tracedraw_core::Shape, out: &mut Vec<tracedraw_core::Shape>) {
+            match &s.kind {
+                ShapeKind::ClipFrame { contents, .. } => {
+                    for c in contents {
+                        shapes(c, out);
+                    }
+                }
+                _ => out.push(s.clone()),
+            }
+        }
+        let mut app = App::headless();
+        for _ in 0..2 {
+            app.add_page();
+        }
+        app.set_facing_pages(true, tracedraw_core::spreads::PageSide::Right);
+        app.page = app.doc().pages[1].id;
+        let size = app.doc().pages[1].size;
+        let id = app
+            .new_shape(ShapeKind::Rect {
+                rect: Rect::new(size.width - 20.0, 10.0, size.width + 30.0, 40.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("rect");
+        let st = PrintState {
+            fit_to_page: true,
+            ..PrintState::default()
+        };
+        let on_sheet = |doc: &Document, k: usize| {
+            let mut out = Vec::new();
+            for s in doc.pages[k].layers.iter().flat_map(|l| &l.shapes) {
+                shapes(s, &mut out);
+            }
+            out
+        };
+        let printed = print_sheets(&app, &st);
+        assert_eq!(printed.pages.len(), 3);
+        // Page 2 has it as drawn, 50 mm wide; page 3 its copy.
+        let own = on_sheet(&printed, 1);
+        assert_eq!(own.len(), 1);
+        let w = own[0]
+            .transform
+            .transform_rect_bbox(own[0].bounds())
+            .width();
+        assert!((own[0].bounds().width() - 50.0).abs() < 1e-6, "{w}");
+        assert_eq!(
+            on_sheet(&printed, 2).len(),
+            1,
+            "the facing page has its part"
+        );
+    }
+
+    /// Fit to page scales the page to the paper and leaves what runs off
+    /// a page cut at its edge, where it was drawn (#2678): an object put
+    /// partly off the page on purpose, or past the outer edge of a
+    /// spread, keeps its place and size instead of being pulled onto the
+    /// page and shrunk with the page's other objects.
+    #[test]
+    fn fit_to_page_leaves_what_runs_off_the_page_where_it_is() {
+        // The rectangles printed on page `k`, inside any clip frame.
+        fn rects(doc: &Document, k: usize) -> Vec<Rect> {
+            fn walk(s: &tracedraw_core::Shape, out: &mut Vec<Rect>) {
+                match &s.kind {
+                    ShapeKind::ClipFrame { contents, .. } => {
+                        contents.iter().for_each(|c| walk(c, out))
+                    }
+                    ShapeKind::Rect { .. } => out.push(s.bounds()),
+                    _ => {}
+                }
+            }
+            let mut out = Vec::new();
+            for s in doc.pages[k].layers.iter().flat_map(|l| &l.shapes) {
+                walk(s, &mut out);
+            }
+            out
+        }
+        let mut app = App::headless();
+        let size = app.page_size();
+        let rect = |app: &mut App, r: Rect| {
+            app.new_shape(ShapeKind::Rect {
+                rect: r,
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("rect")
+        };
+        rect(&mut app, Rect::new(20.0, 20.0, 60.0, 60.0));
+        let off = Rect::new(size.width - 30.0, 100.0, size.width + 70.0, 150.0);
+        rect(&mut app, off);
+        let st = PrintState {
+            fit_to_page: true,
+            ..PrintState::default()
+        };
+        let printed = print_sheets(&app, &st);
+        let on_page = rects(&printed, 0);
+        assert!(
+            on_page.contains(&off),
+            "not pulled onto the page: {on_page:?}"
+        );
+        assert!(on_page.contains(&Rect::new(20.0, 20.0, 60.0, 60.0)));
+        // The page is what fits the paper: Fit to page goes to the layout.
+        assert!(print_layout(&app, &st, &printed).fit);
+        // Facing pages: past the outer edge of the spread, the same.
+        for _ in 0..2 {
+            app.add_page();
+        }
+        app.set_facing_pages(true, tracedraw_core::spreads::PageSide::Right);
+        app.page = app.doc().pages[2].id;
+        let outer = Rect::new(size.width - 30.0, 10.0, size.width + 40.0, 40.0);
+        rect(&mut app, outer);
+        let printed = print_sheets(&app, &st);
+        let on_page = rects(&printed, 2);
+        assert!(
+            on_page.contains(&outer),
+            "kept past the spread's edge: {on_page:?}"
+        );
+    }
+
+    /// A blend prints as it is drawn when the print moves or recolours
+    /// its objects: with Fit to page (the end object running off the
+    /// page, left where it is), with the selection printed as the page,
+    /// and as a negative,
+    /// the steps lie between the start and the end as printed and their
+    /// colours run between the printed colours. The steps were evaluated
+    /// from the copy of the end object the blend keeps, which the print
+    /// left where (and as) it was on the page (#1541).
+    #[test]
+    fn a_blend_prints_between_its_objects_as_printed() {
+        use tracedraw_core::{live::Effect, Color, Fill};
+        let mut app = App::headless();
+        let square = |app: &mut App, r: Rect, c: Color| {
+            let id = app
+                .new_shape(ShapeKind::Rect {
+                    rect: r,
+                    radius: 0.0,
+                    corners: None,
+                })
+                .expect("square");
+            app.run(Command::SetFill {
+                shapes: vec![id],
+                fill: Fill::Solid(c),
+            });
+            id
+        };
+        // On an A4 page: the start inside, the end running off the right.
+        let a = square(
+            &mut app,
+            Rect::new(20.0, 100.0, 40.0, 120.0),
+            Color::rgb8(255, 0, 0),
+        );
+        let b = square(
+            &mut app,
+            Rect::new(180.0, 100.0, 260.0, 180.0),
+            Color::rgb8(0, 0, 255),
+        );
+        app.select(vec![a, b]);
+        app.blend_selection(3, 0.0, 0.0, 0.0);
+        app.refresh_blends();
+        app.selection = vec![a, b];
+        // The start, the end and the steps of the first sheet, on the
+        // sheet: (bounds, colour) each.
+        let printed_blend = |doc: &Document| {
+            let mut start = None;
+            let mut end = None;
+            let mut steps = Vec::new();
+            for c in doc.pages[0].layers.iter().flat_map(|l| &l.shapes) {
+                let ShapeKind::ClipFrame { contents, .. } = &c.kind else {
+                    continue;
+                };
+                for s in contents {
+                    let on_sheet = |s: &tracedraw_core::Shape| {
+                        let mut s = s.clone();
+                        s.transform_by(c.transform);
+                        (s.bounds(), s.fill.preview_color().expect("a colour"))
+                    };
+                    if s.effects.iter().any(|e| matches!(e, Effect::Blend { .. })) {
+                        let ev = tracedraw_core::live::evaluate(s);
+                        start = Some(on_sheet(s));
+                        steps.extend(ev.below.iter().chain(&ev.above).map(on_sheet));
+                    } else if s.effects.is_empty() {
+                        end = Some(on_sheet(s));
+                    }
+                }
+            }
+            (start.expect("start"), end.expect("end"), steps)
+        };
+        let between = |(start, end, steps): &((Rect, Color), (Rect, Color), Vec<(Rect, Color)>)| {
+            assert_eq!(steps.len(), 3);
+            let (s, e) = (start.0.center(), end.0.center());
+            // From the start to the end, the middle step half way.
+            for (i, (b, _)) in steps.iter().enumerate() {
+                let want = s.lerp(e, (i + 1) as f64 / 4.0);
+                let got = b.center();
+                assert!((got - want).hypot() < 1e-6, "{i}: {got:?}, not {want:?}");
+            }
+            let [r0, g0, b0] = start.1.to_rgb8();
+            let [r1, g1, b1] = end.1.to_rgb8();
+            let [r, g, bl] = steps[1].1.to_rgb8();
+            let mid = |x: u8, y: u8| (x as i32 + y as i32) / 2;
+            assert!(
+                (r as i32 - mid(r0, r1)).abs() <= 1
+                    && (g as i32 - mid(g0, g1)).abs() <= 1
+                    && (bl as i32 - mid(b0, b1)).abs() <= 1,
+                "{:?} between {:?} and {:?}",
+                steps[1].1,
+                start.1,
+                end.1
+            );
+        };
+        // Fit to page scales the page, so the end stays where it is.
+        let fit = PrintState {
+            fit_to_page: true,
+            ..PrintState::default()
+        };
+        let p = printed_blend(&print_sheets(&app, &fit));
+        assert!(p.1 .0.x1 > 210.0, "left where drawn: {:?}", p.1 .0);
+        between(&p);
+        let selection = PrintState {
+            range: 3,
+            ..PrintState::default()
+        };
+        between(&printed_blend(&print_sheets(&app, &selection)));
+        let negative = PrintState {
+            invert: true,
+            ..PrintState::default()
+        };
+        let p = printed_blend(&print_sheets(&app, &negative));
+        assert_eq!(p.0 .1.to_rgb8(), [0, 255, 255]);
+        between(&p);
+        // Exported alone, the start keeps its steps running to the end's
+        // place beside it.
+        app.selection = vec![a];
+        let (doc, bounds) = export_document(
+            &app,
+            &ExportState {
+                selection_only: true,
+                ..ExportState::default()
+            },
+        );
+        let s = doc.pages[0].layers[0].shapes[0].clone();
+        let ev = tracedraw_core::live::evaluate(&s);
+        let last = ev
+            .above
+            .last()
+            .or(ev.below.first())
+            .expect("steps")
+            .bounds()
+            .center();
+        // Moved with the start: the last step three quarters of the way
+        // from the start's centre (30, 110) to the end's (220, 140).
+        let want = tracedraw_core::geometry::Point::new(172.5 - bounds.x0, 132.5 - bounds.y0);
+        assert!((last - want).hypot() < 1e-6, "{last:?}, not {want:?}");
+    }
+
+    /// A rectangle with a 2 mm outline exported alone: the export takes
+    /// the whole outline, 1 mm past the path on every side, where the SVG's
+    /// box was the path's and cut half the outline off at each edge
+    /// (#2290). Also inside a group.
+    #[test]
+    fn a_selection_exported_alone_keeps_its_whole_outline() {
+        use tracedraw_core::{Color, Stroke};
+        let mut app = App::headless();
+        let layer = app.active_layer().expect("layer");
+        let id = app.engine.new_shape_id();
+        let mut s = tracedraw_core::Shape::new(
+            id,
+            ShapeKind::Rect {
+                rect: tracedraw_core::Rect::new(10.0, 10.0, 40.0, 30.0),
+                radius: 0.0,
+                corners: None,
+            },
+        );
+        s.stroke = Some(Stroke::new(Color::rgb8(0, 0, 255), 2.0));
+        app.run(Command::AddShape { layer, shape: s });
+        app.selection = vec![id];
+        let st = ExportState {
+            selection_only: true,
+            ..ExportState::default()
+        };
+        let (doc, bounds) = export_document(&app, &st);
+        let near = |a: f64, b: f64| (a - b).abs() < 1e-6;
+        assert!(
+            near(bounds.x0, 9.0)
+                && near(bounds.y0, 9.0)
+                && near(bounds.x1, 41.0)
+                && near(bounds.y1, 31.0),
+            "{bounds:?}"
+        );
+        let svg = tracedraw_io::svg::page_to_svg(&doc, 0);
+        assert!(svg.contains("viewBox=\"0 0 32 22\""), "{svg}");
+
+        // Grouped: the group has no outline of its own, its rectangle has.
+        app.selection = vec![id];
+        app.group_selection();
+        assert_eq!(app.selection.len(), 1);
+        let (_, grouped) = export_document(&app, &st);
+        assert!(
+            near(grouped.x0, 9.0) && near(grouped.x1, 41.0),
+            "{grouped:?}"
+        );
+    }
+
+    /// Selected objects exported alone keep their spot inks: a PDF of the
+    /// selection prints each on its own separation, not as its process
+    /// stand-in.
+    #[test]
+    fn a_selection_exported_alone_keeps_its_spot_inks() {
+        use tracedraw_core::{document::Ink, Command, Fill};
+        let mut app = App::headless();
+        let ink = Ink {
+            id: 9,
+            name: "Spot_1_W".into(),
+            cmyk: [0.0, 0.0, 0.0, 0.1],
+        };
+        app.run(Command::SetInks {
+            inks: vec![ink.clone()],
+        });
+        let layer = app.active_layer().expect("layer");
+        let id = app.engine.new_shape_id();
+        let mut s = tracedraw_core::Shape::new(
+            id,
+            ShapeKind::Rect {
+                rect: tracedraw_core::Rect::new(10.0, 10.0, 40.0, 30.0),
+                radius: 0.0,
+                corners: None,
+            },
+        );
+        s.fill = Fill::Solid(ink.color(1.0));
+        s.stroke = None;
+        app.run(Command::AddShape { layer, shape: s });
+        app.selection = vec![id];
+        let (doc, _) = export_document(
+            &app,
+            &ExportState {
+                selection_only: true,
+                ..ExportState::default()
+            },
+        );
+        assert_eq!(doc.inks, vec![ink]);
+        let text = String::from_utf8_lossy(&tracedraw_io::pdf::document_to_pdf(&doc)).to_string();
+        assert!(text.contains("/Separation /Spot_1_W "), "no separation");
     }
 }
 

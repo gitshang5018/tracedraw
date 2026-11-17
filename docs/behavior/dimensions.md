@@ -27,7 +27,30 @@ moved, scaled, turned or skewed (`dimensions.rs`).
   (Options > Edit, 15 degrees by default) from the first point or the
   vertex, as the curve tools do; the preview follows
   (`pick_drag_tests::ctrl_keeps_a_dimension_leg_to_the_constrain_angle`).
+- From the first point on, the measure so far reads in a small box beside
+  the pointer, in the property bar's units, decimals and units sign: the
+  length while the second point or the dimension line is wanted, the
+  angle once the angular tool's first side is given. It is the value the
+  label will show (prefix and suffix left out), for the point a click
+  would take there, snapped and constrained (#2624,
+  `dimension_bar::tests::the_measure_reads_live_while_the_dimension_is_placed`).
 - The new dimension is selected; one undo step.
+
+## Add Dimensions
+
+- Object > Insert > Add Dimensions (also in the canvas context menu
+  with something selected): a horizontal dimension along the bottom of
+  the selection's box and a vertical one along its right side, their
+  lines `ADD_DIMENSIONS_GAP` (5 mm) below and to the right of it, in the
+  Dimension tool's style and units (`App::add_dimensions`,
+  `box_measures`).
+- Add Dimensions to Each Object (in the context menu with more than one
+  object selected): a pair for every selected object's own box.
+- Dimensions in the selection are not measured; a box with no width or
+  no height gets no dimension for it; nothing selected adds nothing.
+  The points are held to the objects they sit on, as when drawn.
+- All the new dimensions are selected; one undo step
+  (`dimensions::tests::add_dimensions_measures_the_selection_and_each_object`).
 
 ## Drawing
 
@@ -46,6 +69,18 @@ moved, scaled, turned or skewed (`dimensions.rs`).
   angles outside the arc), In the line (centred on it, the line broken
   1 mm either side of the label), Below the line (for angles inside the
   arc).
+- Place (linear dimensions, #1500): In the middle (as before), Toward
+  the start or Toward the end (the label's near edge 1 mm past the
+  arrowhead at the first or the second point measured; a label too long
+  for the room between the arrowheads stays in the middle), or Outside,
+  at the start or at the end (the label's middle `2 mm + half its
+  reach` past the extension line; above or below the line the
+  dimension line runs on under the label to its far edge, in the line
+  it is left unbroken). The label keeps its text position and reading
+  direction (`LabelAlong::offset`,
+  `dimensions::tests::the_label_sits_where_chosen_along_the_line`).
+  Angular dimensions keep the label in the middle of the arc. Turning
+  the label is Options > Horizontal text.
 - Lines, arrowheads and label take the style's look (#475): at first
   hairlines, black filled arrowheads and a black label in the font of new
   text at the style's size
@@ -64,9 +99,11 @@ is kept in the preferences (`tools.dimension_style`).
 |---|---|---|
 | Precision | 1.23 (2 decimals) | 0 to 6 decimals |
 | Units | Drawing units (the document's) | any unit of the Units list; lengths go through the drawing scale (at 1:100 a 10 mm line reads 1000 mm) |
+| Drawing scale | the document's (1:1) | the typical scales, or Custom... for Document Setup > Rulers; it is the whole drawing's scale, one undo step (#2772, #1891) |
 | Show units | on | the unit's sign after the number; for angles, the degree sign |
 | Prefix, Suffix | empty | text before and after (applied when the field is left or Enter is pressed) |
 | Text | Above the line | Above the line, In the line, Below the line |
+| Place | In the middle | In the middle, Toward the start, Toward the end, Outside, at the start, Outside, at the end (linear dimensions) |
 | Label size | 10 pt | 1 to 500 pt |
 | Font | the font of new text | any font (the label keeps it; empty in styles saved before) |
 | Label colour | black | any colour (the swatch opens the colour picker) |
@@ -181,8 +218,19 @@ step: each held point goes to its node or to the same share of its
 segment, the dimension line or arc moves as far as the held points
 moved on average, and the label reads the new value. A point on a
 stretched edge keeps its share of the edge, so a dimension between two
-sides of a rectangle grows with it. A dimension moved by itself lets go
-of the object, as does one whose object, node or segment is gone
+sides of a rectangle grows with it.
+
+A dimension moved by itself (dragged, nudged, or scaled, turned or
+skewed without the object it measures) stays held to it (#1492): its
+held points go back on their nodes or segments and only the rest of it
+keeps the move, so a linear dimension's line moves along its normal (a
+move along the measured points changes nothing) and an angular one's
+arc to the new radius; a measured point held to nothing moves with it.
+While it is dragged it is shown moved whole; on release it settles on
+the object, in the same undo step. Moved together with its object, it
+goes along unchanged. Only Break Apart frees it from the object (its
+pieces are then no longer a dimension); a dimension lets go of the
+object by itself only when its object, node or segment is gone
 (deleted, or the outline now has fewer segments).
 
 ## Convert to Curves
@@ -263,7 +311,11 @@ ones made next; the style is kept in the preferences
 - `dimensions::tests::dimensions_redraw_for_their_style_and_their_size`
 - `dimensions::tests::previews_and_segments`
 - `dimensions::tests::a_dimension_follows_the_object_it_measures` (two
-  corners of a rectangle; moved by itself it lets go)
+  corners of a rectangle; moved or turned by itself it stays held, Break
+  Apart frees it)
+- `dimensions::tests::a_dimension_moved_by_itself_stays_on_its_object`
+  (a circle's diameter and an angle on a rectangle's corners)
+- `pick_drag_tests::a_dragged_dimension_stays_on_the_circle_it_measures`
 - `dimensions::tests::a_dimension_between_two_edges_follows_the_object`
   (two sides of a rectangle: moved, scaled, given a new size, saved)
 - `dimensions::tests::a_dimension_lets_go_of_a_deleted_object`

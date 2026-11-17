@@ -3,6 +3,7 @@
 .DS_Store
 /corpus/
 /site
+/dist-android/
 /tracedraw.exe
 /tracedraw
 /.workbuddy-ai/

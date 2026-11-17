@@ -6,7 +6,7 @@ TraceDraw 視窗包含您的繪圖，以及處理繪圖所需的一切。本頁�
 
 由上到下、由左到右：
 
-- **選單列**包含所有指令，分布在 [[menu.file]]、[[menu.edit]]、[[menu.view]]、[[menu.layout]]、[[menu.object]]、[[menu.effects]]、[[menu.bitmaps]]、[[menu.text]]、[[menu.table]]、[[menu.tools]]、[[menu.window]] 和 [[menu.help]] 選單中。每個指令旁邊都會顯示其快速鍵。沒有開啟任何繪圖時，只會顯示 [[menu.file]]、[[menu.tools]]、[[menu.window]] 和 [[menu.help]]。[選單指令](../reference/menus.md)頁面列出了所有指令。
+- **選單列**包含所有指令，分布在 [[menu.file]]、[[menu.edit]]、[[menu.view]]、[[menu.object]]、[[menu.text]]、[[menu.bitmaps]]、[[menu.effects]]、[[menu.layout]]、[[menu.tools]]、[[menu.window]] 和 [[menu.help]] 選單中。每個指令旁邊都會顯示其快速鍵。沒有開啟任何繪圖時，只會顯示 [[menu.file]]、[[menu.tools]]、[[menu.window]] 和 [[menu.help]]。[選單指令](../reference/menus.md)頁面列出了所有指令。
 - **標準工具列**包含常用指令（請參閱下文）。
 - **屬性列**顯示您目前操作的設定。
 - **文件分頁**為每個開啟的繪圖顯示一個分頁。
@@ -29,7 +29,7 @@ TraceDraw 視窗包含您的繪圖，以及處理繪圖所需的一切。本頁�
 6. 顯示尺規、顯示格點和顯示參考線，開啟時會以按下狀態顯示。
 7. 關閉貼齊（<kbd>Alt+Q</kbd>）以及要貼齊對象的清單。
 8. 選項，會開啟選項頁面的清單。
-9. 啟動：字型管理員、歡迎畫面和色彩管理。
+9. 啟動：字型管理員、TraceCut 和歡迎畫面。
 
 將指標停留在按鈕上，即可查看其名稱、快速鍵和用途。
 

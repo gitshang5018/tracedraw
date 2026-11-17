@@ -1,5 +1,7 @@
 # Opciones de herramientas
 
+> *Traducción automática: esta página puede ir por detrás de la versión en inglés.*
+
 [[menu.tools > menu.tools.options > menu.tools.options_tools]] ajusta cómo se
 comportan las herramientas y qué objetos nuevos dibujan. La mayoría de estos
 valores también están en la barra de propiedades de cada herramienta.
@@ -15,6 +17,18 @@ valores también están en la barra de propiedades de cada herramienta.
   selecciona los objetos que solo toca; <kbd>Alt</kbd> selecciona entonces
   solo los que están por completo dentro.
 
+- [[options.ctrl_shift_keys]] [[options.keys_traditional]]: [[options.keys_traditional_tip]]
+  [[options.keys_windows]]: [[options.keys_windows_tip]]
+
+## Borrador {#eraser}
+
+![Las opciones de la herramienta Borrador](../../img/customize-tool-options-eraser.png)
+
+[[options.eraser_width]] (6,35 mm de forma predeterminada), y
+[[options.eraser_round]] o [[options.eraser_square]].
+
+[[options.eraser_reduce_nodes]]: [[options.eraser_reduce_nodes_tip]]
+
 ## Zoom y desplazamiento {#zoom-pan}
 
 ![Las opciones de Zoom y desplazamiento](../../img/customize-tool-options-zoom-pan.png)
@@ -22,15 +36,45 @@ valores también están en la barra de propiedades de cada herramienta.
 - [[options.zoom_right_button]]: [[options.zoom_out]] (opción predeterminada)
   o el [[options.context_menu]].
 - [[options.wheel_action]]: [[options.wheel_zoom]] o [[options.wheel_scroll]].
+- [[options.zoom_relative_1to1]] (activado): el zoom 100% es el tamaño real con la
+  resolución de pantalla calibrada; desactivado, son 96 píxeles por pulgada.
+- [[options.wheel_center_mouse]] (desactivado): un zoom con la rueda lleva el punto bajo
+  el puntero al centro de la vista, y el puntero con él.
+- [[options.smooth_zoom]] (activado): cada muesca de la rueda hace zoom en un
+  breve deslizamiento en lugar de un salto; cuanto más rápido gira la rueda,
+  más corto. Desactivado, cada muesca hace zoom al instante.
+- [[options.light_zoom]]: [[options.light_zoom_tip]]
+- [[options.wheel_zoom_step]] cuánto acerca o aleja una muesca, de 1 a 100 por
+  ciento (15 % al principio).
+- [[options.pan_right_button]] [[options.zoom_out]] o el [[options.context_menu]] (al principio).
+- [[options.pan_inertia]] (desactivado): un desplazamiento que suelta mientras
+  el puntero aún se mueve hace que la vista siga deslizándose en la misma
+  dirección y se frene poco a poco. Un clic o la rueda la detiene. Vale para la
+  herramienta Desplazamiento, el botón central y dos dedos.
 
-## Curvas {#curves}
+## Mano alzada/Bézier {#curves}
 
-![Las opciones de las herramientas de curva](../../img/customize-tool-options-curves.png)
+![Las opciones de las herramientas Mano alzada/Bézier](../../img/customize-tool-options-curves.png)
 
 - [[options.freehand_smoothing]]: de 0 a 100 (50 de forma predeterminada).
 - [[options.join_within]]: a qué distancia de un nodo final debe empezar una
   línea para continuar la curva (5 píxeles de pantalla de forma
   predeterminada). Vea [Continuar una curva](../lines-shapes/lines.md#continue).
+
+- [[options.pen_preview]] y [[options.pen_auto_add_delete]] (ambas activadas)
+  para la herramienta [[tool.pen]]; vea [Pluma](../lines-shapes/lines.md#pen).
+- [[options.pen_tablet]]: [[options.pen_pressure]] (activada); vea
+  [Dibujar con una tableta gráfica](../lines-shapes/pen-pressure.md).
+
+- [[options.corner_threshold]]: [[options.corner_threshold_tip]]
+- [[options.straight_threshold]]: [[options.straight_threshold_tip]]
+
+## Reconocimiento de formas {#shape-recognition}
+
+![Las opciones de la herramienta Reconocimiento de formas](../../img/customize-tool-options-shape-recognition.png)
+
+[[recognize.recognition]] y [[recognize.smoothing]] de la herramienta Reconocimiento
+de formas, de desactivado a máximo, como en su barra de propiedades.
 
 ## Rectángulo {#rectangle}
 
@@ -48,11 +92,20 @@ esquina y [[toolbar.corners_together]]. [[options.scale_corners]]:
 [[options.ellipse]], [[options.pie]] o [[options.arc]], con el
 [[options.starting_angle]] y el [[options.ending_angle]].
 
+[[options.arc_direction]]: [[options.counterclockwise]] / [[options.clockwise]].
+[[options.arc_direction_desc]]
+
 ## Polígono {#polygon}
 
 ![Las opciones de la herramienta Polígono](../../img/customize-tool-options-polygon.png)
 
 [[options.number_of_points]] y [[options.sharpness]].
+
+## Papel cuadriculado {#graph-paper}
+
+![Las opciones de la herramienta Papel cuadriculado](../../img/customize-tool-options-graph-paper.png)
+
+[[options.rows]] y [[options.columns]] de la cuadrícula.
 
 ## Espiral {#spiral}
 
@@ -61,11 +114,8 @@ esquina y [[toolbar.corners_together]]. [[options.scale_corners]]:
 [[options.revolutions]], y [[options.symmetrical_spiral]] o
 [[options.logarithmic_spiral]].
 
-## Papel cuadriculado {#graph-paper}
-
-![Las opciones de la herramienta Papel cuadriculado](../../img/customize-tool-options-graph-paper.png)
-
-[[options.rows]] y [[options.columns]] de la cuadrícula.
+[[options.spiral_expansion]]: [[options.spiral_expansion_tip]]
+[[options.spiral_preview_tip]]
 
 ## Tabla {#table}
 
@@ -73,9 +123,37 @@ esquina y [[toolbar.corners_together]]. [[options.scale_corners]]:
 
 [[options.rows]] y [[options.columns]] de las tablas nuevas.
 
-## Borrador {#eraser}
+## Cota {#dimension}
 
-![Las opciones de la herramienta Borrador](../../img/customize-tool-options-eraser.png)
+![Las opciones de la herramienta Cota](../../img/customize-tool-options-dimension.png)
 
-[[options.eraser_width]] (6,35 mm de forma predeterminada), y
-[[options.eraser_round]] o [[options.eraser_square]].
+Cómo se lee la etiqueta de las cotas nuevas: [[dimension.precision]],
+[[dimension.units]], [[dimension.show_units]], [[dimension.prefix]] y
+[[dimension.suffix]]. Las cotas ya dibujadas mantienen su etiqueta; seleccione
+una y use la barra de propiedades para cambiarla.
+
+[[options.dimension_style]]: [[options.decimal]] / [[options.fractional]].
+[[options.dimension_style_tip]]
+
+## Cota angular {#angular-dimension}
+
+[[dimension.precision]], [[dimension.show_units]], [[dimension.prefix]] and
+[[dimension.suffix]] of new angular dimensions.
+[[options.angular_units_tip]]
+
+## Conector {#connector}
+
+![Las opciones de la herramienta Conector](../../img/customize-tool-options-connector.png)
+
+[[connector.radius]] de los conectores redondeados nuevos (3 mm al principio).
+
+[[options.connector_gap]]: [[options.connector_gap_tip]]
+
+[[options.connector_geometric_anchors]]: [[options.connector_geometric_anchors_tip]]
+
+## Relleno de malla {#mesh-fill}
+
+![Las opciones de la herramienta Relleno de malla](../../img/customize-tool-options-mesh-fill.png)
+
+[[options.columns]] y [[options.rows]] de la cuadrícula con la que empieza un
+relleno de malla nuevo (2 por 2 al principio).

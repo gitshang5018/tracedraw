@@ -1,4 +1,4 @@
-//! File > Document Properties: the drawing's language, title, subject,
+//! File > Document Info: the drawing's language, title, subject,
 //! author, copyright, tags, notes and rating, edited until OK, over a
 //! scrolling report of the file, the document, its colour settings and
 //! what it holds (objects, text, bitmaps, styles, effects, fills,
@@ -13,7 +13,7 @@ use egui::{Context, RichText, Ui};
 use tracedraw_core::Command;
 
 /// Languages offered, as their tag and their own name.
-pub const LANGUAGES: [(&str, &str); 30] = [
+pub const LANGUAGES: [(&str, &str); 31] = [
     ("ar", "العربية"),
     ("bn", "বাংলা"),
     ("cs-CZ", "Čeština"),
@@ -34,6 +34,7 @@ pub const LANGUAGES: [(&str, &str); 30] = [
     ("it-IT", "Italiano"),
     ("ja-JP", "日本語"),
     ("ko-KR", "한국어"),
+    ("lo-LA", "ພາສາລາວ"),
     ("nl-NL", "Nederlands"),
     ("no-NO", "Norsk"),
     ("pl-PL", "Polski"),
@@ -294,6 +295,7 @@ fn report(app: &App, ui: &mut Ui, st: &DocStats) {
         "docprops.fill_pattern",
         "docprops.fill_texture",
         "docprops.fill_mesh",
+        "docprops.fill_procedural",
     ]
     .iter()
     .enumerate()
@@ -374,7 +376,7 @@ pub fn dialog(app: &mut App, ctx: &Context, st: &mut DocPropsState, close: &mut 
                     .show(ui, |ui| {
                         let w = inner.width() - 90.0;
                         ui.label(tr("options.language"));
-                        egui::ComboBox::from_id_salt("docprops_lang")
+                        crate::ui::keynav::ComboBox::from_id_salt("docprops_lang")
                             .width(w - 8.0)
                             .selected_text(if st.language.is_empty() {
                                 tr("docprops.rating_none")
@@ -421,7 +423,7 @@ pub fn dialog(app: &mut App, ctx: &Context, st: &mut DocPropsState, close: &mut 
                         .rich_tip(crate::ui::tips::pair("dialog.notes", "docprops.notes_desc"));
                         ui.end_row();
                         ui.label(tr("dialog.rating"));
-                        egui::ComboBox::from_id_salt("docprops_rating")
+                        crate::ui::keynav::ComboBox::from_id_salt("docprops_rating")
                             .width(w - 8.0)
                             .selected_text(rating_label(st.rating))
                             .show_ui(ui, |ui| {

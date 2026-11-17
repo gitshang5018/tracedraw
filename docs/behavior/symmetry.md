@@ -17,7 +17,18 @@ reflection across each line plus the rotations those reflections
 generate, `2n - 1` copies in all. The copies are drawn above the original
 (`evaluate()` puts them in `above`), share its fill, outline and other
 effects, and follow every edit of the original, because they are
-recomputed from it.
+recomputed from it. The symmetry is applied after the object's other
+effects, wherever it stands in the list: each copy keeps the object's
+transparency and lens (the renderer draws them on the copy as on the
+object), and what the other effects add around the object (contour steps,
+blend steps, extrusion faces, bevels, block shadows) is mirrored with it,
+under the object for what lies under it (#2121,
+`live::symmetry_tests::mirrored_copies_carry_the_other_effects`,
+`render::tests::a_mirrored_copy_keeps_the_transparency`). A fountain
+fill and a gradient transparency are mirrored with each copy, so a fade
+running toward a mirror line runs toward it from the other side too
+(`Shape::carry_fills`,
+`live::symmetry_tests::mirrored_copies_mirror_their_gradients`).
 
 ## Defaults
 
@@ -37,7 +48,10 @@ recomputed from it.
   (`App::join_symmetry`,
   `ops2::symmetry_tests::a_symmetry_takes_several_objects_and_those_made_while_editing`).
 - Edit (Object > Symmetry > Edit Symmetry, Alt+E): the symmetry editing
-  mode (`symmetry_edit.rs`). A bar floats at the top left of the drawing
+  mode (`symmetry_edit.rs`). Alt+E edits only while an object with a
+  symmetry is selected; otherwise it opens the Edit menu, as Alt and the
+  other titles' letters open theirs (#2881,
+  `ui::keynav::tests::alt_e_opens_the_edit_menu`). A bar floats at the top left of the drawing
   window: Finish; the mirror lines icon and their number (1 to 12); the
   centre (X, Y in the drawing's units); the angle of rotation icon and
   the angle (0 to 360 degrees), every number field with spin arrows and

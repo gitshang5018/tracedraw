@@ -5,7 +5,7 @@
 <h1 align="center">TraceDraw</h1>
 
 <p align="center">
-  <b>Vector illustration, page layout and print; an open-source, clean-room vector editor rebuilt from scratch in pure Rust.</b><br>
+  <b>Vector illustration, page layout and print; an open-source, clean-room vector editor written from scratch in pure Rust.</b><br>
   Pages and layers, curves and nodes, artistic and paragraph text, fills and outlines, live effects, symbols, PDF/X and real <code>.cdr</code> files,<br>
   in one native program for Windows, macOS and Linux, and in the browser.
 </p>
@@ -15,18 +15,27 @@
   <img alt="Windows, macOS, Linux and the browser" src="https://img.shields.io/badge/Windows%20%C2%B7%20macOS%20%C2%B7%20Linux%20%C2%B7%20Web-native-1f6fc5?style=flat-square">
   <img alt="License: MIT or Apache-2.0" src="https://img.shields.io/badge/license-MIT%20or%20Apache--2.0-444444?style=flat-square">
   <img alt="Status: alpha" src="https://img.shields.io/badge/status-alpha-d97706?style=flat-square">
-  <img alt="18 interface languages" src="https://img.shields.io/badge/interface-18%20languages-7b5cff?style=flat-square">
+  <img alt="19 interface languages" src="https://img.shields.io/badge/interface-19%20languages-7b5cff?style=flat-square">
 </p>
 
 <p align="center">
-  <a href="https://github.com/igtoth/tracedraw/releases"><b>Download</b></a> &middot;
-  <a href="https://igtoth.github.io/tracedraw/">Open it in the browser</a> &middot;
+  <a href="https://github.com/tracedraw/tracedraw/releases"><b>Download</b></a> &middot;
+  <a href="https://apps.microsoft.com/detail/9P50L12VHF33">Microsoft Store</a>* &middot;
+  <a href="https://tracedraw.github.io/tracedraw/">Open it in the browser</a> &middot;
   <a href="docs/features.md">Feature status</a> &middot;
   <a href="CONTRIBUTING.md">Contribute</a>
 </p>
 
 <p align="center">
-  <sub>Alpha: expect bugs. A <code>.cdr</code> file that does not open right? <a href="https://github.com/igtoth/tracedraw/issues/new?template=cdr_file.yml">Send it in an issue</a>: sample files are what improves the reader most.</sub>
+  <a href="https://apps.microsoft.com/detail/9P50L12VHF33"><img src="https://get.microsoft.com/images/en-us%20dark.svg" alt="Get it from Microsoft" width="200"></a>
+</p>
+
+<p align="center">
+  <sub>* The <a href="https://apps.microsoft.com/detail/9P50L12VHF33">Microsoft Store</a> version is signed and updates itself, but each version must pass the Store's certification first (hours to days), so it is often one or more releases behind the <a href="https://github.com/tracedraw/tracedraw/releases/latest">latest download</a>.</sub>
+</p>
+
+<p align="center">
+  <sub>Alpha: expect bugs. A <code>.cdr</code> file that does not open right? <a href="https://github.com/tracedraw/tracedraw/issues/new?template=cdr_file.yml">Send it in an issue</a>: sample files are what improves the reader most.</sub>
 </p>
 
 <br>
@@ -131,11 +140,11 @@ or the moon button at the right of the status bar).
       Colour modes, a colour mask, background removal on this computer (no AI needed), straighten, crop and resample complete the set.
     </td>
     <td width="50%" valign="top">
-      <img src="docs/images/tracedraw-trace.jpg" alt="The Trace Bitmap dialog with the Clipart preset: the bitmap before and its traced curves after, with the detail, smoothing and colour settings" width="100%">
+      <img src="docs/images/tracedraw-trace.jpg" alt="The Trace Bitmap dialog with the Flat Colors preset: the bitmap before and its traced curves after, with the detail, smoothing and colour settings" width="100%">
       <br>
-      <sub>Trace Bitmap with the Clipart preset: the bitmap and the curves it becomes.</sub>
+      <sub>Trace Bitmap with the Flat Colors preset: the bitmap and the curves it becomes.</sub>
       <h3>From pixels to curves</h3>
-      Trace Bitmap turns images into editable curves: Quick Trace in one click, outline tracing in up to 256 colours with background removal, centreline tracing for drawings, and eight presets from technical illustration to high quality image. The dialog previews the trace before it is made.
+      Trace Bitmap turns images into editable curves: Automatic trace in one click, outline tracing in up to 256 colours with background removal, centreline tracing for drawings, and eight presets from technical illustration to high quality image. The dialog previews the trace before it is made.
     </td>
   </tr>
   <tr>
@@ -146,14 +155,14 @@ or the moon button at the right of the status bar).
       <h3>Out in any format</h3>
       SVG, PDF (with PDF/X-1a, X-3 and X-4 and bleed), EPS, AI, DXF, EMF, WMF, HPGL, PSD and HTML, and PNG, JPEG, WebP, GIF, BMP and TIFF at any resolution. The Export dialog previews the result and estimates its size.
       <br><br>
-      Print goes through a PDF; Print Merge fills a design from a CSV file.
+      Print goes through a PDF; Data Merge fills a design from a CSV file.
     </td>
     <td width="50%" valign="top">
       <img src="docs/images/tracedraw-languages.jpg" alt="The page of type in TraceDraw with the interface in Japanese: menus, property bar, Text panel and status bar" width="100%">
       <br>
       <sub>The same page with the interface in Japanese.</sub>
       <h3>In your language</h3>
-      English, Chinese (Simplified), Hindi, Spanish, French, Arabic with a right-to-left layout, Bengali, Russian, Portuguese (Brazil), Indonesian, German, Japanese, Chinese (Traditional), Italian, Dutch, Polish, Turkish and Czech, with system fonts found for every script. Options &rsaquo; Global switches the language at once.
+      English, Chinese (Simplified), Hindi, Spanish, French, Arabic with a right-to-left layout, Bengali, Russian, Portuguese (Brazil), Indonesian, German, Japanese, Chinese (Traditional), Italian, Dutch, Polish, Turkish, Czech and Lao, with system fonts found for every script. Options &rsaquo; Global switches the language at once.
     </td>
   </tr>
   <tr>
@@ -202,11 +211,11 @@ or the moon button at the right of the status bar).
     </td>
     <td width="33%" valign="top">
       <h4>41 panels</h4>
-      Properties &middot; Objects &middot; Hints &middot; Transformations &middot; Undo &middot; Align and Distribute &middot; Shaping &middot; Step and Repeat &middot; Text &middot; Glyphs &middot; Colour &middot; Colour Styles &middot; Object Styles &middot; Find and Replace &middot; Scripts &middot; Palettes &middot; Lens &middot; Blend &middot; Contour &middot; Envelope &middot; Extrude &middot; Bevel &middot; Brush Strokes &middot; Bitmap Mask &middot; Object Data &middot; Links &middot; Symbols &middot; Pages &middot; Guidelines &middot; Fonts &middot; Font Sampler &middot; Corners &middot; Join Curves &middot; Coordinates &middot; Vector Mosaic &middot; Picture Mosaic &middot; Shelf &middot; Effects &middot; Export &middot; Comments &middot; AI Generate (with Draw with words)
+      Properties &middot; Objects &middot; Hints &middot; Transformations &middot; Undo &middot; Align and Distribute &middot; Combine Shapes &middot; Repeat Copies &middot; Text &middot; Glyphs &middot; Colour &middot; Colour Styles &middot; Object Styles &middot; Find and Replace &middot; Scripts &middot; Palettes &middot; Lens &middot; Blend &middot; Contour &middot; Envelope &middot; Extrude &middot; Bevel &middot; Brush Strokes &middot; Color Mask &middot; Object Data &middot; Links &middot; Symbols &middot; Pages &middot; Guidelines &middot; Fonts &middot; Font Sampler &middot; Corners &middot; Join Curves &middot; Coordinates &middot; Vector Mosaic &middot; Picture Mosaic &middot; Shelf &middot; Effects &middot; Export &middot; Comments &middot; AI Generate (with Draw with words)
     </td>
     <td width="33%" valign="top">
       <h4>Documents and pages</h4>
-      Multi-page documents with a page sorter, layers and master layers (all, odd or even pages), guides at any angle, grids, snapping to objects, page, grid, baseline, guidelines and pixels, dynamic guides, page backgrounds, bleed, tables, symbols, clip frames and metadata. Several drawings open in tabs; auto-backup keeps unsaved work.
+      Multi-page documents with a Page Overview, layers and master layers (all, odd or even pages), guides at any angle, grids, snapping to objects, page, grid, baseline, guidelines and pixels, dynamic guides, page backgrounds, bleed, tables, symbols, clip frames and metadata. Several drawings open in tabs; auto-backup keeps unsaved work.
     </td>
   </tr>
   <tr>
@@ -218,11 +227,11 @@ or the moon button at the right of the status bar).
       <h4>Formats</h4>
       Open: <code>.tdraw</code>, <code>.cdr</code> (versions 1 to 27) and its templates, CMX, SVG and SVGZ, PDF and AI, EPS, DXF, PSD, EMF, WMF, HPGL (PLT), TXT, RTF and DOCX, and bitmaps.
       <br><br>
-      Save and export: <code>.tdraw</code> (JSON), <code>.cdr</code> (versions 7 to 27), SVG, PDF, AI, EPS, DXF, EMF, WMF, PLT, PSD, HTML, PNG, JPEG, WebP, GIF, BMP and TIFF.
+      Save and export: <code>.tdraw</code> (compressed JSON; a file saved by TraceDraw 0.47 or newer opens only in 0.47 or newer), <code>.cdr</code> (versions 7 to 27), SVG, PDF, AI, EPS, DXF, EMF, WMF, PLT, PSD, HTML, PNG, JPEG, WebP, GIF, BMP and TIFF.
     </td>
     <td width="33%" valign="top">
       <h4>The everyday essentials</h4>
-      Undo and redo with a history panel &middot; duplicate, clone and step and repeat &middot; align, distribute and order &middot; object and colour styles &middot; find and replace &middot; customisable shortcuts and workspaces &middot; an interface size setting &middot; Options with every preference &middot; a splash screen and a welcome screen with recent drawings and templates.
+      Undo and redo with a history panel &middot; duplicate, clone and repeat copies &middot; align, distribute and order &middot; object and colour styles &middot; find and replace &middot; customisable shortcuts and workspaces &middot; an interface size setting &middot; Options with every preference &middot; a splash screen and a welcome screen with recent drawings and templates.
     </td>
   </tr>
 </table>
@@ -231,7 +240,8 @@ or the moon button at the right of the status bar).
 
 ## .cdr files, read and written independently
 
-TraceDraw's `.cdr` support lives in its own crate (`crates/cdr`), written
+TraceDraw's `.cdr` support lives in its own crates (`crates/cdr-format`
+for the file structure, `crates/cdr` for reading and writing drawings), written
 from public format notes and from files we own, never from decompiled
 programs or other implementations. `CLEANROOM.md` records where each piece
 of format knowledge comes from and when; `docs/cdr-format.md` records what
@@ -252,10 +262,7 @@ is confirmed and what is still assumed.
 - **Writing back, in the version you need:** drawings save as `.cdr` in
   any version from 7 to 27, as well as in TraceDraw's own JSON format. A
   drawing opened from a `.cdr` saves in its own version unless you pick
-  another. Save As offers versions 14 to 27, the ones checked to open in
-  the program that wrote the samples; versions 7 to 13 are experimental
-  and are not saved (a drawing opened from one asks which checked version
-  to save in). From version 16 the file can carry the drawing's CMYK
+  another. Save As offers every version from 7 to 27. From version 16 the file can carry the drawing's CMYK
   colour profile and the fonts its text uses (when their licence allows
   embedding).
 - **Never crashes on a file:** `tracedraw-cli stress` runs mutation tests
@@ -273,7 +280,7 @@ MCP server all go through it, so anything a click can do, a script can do.
 tracedraw-cli convert poster.cdr poster.pdf
 TRACEDRAW_DPI=300 tracedraw-cli convert poster.tdraw poster.png
 TRACEDRAW_PAGE=2 tracedraw-cli convert brochure.cdr page2.png
-TRACEDRAW_CDR_VERSION=15 tracedraw-cli convert logo.svg logo.cdr   # .cdr version 15 (14 to 27)
+TRACEDRAW_CDR_VERSION=15 tracedraw-cli convert logo.svg logo.cdr   # .cdr version 15 (7 to 27)
 
 # A PDF with a bookmark per page that cannot be printed or copied
 # without its permissions password
@@ -284,6 +291,7 @@ TRACEDRAW_PDF_BOOKMARKS=1 TRACEDRAW_PDF_OWNER_PASSWORD=boss \
 tracedraw-cli inspect drawing.cdr
 tracedraw-cli info drawing.cdr
 TRACEDRAW_OBJECTS=1 tracedraw-cli info drawing.cdr   # every object
+tracedraw-cli check saved.cdr   # what a reader would stumble on in a file TraceDraw wrote
 
 # Serve the editor to an AI agent over the Model Context Protocol
 tracedraw --mcp
@@ -343,7 +351,7 @@ see [`docs/behavior/ai-drawing.md`](docs/behavior/ai-drawing.md).
 ## Get started
 
 ```sh
-git clone https://github.com/igtoth/tracedraw
+git clone https://github.com/tracedraw/tracedraw
 cd tracedraw
 cargo run --release -p tracedraw                  # the editor
 cargo run --release -p tracedraw -- drawing.cdr   # open a file
@@ -355,8 +363,8 @@ editor needs X11 or Wayland, libxkbcommon and Mesa.
 
 ### What it runs on
 
-- **Windows 10 and 11** (x64), **macOS 11 or later** (Apple silicon and
-  Intel), **Linux** (x86_64 and arm64, glibc 2.35 or later: Ubuntu 22.04,
+- **Windows 10 and 11** (x64; 32-bit Windows 10 with the `x86` files),
+  **macOS 11 or later** (Apple silicon and Intel), **Linux** (x86_64 and arm64, glibc 2.35 or later: Ubuntu 22.04,
   Debian 12, Fedora 36 or newer) and any current browser. Older Linux
   distributions can use the browser version.
 - **Older computers too:** a graphics card with OpenGL 2.1 is enough. An
@@ -367,7 +375,7 @@ editor needs X11 or Wayland, libxkbcommon and Mesa.
   estimated: [`docs/system-requirements.md`](docs/system-requirements.md).
 - If the window still does not come up, start it with
   `tracedraw --renderer=gl` and send `tracedraw.log` (in the settings folder) in
-  [an issue](https://github.com/igtoth/tracedraw/issues/new?template=bug_report.yml).
+  [an issue](https://github.com/tracedraw/tracedraw/issues/new?template=bug_report.yml).
 
 New contributors and AI agents: start with [`AGENTS.md`](AGENTS.md), then
 [`CONTRIBUTING.md`](CONTRIBUTING.md) and the pages in [`docs/`](docs/).
@@ -380,7 +388,7 @@ New contributors and AI agents: start with [`AGENTS.md`](AGENTS.md), then
 > and gaps listed in [`docs/blueprint-gaps.md`](docs/blueprint-gaps.md).
 > [`docs/features.md`](docs/features.md) is the honest, row-by-row picture.
 > Issues with a sample file and a screenshot are the most helpful; there
-> are [templates](https://github.com/igtoth/tracedraw/issues/new/choose)
+> are [templates](https://github.com/tracedraw/tracedraw/issues/new/choose)
 > for bugs, `.cdr` files and feature requests.
 >
 > Issues are looked at every day, in the maintainer's spare time, so
@@ -392,19 +400,19 @@ New contributors and AI agents: start with [`AGENTS.md`](AGENTS.md), then
 Anyone who wants to help is welcome, with or without writing code:
 
 - **Try it on your own files.** A `.cdr` that does not open right, sent
-  in [an issue](https://github.com/igtoth/tracedraw/issues/new?template=cdr_file.yml),
+  in [an issue](https://github.com/tracedraw/tracedraw/issues/new?template=cdr_file.yml),
   improves the reader more than anything else (only files you may share).
   Files of versions 4 and 6, and old files that use perspective,
   pattern or PostScript fills, with a picture of how they look, are the
   most wanted: those are the parts still read from few samples.
-- **Open our test files in your copy of the reference program.** The
-  [`interop` branch](https://github.com/igtoth/tracedraw/tree/interop/bundles)
+- **Open our test files in the program you use for `.cdr` files.** The
+  [`interop` branch](https://github.com/tracedraw/tracedraw/tree/interop/bundles)
   holds small `.cdr` files saved by TraceDraw in versions 7 to 15; telling
   us which ones open (and which do not) is what lets TraceDraw save
   versions 7 to 13 again. Releases from 2021 on open version 15 and newer only,
-  so versions 7 to 14 need CorelDRAW 2020 or older.
+  so versions 7 to 14 need a release from 2020 or older.
 - **Report bugs** with the steps and a screenshot
-  ([bug report](https://github.com/igtoth/tracedraw/issues/new?template=bug_report.yml)).
+  ([bug report](https://github.com/tracedraw/tracedraw/issues/new?template=bug_report.yml)).
 - **Review a translation** in your language (`apps/tracedraw/lang/`):
   native speakers catch what no test does.
 - **Pick a row** of [`docs/features.md`](docs/features.md) that is not
@@ -413,7 +421,7 @@ Anyone who wants to help is welcome, with or without writing code:
 - **Package it** for the system you use (Flatpak, Homebrew, winget, AUR).
 
 **A contributors team is planned:** people who help regularly (fixes,
-sample files, tests against the reference program, translations) will
+sample files, tests of `.cdr` files, translations) will
 be invited into a team, with a ranking that shows who helped most. If
 you would like to be part of it, say so in an issue.
 
@@ -423,50 +431,65 @@ sign-off line and how pull requests are checked.
 ## Downloads
 
 Each version gets a release with installers for every platform: take the
-[latest release](https://github.com/igtoth/tracedraw/releases/latest)
+[latest release](https://github.com/tracedraw/tracedraw/releases/latest)
 (what changed is in [`CHANGELOG.md`](CHANGELOG.md)). Every push to `main`
 also refreshes the **Nightly build** pre-release. `<version>` in the file
 names is the version number.
 
+On Windows, TraceDraw is also in the
+[Microsoft Store](https://apps.microsoft.com/detail/9P50L12VHF33): signed by the Store, no SmartScreen
+warning, and updated by Windows on its own. Each version has to pass the
+Store's certification first, which takes from a few hours to a few days,
+so the Store version is usually one or more releases behind the
+[latest release](https://github.com/tracedraw/tracedraw/releases/latest) here.
+For the newest fixes, take the installer below.
+
 | Platform | Files |
 |---|---|
-| Windows (x64) | `tracedraw-<version>-windows-x86_64-setup.exe` (installer), `tracedraw-<version>-windows-x86_64-portable.zip` (keeps its settings in the `tracedraw-settings` folder beside the program; not signed yet: if SmartScreen warns, More info > Run anyway) |
+| Windows (x64) | [Microsoft Store](https://apps.microsoft.com/detail/9P50L12VHF33) (signed, may lag behind the latest release), `tracedraw-<version>-windows-x86_64-setup.exe` (installer), `tracedraw-<version>-windows-x86_64-portable.zip` (keeps its settings in the `tracedraw-settings` folder beside the program; not signed yet: if SmartScreen warns, More info > Run anyway); with Chocolatey, `choco install tracedraw` once the package is accepted in its community repository (the release carries `tracedraw.<version>.nupkg`) |
+| Windows 10 (32-bit) | `tracedraw-<version>-windows-x86-setup.exe` (for 32-bit Windows; on 64-bit Windows it asks first and the x64 files are better), `tracedraw-<version>-windows-x86-portable.zip`. Not in the Microsoft Store. A 32-bit program can use at most 2 GB of memory, so very large drawings are better opened on 64-bit Windows |
 | macOS (Apple silicon, Intel) | `tracedraw-<version>-macos-arm64.dmg`, `tracedraw-<version>-macos-x86_64.dmg` (unsigned for now: right-click, Open) |
-| Linux (x86_64, arm64) | `.deb` (`_amd64` or `_arm64`), `tracedraw-<version>-linux-amd64.AppImage` or `-linux-arm64.AppImage`, `tracedraw-<version>-linux-x86_64.tar.gz` or `-linux-arm64.tar.gz` |
-| Web | no download: [open it in the browser](https://igtoth.github.io/tracedraw/), nothing to install |
-| Android (arm64, armv7, x86_64) | no download yet: build it with `scripts/android.sh`, which needs an Android SDK with the NDK and `cargo install cargo-apk`; the APK lands in `target/release/apk/tracedraw.apk` |
+| Linux (x86_64, arm64) | `.deb` (`_amd64` or `_arm64`), `tracedraw-<version>-linux-amd64.AppImage` or `-linux-arm64.AppImage`, `tracedraw-<version>-linux-x86_64.tar.gz` or `-linux-arm64.tar.gz`, `tracedraw-<version>-linux-x86_64.flatpak` (`flatpak install --user <file>`; the release also carries the Flathub manifest). The AppImage carries its update information, so AppImageUpdate and Gear Lever update it from the release's `.AppImage.zsync` file, downloading only what changed |
+| Web | no download: [open it in the browser](https://tracedraw.github.io/tracedraw/), nothing to install |
+| Android (64-bit ARM; x86_64 Chromebooks) | `tracedraw-<version>-android-arm64-v8a-debug.apk` (`-x86_64-` for Chromebooks) in the releases and the nightly, signed with a debug key (remove the installed one before installing a build of another run); `scripts/android/build.sh` builds debug-signed APKs and an App Bundle for Google Play, and CI keeps them with each run as the `android-apk` and `android-aab` artifacts after starting the app on Android emulators (see [`docs/behavior/android.md`](docs/behavior/android.md) and [`docs/android-play.md`](docs/android-play.md)) |
+| Web | no download: [open it in the browser](https://tracedraw.github.io/tracedraw/), nothing to install; on an Android tablet, an iPad or a desktop the browser can also install the page as an app that opens full screen and starts offline (see [`docs/behavior/web.md`](docs/behavior/web.md), Installing on a tablet) |
 
 Each download includes `tracedraw-cli` next to the editor. Packaging sources
 are in [`packaging/`](packaging/); the browser build is described in
-[`docs/behavior/web.md`](docs/behavior/web.md), and the phone layout the
-Android build uses in [`docs/behavior/mobile.md`](docs/behavior/mobile.md).
+[`docs/behavior/web.md`](docs/behavior/web.md).
 
 ## Code signing policy
 
 Windows releases are built from this repository by GitHub Actions
 ([`build.yml`](.github/workflows/build.yml)) and nowhere else. The
 downloads are not code-signed yet: if SmartScreen warns, More info > Run
-anyway. The Microsoft Store version, once published, is signed by the
+anyway. The [Microsoft Store](https://apps.microsoft.com/detail/9P50L12VHF33) version is signed by the
 Store. When a certificate is set up, a signing request is made only for a
 version tag, and only after an approver accepts it; how the build signs
 is described in [`docs/code-signing.md`](docs/code-signing.md).
 
 | Role | Members |
 |---|---|
-| Committers and reviewers | [Ighor Toth](https://github.com/igtoth) |
-| Approvers | [Ighor Toth](https://github.com/igtoth) |
+| Committers and reviewers | the organization's `maintainers` and `reviewers` teams (see [Roles](CONTRIBUTING.md#roles)) |
+| Approvers | the owners of the [`tracedraw`](https://github.com/tracedraw) organization |
 
 Privacy policy: this program will not transfer any information to other
 networked systems unless specifically requested by the user or the person
 installing or operating it. TraceDraw opens web pages (help, the project's
-pages) in your browser only when you choose to. The full policy is in
+pages) in your browser only when you choose to. The one automatic
+connection is the update check: the first time TraceDraw starts it asks
+whether to check for updates (Always check / Never check) and connects to
+nothing before you answer; with Always check it asks GitHub
+(`api.github.com`) once a day whether a newer release is out, sending no
+data about you or your drawings. Turn it off at any time in Tools >
+Options > Global > General, "Check for updates at start". The full policy is in
 [`PRIVACY.md`](PRIVACY.md).
 
 ## Documentation
 
 | Document | What it covers |
 |---|---|
-| [User Help](https://igtoth.github.io/tracedraw/help/en/index.html) | the manual, with screenshots; every "?" button and F1 in the app open its page in the interface language |
+| [User Help](https://tracedraw.github.io/tracedraw/help/en/index.html) | the manual, with screenshots; every "?" button and F1 in the app open its page in the interface language |
 | [`docs/features.md`](docs/features.md) | every capability and its status |
 | [`docs/behavior/`](docs/behavior/) | defaults, shortcuts and formulas, tool by tool |
 | [`docs/architecture.md`](docs/architecture.md) | crates, data flow, units, rendering, text |
@@ -479,6 +502,7 @@ pages) in your browser only when you choose to. The full policy is in
 | [`CLEANROOM.md`](CLEANROOM.md) | where the knowledge of every file format comes from |
 | [`ATTRIBUTION.md`](ATTRIBUTION.md) | bundled assets and their licenses |
 | [`CONTRIBUTORS.md`](CONTRIBUTORS.md) | the people who contributed code, tests and reports |
+| [`MAINTAINING.md`](MAINTAINING.md) | how reviewers and maintainers triage issues, read attachments, review and merge |
 
 ---
 
@@ -486,9 +510,10 @@ pages) in your browser only when you choose to. The full policy is in
 
 TraceDraw is dual-licensed under [MIT](LICENSE-MIT) or
 [Apache-2.0](LICENSE-APACHE), at your option.
-Copyright &copy; 2026 Ighor Toth and the TraceDraw contributors.
+Copyright &copy; 2026 TraceDraw members and contributors.
 
-Written by Ighor Toth with Claude Code, Anthropic's AI coding assistant,
+Created by Ighor Toth, founder and lead maintainer. Written by the
+TraceDraw maintainers with Claude Code, Anthropic's AI coding assistant,
 as co-author: commits it helped write carry a `Co-Authored-By` line, and
 the About box says so too.
 
@@ -500,8 +525,22 @@ is listed with its author, source and license in
 [ATTRIBUTION.md](ATTRIBUTION.md). Every drawing in the screenshots was made
 for TraceDraw.
 
-<sub>TraceDraw is an independent open-source project, not affiliated with,
-sponsored by or endorsed by any other software vendor. Trademarks and
+## Star History
+
+<a href="https://www.star-history.com/?repos=tracedraw%2Ftracedraw&type=date&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=tracedraw/tracedraw&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=tracedraw/tracedraw&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=tracedraw/tracedraw&type=date&legend=top-left" />
+ </picture>
+</a>
+
+<sub>TraceDraw is an independent open-source project, not affiliated
+with, endorsed by or sponsored by Corel Corporation, Alludo or any other
+software vendor. CorelDRAW is a registered trademark of Corel Corporation.
+<code>.cdr</code> support is implemented independently, from public format
+notes and files the contributors own, for interoperability; no code,
+documentation or content of any other product is used. Other trademarks and
 product names belong to their owners; file format names such as
 <code>.cdr</code>, <code>.ai</code>, <code>.psd</code> and <code>.pdf</code>
 are used only to describe the files TraceDraw reads and writes. The

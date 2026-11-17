@@ -33,14 +33,14 @@ Status tracked in `docs/features.md`.
 - PDF export (vector, CMYK, separations), EPS, AI (PDF-based), bitmaps
 - Print to PDF, print preview, print merge
 - PDF/X-1a, X-3 and X-4 output (done)
-- Publish to PDF with document information, bookmarks and password protection (AES-256); protected PDFs of every revision open (done; see `behavior/publish-to-pdf.md`)
+- Export as PDF with document information, bookmarks and password protection (AES-256); protected PDFs of every revision open (done; see `behavior/publish-to-pdf.md`)
 - `.cdr` write in versions 7 to 27, chosen when saving (RIFF, ZIP and redirected ZIP layouts; read back here and opened by another public reader) (done)
 
 ## M4 Platform (done)
 - CLI batch convert (done); installers for Windows, macOS, Linux (done)
 - Signed Windows downloads and a Microsoft Store package: the build signs through SignPath or Azure Artifact Signing and packs an MSIX once the accounts are set up (build ready; signing waits for the accounts, see `code-signing.md`)
 - JavaScript automation with macro recording (done)
-- User interface in 18 languages (done)
+- User interface in 19 languages (done)
 - JSON control channel and MCP server (`tracedraw --mcp`, see `behavior/mcp.md`) (done)
 - WebAssembly build: the same editor in the browser (WebGL 2), published to GitHub Pages and attached to releases (done; see `behavior/web.md`)
 

@@ -29,6 +29,11 @@ page dans la liste de gauche.
 - [[options.full_screen_preview]] : [[options.show_page_border]].
 - [[options.wheel_default_action]] : [[options.wheel_zoom]] (au départ) ou
   [[options.wheel_scroll]].
+- [[options.open_view]] : [[options.open_view_page]] (au départ),
+  [[options.open_view_objects]], [[options.open_view_width]],
+  [[options.open_view_height]], [[options.open_view_actual]], [[options.open_view_percent]] ou
+  [[options.open_view_saved]] (la page, l'endroit et le zoom gardés à chaque
+  enregistrement d'un fichier TraceDraw).
 - [[options.ruler_calibration]] : tenez une règle contre l'écran et changez
   la [[options.screen_resolution]] jusqu'à ce que les graduations
   correspondent, afin que le zoom à 100 % montre les tailles réelles.
@@ -109,6 +114,7 @@ La page a cinq onglets.
 - [[options.paragraph_text]] : [[menu.text.show_text_frames]],
   [[menu.text.use_hyphenation]] et les [[options.hyphenation_patterns]]
   (intégrés, ou un dictionnaire de césure de votre langue).
+  - [[options.default_tab_spacing]]: où va <kbd>Tab</kbd> dans un paragraphe sans taquets propres (12,7 mm, un demi-pouce).
 - [[docker.fonts]] : [[options.show_recent_fonts]] en haut des listes de
   polices, le [[options.recent_font_count]] (5, jusqu'à 20) et la
   [[options.font_sample_size]].
@@ -119,3 +125,13 @@ La page a cinq onglets.
   [Dictionnaires](../text/writing-tools.md#dictionaries).
 - [[dialog.autocorrect]] : ce qui est corrigé à la frappe ; voir
   [Correction automatique](../text/writing-tools.md#autocorrect).
+
+## [[benchmark.title]] {#benchmark}
+
+[[menu.help > menu.help.benchmark]]: [[menu.help.benchmark_tip]]
+
+[[benchmark.intro]]
+
+[[benchmark.compare_how]]
+
+[[options.light_zoom]]: [[options.light_zoom_tip]]

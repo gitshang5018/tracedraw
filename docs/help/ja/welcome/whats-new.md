@@ -5,19 +5,35 @@ TraceDraw の各バージョンでは機能と修正が加わります。この�
 
 ## プログラム内で新機能を見る {#in-the-program}
 
-- [[menu.help > menu.help.whats_new]] を選ぶと、このバージョンのニュースが
-  載ったウェルカム画面の新機能ページが開きます。
+- [[menu.help > menu.help.whats_new]] を選ぶと、ウェルカム画面の新機能ページが
+  開きます。最近の 10 バージョンが新しい順に、それぞれの日付と短いタイトル
+  つきで並びます。バージョンをクリックすると、変更点の短いまとめが読めます。
+  最新のバージョンは最初から開いています。まとめの下の
+  **もっと詳しく知りたいですか？** を押すと、そのバージョンの GitHub の
+  ページが開き、すべての変更の一覧を見られます。
 - [[menu.help > menu.help.highlight_whats_new]] をオンにすると、このバージョン
   の新しいものがメニューで示されます。新しいコマンドの末尾、そこへ通じる
   サブメニューの矢印の横、新しいコマンドを含むメニューのタイトルの上に小さな
   点が付きます。コマンドをオフにすると印は消え、TraceDraw を次に起動したとき
   にはコマンドは再びオフになっています。
 - 各バージョンの変更点の完全な一覧は、プロジェクトの
-  [変更履歴](https://github.com/igtoth/tracedraw/blob/main/CHANGELOG.md)
+  [変更履歴](https://github.com/tracedraw/tracedraw/blob/main/CHANGELOG.md)
   にあります。
 
 ## 最近のバージョンの主な新機能 {#highlights}
 
+- **立体化、シャドウ、多数の修正。** [[menu.effects > menu.effects.extrude]] は空間で回転させた立体をその場に保ち、テキストのベベルは折り重ならなくなりました。シャドウはリングの穴を保ち、立体化したオブジェクトからは立体部分と一緒に落ちます。[[menu.edit > menu.edit.select_similar]] はグループの中も調べ、[[menu.bitmaps > menu.bitmaps.convert_to_bitmap]] は画像の重なり順の位置を保ちます。[[menu.view > menu.view.navigator]] は N キーのメニューコマンドになりました。.cdr ファイルは表とともに開き、タイ語のファイル名が正しく表示されます。
+- **CNC ツールパス、エクスポート、選択。** [[menu.tools > menu.tools.tracecut]] は CNC ルーター用の G コードを作成し、ハトメ、指継ぎの箱、折り曲げトレイを描きます。[[menu.file > menu.file.export]] は先にファイルを尋ね、その後で形式のオプションを表示し、[[menu.file > menu.file.export_with_options]] は常にオプションを表示します。[[menu.edit > menu.edit.select_similar]] と [[menu.edit > menu.edit.invert_selection]] で選択を変えられ、[[menu.object > menu.object.insert > menu.object.add_dimensions]] で選択範囲に寸法を付けられます。プロシージャル塗りつぶし、OpenType ボタン、ラオス語のインターフェースも加わりました。
+- **見開きページとリンクされたテキスト。** [[menu.layout > menu.layout.facing_pages]] でページを見開きで並べて表示し、[[menu.text > menu.text.link_content]] でテキストをリンクして 1 つへの入力をほかにも反映します。複数ページの PDF は読み込むページを尋ね、[[menu.edit > menu.edit.step_and_repeat]] でページをコピーで埋められます。
+- **タッチとスマートフォン。** 標準ツールバーの Shift、Ctrl、Alt ボタンは指のために押されたままになります。Android ではインターフェースがカメラの切り欠きや角の丸みを避けます。iPad の Safari で Apple Pencil が使えます。
+- **ファイル。** .cdr ファイルは重なった曲線の塗りつぶし規則を保ち、タブ位置、段組みのテキスト、全ページ共通のガイドライン、マスターページのオブジェクトを保って開きます。
+- **画像、印刷、作業領域。** トリミングツールの画像ピクセルのトリミングと [[menu.bitmaps > menu.bitmaps.crop_to_frame]] で画像のピクセルを切り取れます。グレースケールと逆順で印刷できます。[[menu.view > menu.view.scrollbars]] でスクロールバーを隠せます。
+- **TraceCut。** [[menu.tools > menu.tools.tracecut]] でカッティングプロッター向けのツールが開きます。プロッター出力、カットライン、ネスティング、計測があります。[TraceCut](../objects/tracecut.md) を参照してください。
+- **キーボード、スマートフォン、ペン。** メニューとリストをキーボードで操作できます。Android のスマートフォンではインターフェースが画面に収まり、ペンを使っている間は置いた手で描画されません。Linux の Wayland でタブレットのペンが使えます。
+- **ファイル。** .cdr ファイルはタブ位置、マスターページ、グラデーション、変形を保って開きます。PDF の画像はフル解像度で読み込まれ、JPEG と TIFF は CMYK で書き出せます。
+- **オブジェクトのサムネール。** [[docker.objects]] パネルは各オブジェクトを
+  名前の横に小さく描いて表示します。リスト上の Ctrl+ホイールか下部の
+  スライダーでサイズを変えられます。[オブジェクトとレイヤーの整理](../objects/objects-and-layers.md#objects-docker)を参照。
 - **お使いの言語でヘルプ。** すべての **?** ボタンと <kbd>F1</kbd> キーで、
   目の前のダイアログボックス、パネル、ツールについてのこのヘルプのページが、
   TraceDraw に設定された言語で開きます。

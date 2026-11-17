@@ -1,5 +1,7 @@
 # Werkzeugoptionen
 
+> *Maschinelle Übersetzung: Diese Seite kann hinter der englischen Fassung zurückliegen.*
+
 [[menu.tools > menu.tools.options > menu.tools.options_tools]] legt fest, wie
 sich Werkzeuge verhalten und welche neuen Objekte sie zeichnen. Die meisten
 dieser Werte finden Sie auch in der Eigenschaftsleiste des jeweiligen
@@ -16,6 +18,18 @@ Werkzeugs.
   aus, die er nur berührt; mit <kbd>Alt</kbd> werden dann nur die vollständig
   umschlossenen ausgewählt.
 
+- [[options.ctrl_shift_keys]] [[options.keys_traditional]]: [[options.keys_traditional_tip]]
+  [[options.keys_windows]]: [[options.keys_windows_tip]]
+
+## Radierer {#eraser}
+
+![Die Optionen des Radierers](../../img/customize-tool-options-eraser.png)
+
+[[options.eraser_width]] (anfangs 6,35 mm) sowie [[options.eraser_round]] oder
+[[options.eraser_square]].
+
+[[options.eraser_reduce_nodes]]: [[options.eraser_reduce_nodes_tip]]
+
 ## Zoom und Schwenken {#zoom-pan}
 
 ![Die Optionen für Zoom und Schwenken](../../img/customize-tool-options-zoom-pan.png)
@@ -23,15 +37,46 @@ Werkzeugs.
 - [[options.zoom_right_button]]: [[options.zoom_out]] (anfangs) oder das
   [[options.context_menu]].
 - [[options.wheel_action]]: [[options.wheel_zoom]] oder [[options.wheel_scroll]].
+- [[options.zoom_relative_1to1]] (ein): Zoom 100 % ist die echte Größe bei der
+  kalibrierten Bildschirmauflösung; aus sind es 96 Pixel pro Zoll.
+- [[options.wheel_center_mouse]] (aus): ein Zoom mit dem Mausrad bringt die Stelle unter
+  dem Zeiger in die Mitte der Ansicht, den Zeiger mit.
+- [[options.smooth_zoom]] (an): eine Rastung des Mausrads zoomt in einer kurzen
+  Gleitbewegung statt in einem Sprung; je schneller Sie das Rad drehen, desto
+  kürzer. Aus: jede Rastung zoomt sofort.
+- [[options.light_zoom]]: [[options.light_zoom_tip]]
+- [[options.wheel_zoom_step]] wie stark eine Rastung hinein- oder herauszoomt,
+  von 1 bis 100 Prozent (anfangs 15 %).
+- [[options.pan_right_button]] [[options.zoom_out]] oder das [[options.context_menu]] (anfangs).
+- [[options.pan_inertia]] (aus): ein Verschieben, das Sie loslassen, während sich
+  der Zeiger noch bewegt, lässt die Ansicht in dieselbe Richtung weitergleiten
+  und sanft auslaufen. Ein Klick oder das Mausrad hält sie an. Gilt für das
+  Verschiebewerkzeug, die mittlere Maustaste und zwei Finger.
 
-## Kurven {#curves}
+## Freihand/Bézier {#curves}
 
-![Die Optionen der Kurvenwerkzeuge](../../img/customize-tool-options-curves.png)
+![Die Optionen der Werkzeuge Freihand/Bézier](../../img/customize-tool-options-curves.png)
 
 - [[options.freehand_smoothing]]: 0 bis 100 (anfangs 50).
 - [[options.join_within]]: wie nah an einem Endknoten eine Linie beginnen muss,
   um die Kurve fortzusetzen (anfangs 5 Bildschirmpixel). Siehe
   [Eine Kurve fortsetzen](../lines-shapes/lines.md#continue).
+
+- [[options.pen_preview]] und [[options.pen_auto_add_delete]] (beide an) für
+  das Werkzeug [[tool.pen]]; siehe [Stift](../lines-shapes/lines.md#pen).
+- [[options.pen_tablet]]: [[options.pen_pressure]] (an); siehe
+  [Mit einem Grafiktablett zeichnen](../lines-shapes/pen-pressure.md).
+
+- [[options.corner_threshold]]: [[options.corner_threshold_tip]]
+- [[options.straight_threshold]]: [[options.straight_threshold_tip]]
+
+## Formerkennung {#shape-recognition}
+
+![Die Optionen des Werkzeugs Formerkennung](../../img/customize-tool-options-shape-recognition.png)
+
+[[recognize.recognition]] und [[recognize.smoothing]] des Werkzeugs
+Formerkennung, von aus bis höchste Stufe, wie in seiner
+Eigenschaftsleiste.
 
 ## Rechteck {#rectangle}
 
@@ -49,11 +94,20 @@ Eckengrößen und [[toolbar.corners_together]]. [[options.scale_corners]]:
 [[options.ellipse]], [[options.pie]] oder [[options.arc]], mit
 [[options.starting_angle]] und [[options.ending_angle]].
 
+[[options.arc_direction]]: [[options.counterclockwise]] / [[options.clockwise]].
+[[options.arc_direction_desc]]
+
 ## Polygon {#polygon}
 
 ![Die Optionen des Polygonwerkzeugs](../../img/customize-tool-options-polygon.png)
 
 [[options.number_of_points]] und [[options.sharpness]].
+
+## Millimeterpapier {#graph-paper}
+
+![Die Optionen des Millimeterpapierwerkzeugs](../../img/customize-tool-options-graph-paper.png)
+
+[[options.rows]] und [[options.columns]] des Rasters.
 
 ## Spirale {#spiral}
 
@@ -62,11 +116,8 @@ Eckengrößen und [[toolbar.corners_together]]. [[options.scale_corners]]:
 [[options.revolutions]] sowie [[options.symmetrical_spiral]] oder
 [[options.logarithmic_spiral]].
 
-## Millimeterpapier {#graph-paper}
-
-![Die Optionen des Millimeterpapierwerkzeugs](../../img/customize-tool-options-graph-paper.png)
-
-[[options.rows]] und [[options.columns]] des Rasters.
+[[options.spiral_expansion]]: [[options.spiral_expansion_tip]]
+[[options.spiral_preview_tip]]
 
 ## Tabelle {#table}
 
@@ -74,9 +125,37 @@ Eckengrößen und [[toolbar.corners_together]]. [[options.scale_corners]]:
 
 [[options.rows]] und [[options.columns]] neuer Tabellen.
 
-## Radierer {#eraser}
+## Bemaßung {#dimension}
 
-![Die Optionen des Radierers](../../img/customize-tool-options-eraser.png)
+![Die Optionen des Bemaßungswerkzeugs](../../img/customize-tool-options-dimension.png)
 
-[[options.eraser_width]] (anfangs 6,35 mm) sowie [[options.eraser_round]] oder
-[[options.eraser_square]].
+Wie die Beschriftung neuer Bemaßungen aussieht: [[dimension.precision]],
+[[dimension.units]], [[dimension.show_units]], [[dimension.prefix]] und
+[[dimension.suffix]]. Bereits gezeichnete Bemaßungen behalten ihre
+Beschriftung; wählen Sie eine aus und ändern Sie sie in der Eigenschaftsleiste.
+
+[[options.dimension_style]]: [[options.decimal]] / [[options.fractional]].
+[[options.dimension_style_tip]]
+
+## Winkelbemaßung {#angular-dimension}
+
+[[dimension.precision]], [[dimension.show_units]], [[dimension.prefix]] and
+[[dimension.suffix]] of new angular dimensions.
+[[options.angular_units_tip]]
+
+## Verbindungslinie {#connector}
+
+![Die Optionen des Verbindungswerkzeugs](../../img/customize-tool-options-connector.png)
+
+[[connector.radius]] neuer abgerundeter Verbindungslinien (anfangs 3 mm).
+
+[[options.connector_gap]]: [[options.connector_gap_tip]]
+
+[[options.connector_geometric_anchors]]: [[options.connector_geometric_anchors_tip]]
+
+## Maschenfüllung {#mesh-fill}
+
+![Die Optionen der Maschenfüllung](../../img/customize-tool-options-mesh-fill.png)
+
+[[options.columns]] und [[options.rows]] des Rasters, mit dem eine neue
+Maschenfüllung beginnt (anfangs 2 mal 2).

@@ -27,15 +27,26 @@ pub struct ParagraphFormat {
     pub word_spacing_pct: f64,
     pub space_before: f64,
     pub space_after: f64,
+    /// In percent of the character height (#2613); not in older files.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub space_before_pct: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub space_after_pct: Option<f64>,
     pub first_line_indent: f64,
     pub left_indent: f64,
     pub right_indent: f64,
     pub bullets: bool,
     pub bullet_char: String,
     pub bullet_indent: f64,
+    /// Numbering, font, size, shift and indents of the bullet (#1443).
+    #[serde(skip_serializing_if = "crate::document::BulletStyle::is_plain")]
+    pub bullet: crate::document::BulletStyle,
     pub drop_cap_lines: u32,
-    pub tabs: Vec<f64>,
+    pub tabs: Vec<crate::document::TabStop>,
     pub hyphenate: bool,
+    /// Left to right or right to left; not in older files.
+    #[serde(skip_serializing_if = "crate::document::TextDirection::is_left_to_right")]
+    pub direction: crate::document::TextDirection,
 }
 
 impl Default for ParagraphFormat {
@@ -55,15 +66,19 @@ impl ParagraphFormat {
             word_spacing_pct: p.word_spacing_pct,
             space_before: p.space_before,
             space_after: p.space_after,
+            space_before_pct: p.space_before_pct,
+            space_after_pct: p.space_after_pct,
             first_line_indent: p.first_line_indent,
             left_indent: p.left_indent,
             right_indent: p.right_indent,
             bullets: p.bullets,
             bullet_char: p.bullet_char.clone(),
             bullet_indent: p.bullet_indent,
+            bullet: p.bullet.clone(),
             drop_cap_lines: p.drop_cap_lines,
             tabs: p.tabs.clone(),
             hyphenate: p.hyphenate,
+            direction: p.direction,
         }
     }
 
@@ -76,15 +91,19 @@ impl ParagraphFormat {
         p.word_spacing_pct = self.word_spacing_pct;
         p.space_before = self.space_before;
         p.space_after = self.space_after;
+        p.space_before_pct = self.space_before_pct;
+        p.space_after_pct = self.space_after_pct;
         p.first_line_indent = self.first_line_indent;
         p.left_indent = self.left_indent;
         p.right_indent = self.right_indent;
         p.bullets = self.bullets;
         p.bullet_char = self.bullet_char.clone();
         p.bullet_indent = self.bullet_indent;
+        p.bullet = self.bullet.clone();
         p.drop_cap_lines = self.drop_cap_lines;
         p.tabs = self.tabs.clone();
         p.hyphenate = self.hyphenate;
+        p.direction = self.direction;
         self.align
     }
 
@@ -107,15 +126,19 @@ impl ParagraphFormat {
             word_spacing_pct,
             space_before,
             space_after,
+            space_before_pct,
+            space_after_pct,
             first_line_indent,
             left_indent,
             right_indent,
             bullets,
             bullet_char,
             bullet_indent,
+            bullet,
             drop_cap_lines,
             tabs,
-            hyphenate
+            hyphenate,
+            direction
         );
     }
 }
@@ -163,10 +186,19 @@ fn span_at(spans: &[TextSpan], at: usize) -> Option<&TextSpan> {
     None
 }
 
-/// The format a paragraph starting at `start` carries, if any.
+/// The format a paragraph starting at `start` carries, if any. A text
+/// with no characters yet (a frame just drawn) keeps it on its first
+/// span, where [`edit_paragraph_formats`] puts it (#1852).
 fn carried(spans: &[TextSpan], start: usize) -> Option<&ParagraphFormat> {
     span_at(spans, start)
         .or_else(|| start.checked_sub(1).and_then(|p| span_at(spans, p)))
+        .or_else(|| {
+            spans
+                .iter()
+                .all(|sp| sp.text.is_empty())
+                .then(|| spans.first())
+                .flatten()
+        })
         .and_then(|sp| sp.paragraph.as_deref())
 }
 
@@ -426,5 +458,77 @@ mod tests {
         assert!(st
             .iter()
             .all(|(a, p)| *a == TextAlign::Center && p.space_after == 2.0));
+    }
+
+    /// Tab stops keep their kind and leader through a save; files from
+    /// before tab kinds held bare numbers, read as left stops (#1852).
+    #[test]
+    fn tab_stops_save_their_kind_and_read_old_numbers() {
+        use crate::document::{normalized_tabs, TabKind, TabStop};
+        let p = ParagraphStyle {
+            tabs: vec![
+                TabStop::left(5.0),
+                TabStop {
+                    pos: 40.0,
+                    kind: TabKind::Decimal,
+                    leader: Some('.'),
+                },
+            ],
+            ..ParagraphStyle::default()
+        };
+        let json = serde_json::to_string(&p).unwrap();
+        let back: ParagraphStyle = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.tabs, p.tabs);
+        let mut v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        v["tabs"] = serde_json::json!([12.7, 25.4]);
+        let old: ParagraphStyle = serde_json::from_value(v).unwrap();
+        assert_eq!(old.tabs, vec![TabStop::left(12.7), TabStop::left(25.4)]);
+        // An edit's stops come back in order, without doubles.
+        let n = normalized_tabs(&[
+            TabStop::left(30.0),
+            TabStop::new(10.0, TabKind::Right),
+            TabStop::left(30.001),
+            TabStop::left(f64::NAN),
+            TabStop::left(-1.0),
+        ]);
+        assert_eq!(
+            n,
+            vec![TabStop::new(10.0, TabKind::Right), TabStop::left(30.0)]
+        );
+    }
+
+    /// A frame just drawn has no characters: the format an edit gives
+    /// its one paragraph is read back from its empty span (#1852).
+    #[test]
+    fn an_empty_text_keeps_the_format_given_to_it() {
+        let mut k = text("");
+        edit_paragraph_formats(&mut k, Some((0, 0)), |f| {
+            f.tabs = vec![crate::document::TabStop::left(10.0)]
+        });
+        let ShapeKind::Text {
+            spans, align, para, ..
+        } = &k
+        else {
+            panic!("text");
+        };
+        let f = paragraph_format(spans, *align, para, 0);
+        assert_eq!(f.tabs, vec![crate::document::TabStop::left(10.0)]);
+        assert_eq!(paragraph_styles(spans, *align, para)[0].1.tabs.len(), 1);
+    }
+
+    /// The default tab spacing is half an inch until set; a setting is
+    /// kept within 1 to 100 mm (#1852).
+    #[test]
+    fn the_default_tab_spacing_follows_the_setting() {
+        use crate::document::{default_tab_step, set_default_tab_step, DEFAULT_TAB_STEP};
+        assert_eq!(DEFAULT_TAB_STEP, 12.7);
+        set_default_tab_step(5.0);
+        assert_eq!(default_tab_step(), 5.0);
+        set_default_tab_step(0.0);
+        assert_eq!(default_tab_step(), 1.0);
+        set_default_tab_step(1e9);
+        assert_eq!(default_tab_step(), 100.0);
+        set_default_tab_step(f64::NAN);
+        assert_eq!(default_tab_step(), DEFAULT_TAB_STEP);
     }
 }

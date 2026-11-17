@@ -111,7 +111,7 @@ fn decode_text(bytes: &[u8]) -> String {
 }
 
 /// Windows-1252 to Unicode (the 0x80..0x9F row differs from Latin-1).
-fn cp1252(b: u8) -> char {
+pub(crate) fn cp1252(b: u8) -> char {
     const HIGH: [u32; 32] = [
         0x20AC, 0x81, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021, 0x02C6, 0x2030, 0x0160,
         0x2039, 0x0152, 0x8D, 0x017D, 0x8F, 0x90, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013,
@@ -183,7 +183,7 @@ pub fn parse_rtf(bytes: &[u8]) -> Result<ImportedText, String> {
         let style = TextSpan {
             bold: st.bold,
             italic: st.italic,
-            underline: st.underline,
+            underline: st.underline.into(),
             ..TextSpan::new("", family, st.size_pt)
         };
         match out.spans.last_mut() {
@@ -489,8 +489,8 @@ pub fn parse_docx_xml(xml: &str) -> Result<ImportedText, String> {
                     match prop.tag_name().name() {
                         "b" => span.bold = on,
                         "i" => span.italic = on,
-                        "u" => span.underline = on,
-                        "strike" => span.strikethrough = on,
+                        "u" => span.underline = on.into(),
+                        "strike" => span.strikethrough = on.into(),
                         "sz" => {
                             if let Some(v) = val.and_then(|v| v.parse::<f64>().ok()) {
                                 span.size_pt = (v / 2.0).max(1.0);

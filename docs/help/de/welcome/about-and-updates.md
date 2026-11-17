@@ -53,6 +53,8 @@ suchen. Sie ist anfangs eingeschaltet: Einmal am Tag prüft TraceDraw beim Start
 im Stillen und meldet sich nur, wenn eine neuere Version vorliegt, die Sie
 nicht übersprungen haben.
 
+Beim ersten Start fragt TraceDraw, ob es nach Updates suchen soll: [[updates.policy_always]] oder [[updates.policy_never]]. Bis Sie antworten, baut TraceDraw von sich aus keine Verbindung auf. Die Antwort setzt diese Einstellung, die Sie hier jederzeit ändern können.
+
 > **Hinweis:** Die Browserversion ist immer die neueste. Dort öffnet
 > [[menu.help > menu.help.updates]] die Release-Seite.
 
@@ -62,6 +64,9 @@ Der Begrüßungsbildschirm ist die erste Registerkarte, wenn TraceDraw startet.
 Von dort legen Sie eine Zeichnung an, öffnen eine der zuletzt verwendeten
 Zeichnungen (jede mit einer Miniatur; [[menu.file.clear_recent]] vergisst sie),
 beginnen mit einer Vorlage, lesen die Neuigkeiten und finden Lernmaterial.
+Ist eine Seite höher als das Fenster (eine lange Liste zuletzt verwendeter
+Zeichnungen), rollt sie mit dem Mausrad oder ihrer Bildlaufleiste; die Reihe
+der Registerkarten oben bleibt stehen.
 Wählen Sie [[menu.help > menu.help.welcome_screen]], um ihn zurückzuholen.
 [[menu.help > menu.help.video_tutorials]], [[menu.help.quick_start_guide]] und
 [[menu.help.user_guide]] öffnen seine Lernseite, [[menu.help.whats_new]] seine

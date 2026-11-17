@@ -11,7 +11,7 @@ of this guide make sense.
 Every version of TraceDraw has a release with files for each system. To
 install it:
 
-1. Open the [latest release](https://github.com/igtoth/tracedraw/releases/latest).
+1. Open the [latest release](https://github.com/tracedraw/tracedraw/releases/latest).
 2. Download the file for your system (`<version>` is the version
    number):
 
@@ -23,7 +23,11 @@ install it:
    | Linux (x86_64) | the `.deb` package (`_amd64`), `tracedraw-<version>-linux-amd64.AppImage` or `tracedraw-<version>-linux-x86_64.tar.gz` |
    | Linux (arm64: Raspberry Pi 4/5 with a 64-bit system, ARM laptops) | the `.deb` package (`_arm64`), `tracedraw-<version>-linux-arm64.AppImage` or `tracedraw-<version>-linux-arm64.tar.gz` |
 
-3. Install or unpack it as you would any program on your system.
+3. Install or unpack it as you would any program on your system. The
+   Windows installer asks which language TraceDraw starts in; System
+   language, selected at first, follows the language of Windows. Other
+   copies start in the system's language. Change it at any time under
+   Tools > Options > Global > General.
 
 The downloads are not code-signed yet:
 
@@ -39,7 +43,7 @@ pre-release on the releases page is refreshed with every change.
 
 ### In your browser
 
-You can also [open TraceDraw in the browser](https://igtoth.github.io/tracedraw/)
+You can also [open TraceDraw in the browser](https://tracedraw.github.io/tracedraw/)
 with nothing to install. While it loads, the page shows a progress bar;
 the editor starts when the bar is full.
 
@@ -122,14 +126,14 @@ Detail: [the New Document notes](../behavior/new-document.md).
 From top to bottom and left to right:
 
 - **Menu bar**: every command, grouped in menus such as File, Edit,
-  View, Layout, Object, Effects, Text, Tools, Window and Help, with each
+  View, Object, Text, Image, Effects, Page, Tools, Window and Help, with each
   command's shortcut shown beside it.
 - **Standard toolbar**: New, Open (its arrow lists recent drawings),
   Save and Print; Cut, Copy and Paste; Undo and Redo (their arrows list
   the steps, so you can undo several at once); Import, Export and
-  Publish to PDF; the zoom box; Show Rulers, Show Grid and Show
+  Export as PDF; the zoom box; Show Rulers, Show Grid and Show
   Guidelines; Snap Off and Snap To; Options; and Launch (Font Manager,
-  Welcome Screen, Color Management).
+  TraceCut, Welcome Screen).
 - **Property bar**: the settings for what you are doing right now. With
   nothing selected it shows the page size, orientation, units and nudge
   distance. With a selection it shows position, size, scale, rotation

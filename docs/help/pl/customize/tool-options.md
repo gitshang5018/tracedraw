@@ -1,5 +1,7 @@
 # Opcje narzędzi
 
+> *Tłumaczenie maszynowe: ta strona może być mniej aktualna niż wersja angielska.*
+
 [[menu.tools > menu.tools.options > menu.tools.options_tools]] określa działanie
 narzędzi i to, jakie nowe obiekty rysują. Większość tych wartości znajduje się
 również na pasku właściwości każdego narzędzia.
@@ -15,6 +17,18 @@ również na pasku właściwości każdego narzędzia.
   obiekty, których tylko dotyka; <kbd>Alt</kbd> zaznacza wtedy tylko obiekty
   całkowicie wewnątrz.
 
+- [[options.ctrl_shift_keys]] [[options.keys_traditional]]: [[options.keys_traditional_tip]]
+  [[options.keys_windows]]: [[options.keys_windows_tip]]
+
+## Gumka {#eraser}
+
+![Opcje narzędzia Gumka](../../img/customize-tool-options-eraser.png)
+
+[[options.eraser_width]] (domyślnie 6,35 mm) oraz [[options.eraser_round]] lub
+[[options.eraser_square]].
+
+[[options.eraser_reduce_nodes]]: [[options.eraser_reduce_nodes_tip]]
+
 ## Powiększenie i przesuwanie {#zoom-pan}
 
 ![Opcje powiększenia i przesuwania](../../img/customize-tool-options-zoom-pan.png)
@@ -22,15 +36,45 @@ również na pasku właściwości każdego narzędzia.
 - [[options.zoom_right_button]]: [[options.zoom_out]] (domyślnie) lub
   [[options.context_menu]].
 - [[options.wheel_action]]: [[options.wheel_zoom]] lub [[options.wheel_scroll]].
+- [[options.zoom_relative_1to1]] (włączone): powiększenie 100% to rzeczywisty rozmiar
+  przy skalibrowanej rozdzielczości ekranu; wyłączone to 96 pikseli na cal.
+- [[options.wheel_center_mouse]] (wyłączone): powiększenie kółkiem przenosi punkt pod
+  wskaźnikiem na środek widoku, razem ze wskaźnikiem.
+- [[options.smooth_zoom]] (włączone): ząbek kółka powiększa w krótkim płynnym
+  ruchu zamiast skoku; im szybciej obraca się kółko, tym krótszym.
+  Wyłączone: każdy ząbek powiększa od razu.
+- [[options.light_zoom]]: [[options.light_zoom_tip]]
+- [[options.wheel_zoom_step]] jak bardzo jeden ząbek powiększa lub pomniejsza,
+  od 1 do 100 procent (na początku 15 %).
+- [[options.pan_right_button]] [[options.zoom_out]] lub [[options.context_menu]] (na początku).
+- [[options.pan_inertia]] (wyłączone): przesunięcie puszczone, gdy wskaźnik
+  jeszcze się porusza, sprawia, że widok sunie dalej w tę samą stronę i
+  łagodnie wyhamowuje. Kliknięcie lub kółko go zatrzymuje. Działa dla narzędzia
+  Przesuwanie, środkowego przycisku i dwóch palców.
 
-## Krzywe {#curves}
+## Odręczne/Bézier {#curves}
 
-![Opcje narzędzi krzywych](../../img/customize-tool-options-curves.png)
+![Opcje narzędzi Odręczne/Bézier](../../img/customize-tool-options-curves.png)
 
 - [[options.freehand_smoothing]]: od 0 do 100 (domyślnie 50).
 - [[options.join_within]]: jak blisko węzła końcowego musi zaczynać się linia,
   aby kontynuować krzywą (domyślnie 5 pikseli ekranu). Zobacz
   [Kontynuowanie krzywej](../lines-shapes/lines.md#continue).
+
+- [[options.pen_preview]] i [[options.pen_auto_add_delete]] (obie włączone)
+  dla narzędzia [[tool.pen]]; zobacz [Pióro](../lines-shapes/lines.md#pen).
+- [[options.pen_tablet]]: [[options.pen_pressure]] (włączone); zobacz
+  [Rysowanie na tablecie graficznym](../lines-shapes/pen-pressure.md).
+
+- [[options.corner_threshold]]: [[options.corner_threshold_tip]]
+- [[options.straight_threshold]]: [[options.straight_threshold_tip]]
+
+## Rozpoznawanie kształtów {#shape-recognition}
+
+![Opcje narzędzia Rozpoznawanie kształtów](../../img/customize-tool-options-shape-recognition.png)
+
+[[recognize.recognition]] i [[recognize.smoothing]] narzędzia Rozpoznawanie
+kształtów, od wyłączonego do najwyższego, jak na jego pasku właściwości.
 
 ## Prostokąt {#rectangle}
 
@@ -48,11 +92,20 @@ narożników oraz [[toolbar.corners_together]]. [[options.scale_corners]]:
 [[options.ellipse]], [[options.pie]] lub [[options.arc]], z wartościami
 [[options.starting_angle]] i [[options.ending_angle]].
 
+[[options.arc_direction]]: [[options.counterclockwise]] / [[options.clockwise]].
+[[options.arc_direction_desc]]
+
 ## Wielokąt {#polygon}
 
 ![Opcje narzędzia Wielokąt](../../img/customize-tool-options-polygon.png)
 
 [[options.number_of_points]] i [[options.sharpness]].
+
+## Papier milimetrowy {#graph-paper}
+
+![Opcje narzędzia Papier milimetrowy](../../img/customize-tool-options-graph-paper.png)
+
+[[options.rows]] i [[options.columns]] siatki.
 
 ## Spirala {#spiral}
 
@@ -61,11 +114,8 @@ narożników oraz [[toolbar.corners_together]]. [[options.scale_corners]]:
 [[options.revolutions]] oraz [[options.symmetrical_spiral]] lub
 [[options.logarithmic_spiral]].
 
-## Papier milimetrowy {#graph-paper}
-
-![Opcje narzędzia Papier milimetrowy](../../img/customize-tool-options-graph-paper.png)
-
-[[options.rows]] i [[options.columns]] siatki.
+[[options.spiral_expansion]]: [[options.spiral_expansion_tip]]
+[[options.spiral_preview_tip]]
 
 ## Tabela {#table}
 
@@ -73,9 +123,37 @@ narożników oraz [[toolbar.corners_together]]. [[options.scale_corners]]:
 
 [[options.rows]] i [[options.columns]] nowych tabel.
 
-## Gumka {#eraser}
+## Wymiar {#dimension}
 
-![Opcje narzędzia Gumka](../../img/customize-tool-options-eraser.png)
+![Opcje narzędzia Wymiar](../../img/customize-tool-options-dimension.png)
 
-[[options.eraser_width]] (domyślnie 6,35 mm) oraz [[options.eraser_round]] lub
-[[options.eraser_square]].
+Jak wygląda etykieta nowych wymiarów: [[dimension.precision]],
+[[dimension.units]], [[dimension.show_units]], [[dimension.prefix]] i
+[[dimension.suffix]]. Narysowane już wymiary zachowują swoją etykietę;
+zaznacz jeden i zmień ją na pasku właściwości.
+
+[[options.dimension_style]]: [[options.decimal]] / [[options.fractional]].
+[[options.dimension_style_tip]]
+
+## Wymiar kątowy {#angular-dimension}
+
+[[dimension.precision]], [[dimension.show_units]], [[dimension.prefix]] and
+[[dimension.suffix]] of new angular dimensions.
+[[options.angular_units_tip]]
+
+## Łącznik {#connector}
+
+![Opcje narzędzia Łącznik](../../img/customize-tool-options-connector.png)
+
+[[connector.radius]] nowych zaokrąglonych łączników (na początku 3 mm).
+
+[[options.connector_gap]]: [[options.connector_gap_tip]]
+
+[[options.connector_geometric_anchors]]: [[options.connector_geometric_anchors_tip]]
+
+## Wypełnienie siatkowe {#mesh-fill}
+
+![Opcje narzędzia Wypełnienie siatkowe](../../img/customize-tool-options-mesh-fill.png)
+
+[[options.columns]] i [[options.rows]] siatki, od której zaczyna się nowe
+wypełnienie siatkowe (na początku 2 na 2).

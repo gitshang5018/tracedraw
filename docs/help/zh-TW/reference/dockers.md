@@ -11,7 +11,7 @@
 | [[docker.hints]] |  | [→](../get-started/hints.md) |
 | [[docker.transformations]] | <kbd>Alt+F7</kbd> | [→](../objects/transforming.md#transformations-docker) |
 | [[docker.undo]] |  | [→](../get-started/undo-and-views.md#undo-docker) |
-| [[docker.align_distribute]] | <kbd>Ctrl+Shift+A</kbd> | [→](../objects/align-distribute.md) |
+| [[docker.align_distribute]] |  | [→](../objects/align-distribute.md) |
 | [[docker.shaping]] |  | [→](../lines-shapes/shaping.md) |
 | [[docker.step_and_repeat]] | <kbd>Ctrl+Shift+D</kbd> | [→](../objects/step-and-repeat.md) |
 | [[docker.text]] | <kbd>Ctrl+T</kbd> | [→](../text/adding-text.md#text-docker) |
@@ -51,6 +51,6 @@
 ## 使用面板 {#working}
 
 - 按一下索引標籤可將其面板移到前面；按一下前面的索引標籤可摺疊面板。
-- 面板標題列中的關閉按鈕將它從索引標籤中移除；摺疊按鈕摺疊面板區域。
+- 面板標題列中的關閉按鈕將它從索引標籤中移除；摺疊按鈕摺疊面板區域，其箭頭指向面板摺向的視窗一側（停靠在左側的面板指向左）。
 - 保持開啟的面板會在下次啟動 TraceDraw 時恢復。
 - 面板快速鍵可切換：在其面板位於前面時按下會隱藏面板。

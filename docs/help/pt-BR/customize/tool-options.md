@@ -1,5 +1,7 @@
 # Opções das ferramentas
 
+> *Tradução automática: esta página pode estar atrasada em relação à versão em inglês.*
+
 [[menu.tools > menu.tools.options > menu.tools.options_tools]] define como as
 ferramentas se comportam e o que os objetos novos desenhados por elas recebem. A
 maioria desses valores também está na barra de propriedades de cada ferramenta.
@@ -15,6 +17,18 @@ maioria desses valores também está na barra de propriedades de cada ferramenta
   seleciona os objetos que ela só toca; <kbd>Alt</kbd> então seleciona só os
   que estão inteiramente dentro.
 
+- [[options.ctrl_shift_keys]] [[options.keys_traditional]]: [[options.keys_traditional_tip]]
+  [[options.keys_windows]]: [[options.keys_windows_tip]]
+
+## Borracha {#eraser}
+
+![As opções da ferramenta Borracha](../../img/customize-tool-options-eraser.png)
+
+[[options.eraser_width]] (6,35 mm de início), e [[options.eraser_round]] ou
+[[options.eraser_square]].
+
+[[options.eraser_reduce_nodes]]: [[options.eraser_reduce_nodes_tip]]
+
 ## Zoom e deslocamento {#zoom-pan}
 
 ![As opções de zoom e deslocamento](../../img/customize-tool-options-zoom-pan.png)
@@ -22,15 +36,45 @@ maioria desses valores também está na barra de propriedades de cada ferramenta
 - [[options.zoom_right_button]]: [[options.zoom_out]] (de início) ou o
   [[options.context_menu]].
 - [[options.wheel_action]]: [[options.wheel_zoom]] ou [[options.wheel_scroll]].
+- [[options.zoom_relative_1to1]] (ligado): o zoom 100% é o tamanho real na resolução de
+  tela calibrada; desligado, é 96 pixels por polegada.
+- [[options.wheel_center_mouse]] (desligado): um zoom com a roda leva o ponto sob o
+  ponteiro para o meio da vista, e o ponteiro junto.
+- [[options.smooth_zoom]] (ligado): cada clique da roda aplica o zoom num breve
+  deslizamento em vez de um salto; quanto mais rápido a roda gira, mais curto.
+  Desligado, cada clique aplica o zoom na hora.
+- [[options.light_zoom]]: [[options.light_zoom_tip]]
+- [[options.wheel_zoom_step]] quanto um clique aproxima ou afasta, de 1 a 100 por
+  cento (15 % no início).
+- [[options.pan_right_button]] [[options.zoom_out]] ou o [[options.context_menu]] (de início).
+- [[options.pan_inertia]] (desligado): um deslocamento solto com o ponteiro
+  ainda em movimento faz a vista continuar deslizando na mesma direção e parar
+  aos poucos. Um clique ou a roda a interrompe. Vale para a ferramenta
+  Deslocamento, o botão do meio e dois dedos.
 
-## Curvas {#curves}
+## Mão livre/Bézier {#curves}
 
-![As opções das ferramentas de curva](../../img/customize-tool-options-curves.png)
+![As opções das ferramentas Mão livre/Bézier](../../img/customize-tool-options-curves.png)
 
 - [[options.freehand_smoothing]]: 0 a 100 (50 de início).
 - [[options.join_within]]: quão perto de um nó final uma linha deve começar
   para continuar a curva (5 pixels de tela de início). Veja
   [Continuar uma curva](../lines-shapes/lines.md#continue).
+
+- [[options.pen_preview]] e [[options.pen_auto_add_delete]] (ambos ligados)
+  para a ferramenta [[tool.pen]]; veja [Caneta](../lines-shapes/lines.md#pen).
+- [[options.pen_tablet]]: [[options.pen_pressure]] (ligado); veja
+  [Desenhar com uma mesa digitalizadora](../lines-shapes/pen-pressure.md).
+
+- [[options.corner_threshold]]: [[options.corner_threshold_tip]]
+- [[options.straight_threshold]]: [[options.straight_threshold_tip]]
+
+## Reconhecimento de formas {#shape-recognition}
+
+![As opções da ferramenta Reconhecimento de formas](../../img/customize-tool-options-shape-recognition.png)
+
+[[recognize.recognition]] e [[recognize.smoothing]] da ferramenta Reconhecimento
+de formas, de desligado a máximo, como na barra de propriedades.
 
 ## Retângulo {#rectangle}
 
@@ -48,11 +92,20 @@ canto e [[toolbar.corners_together]]. [[options.scale_corners]]:
 [[options.ellipse]], [[options.pie]] ou [[options.arc]], com o
 [[options.starting_angle]] e o [[options.ending_angle]].
 
+[[options.arc_direction]]: [[options.counterclockwise]] / [[options.clockwise]].
+[[options.arc_direction_desc]]
+
 ## Polígono {#polygon}
 
 ![As opções da ferramenta Polígono](../../img/customize-tool-options-polygon.png)
 
 [[options.number_of_points]] e [[options.sharpness]].
+
+## Papel quadriculado {#graph-paper}
+
+![As opções da ferramenta Papel quadriculado](../../img/customize-tool-options-graph-paper.png)
+
+[[options.rows]] e [[options.columns]] da grade.
 
 ## Espiral {#spiral}
 
@@ -61,11 +114,8 @@ canto e [[toolbar.corners_together]]. [[options.scale_corners]]:
 [[options.revolutions]], e [[options.symmetrical_spiral]] ou
 [[options.logarithmic_spiral]].
 
-## Papel quadriculado {#graph-paper}
-
-![As opções da ferramenta Papel quadriculado](../../img/customize-tool-options-graph-paper.png)
-
-[[options.rows]] e [[options.columns]] da grade.
+[[options.spiral_expansion]]: [[options.spiral_expansion_tip]]
+[[options.spiral_preview_tip]]
 
 ## Tabela {#table}
 
@@ -73,9 +123,37 @@ canto e [[toolbar.corners_together]]. [[options.scale_corners]]:
 
 [[options.rows]] e [[options.columns]] das tabelas novas.
 
-## Borracha {#eraser}
+## Cota {#dimension}
 
-![As opções da ferramenta Borracha](../../img/customize-tool-options-eraser.png)
+![As opções da ferramenta Cota](../../img/customize-tool-options-dimension.png)
 
-[[options.eraser_width]] (6,35 mm de início), e [[options.eraser_round]] ou
-[[options.eraser_square]].
+Como o rótulo das cotas novas aparece: [[dimension.precision]],
+[[dimension.units]], [[dimension.show_units]], [[dimension.prefix]] e
+[[dimension.suffix]]. As cotas já desenhadas mantêm o rótulo; selecione uma
+e use a barra de propriedades para mudá-lo.
+
+[[options.dimension_style]]: [[options.decimal]] / [[options.fractional]].
+[[options.dimension_style_tip]]
+
+## Dimensão angular {#angular-dimension}
+
+[[dimension.precision]], [[dimension.show_units]], [[dimension.prefix]] and
+[[dimension.suffix]] of new angular dimensions.
+[[options.angular_units_tip]]
+
+## Conector {#connector}
+
+![As opções da ferramenta Conector](../../img/customize-tool-options-connector.png)
+
+[[connector.radius]] dos conectores arredondados novos (3 mm de início).
+
+[[options.connector_gap]]: [[options.connector_gap_tip]]
+
+[[options.connector_geometric_anchors]]: [[options.connector_geometric_anchors_tip]]
+
+## Preenchimento de malha {#mesh-fill}
+
+![As opções da ferramenta Preenchimento de malha](../../img/customize-tool-options-mesh-fill.png)
+
+[[options.columns]] e [[options.rows]] da grade com que um preenchimento de
+malha novo começa (2 por 2 de início).

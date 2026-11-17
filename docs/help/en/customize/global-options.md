@@ -47,7 +47,7 @@ of the last print. Under [[options.print_checks]],
 
 ![The Bitmap Tracing page of the global options](../../img/customize-global-options-bitmap-tracing.png)
 
-[[options.quick_trace_with]] one of the presets (Clipart at first).
+[[options.quick_trace_with]] one of the presets (Flat Colors at first).
 [[options.trace_starts_with]] [[dialog.remove_background]] (on) and
 [[dialog.delete_original]] (off). See [Tracing bitmaps](../bitmaps/tracing.md).
 
@@ -58,6 +58,11 @@ of the last print. Under [[options.print_checks]],
 [[options.warnings_show]] [[options.warn_unread_objects]],
 [[options.warn_missing_fonts]] and [[options.warn_shelf_remove]] (all on). Each
 message also has a box that stops it; tick the option here to see it again.
+
+[[options.ask_missing_fonts]] (on) shows the Missing Fonts dialog box when a
+drawing opens with fonts that are not installed; see
+[Missing fonts](../text/missing-fonts.md). It is separate from the plain
+message above.
 
 ## File Locations {#file-locations}
 

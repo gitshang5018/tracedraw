@@ -1,5 +1,7 @@
 # 自定义选项
 
+> *机器翻译：本页可能落后于英文版。*
+
 [[menu.tools > menu.tools.options > menu.tools.options_customization]] 设置界面外观、你自己的键盘快捷键、显示哪些栏以及调色板的行为。
 
 ## 外观 {#appearance}
@@ -9,6 +11,7 @@
 - [[options.center_dialogs]]：对话框在窗口中央打开；关闭时，它们在你上次放置的位置打开。
 - [[options.ui_shadows]]（阴影越少，对较慢的显卡越有利）。
 - [[options.colored_icons]]：每组工具都有自己的颜色。
+- [[options.docker_tabs_icons_only]]：窗口两侧的面板标签只显示图标，名称显示在提示中。关闭时显示图标和名称，放不下所有标签的列可以滚动。
 - [[options.ui_size]]：菜单、栏、图标和面板的大小，相对于系统为显示器设置的缩放比例（起初为 100%）。[[options.reset_to_default]] 恢复为 100%。界面大小从不改变绘图的大小。[[options.follow_text_size]] 使其随桌面文本大小变大。
 - [[options.color_section]]：[[options.theme]]（浅色、中浅色、中深色、深色或高对比度）、[[options.follow_high_contrast]]，以及页面周围的 [[options.desktop_color]]。状态栏右端的按钮在浅色和深色之间切换。
 
@@ -25,6 +28,8 @@
 
 你的快捷键优先于内置快捷键：当你占用另一个命令使用的按键时，页面会说明哪个命令失去了它。菜单显示你的快捷键。快捷键旁的 **x** 删除它，重置为默认值会将它们全部删除。工具按键为一个字母，或 <kbd>Shift</kbd> 加一个字母。请参阅 [键盘快捷键](../reference/keyboard-shortcuts.md)。
 
+一个命令可以有多个快捷键：新按键会加入已有的按键（内置按键仍可同时使用），每个按键都有自己的删除按钮。运行菜单命令的工具栏按钮（新建、打开、保存、撤销、放大等）也可以设置快捷键，与其菜单命令相同；菜单只在某些时候显示的行也是如此。“工具栏按钮”列表包含标准工具栏和缩放工具栏的所有按钮：可从这里把移除的按钮拖回工具栏。
+
 ## 命令栏 {#command-bars}
 
 ![自定义选项的命令栏页面](../../img/customize-customization-command-bars.png)
@@ -38,6 +43,7 @@
 ![自定义选项的调色板页面](../../img/customize-customization-color-palette.png)
 
 - [[options.palette_auto_update]] 和 [[options.palette_show_document]]（均打开）。
+- 默认调色板的 [[options.palette_position]]（顶部、底部、左侧、右侧或浮动），与其自身菜单的设置相同；工具栏锁定时不可更改。
 - [[options.palette_swatches]]：[[options.palette_no_color]]（打开），以及 [[options.palette_right_button]] 的作用：[[options.palette_set_outline]]（起初选用）或打开 [[options.palette_context_menu]]。
 
 请参阅 [调色板](../color/palettes.md)。

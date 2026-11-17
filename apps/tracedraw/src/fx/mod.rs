@@ -371,7 +371,7 @@ pub const VECTOR_FX_DPI: f64 = 300.0;
 const VECTOR_FX_MAX_PIXELS: f64 = 16_000_000.0;
 
 /// The resolution bitmap effects draw vector objects at: the drawing's
-/// rendering resolution (Layout > Page Setup, 72 to 1200 dpi), else
+/// rendering resolution (Page > Page Setup, 72 to 1200 dpi), else
 /// [`VECTOR_FX_DPI`] (#382).
 pub fn vector_fx_dpi(meta: &tracedraw_core::document::Metadata) -> f64 {
     if meta.resolution_dpi.is_finite() && meta.resolution_dpi > 0.0 {
@@ -453,6 +453,7 @@ pub fn vector_base(
                 zoom,
                 origin_x: 0.0,
                 origin_y: h as f64,
+                stretch_y: 1.0,
             },
             preview: None,
             wireframe: false,
@@ -557,6 +558,134 @@ impl crate::app::App {
         }
     }
 
+    /// A picture (bitmap object) is selected.
+    pub fn selection_has_picture(&self) -> bool {
+        self.selection.iter().any(|id| {
+            self.doc().find_shape(*id).is_some_and(|s| {
+                matches!(s.kind, tracedraw_core::document::ShapeKind::Bitmap { .. })
+            })
+        })
+    }
+
+    /// The pictures (bitmap objects) on every page and master layer, in
+    /// groups and clip frames too, leaving out `skip`, locked objects and
+    /// objects on locked layers, in the drawing's order.
+    pub fn pictures_on_all_pages(
+        &self,
+        skip: &[tracedraw_core::ShapeId],
+    ) -> Vec<tracedraw_core::ShapeId> {
+        use tracedraw_core::document::ShapeKind;
+        fn walk(
+            s: &tracedraw_core::Shape,
+            skip: &[tracedraw_core::ShapeId],
+            out: &mut Vec<tracedraw_core::ShapeId>,
+        ) {
+            if s.locked {
+                return;
+            }
+            match &s.kind {
+                ShapeKind::Bitmap { .. } if !skip.contains(&s.id) => out.push(s.id),
+                ShapeKind::Group { children } => {
+                    for c in children {
+                        walk(c, skip, out);
+                    }
+                }
+                ShapeKind::ClipFrame { contents, .. } => {
+                    for c in contents {
+                        walk(c, skip, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut out = Vec::new();
+        for layer in self.doc().all_layers().filter(|l| !l.locked) {
+            for s in &layer.shapes {
+                walk(s, skip, &mut out);
+            }
+        }
+        out
+    }
+
+    /// The effect `e` added to the pictures on every page that the
+    /// selection left out (the effect dialogs' All pages, #1551): joined to
+    /// the step just recorded for the selection when `join`, otherwise a
+    /// step of its own ("Add Effect").
+    pub fn add_bitmap_effect_on_all_pages(&mut self, e: BitmapEffect, join: bool) {
+        let skip = self.selection.clone();
+        let cmds: Vec<_> = self
+            .pictures_on_all_pages(&skip)
+            .into_iter()
+            .filter_map(|id| self.bitmap_fx_command(id, |list| list.push(e.clone())))
+            .collect();
+        if cmds.is_empty() {
+            return;
+        }
+        let done = if join {
+            self.engine.amend_batch("Add Effect", &cmds)
+        } else {
+            self.engine.run_batch("Add Effect", &cmds)
+        };
+        match done {
+            Ok(()) => {
+                self.status =
+                    crate::i18n::trf("status.fx_all_pages", &[("n", &cmds.len().to_string())]);
+            }
+            Err(err) => self.status = err.to_string(),
+        }
+    }
+
+    /// The selected picture's effects can go to the other pictures:
+    /// a selected picture has effects.
+    pub fn can_apply_effects_to_all_pages(&self) -> bool {
+        self.first_picture_with_effects().is_some()
+    }
+
+    fn first_picture_with_effects(&self) -> Option<tracedraw_core::ShapeId> {
+        self.selection.iter().copied().find(|id| {
+            self.doc().find_shape(*id).is_some_and(|s| {
+                matches!(
+                    &s.kind,
+                    tracedraw_core::document::ShapeKind::Bitmap { fx: Some(st), .. }
+                        if !st.effects.is_empty()
+                )
+            })
+        })
+    }
+
+    /// Effects > Apply to Pictures on All Pages: every other picture on
+    /// every page takes the effects of the first selected picture that has
+    /// some (its own list replaced by them, the original pixels kept), as
+    /// one undo step (#1551).
+    pub fn apply_effects_to_all_pages(&mut self) {
+        let Some(from) = self.first_picture_with_effects() else {
+            return;
+        };
+        let effects = self.bitmap_effects(from);
+        let cmds: Vec<_> = self
+            .pictures_on_all_pages(&[from])
+            .into_iter()
+            .filter_map(|id| {
+                if self.bitmap_effects(id) == effects {
+                    return None;
+                }
+                let list = effects.clone();
+                self.bitmap_fx_command(id, move |l| *l = list)
+            })
+            .collect();
+        if cmds.is_empty() {
+            self.status = crate::i18n::trf("status.fx_all_pages", &[("n", "0")]);
+            return;
+        }
+        match self.engine.run_batch("Effects on All Pages", &cmds) {
+            Ok(()) => {
+                self.status =
+                    crate::i18n::trf("status.fx_all_pages", &[("n", &cmds.len().to_string())]);
+            }
+            Err(err) => self.status = err.to_string(),
+        }
+    }
+
     /// Change the effect list of one bitmap, in one undo step.
     pub fn edit_bitmap_effects(
         &mut self,
@@ -571,8 +700,8 @@ impl crate::app::App {
         }
     }
 
-    /// Bitmaps > Inflate Bitmap > Auto Inflate Bitmap, the same switch as
-    /// Document Options > General: effects rendered from now on that
+    /// Image > Bitmap Padding > Automatic, the same switch as
+    /// Document Setup > General: effects rendered from now on that
     /// spread past the edges grow the bitmap first.
     pub fn set_auto_inflate_bitmaps(&mut self, on: bool) {
         let mut metadata = self.doc().metadata.clone();
@@ -649,7 +778,7 @@ impl crate::app::App {
         fn walk(s: &tracedraw_core::Shape, dpi: f64, out: &mut Vec<tracedraw_core::Shape>) {
             if let Some(fx) = &s.raster_fx {
                 // Made from an earlier state, or at another resolution than
-                // the drawing's (it changed in Document Properties).
+                // the drawing's (it changed in Document Info).
                 let pixels = f64::from(fx.width_px) * f64::from(fx.height_px);
                 if fx.source != s.raster_source()
                     || (!fx.png.is_empty()
@@ -1153,6 +1282,39 @@ mod tests {
             .expect("in the page")
             .demultiply();
         [px.red(), px.green(), px.blue(), px.alpha()]
+    }
+
+    #[test]
+    fn imported_gaussian_blur_is_listed_editable_and_cached() {
+        let (doc, _) = tracedraw_cdr::open_bytes(
+            include_bytes!("../../../../crates/cdr/tests/fixtures/gaussian-blur.cdr"),
+            "Gaussian control",
+        )
+        .unwrap();
+        let id = doc
+            .all_layers()
+            .flat_map(|l| &l.shapes)
+            .find(|s| s.raster_fx.is_some())
+            .unwrap()
+            .id;
+        let mut app = crate::app::App::headless();
+        app.engine.replace(doc);
+        app.select(vec![id]);
+        assert_eq!(app.bitmap_effects(id)[0].params["radius"], 15.0);
+        app.sync_raster_fx();
+        let before = app.doc().find_shape(id).unwrap().raster_fx.clone().unwrap();
+        assert!(!before.png.is_empty());
+        app.sync_raster_fx();
+        assert_eq!(
+            app.doc().find_shape(id).unwrap().raster_fx.as_ref(),
+            Some(&before)
+        );
+        app.edit_bitmap_effects(id, "Edit Effect", |effects| {
+            effects[0].params.insert("radius".into(), 5.0);
+        });
+        assert_eq!(app.bitmap_effects(id)[0].params["radius"], 5.0);
+        app.undo();
+        assert_eq!(app.bitmap_effects(id)[0].params["radius"], 15.0);
     }
 
     #[test]

@@ -625,6 +625,13 @@ fn rich(c: &LiveControl, text: &str) -> RichText {
     t
 }
 
+fn picture_hash(bytes: &[u8]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    bytes.hash(&mut h);
+    h.finish()
+}
+
 fn picture(ui: &Ui, key: String, bytes: &[u8]) -> Option<egui::TextureHandle> {
     let id = egui::Id::new(("macro_picture", &key));
     if let Some(t) = ui.ctx().data(|d| d.get_temp::<egui::TextureHandle>(id)) {
@@ -639,6 +646,29 @@ fn picture(ui: &Ui, key: String, bytes: &[u8]) -> Option<egui::TextureHandle> {
     );
     ui.ctx().data_mut(|d| d.insert_temp(id, tex.clone()));
     Some(tex)
+}
+
+/// A control's picture drawn in the middle of its box, shrunk to fit and
+/// never enlarged, as the forms draw a button's or label's icon. Labels
+/// and buttons carried their pictures (the icon of an Undo button, a
+/// maker's logo) but showed none (#2165).
+fn draw_picture(ui: &Ui, form: u32, c: &LiveControl, rect: Rect) {
+    let Some(bytes) = &c.picture else {
+        return;
+    };
+    // A picture the macro changes gets a new key.
+    let key = format!("ctl{form}{}{:x}", c.name, picture_hash(bytes));
+    if let Some(t) = picture(ui, key, bytes) {
+        let s = t.size_vec2();
+        let fit = (rect.width() / s.x).min(rect.height() / s.y).min(1.0);
+        let r = Rect::from_center_size(rect.center(), s * fit);
+        ui.painter().image(
+            t.id(),
+            r,
+            Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+            Color32::WHITE,
+        );
+    }
 }
 
 fn forms(app: &mut App, ctx: &Context) {
@@ -805,8 +835,20 @@ fn draw_controls(ui: &mut Ui, form: &LiveForm, origin: Pos2, acts: &mut FormActi
             .focus
             .as_deref()
             .is_some_and(|f| f.eq_ignore_ascii_case(name));
-        let resp: Option<egui::Response> = ui
-            .add_enabled_ui(enabled, |ui| -> Option<egui::Response> {
+        // Each control on a child that takes no room. A scope (what
+        // add_enabled_ui makes) moved the form's cursor down a little for
+        // every control, and the window grew by that: a form with sixty
+        // controls came out more than half as tall again (#2165).
+        let mut cui = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(ui.max_rect())
+                .id_salt(("macro_control", i)),
+        );
+        if !enabled {
+            cui.disable();
+        }
+        let resp: Option<egui::Response> =
+            Some(&mut cui).and_then(|ui| -> Option<egui::Response> {
                 match c.kind {
                     ControlKind::Label => {
                         if let Some(b) = c.back {
@@ -816,6 +858,7 @@ fn draw_controls(ui: &mut Ui, form: &LiveForm, origin: Pos2, acts: &mut FormActi
                                 color(Some(b), Color32::TRANSPARENT),
                             );
                         }
+                        draw_picture(ui, id, c, rect);
                         let r = ui.put(
                             rect,
                             egui::Label::new(rich(c, &c.caption))
@@ -837,6 +880,7 @@ fn draw_controls(ui: &mut Ui, form: &LiveForm, origin: Pos2, acts: &mut FormActi
                             b = b.fill(color(Some(bg), Color32::LIGHT_GRAY));
                         }
                         let r = ui.put(rect, b);
+                        draw_picture(ui, id, c, rect.shrink(2.0));
                         if c.default {
                             ui.painter().rect_stroke(
                                 rect,
@@ -946,19 +990,7 @@ fn draw_controls(ui: &mut Ui, form: &LiveForm, origin: Pos2, acts: &mut FormActi
                                 color(Some(b), Color32::TRANSPARENT),
                             );
                         }
-                        if let Some(bytes) = &c.picture {
-                            if let Some(t) = picture(ui, format!("ctl{id}{name}"), bytes) {
-                                let s = t.size_vec2();
-                                let fit = (rect.width() / s.x).min(rect.height() / s.y).min(1.0);
-                                let r = Rect::from_center_size(rect.center(), s * fit);
-                                ui.painter().image(
-                                    t.id(),
-                                    r,
-                                    Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
-                                    Color32::WHITE,
-                                );
-                            }
-                        }
+                        draw_picture(ui, id, c, rect);
                         let r = ui.interact(rect, ui.id().with(("img", id, name)), Sense::click());
                         if r.clicked() {
                             acts.event(id, name, "Click", Vec::new());
@@ -976,11 +1008,11 @@ fn draw_controls(ui: &mut Ui, form: &LiveForm, origin: Pos2, acts: &mut FormActi
                         };
                         let up = ui.put(
                             a,
-                            egui::Button::new(if vertical { "▲" } else { "▶" }).small(),
+                            egui::Button::new(if vertical { "\u{23F6}" } else { "▶" }).small(),
                         );
                         let down = ui.put(
                             b,
-                            egui::Button::new(if vertical { "▼" } else { "◀" }).small(),
+                            egui::Button::new(if vertical { "\u{23F7}" } else { "◀" }).small(),
                         );
                         let step = c.small_change.max(1);
                         if up.clicked() {
@@ -1007,7 +1039,9 @@ fn draw_controls(ui: &mut Ui, form: &LiveForm, origin: Pos2, acts: &mut FormActi
                         let mut v = c.number;
                         let (lo, hi) = (c.min.min(c.max), c.min.max(c.max));
                         let vertical = rect.height() > rect.width();
-                        let mut s = egui::Slider::new(&mut v, lo..=hi).show_value(false);
+                        let mut s = crate::ui::Slider::new(&mut v, lo..=hi)
+                            .show_value(false)
+                            .ticks(false);
                         if vertical {
                             s = s.vertical();
                         }
@@ -1028,8 +1062,7 @@ fn draw_controls(ui: &mut Ui, form: &LiveForm, origin: Pos2, acts: &mut FormActi
                         None
                     }
                 }
-            })
-            .inner;
+            });
         let Some(r) = resp else { continue };
         if !c.tip.is_empty() {
             r.clone().rich_tip(c.tip.as_str());
@@ -1172,7 +1205,7 @@ fn combo_box(
     let mut pick = None;
     let r = if c.style == 2 {
         // A drop-down list: the rows only.
-        let cb = egui::ComboBox::from_id_salt(("macro_combo", id, name))
+        let cb = crate::ui::keynav::ComboBox::from_id_salt(("macro_combo", id, name))
             .width(rect.width() - 8.0)
             .selected_text(rich(c, &c.text))
             .show_ui(ui, |ui| {
@@ -1192,7 +1225,7 @@ fn combo_box(
         let edit_rect = Rect::from_min_max(rect.min, Pos2::new(rect.right() - 18.0, rect.bottom()));
         let r = text_box(ui, form, c, edit_rect, acts);
         let button = Rect::from_min_max(Pos2::new(rect.right() - 18.0, rect.top()), rect.max);
-        let b = ui.put(button, egui::Button::new("▾").small());
+        let b = ui.put(button, egui::Button::new("\u{23F7}").small());
         let popup = egui::Id::new(("macro_combo_list", id, name));
         if b.clicked() {
             ui.ctx().data_mut(|d| {
@@ -1558,7 +1591,7 @@ pub fn manager(app: &mut App, ui: &mut Ui) {
                                             && c.2.as_deref() == Some(n.as_str())
                                     });
                                     let r = ui
-                                        .add(egui::Button::selectable(on, format!("▸ {n}")))
+                                        .add(egui::Button::selectable(on, format!("\u{23F5} {n}")))
                                         .rich_tip_with(|| {
                                             format!("{n}\n{}", tr("macros.macro_desc"))
                                         });
@@ -2111,5 +2144,94 @@ mod tests {
         let src = "Sub A() ' hi\r\n  s = \"x\" & 1 ' é\r\nEnd Sub\r\n";
         let job = highlight(src, 12.0);
         assert_eq!(job.text, src);
+    }
+
+    /// A button's and a label's picture are drawn (#2165: the collection's
+    /// Undo and Browse buttons had only an icon, an .ico among them, and
+    /// came out blank).
+    #[test]
+    fn buttons_and_labels_show_their_pictures() {
+        use tracedraw_vba_project::{Control, Form};
+        let mut ico = Vec::new();
+        image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+            16,
+            16,
+            image::Rgba([200, 30, 30, 255]),
+        ))
+        .write_to(&mut std::io::Cursor::new(&mut ico), image::ImageFormat::Ico)
+        .unwrap();
+        assert_eq!(&ico[..4], &[0, 0, 1, 0]);
+        let mut form = Form {
+            name: "F".into(),
+            width: 200.0,
+            height: 100.0,
+            enabled: true,
+            ..Form::default()
+        };
+        for (kind, name) in [
+            (ControlKind::CommandButton, "cmdUndo"),
+            (ControlKind::Label, "lblLogo"),
+        ] {
+            let mut c = Control::new(kind, name);
+            c.width = 30.0;
+            c.height = 25.0;
+            c.picture = Some(ico.clone());
+            form.controls.push(c);
+        }
+        let live = LiveForm::from_model(7, "F", Some(&form));
+        let ctx = Context::default();
+        let mut out = ctx.run_ui(Default::default(), |ui| {
+            let mut acts = FormActions::default();
+            draw_controls(ui, &live, Pos2::ZERO, &mut acts);
+        });
+        out.textures_delta.clear();
+        for name in ["cmdUndo", "lblLogo"] {
+            let key = format!("ctl7{name}{:x}", picture_hash(&ico));
+            let id = egui::Id::new(("macro_picture", &key));
+            let tex = ctx.data(|d| d.get_temp::<egui::TextureHandle>(id));
+            assert_eq!(tex.map(|t| t.size()), Some([16, 16]), "{name}");
+        }
+    }
+
+    /// A form takes the room of its size, however many controls it has
+    /// (#2165: the GRAFISin tiling form, sixty controls, came out more
+    /// than half as tall again, an empty band under its controls).
+    #[test]
+    fn a_form_with_many_controls_keeps_its_height() {
+        use tracedraw_vba_project::{Control, Form};
+        let mut form = Form {
+            name: "F".into(),
+            width: 300.0,
+            height: 100.0,
+            enabled: true,
+            ..Form::default()
+        };
+        for i in 0..60 {
+            let kind = match i % 4 {
+                0 => ControlKind::Label,
+                1 => ControlKind::TextBox,
+                2 => ControlKind::OptionButton,
+                _ => ControlKind::CommandButton,
+            };
+            let mut c = Control::new(kind, &format!("c{i}"));
+            c.left = (i % 10) as f32 * 28.0;
+            c.top = (i / 10) as f32 * 15.0;
+            c.width = 26.0;
+            c.height = 14.0;
+            c.enabled = i % 7 != 0;
+            form.controls.push(c);
+        }
+        let live = LiveForm::from_model(3, "F", Some(&form));
+        let ctx = Context::default();
+        let mut grown = None;
+        let mut out = ctx.run_ui(Default::default(), |ui| {
+            let size = Vec2::new(form.width, form.height) * PX;
+            let (area, _) = ui.allocate_exact_size(size, Sense::click());
+            let mut acts = FormActions::default();
+            draw_controls(ui, &live, area.min, &mut acts);
+            grown = Some(ui.min_rect().bottom() - area.bottom());
+        });
+        out.textures_delta.clear();
+        assert!(grown.is_some_and(|g| g <= 0.5), "{grown:?}");
     }
 }

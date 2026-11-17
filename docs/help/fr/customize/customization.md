@@ -1,5 +1,7 @@
 # Options de personnalisation
 
+> *Traduction automatique : cette page peut être en retard sur la version anglaise.*
+
 [[menu.tools > menu.tools.options > menu.tools.options_customization]] règle
 l'apparence de l'interface, vos propres raccourcis clavier, les barres
 affichées et le comportement de la palette de couleurs.
@@ -13,6 +15,10 @@ affichées et le comportement de la palette de couleurs.
 - [[options.ui_shadows]] (moins d'ombres aide les cartes graphiques lentes).
 - [[options.colored_icons]] : chaque groupe d'outils reçoit sa propre
   couleur.
+- [[options.docker_tabs_icons_only]] : les onglets des panneaux sur les
+  côtés de la fenêtre n'affichent que leur image, le nom dans l'info-bulle.
+  Désactivé, ils affichent l'image et le nom, et une colonne qui a plus
+  d'onglets que de place défile.
 - [[options.ui_size]] : la taille des menus, des barres, des icônes et des
   panneaux, par rapport à la mise à l'échelle que votre système donne à
   l'écran (100 % au départ). [[options.reset_to_default]] revient à 100 %.
@@ -45,6 +51,15 @@ le supprime, et la réinitialisation aux valeurs par défaut les supprime
 tous. Les touches des outils sont une lettre, ou <kbd>Shift</kbd> et une
 lettre. Voir [Raccourcis clavier](../reference/keyboard-shortcuts.md).
 
+Une commande peut avoir plusieurs raccourcis : une nouvelle touche s'ajoute à
+celles qu'elle a (une touche intégrée continue de marcher à côté), et chaque
+touche a son propre bouton de suppression. Les boutons des barres qui lancent
+une commande de menu (Nouveau, Ouvrir, Enregistrer, Annuler, Zoom avant et
+d'autres) prennent aussi des raccourcis, les mêmes touches que leur commande de
+menu, tout comme les lignes que les menus n'affichent que par moments. Une
+liste **Boutons des barres d'outils** contient tous les boutons des barres
+Standard et Zoom : faites glisser de là, vers sa barre, un bouton retiré.
+
 ## Barres de commandes {#command-bars}
 
 ![La page Barres de commandes des options de personnalisation](../../img/customize-customization-command-bars.png)
@@ -66,6 +81,9 @@ place. Sous [[options.other]] : [[bars.lock]] et
 
 - [[options.palette_auto_update]] et [[options.palette_show_document]]
   (actifs tous les deux).
+- [[options.palette_position]] (Haut, Bas, Gauche, Droite ou Flottante) de
+  la palette par défaut, comme son propre menu la règle ; elle ne change
+  pas tant que les barres d'outils sont verrouillées.
 - [[options.palette_swatches]] : [[options.palette_no_color]] (actif), et ce
   que fait le [[options.palette_right_button]] :
   [[options.palette_set_outline]] (au départ) ou ouvrir le

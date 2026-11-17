@@ -20,6 +20,7 @@
 - [[options.show_tooltips]]（打开）、[[options.hide_bbox_curve_tools]] 和 [[options.node_tracking]]（关闭：打开时，[[tool.pick]] 工具可以拖动所选曲线的节点）。
 - [[options.full_screen_preview]]：[[options.show_page_border]]。
 - [[options.wheel_default_action]]：[[options.wheel_zoom]]（起初选用）或 [[options.wheel_scroll]]。
+- [[options.open_view]]：[[options.open_view_page]]（起初选用）、[[options.open_view_objects]]、[[options.open_view_width]]、[[options.open_view_height]]、[[options.open_view_actual]]、[[options.open_view_percent]]或[[options.open_view_saved]]（每次保存 TraceDraw 文件时记下的页面、位置和缩放）。
 - [[options.ruler_calibration]]：将一把尺子贴在屏幕上，更改 [[options.screen_resolution]] 直到刻度吻合，使 100% 缩放显示真实尺寸。[[options.reset]] 恢复为 96。
 
 ## 编辑 {#edit}
@@ -82,6 +83,7 @@
 - [[options.paragraph_text]]：[[menu.text.show_text_frames]]、
   [[menu.text.use_hyphenation]] 和 [[options.hyphenation_patterns]]
   （内置，或您所用语言的断字词典）。
+  - [[options.default_tab_spacing]]: 没有自己制表位的段落中 <kbd>Tab</kbd> 跳到的位置(12.7 毫米,半英寸)。
 - [[docker.fonts]]：在字体列表顶部 [[options.show_recent_fonts]]、
   [[options.recent_font_count]]（5，最多 20）以及
   [[options.font_sample_size]]。
@@ -90,3 +92,13 @@
   [[options.dictionaries]]，请参阅[词典](../text/writing-tools.md#dictionaries)。
 - [[dialog.autocorrect]]：键入时更正的内容；请参阅
   [自动更正](../text/writing-tools.md#autocorrect)。
+
+## [[benchmark.title]] {#benchmark}
+
+[[menu.help > menu.help.benchmark]]: [[menu.help.benchmark_tip]]
+
+[[benchmark.intro]]
+
+[[benchmark.compare_how]]
+
+[[options.light_zoom]]: [[options.light_zoom_tip]]

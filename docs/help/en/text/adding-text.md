@@ -15,7 +15,10 @@ sans-serif font found. Change the defaults by formatting with nothing selected.
 To make an existing object a text frame, right-click it and choose to create
 an empty text frame; see [Empty frames](../objects/clip-frames.md#empty-frames).
 [[menu.text > menu.text.insert_placeholder_text]] fills the selected frames
-with sample text, as much as fits.
+with sample text, as much as fits. It works on an empty frame you have just
+drawn too, and you can keep typing after the sample text. Right-click a
+paragraph frame, or right-click while you type in one, to find the same
+command.
 
 ## Editing text {#edit}
 
@@ -28,13 +31,34 @@ not change keep their formatting.
 | Keys | What they do |
 |---|---|
 | Typing, <kbd>Ctrl+V</kbd> | insert at the caret, replacing the selection |
+| <kbd>Ctrl+C</kbd>, <kbd>Ctrl+X</kbd>, <kbd>Ctrl+V</kbd> | copy, cut and paste the selected characters; the [[menu.edit]] menu, the toolbar and the right-click menu do the same while you edit. Pasted here, they keep their font, size and colors; other programs get their plain text |
 | <kbd>Backspace</kbd>, <kbd>Delete</kbd> | delete the selection, else the character before or after |
 | <kbd>Enter</kbd>, <kbd>Shift+Enter</kbd> | new paragraph, new line |
 | Arrow keys, with <kbd>Ctrl</kbd> | move by a character or a word; <kbd>Shift</kbd> selects |
 | <kbd>Home</kbd>, <kbd>End</kbd>, with <kbd>Ctrl</kbd> | start or end of the line, or of the text |
 | <kbd>Ctrl+A</kbd> | select all |
 | <kbd>Ctrl+B</kbd>, <kbd>Ctrl+I</kbd>, <kbd>Ctrl+U</kbd> | bold, italic, underline |
+| <kbd>Ctrl+L</kbd>, <kbd>Ctrl+E</kbd>, <kbd>Ctrl+R</kbd> | align left, center, right |
+| <kbd>Ctrl+J</kbd>, <kbd>Ctrl+H</kbd>, <kbd>Ctrl+N</kbd> | full justify, force justify, no alignment |
+| <kbd>Shift+F3</kbd> | change case (see [Proofing](writing-tools.md#change-case)) |
 | Double-click | select a word |
+
+A new alignment keeps artistic text in place at the reference point of the X
+and Y fields of the property bar; in a frame it applies to the paragraphs at
+the caret.
+
+Text in right-to-left scripts (Arabic, Hebrew) is laid out right to left,
+also when it is mixed with left-to-right words, and selections shade every
+selected letter. Keyboards and input methods that send characters (such as
+those for Tamil and other Indian scripts on Windows) type into text and
+fields, and <kbd>Alt</kbd> codes typed on the keypad give their character
+once.
+Letters typed with <kbd>AltGr</kbd> (Polish ą ę ł, German @ € { }) type into
+text and fields, also on Windows.
+On Android the on-screen keyboard types every script its input methods
+compose (Chinese, Japanese, Korean, Tamil). Older fonts that set the letters
+of a script at the places of Latin ones (some Tamil fonts) type as their
+keyboards expect: Autocorrect does not change the letters typed in them.
 
 All your typing in one editing session is one undo step.
 
@@ -44,9 +68,11 @@ With the [[tool.text]] tool, or with text selected, the property bar has the
 font list, the size (type it or pick from the list), bold, italic, underline,
 the alignment (left, center, right, full justify), bullets and drop cap for
 paragraph text, [[menu.text.text_docker]] (<kbd>Ctrl+T</kbd>) and
-[[menu.text.edit_text]]. While editing, they act on the selected characters;
-otherwise on the whole selected texts. Your choice also becomes the default
-for the next text.
+[[menu.text.edit_text]]. The button beside the font size opens the sliders of
+a variable font's axes (see [Variable fonts](fonts.md#variable-fonts)). While editing, they act on the selected characters;
+otherwise on the whole selected texts, and only the setting you change: a new
+font for several texts keeps each one's size, bold and italic. Your choice
+also becomes the default for the next text.
 
 The font list shows each family in its own font, with the ones you used last
 at the top. Type to narrow the list. A family with several styles has an arrow
@@ -58,6 +84,12 @@ The [[docker.text]] panel (<kbd>Ctrl+T</kbd>) has every text setting, in three
 sections you can open and close: **Character**, **Paragraph** and **Frame**.
 The three buttons at the top show the panel from that section on.
 
+Full justification spreads Chinese and Japanese lines to the edge of the frame
+by adding room between the characters, and paragraph text in those scripts
+breaks lines by their rules: punctuation such as ，。、 and closing brackets
+never start a line, and opening brackets never end one. Letters given another
+color keep the font's kerning with their neighbours.
+
 ![The Text panel](../../img/text-adding-text-text-docker.png)
 
 - **Character**: the font, style and size; range kerning (-50 to 200%) and
@@ -65,7 +97,9 @@ The three buttons at the top show the panel from that section on.
   under the section: character offsets and angle, strikethrough and OpenType
   features.
 - **Paragraph**: the alignment (none, left, center, right, full justify, and
-  forced justify, which spreads the last line too); line spacing in percent of
+  forced justify, which spreads the last line too); the direction, left to
+  right or right to left for Arabic, Hebrew and other right-to-left text
+  (lines start at the right and the indents change sides); line spacing in percent of
   the character height, points or percent of the font size; left, first-line
   and right indents; space before and after paragraphs; character and word
   spacing. The gear opens custom hyphens.
@@ -91,9 +125,18 @@ drawn, printed or exported. To make it fit:
   to resize the text to fill the frame;
 - link the frame to another one, so the text flows on:
   [[menu.text.frame_link]]. [[menu.text.frame_unlink]] breaks the link.
+  With two frames picked, the first flows into the second; an empty frame
+  always takes the text that does not fit in the other one, whichever you
+  picked first.
   Or click the small tab under the frame's bottom edge, then click another
   frame (on this page or another one) or click or drag on an empty spot
-  for a new frame: the text flows on into it.
+  for a new frame: the text flows on into it. You can also drag from the
+  tab and let go over another frame or an empty spot.
+- a picked frame also has a small tab over its top edge: click it, then
+  click the frame whose text should flow into this one, or click an empty
+  spot for a new frame that the text starts in. The top tab shows two
+  links when text flows in, and the bottom tab when the text flows on;
+  while you choose, a dashed line runs from the tab to the pointer.
 
 [[menu.text > menu.text.show_text_frames]] shows or hides the frames.
 
@@ -113,12 +156,29 @@ offsets.
 2. Choose [[menu.text > menu.text.fit_text_to_path]].
 
 Or click the outline of a path with the [[tool.text]] tool and type. Text on a
-closed shape stands on its outside, centered on its top. With text on a path
-selected, the property bar sets the orientation of the letters (rotated,
-vertical or horizontal skew, or upright), the vertical placement (on the
-baseline, ascender, descender or center), the placement along the path, the
-distance and offset, and mirroring. Drag the text to slide it along the path.
-[[menu.text.straighten_text]] takes it off the path.
+closed shape stands on its outside, centered on its top; clicked on the bottom
+of an ellipse, it starts there.
+
+With text on a path selected (also with the [[tool.pick]] tool), the property
+bar shows the path's fields first, then the usual text fields:
+
+- The orientation of the letters: rotated, vertical skew, horizontal skew or
+  upright.
+- The vertical placement: on the baseline, the ascender, the descender, or
+  centred on the path.
+- The placement along the path: at its start, centre or end, and on a closed
+  path also **Top centre** (centred on the highest point, outside and
+  upright) and **Bottom centre** (centred on the lowest point, inside and
+  reading left to right, as the bottom line of a stamp).
+- The distance from the path and the offset along it. A new distance keeps
+  the text centred where it was, so a line at the bottom of a circle stays
+  centred as it moves in or out.
+- The two mirror buttons, which put the text on the other side of the path
+  or turn it round, and [[menu.text.straighten_text]], which takes it off the
+  path.
+
+Drag the text to slide it along the path, or across the path to move it away
+from it.
 
 ## Other text commands {#commands}
 

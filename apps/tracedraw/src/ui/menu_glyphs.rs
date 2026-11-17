@@ -28,7 +28,6 @@ pub enum Glyph {
     Exit,
     Mail,
     Acquire,
-    FromTemplate,
     // Edit
     Delete,
     Duplicate,
@@ -118,17 +117,26 @@ pub enum Glyph {
     // Tools
     ColorManagement,
     FontManager,
+    TraceCut,
     Ai,
     Clock,
     Script,
     Record,
     Grommet,
     SaveDefaults,
+    // View (#2100): so these commands show a picture on a toolbar too.
+    ViewWireframe,
+    ViewNormal,
+    ViewEnhanced,
+    ViewPixels,
+    MaskOutsidePage,
+    PreviewSelected,
+    PageSorter,
+    Multipage,
 }
 
 const RED: Color32 = Color32::from_rgb(0xD0, 0x2B, 0x2B);
 const GREEN: Color32 = Color32::from_rgb(0x1E, 0x9E, 0x3C);
-const BLUE: Color32 = Color32::from_rgb(0x1F, 0x6F, 0xC5);
 const GOLD: Color32 = Color32::from_rgb(0xE8, 0xA3, 0x17);
 
 /// The picture of a menu row, by its key.
@@ -136,6 +144,7 @@ pub fn for_key(key: &str) -> Option<Glyph> {
     use Glyph::*;
     Some(match key {
         "menu.help.product_help" | "menu.help.help_topics" => Help,
+        "menu.help.search_commands" => Find,
         "menu.help.video_tutorials" => Video,
         "menu.help.quick_start_guide" => QuickStart,
         "menu.help.user_guide" => UserGuide,
@@ -145,6 +154,15 @@ pub fn for_key(key: &str) -> Option<Glyph> {
         "menu.help.community" => Community,
         "menu.help.support" | "menu.help.about" => Info,
         "menu.file.save_as" | "menu.file.save_as_template" => SaveAs,
+        "menu.view.wireframe" => ViewWireframe,
+        "menu.view.normal" => ViewNormal,
+        "menu.view.enhanced" => ViewEnhanced,
+        "menu.view.pixels" => ViewPixels,
+        "menu.view.mask_outside_page" => MaskOutsidePage,
+        "menu.view.preview_selected_only" => PreviewSelected,
+        "menu.view.page_sorter" => PageSorter,
+        "menu.view.multipage" => Multipage,
+        "menu.view.draw_in_perspective" => Perspective,
         "menu.file.close" => CloseDoc,
         "menu.file.close_all" => CloseAllDocs,
         "menu.file.revert" => Revert,
@@ -153,7 +171,6 @@ pub fn for_key(key: &str) -> Option<Glyph> {
         "menu.file.document_properties" => DocProperties,
         "menu.file.exit" => Exit,
         "menu.file.send_to_mail" => Mail,
-        "menu.file.new_from_template" => FromTemplate,
         "menu.file.acquire_image" => Acquire,
         "menu.edit.delete" => Delete,
         "menu.edit.duplicate" => Duplicate,
@@ -170,7 +187,7 @@ pub fn for_key(key: &str) -> Option<Glyph> {
         "page_tab.insert_before" => PageInsertBefore,
         "menu.layout.rename_page" => PageRename,
         "menu.layout.go_to_page" => PageGoto,
-        "menu.layout.duplicate_page" => PageDuplicate,
+        "menu.layout.duplicate_page" | "page_tab.duplicate_to_new_document" => PageDuplicate,
         "menu.layout.switch_orientation" => PageOrientation,
         "menu.layout.page_number_settings" | "menu.object.insert_page_number" => PageNumber,
         "menu.layout.document_options" | "menu.layout.page_layout" => DocOptions,
@@ -208,8 +225,8 @@ pub fn for_key(key: &str) -> Option<Glyph> {
         "menu.object.objects" => ObjectsDocker,
         "menu.object.clip_frame_place_inside" | "menu.object.clip_frame" => ClipInside,
         "menu.object.clip_frame_extract" => ClipExtract,
-        "menu.object.clip_frame_edit" => ClipEdit,
-        "menu.object.clip_frame_finish" => ClipFinish,
+        "menu.object.clip_frame_edit" | "menu.object.symbol_edit" => ClipEdit,
+        "menu.object.clip_frame_finish" | "menu.object.symbol_finish" => ClipFinish,
         "menu.object.insert_barcode" | "menu.object.insert" => Barcode,
         "menu.object.insert_qr" => QrCode,
         "menu.object.symmetry_create" | "menu.object.symmetry_edit" | "menu.object.symmetry" => {
@@ -245,10 +262,12 @@ pub fn for_key(key: &str) -> Option<Glyph> {
         "menu.table.distribute_columns" => DistCols,
         "menu.tools.color_management" => ColorManagement,
         "menu.tools.font_manager" => FontManager,
+        "menu.tools.tracecut" => TraceCut,
         "menu.tools.ai_drawing" | "menu.object.ai_draw_words" => Ai,
         "menu.tools.ai_generate"
         | "menu.tools.options_ai"
         | "menu.bitmaps.remove_background"
+        | "menu.bitmaps.ai_vectorize"
         | "context.ai_remix"
         | "menu.object.ai_generate"
         | "menu.object.ai_create_image"
@@ -334,8 +353,10 @@ pub fn draw(painter: &Painter, r: Rect, g: Glyph, color: Color32) {
         line((cx - h, cy - h), (cx + h, cy + h), st);
         line((cx - h, cy + h), (cx + h, cy - h), st);
     };
+    // The accent of the pages: the icons' blue (#1682).
+    let blue = accent(crate::ui::icons::accent());
     let plus = |cx: f32, cy: f32, h: f32| {
-        let st = Stroke::new(1.6 * k, accent(GREEN));
+        let st = Stroke::new(1.6 * k, blue);
         line((cx - h, cy), (cx + h, cy), st);
         line((cx, cy - h), (cx, cy + h), st);
     };
@@ -415,7 +436,7 @@ pub fn draw(painter: &Painter, r: Rect, g: Glyph, color: Color32) {
     let blk = |x0: f32, y0: f32, x1: f32, y1: f32, c: Color32| {
         fillr(x0, y0, x1, y1, c);
     };
-    let blue = accent(BLUE);
+
     let grid = |x0: f32, y0: f32, x1: f32, y1: f32, rows: usize, cols: usize| {
         rect(x0, y0, x1, y1, paper, s);
         for i in 1..rows {
@@ -548,13 +569,6 @@ pub fn draw(painter: &Painter, r: Rect, g: Glyph, color: Color32) {
             line((3.0, 9.5), (13.0, 9.5), Stroke::new(1.4 * k, blue));
             page(4.0, 1.5, 12.0, 7.0);
         }
-        FromTemplate => {
-            page(2.0, 1.5, 12.0, 14.5);
-            for (y, w) in [(5.0, 6.0), (7.5, 4.0), (10.0, 6.0)] {
-                fillr(4.0, y - 0.6, 4.0 + w, y + 0.6, blue);
-            }
-            plus(12.5, 12.5, 2.5);
-        }
         Delete => cross(8.0, 8.0, 5.5),
         Duplicate => {
             rect(1.5, 1.5, 9.5, 9.5, paper, s);
@@ -669,14 +683,11 @@ pub fn draw(painter: &Painter, r: Rect, g: Glyph, color: Color32) {
             gear(11.5, 11.5, 4.0);
         }
         PageBackground => {
-            fillr(
-                1.5,
-                1.5,
-                14.5,
-                14.5,
-                accent(Color32::from_rgb(0x9C, 0xC8, 0xF0)),
-            );
-            page(4.0, 3.5, 12.0, 13.0);
+            // The page in the same line as the other page pictures, with
+            // the background in the accent behind it (#1682): it was a
+            // tinted square framed in the accent, unlike the rest.
+            fillr(5.0, 4.0, 14.5, 15.0, blue);
+            page(1.5, 1.0, 11.0, 12.5);
         }
         PageSize => {
             page(3.0, 3.5, 12.5, 15.0);
@@ -1057,6 +1068,24 @@ pub fn draw(painter: &Painter, r: Rect, g: Glyph, color: Color32) {
             text(6.0, 8.0, "A", 12.0, color);
             text(12.0, 10.0, "a", 9.0, blue);
         }
+        TraceCut => {
+            // A shape with its cut line dashed round it and the knife
+            // cutting along it: the cutting plotter tools.
+            let cut = Stroke::new(1.3 * k, blue);
+            let n = 16;
+            for i in (0..n).step_by(2) {
+                let a0 = i as f32 / n as f32 * std::f32::consts::TAU;
+                let a1 = (i + 1) as f32 / n as f32 * std::f32::consts::TAU;
+                line(
+                    (7.0 + 5.5 * a0.cos(), 9.0 + 5.5 * a0.sin()),
+                    (7.0 + 5.5 * a1.cos(), 9.0 + 5.5 * a1.sin()),
+                    cut,
+                );
+            }
+            // The knife: a handle and its blade, the tip on the cut line.
+            line((15.0, 1.0), (11.8, 4.2), bold);
+            closed(&[(11.8, 4.2), (9.9, 4.6), (11.0, 5.9)], color, Stroke::NONE);
+        }
         Ai => {
             closed(
                 &[
@@ -1073,6 +1102,61 @@ pub fn draw(painter: &Painter, r: Rect, g: Glyph, color: Color32) {
                 Stroke::NONE,
             );
             text(12.5, 4.0, "+", 7.0, blue);
+        }
+        // A circle and a square: outlines only, filled, smooth, in pixels.
+        ViewWireframe => {
+            circle(6.0, 7.0, 4.5, Color32::TRANSPARENT, thin);
+            rect(7.5, 7.5, 14.5, 14.5, Color32::TRANSPARENT, thin);
+        }
+        ViewNormal => {
+            circle(6.0, 7.0, 4.5, accent(blue), s);
+            rect(7.5, 7.5, 14.5, 14.5, accent(GOLD), s);
+        }
+        ViewEnhanced => {
+            circle(6.0, 7.0, 4.5, accent(blue), Stroke::NONE);
+            rect(7.5, 7.5, 14.5, 14.5, accent(GOLD), Stroke::NONE);
+            circle(4.6, 5.6, 1.4, Color32::from_white_alpha(150), Stroke::NONE);
+        }
+        ViewPixels => {
+            for (x, y) in [
+                (2.0, 4.0),
+                (4.0, 2.0),
+                (6.0, 2.0),
+                (8.0, 4.0),
+                (2.0, 6.0),
+                (8.0, 6.0),
+                (4.0, 8.0),
+                (6.0, 8.0),
+            ] {
+                fillr(x, y, x + 2.0, y + 2.0, accent(blue));
+            }
+            fillr(8.0, 9.0, 14.5, 14.5, accent(GOLD));
+        }
+        // The page, the desk around it shaded.
+        MaskOutsidePage => {
+            fillr(1.0, 1.0, 15.0, 15.0, color.gamma_multiply(0.45));
+            rect(4.0, 3.0, 12.0, 13.0, paper, s);
+        }
+        // One object shown, another dashed.
+        PreviewSelected => {
+            for i in 0..3 {
+                let x = 1.5 + i as f32 * 2.5;
+                line((x, 2.0), (x + 1.4, 2.0), thin);
+                line((x, 9.0), (x + 1.4, 9.0), thin);
+            }
+            line((1.5, 2.0), (1.5, 9.0), thin);
+            line((8.5, 2.0), (8.5, 9.0), thin);
+            rect(6.5, 6.5, 14.5, 14.5, accent(blue), s);
+        }
+        // Pages side by side.
+        PageSorter => {
+            for (x, y) in [(1.5, 1.5), (8.5, 1.5), (1.5, 8.5), (8.5, 8.5)] {
+                rect(x, y, x + 6.0, y + 6.0, paper, thin);
+            }
+        }
+        Multipage => {
+            rect(1.0, 3.0, 7.0, 12.5, paper, s);
+            rect(9.0, 3.0, 15.0, 12.5, paper, s);
         }
         Clock => {
             circle(8.0, 8.0, 6.5, paper, s);
@@ -1104,5 +1188,97 @@ pub fn draw(painter: &Painter, r: Rect, g: Glyph, color: Color32) {
             fillr(3.5, 1.5, 9.5, 5.0, color);
             gear(12.0, 12.0, 3.6);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tracecut_has_its_own_picture() {
+        assert_eq!(for_key("menu.tools.tracecut"), Some(Glyph::TraceCut));
+        let ctx = crate::theme::ui_context();
+        let mut out = ctx.run_ui(Default::default(), |ui| {
+            let r = Rect::from_min_size(Pos2::ZERO, Vec2::splat(16.0));
+            assert!(crate::ui::menus::draw_menu_picture(
+                ui.painter(),
+                r,
+                "menu.tools.tracecut",
+                Color32::GRAY
+            ));
+        });
+        out.textures_delta.clear();
+    }
+
+    /// #2100: the View commands of the video have pictures, so a toolbar
+    /// shows them as buttons, not as their names.
+    #[test]
+    fn the_view_commands_have_pictures() {
+        for key in [
+            "menu.view.wireframe",
+            "menu.view.normal",
+            "menu.view.enhanced",
+            "menu.view.pixels",
+            "menu.view.mask_outside_page",
+            "menu.view.preview_selected_only",
+            "menu.view.page_sorter",
+            "menu.view.multipage",
+            "menu.view.draw_in_perspective",
+        ] {
+            assert!(crate::ui::menus::has_menu_picture(key), "{key}");
+        }
+        let ctx = crate::theme::ui_context();
+        let mut out = ctx.run_ui(Default::default(), |ui| {
+            let r = Rect::from_min_size(Pos2::ZERO, Vec2::splat(16.0));
+            for g in [Glyph::PreviewSelected, Glyph::Perspective, Glyph::ViewPixels] {
+                draw(ui.painter(), r, g, Color32::GRAY);
+            }
+        });
+        out.textures_delta.clear();
+    }
+
+    /// #2100: a command without a picture takes the one chosen for it on
+    /// the Commands page (another command's or a tool's), kept in the
+    /// settings; Reset to Default takes it away again.
+    #[test]
+    fn a_chosen_picture_is_the_command_s() {
+        let mut app = crate::app::App::headless();
+        let key = "menu.view.bleed";
+        assert!(!crate::ui::menus::has_own_picture(key));
+        crate::ui::menus::set_command_icons(&[]);
+        assert!(!crate::ui::menus::has_menu_picture(key));
+        crate::ui::options::set_command_icon(&mut app, key, Some("tool:rectangle"));
+        assert_eq!(
+            app.settings.command_icons,
+            [(key.to_string(), "tool:rectangle".to_string())]
+        );
+        assert!(crate::ui::menus::has_menu_picture(key));
+        crate::ui::options::set_command_icon(&mut app, key, Some("menu.file.save"));
+        assert_eq!(app.settings.command_icons.len(), 1);
+        assert_eq!(
+            crate::ui::menus::chosen_icon(key).as_deref(),
+            Some("menu.file.save")
+        );
+        // The pictures to choose from: commands with their own, and tools.
+        let entries = vec![
+            crate::ui::menus::invoke::Entry {
+                key: "menu.file.save".into(),
+                shortcut: String::new(),
+                path: Vec::new(),
+            },
+            crate::ui::menus::invoke::Entry {
+                key: key.into(),
+                shortcut: String::new(),
+                path: Vec::new(),
+            },
+        ];
+        let sources = crate::ui::options::icon_sources(&entries);
+        assert_eq!(sources[0], "menu.file.save");
+        assert!(!sources.iter().any(|s| s == key));
+        assert!(sources.iter().any(|s| s == "tool:rectangle"));
+        crate::ui::options::set_command_icon(&mut app, key, None);
+        assert!(app.settings.command_icons.is_empty());
+        assert!(!crate::ui::menus::has_menu_picture(key));
     }
 }

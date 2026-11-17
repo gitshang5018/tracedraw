@@ -11,7 +11,7 @@
 | [[docker.hints]] |  | [→](../get-started/hints.md) |
 | [[docker.transformations]] | <kbd>Alt+F7</kbd> | [→](../objects/transforming.md#transformations-docker) |
 | [[docker.undo]] |  | [→](../get-started/undo-and-views.md#undo-docker) |
-| [[docker.align_distribute]] | <kbd>Ctrl+Shift+A</kbd> | [→](../objects/align-distribute.md) |
+| [[docker.align_distribute]] |  | [→](../objects/align-distribute.md) |
 | [[docker.shaping]] |  | [→](../lines-shapes/shaping.md) |
 | [[docker.step_and_repeat]] | <kbd>Ctrl+Shift+D</kbd> | [→](../objects/step-and-repeat.md) |
 | [[docker.text]] | <kbd>Ctrl+T</kbd> | [→](../text/adding-text.md#text-docker) |
@@ -51,6 +51,6 @@
 ## 使用面板 {#working}
 
 - 单击选项卡可将其面板置于前面；单击前面的选项卡可折叠面板。
-- 面板标题栏中的关闭按钮将它从选项卡中移除；折叠按钮折叠面板区域。
+- 面板标题栏中的关闭按钮将它从选项卡中移除；折叠按钮折叠面板区域，其箭头指向面板折向的窗口一侧（停靠在左侧的面板指向左）。
 - 保持打开的面板会在下次启动 TraceDraw 时恢复。
 - 面板快捷键可切换：在其面板位于前面时按下会隐藏面板。

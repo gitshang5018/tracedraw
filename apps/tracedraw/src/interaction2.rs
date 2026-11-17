@@ -23,6 +23,7 @@ impl App {
             || self.pending_merge_frame
             || self.pending_copy_effect.is_some()
             || self.pending_copy_envelope
+            || self.pending_copy_fill
             || self.pending_clone_effect.is_some()
             || self.pending_blend_path
             || self.pending_text_path
@@ -37,6 +38,7 @@ impl App {
             self.pending_merge_frame = false;
             self.pending_copy_effect = None;
             self.pending_copy_envelope = false;
+            self.pending_copy_fill = false;
             self.pending_clone_effect = None;
             self.pending_blend_path = false;
             self.pending_text_path = false;
@@ -84,11 +86,32 @@ impl App {
         } else if self.pending_copy_properties {
             self.pending_copy_properties = false;
             if let Some(t) = target {
-                self.copy_properties_from(t);
+                // Read from the object clicked inside a group or clip
+                // frame, which shows the properties (#1550).
+                match self.leaf_of(t, p) {
+                    Some(leaf) => self.copy_properties_from_shape(t, &leaf),
+                    None => self.copy_properties_from(t),
+                }
             }
         } else if let Some(kind) = self.pending_copy_effect.take() {
             if let Some(t) = target {
                 self.copy_effect_from(t, kind);
+            }
+        } else if self.pending_copy_fill {
+            self.pending_copy_fill = false;
+            if let Some(t) = target {
+                // The fill the object clicked shows, inside a group or
+                // clip frame too, as Copy Properties From reads it.
+                let src = match self.leaf_of(t, p) {
+                    Some(leaf) => Some(leaf),
+                    None => self
+                        .doc()
+                        .find_shape(t)
+                        .map(crate::copy_props::properties_source),
+                };
+                if let Some(src) = src {
+                    self.copy_fill_from_shape(t, &src);
+                }
             }
         } else if self.pending_copy_envelope {
             self.pending_copy_envelope = false;
@@ -125,6 +148,7 @@ impl App {
                 self.brush_input(response, p, mods)
             }
             Tool::VariableOutline => self.variable_outline_input(response, p, mods),
+            Tool::Join => self.join_tool_input(response, p),
             Tool::SegmentDelete => {
                 if response.clicked_by(PointerButton::Primary) {
                     self.delete_virtual_segment_at(p);
@@ -158,6 +182,8 @@ impl App {
             Tool::ShapeRecognition | Tool::Sketch => {
                 if response.drag_started_by(PointerButton::Primary) {
                     self.drag = Drag::Freehand { points: vec![p] };
+                    // A pen's pressure along the stroke (#883).
+                    self.pen_stroke = crate::pen::PenStroke::start(self.pen_pressure);
                 }
                 if response.dragged_by(PointerButton::Primary) {
                     if let Drag::Freehand { points } = &mut self.drag {
@@ -167,6 +193,8 @@ impl App {
                             .unwrap_or(true)
                         {
                             points.push(p);
+                            let n = points.len();
+                            self.pen_stroke.record(n, self.pen_pressure);
                         }
                     }
                 }
@@ -192,20 +220,34 @@ impl App {
                     }
                 }
             }
-            Tool::BlockShadow => {
+            Tool::BlockShadow | Tool::InnerShadow => {
+                // A drag from an object casts the shadow from the press
+                // (the Inner Shadow tool as the Block Shadow one, #2473);
+                // one from the square at the selected shadow's end moves
+                // that end (#1280).
                 if response.drag_started_by(PointerButton::Primary) {
-                    if let Some(id) = self.hit_test(p) {
-                        self.select(vec![id]);
-                        self.drag = Drag::ContourDrag { start: p };
+                    // The press point, not where the drag was noticed.
+                    let press = response
+                        .ctx
+                        .input(|i| i.pointer.press_origin())
+                        .map(|o| self.view.to_page(o))
+                        .unwrap_or(p);
+                    if !self.begin_offset_shadow_handle(press) {
+                        if let Some(id) = self.shadow_drag_target(press) {
+                            // A press on one of several selected objects
+                            // keeps them all: each takes the shadow (#2218).
+                            if !self.selection.contains(&id) {
+                                self.select(vec![id]);
+                            }
+                            self.drag = Drag::ContourDrag { start: press };
+                        }
                     }
                 }
                 if response.dragged_by(PointerButton::Primary) {
-                    if let Drag::ContourDrag { start } = self.drag {
-                        let offset = p - start;
-                        let color = self.block_shadow_color;
-                        let gap = self.block_shadow_gap;
-                        self.push_effect(Effect::BlockShadow { offset, color, gap }, true);
-                    }
+                    let ctrl = response
+                        .ctx
+                        .input(|i| i.modifiers.ctrl || i.modifiers.command);
+                    self.offset_shadow_drag_to(p, ctrl);
                 }
             }
             Tool::Envelope => self.envelope_tool_input(response, p),
@@ -238,6 +280,11 @@ impl App {
 
     fn free_transform_input(&mut self, response: &Response, p: Point, mods: Modifiers) {
         use crate::app::FreeTransformMode as M;
+        // A drag that ended without its release reaching here (Esc, a
+        // tool change) closes its undo group.
+        if !matches!(self.drag, Drag::Rotate { .. }) {
+            self.end_free_transform_group();
+        }
         if response.drag_started_by(PointerButton::Primary) {
             if let Some(id) = self.hit_test(p) {
                 if !self.selection.contains(&id) {
@@ -245,6 +292,9 @@ impl App {
                 }
             }
             if !self.selection.is_empty() {
+                // The whole drag is one undo step (#1342).
+                self.end_free_transform_group();
+                self.free_transform_group = Some(self.engine.begin_group());
                 if self.free_transform_duplicate {
                     // Transform a copy, leave the original where it is.
                     let offset = self.duplicate_offset;
@@ -282,14 +332,36 @@ impl App {
                 let t = free_transform_step(mode, center, last, p, first);
                 if t != Affine::IDENTITY {
                     self.transform_selection(t);
+                    // The steps so far become one at once: the drag keeps
+                    // one copy of the drawing from before it, not one a
+                    // pointer move.
+                    if let Some(mark) = self.free_transform_group {
+                        self.engine.join_group(mark, "Free Transform");
+                    }
                 }
             }
+        }
+        if response.drag_stopped_by(PointerButton::Primary)
+            && matches!(self.drag, Drag::Rotate { .. })
+        {
+            // Every step was applied as the pointer moved; the release
+            // has nothing more to do than close the undo group.
+            self.drag = Drag::None;
+            self.end_free_transform_group();
         }
         if response.clicked_by(PointerButton::Primary) {
             match self.hit_test(p) {
                 Some(id) => self.select(vec![id]),
                 None => self.select(Vec::new()),
             }
+        }
+    }
+
+    /// Close the undo group of a Free Transform drag, if one is open: its
+    /// steps become one "Free Transform" step.
+    pub fn end_free_transform_group(&mut self) {
+        if let Some(mark) = self.free_transform_group.take() {
+            self.engine.end_group(mark, "Free Transform");
         }
     }
 
@@ -334,12 +406,33 @@ impl App {
                 }
             }
         }
-        if let Some(id) = self.new_shape(ShapeKind::Path {
-            path,
-            closed: false,
-        }) {
+        // Drawn with a pen: the outline follows its pressure (#883).
+        let widths = self.pen_widths(&points);
+        if let Some(id) = self.new_shape_styled(
+            ShapeKind::Path {
+                path,
+                closed: false,
+            },
+            |shape| {
+                if let Some(st) = shape.stroke.as_mut().filter(|_| !widths.is_empty()) {
+                    st.widths = widths;
+                }
+            },
+        ) {
             self.select(vec![id]);
         }
+    }
+
+    /// The width nodes a line drawn along `points` gets from the pen's
+    /// pressure, for the default outline's width; empty with the mouse
+    /// or with Options > Tools > Curve tools' pen pressure off (#850,
+    /// #883).
+    pub fn pen_widths(&self, points: &[Point]) -> Vec<tracedraw_core::style::WidthNode> {
+        self.pen_pressures(points)
+            .and_then(|pr| crate::pen::PressureProfile::new(points, pr))
+            .zip(self.default_stroke())
+            .map(|(pen, st)| pen.freehand_widths(st.width))
+            .unwrap_or_default()
     }
 
     /// Right-angle and rounded connectors: an elbow path between the
@@ -364,10 +457,11 @@ impl App {
         }
     }
 
-    /// Area Fill: find the enclosed area under the click (all visible
-    /// outlines count as walls) and create a filled object from it. The
-    /// area can be anywhere, on the page or off it on the desktop, and a
-    /// drawing of any size (#499).
+    /// Area Fill: find the enclosed area under the click (the outlines
+    /// that show count as walls: a line hidden under an object's opaque
+    /// fill does not cut the area, #1281) and create a filled object from
+    /// it. The area can be anywhere, on the page or off it on the desktop,
+    /// and a drawing of any size (#499).
     pub fn area_fill_at(&mut self, p: Point) {
         let shapes: Vec<Shape> = self
             .doc()
@@ -377,32 +471,45 @@ impl App {
             .filter(|l| l.visible)
             .flat_map(|l| l.shapes.clone())
             .collect();
-        fn collect(s: &Shape, parent: Affine, out: &mut Vec<BezPath>) {
+        // Bottom to top: each outline and whether its fill hides what
+        // lies beneath it.
+        fn collect(s: &Shape, parent: Affine, out: &mut Vec<(BezPath, bool)>) {
             let t = parent * s.transform;
             if !s.effects.is_empty() {
-                // What the object draws: its warped outline and the
-                // objects its effects add.
+                // What the object draws, in drawing order: the objects its
+                // effects add below it, its warped outline, those above.
                 let mut on_page = s.clone();
                 on_page.transform_by(parent);
                 let ev = tracedraw_core::live::evaluate(&on_page);
-                for part in std::iter::once(ev.main).chain(ev.below).chain(ev.above) {
-                    out.push(part.page_path());
+                let see_through = s
+                    .effects
+                    .iter()
+                    .any(|e| matches!(e, Effect::Transparency { .. } | Effect::Lens(_)));
+                for part in ev.below {
+                    let covers = hides_below(&part);
+                    out.push((part.page_path(), covers));
+                }
+                let covers = !see_through && hides_below(&ev.main);
+                out.push((ev.main.page_path(), covers));
+                for part in ev.above {
+                    let covers = hides_below(&part);
+                    out.push((part.page_path(), covers));
                 }
                 return;
             }
             match &s.kind {
                 ShapeKind::Group { children } => children.iter().for_each(|c| collect(c, t, out)),
-                _ => out.push(t * s.local_path()),
+                _ => out.push((t * s.local_path(), hides_below(s))),
             }
         }
-        let mut paths = Vec::new();
+        let mut parts = Vec::new();
         for s in &shapes {
-            collect(s, Affine::IDENTITY, &mut paths);
+            collect(s, Affine::IDENTITY, &mut parts);
         }
         // The area the outlines close off around the click, its sides
         // their own curves (#734); a click in an open area or on an
         // outline makes nothing.
-        let path = match tracedraw_core::shaping::enclosed_area(&paths, p) {
+        let path = match tracedraw_core::shaping::enclosed_visible_area(&parts, p) {
             tracedraw_core::shaping::Enclosed::Area(path) => path,
             tracedraw_core::shaping::Enclosed::Open => {
                 self.status = tr("status.area_fill_open");
@@ -443,24 +550,80 @@ impl App {
     }
 
     /// Effect nodes (perspective, mesh) under the pointer, for the Shape
-    /// and Mesh Fill tools: (shape, node index).
+    /// and Mesh Fill tools: (shape, node index). The nearest within the
+    /// pick distance (it grows with the node size, #1935) of the nodes and
+    /// of the handles of the selected mesh node (they lie along its grid
+    /// lines); a node wins over a handle as near.
     pub fn effect_node_at(&self, p: Point) -> Option<(ShapeId, usize)> {
-        let tol = 5.0 / self.view.zoom as f64;
-        for s in self.selected_shapes() {
-            for (i, q) in effect_nodes(&s) {
-                if (q - p).hypot() <= tol {
-                    return Some((s.id, i));
-                }
+        let tol = self.settings.nodes.pick_px() / self.view.zoom.max(1e-6) as f64;
+        let nearest = |points: Vec<((ShapeId, usize), Point)>| {
+            points
+                .into_iter()
+                .map(|(key, q)| (key, (q - p).hypot()))
+                .filter(|(_, d)| *d <= tol)
+                .min_by(|a, b| a.1.total_cmp(&b.1))
+                .map(|(key, _)| key)
+        };
+        let mut points: Vec<((ShapeId, usize), Point)> = self
+            .selected_shapes()
+            .iter()
+            .flat_map(|s| {
+                effect_nodes(s)
+                    .into_iter()
+                    .map(move |(i, q)| ((s.id, i), q))
+            })
+            .collect();
+        // After the nodes: a node and a handle as near win the node.
+        if let Some((id, i)) = self.selected_mesh_node() {
+            if let Some(s) = self.doc().find_shape(id) {
+                points.extend(
+                    mesh_handle_points(s, i)
+                        .into_iter()
+                        .map(|(k, q)| ((id, k), q)),
+                );
             }
         }
-        None
+        nearest(points)
     }
 
-    /// Drag an effect node; returns true when handled.
+    /// Drag an effect node; returns true when handled. A drag takes the
+    /// node (or the selected mesh node's handle) under the press, not
+    /// under the pointer where the drag is noticed a few pixels on, and
+    /// the node follows the pointer, snapping where it lands (#2004,
+    /// discussion #2073).
     pub fn effect_node_input(&mut self, response: &Response, p: Point) -> bool {
+        // Checked before the click, which the second click of a
+        // double-click also is.
+        if response.double_clicked() {
+            // Double-click on a mesh node: the grid lines through it go,
+            // as with Delete and as in CorelDRAW; a row or column could
+            // not be taken out with the mouse (d#2889).
+            let on_node = self.effect_node_at(p).filter(|h| {
+                !crate::mesh_tool::is_mesh_handle(h.1)
+                    && crate::mesh_tool::mesh_node_of(h.1).is_some()
+            });
+            if let Some(hit) = on_node {
+                self.selected_effect_node = Some(hit);
+                self.mesh_more_nodes = None;
+                self.delete_mesh_lines();
+                return true;
+            }
+        }
         if response.clicked_by(PointerButton::Primary) {
             if let Some(hit) = self.effect_node_at(p) {
-                self.selected_effect_node = Some(hit);
+                // A handle keeps its node selected. Shift+click on a
+                // mesh node adds it to (or takes it out of) the chosen
+                // nodes, as in CorelDRAW (discussion #2387).
+                if !crate::mesh_tool::is_mesh_handle(hit.1) {
+                    let shift = response.ctx.input(|i| i.modifiers.shift);
+                    match crate::mesh_tool::mesh_node_of(hit.1) {
+                        Some(k) if shift => self.toggle_mesh_node(hit.0, k),
+                        _ => {
+                            self.selected_effect_node = Some(hit);
+                            self.mesh_more_nodes = None;
+                        }
+                    }
+                }
                 return true;
             }
         }
@@ -492,46 +655,55 @@ impl App {
             }
         }
         if response.drag_started_by(PointerButton::Primary) {
-            if let Some(hit) = self.effect_node_at(p) {
-                self.effect_node_drag = Some(hit);
-                self.selected_effect_node = Some(hit);
+            let press = response
+                .ctx
+                .input(|i| i.pointer.press_origin())
+                .map(|o| self.view.to_page(o))
+                .unwrap_or(p);
+            let hit = self
+                .effect_node_at(press)
+                .map(|h| (h, press))
+                .or_else(|| self.effect_node_at(p).map(|h| (h, p)));
+            if let Some(((id, index), from)) = hit {
+                let at = self
+                    .doc()
+                    .find_shape(id)
+                    .and_then(|s| effect_point(s, index))
+                    .unwrap_or(from);
+                self.effect_node_grab = at - from;
+                self.effect_node_drag = Some((id, index));
+                if !crate::mesh_tool::is_mesh_handle(index) {
+                    // A drag on one of several chosen mesh nodes moves
+                    // them all; on another node, that node alone.
+                    let group = crate::mesh_tool::mesh_node_of(index).and_then(|k| {
+                        self.selected_mesh_nodes()
+                            .filter(|(sid, nodes)| *sid == id && nodes.contains(&k))
+                            .map(|(_, nodes)| (k, nodes))
+                    });
+                    match group {
+                        Some((k, mut nodes)) => {
+                            nodes.retain(|&n| n != k);
+                            nodes.insert(0, k);
+                            self.choose_mesh_nodes(id, &nodes);
+                        }
+                        None => {
+                            self.selected_effect_node = Some((id, index));
+                            self.mesh_more_nodes = None;
+                        }
+                    }
+                }
                 self.effect_node_stepped = false;
-                self.drag = Drag::Node { last: p };
+                self.drag = Drag::Node { last: from };
+                // The node catches up with the pointer now.
+                self.effect_node_drag_to(p);
                 return true;
             }
         }
-        let Some((id, index)) = self.effect_node_drag else {
+        if self.effect_node_drag.is_none() {
             return false;
-        };
+        }
         if response.dragged_by(PointerButton::Primary) {
-            if let Drag::Node { last } = self.drag {
-                let delta = p - last;
-                if let Some(s) = self.doc().find_shape(id).cloned() {
-                    let inv = s.transform.inverse();
-                    let ld = (inv * (Point::ZERO + delta)) - (inv * Point::ZERO);
-                    let mut effects = s.effects.clone();
-                    let mut fill = s.fill.clone();
-                    move_effect_node(&mut effects, &mut fill, index, ld);
-                    // One undo step for the whole drag.
-                    if self.effect_node_stepped && self.engine.undo_label() == Some("Edit Effect") {
-                        let _ = self.engine.undo();
-                    }
-                    self.effect_node_stepped = true;
-                    let _ = self
-                        .engine
-                        .run_with_label(&Command::SetEffects { shape: id, effects }, "Edit Effect");
-                    if fill != s.fill {
-                        let _ = self.engine.run_with_label(
-                            &Command::SetFill {
-                                shapes: vec![id],
-                                fill,
-                            },
-                            "Edit Effect",
-                        );
-                    }
-                }
-                self.drag = Drag::Node { last: p };
-            }
+            self.effect_node_drag_to(p);
             return true;
         }
         if response.drag_stopped() {
@@ -542,6 +714,66 @@ impl App {
         false
     }
 
+    /// The pointer of an effect node drag is at `p`: the node (or handle)
+    /// goes to it, less the offset it was grabbed at, snapped; one undo
+    /// step for the whole drag.
+    pub fn effect_node_drag_to(&mut self, p: Point) {
+        let Some((id, index)) = self.effect_node_drag else {
+            return;
+        };
+        let Some(s) = self.doc().find_shape(id).cloned() else {
+            return;
+        };
+        let Some(at) = effect_point(&s, index) else {
+            return;
+        };
+        let to = self.snap_point(p + self.effect_node_grab);
+        let delta = to - at;
+        if delta.hypot() > 0.0 {
+            let inv = s.transform.inverse();
+            let ld = (inv * (Point::ZERO + delta)) - (inv * Point::ZERO);
+            let mut effects = s.effects.clone();
+            let mut fill = s.fill.clone();
+            move_effect_node(&mut effects, &mut fill, index, ld);
+            // The other chosen mesh nodes go along (discussion #2387).
+            if let Some(k) = crate::mesh_tool::mesh_node_of(index) {
+                if let Some((sid, nodes)) = self.selected_mesh_nodes() {
+                    if sid == id && nodes.first() == Some(&k) {
+                        for &n in &nodes[1..] {
+                            move_effect_node(
+                                &mut effects,
+                                &mut fill,
+                                crate::mesh_tool::MESH_NODE_BASE + n,
+                                ld,
+                            );
+                        }
+                    }
+                }
+            }
+            let mut cmds = Vec::new();
+            if effects != s.effects {
+                cmds.push(Command::SetEffects { shape: id, effects });
+            }
+            if fill != s.fill {
+                cmds.push(Command::SetFill {
+                    shapes: vec![id],
+                    fill,
+                });
+            }
+            if !cmds.is_empty() {
+                // One undo step for the whole drag.
+                if self.effect_node_stepped && self.engine.undo_label() == Some("Edit Effect") {
+                    let _ = self.engine.undo();
+                }
+                self.effect_node_stepped = true;
+                if let Err(e) = self.engine.run_batch("Edit Effect", &cmds) {
+                    self.status = e.to_string();
+                }
+            }
+        }
+        self.drag = Drag::Node { last: p };
+    }
+
     /// Right-click: remember where, the UI draws the context menu.
     pub fn open_context_menu(&mut self, screen: egui::Pos2, p: Point) {
         self.context_locked = None;
@@ -549,11 +781,16 @@ impl App {
             if let Some(id) = self.locked_at(p) {
                 // A locked object on top: its own menu, to unlock it.
                 self.context_locked = Some(id);
+            } else if self.selection_under(p) {
+                // A right click on a selected object keeps the selection,
+                // also when another object covers it there (one picked
+                // with Alt+click or a marquee): the menu is for what is
+                // selected, not for the object in front (#1684).
             } else if let Some(id) = self.hit_test(p) {
                 if !self.selection.contains(&id) {
                     self.select(vec![id]);
                 }
-            } else if let Some(i) = self.guide_at(p) {
+            } else if let Some(i) = self.pick_guide_at(p) {
                 // A guideline under the pointer gets its own menu.
                 if !self.selected_guides.contains(&i) {
                     self.select(Vec::new());
@@ -612,7 +849,50 @@ pub fn effect_nodes(s: &Shape) -> Vec<(usize, Point)> {
     out
 }
 
+/// The handles of mesh node `i` of `s` on the page, with their effect
+/// node numbers (see [`crate::mesh_tool::mesh_handle_index`]): one on
+/// each grid line that leaves the node, the mesh's edge lines included.
+pub fn mesh_handle_points(s: &Shape, i: usize) -> Vec<(usize, Point)> {
+    use tracedraw_core::MeshHandle;
+    let Fill::Mesh(m) = &s.fill else {
+        return Vec::new();
+    };
+    [
+        MeshHandle::Right,
+        MeshHandle::Left,
+        MeshHandle::Down,
+        MeshHandle::Up,
+    ]
+    .into_iter()
+    .filter_map(|h| {
+        m.handle_point(i, h)
+            .map(|q| (crate::mesh_tool::mesh_handle_index(i, h), s.transform * q))
+    })
+    .collect()
+}
+
+/// Where effect node `index` of `s` is on the page: a perspective
+/// corner, a mesh node or a mesh node's handle.
+pub fn effect_point(s: &Shape, index: usize) -> Option<Point> {
+    if let Some((i, h)) = crate::mesh_tool::mesh_handle_of(index) {
+        let Fill::Mesh(m) = &s.fill else {
+            return None;
+        };
+        return m.handle_point(i, h).map(|q| s.transform * q);
+    }
+    effect_nodes(s)
+        .into_iter()
+        .find(|(k, _)| *k == index)
+        .map(|(_, q)| q)
+}
+
 fn move_effect_node(effects: &mut [Effect], fill: &mut Fill, index: usize, d: Vec2) {
+    if let Some((i, h)) = crate::mesh_tool::mesh_handle_of(index) {
+        if let Fill::Mesh(m) = fill {
+            m.move_handle(i, h, d);
+        }
+        return;
+    }
     for e in effects.iter_mut() {
         if let Effect::Perspective { corners } = e {
             if let Some(c) = index.checked_sub(100).and_then(|i| corners.get_mut(i)) {
@@ -646,15 +926,24 @@ pub fn free_transform_step(
         |t: Affine| Affine::translate(center.to_vec2()) * t * Affine::translate(-center.to_vec2());
     match mode {
         M::Scale => {
-            // Scale about the press point by the ratio of distances.
-            let d0 = (last - center).hypot().max(1e-6);
-            let d1 = (p - center).hypot().max(1e-6);
+            // Scale about the press point by the ratio of distances. The
+            // first move away from the press point has no distance to
+            // scale from: it sets it.
+            let d0 = (last - center).hypot();
+            let d1 = (p - center).hypot();
+            if d0 < 1e-3 || d1 < 1e-3 {
+                return Affine::IDENTITY;
+            }
             about(Affine::scale(d1 / d0))
         }
         M::Skew => {
-            // Horizontal motion skews along x, vertical along y.
+            // Horizontal motion skews along x, vertical along y. One shear
+            // after the other, so the step keeps the area and never turns
+            // the object over: a single skew by both amounts mirrors it
+            // once their product passes 1, as a quick diagonal stroke did
+            // to text (#1342).
             let d = p - last;
-            about(Affine::skew(d.x / 50.0, d.y / 50.0))
+            about(Affine::skew(d.x / 50.0, 0.0) * Affine::skew(0.0, d.y / 50.0))
         }
         M::Reflection => {
             // Mirror across the line from the press point through the
@@ -674,6 +963,22 @@ pub fn free_transform_step(
             let a1 = (p - center).atan2();
             Affine::rotate_about(a1 - a0, center)
         }
+    }
+}
+
+/// The object's fill hides what lies beneath it: an opaque fill at full
+/// opacity, with no transparency mask (Area Fill, #1281).
+fn hides_below(s: &Shape) -> bool {
+    if s.opacity < 1.0 || s.opacity_mask.is_some() {
+        return false;
+    }
+    match &s.fill {
+        Fill::None => false,
+        Fill::Solid(_) | Fill::Pattern(_) | Fill::Texture(_) => true,
+        Fill::Fountain(f) => f.stops.iter().all(|st| st.opacity >= 1.0),
+        Fill::Mesh(m) => m.nodes.iter().all(|n| n.alpha >= 1.0),
+        // Without a background what is beneath shows between the paths.
+        Fill::Procedural(p) => p.background.is_some(),
     }
 }
 
@@ -734,5 +1039,9 @@ mod free_transform_tests {
             true,
         );
         assert!(close(t * Point::new(15.0, 5.0), Point::new(5.0, 15.0)));
+        // The first move of a Free Scale starts at the press point: no
+        // distance to scale from, so nothing happens (#1342).
+        let t = free_transform_step(M::Scale, c, c, Point::new(6.0, 5.0), true);
+        assert_eq!(t, tracedraw_core::Affine::IDENTITY);
     }
 }

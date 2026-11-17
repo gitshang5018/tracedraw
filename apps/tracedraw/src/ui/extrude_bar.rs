@@ -32,7 +32,7 @@ fn length(ui: &mut Ui, app: &App, mm: &mut f64, tip: &str) -> bool {
     let r = ui
         .add(
             NumField::new(&mut v)
-                .fixed_decimals(app.settings.precision.min(10) as usize)
+                .length_decimals(app.settings.precision.min(10) as usize)
                 .unit_mm(app.units.world_to_mm(1.0))
                 .suffix(format!(" {}", app.units.short()))
                 .width(76.0),
@@ -53,7 +53,7 @@ pub fn extrude_controls(app: &mut App, ui: &mut Ui) {
     let mut s = app.extrude;
     let mut changed = false;
     ui.horizontal(|ui| {
-        egui::ComboBox::from_id_salt("extrude_kind")
+        crate::ui::keynav::ComboBox::from_id_salt("extrude_kind")
             .selected_text(tr(kind_key(s.kind)))
             .width(110.0)
             .show_ui(ui, |ui| {
@@ -94,7 +94,7 @@ pub fn extrude_controls(app: &mut App, ui: &mut Ui) {
             );
             changed |= length(ui, app, &mut s.vanishing.x, &tx);
             changed |= length(ui, app, &mut s.vanishing.y, &ty);
-            egui::ComboBox::from_id_salt("extrude_locked")
+            crate::ui::keynav::ComboBox::from_id_salt("extrude_locked")
                 .selected_text(tr(if s.on_object {
                     "extrude.locked_object"
                 } else {
@@ -123,7 +123,7 @@ pub fn extrude_controls(app: &mut App, ui: &mut Ui) {
     });
     ui.horizontal(|ui| {
         dim(ui, tr("extrude.color"));
-        egui::ComboBox::from_id_salt("extrude_color")
+        crate::ui::keynav::ComboBox::from_id_salt("extrude_color")
             .selected_text(tr(s.color.key()))
             .width(96.0)
             .show_ui(ui, |ui| {
@@ -396,6 +396,46 @@ pub fn draw_handles(app: &App, painter: &Painter) {
             Stroke::new(1.0, blue),
         );
     }
+    // The depth slider: a bar across the line where the far face is
+    // (#1280), filled while it is dragged.
+    let held = app.extrude_drag.filter(|d| d.depth).map(|d| d.id);
+    for d in app.extrusion_depth_sliders() {
+        let (a, z) = (app.view.to_screen(d.mid), app.view.to_screen(d.vanishing));
+        let at = app.view.to_screen(d.at);
+        if d.away {
+            // Beyond the middle: the line runs on to the slider.
+            painter.add(egui::Shape::dashed_line(
+                &[a, at],
+                Stroke::new(1.0, blue),
+                4.0,
+                3.0,
+            ));
+        }
+        let along = (z - a).normalized();
+        let along = if along.x.is_finite() {
+            along
+        } else {
+            egui::vec2(1.0, 0.0)
+        };
+        let across = egui::vec2(-along.y, along.x);
+        let (half_w, half_l) = (2.5, 7.0);
+        let corners = [
+            at + across * half_l + along * half_w,
+            at + across * half_l - along * half_w,
+            at - across * half_l - along * half_w,
+            at - across * half_l + along * half_w,
+        ];
+        let fill = if held == Some(d.id) {
+            blue
+        } else {
+            Color32::WHITE
+        };
+        painter.add(egui::Shape::convex_polygon(
+            corners.to_vec(),
+            fill,
+            Stroke::new(1.0, blue),
+        ));
+    }
 }
 
 /// The Extrude docker's pages.
@@ -557,7 +597,7 @@ pub fn extrude_docker(app: &mut App, ui: &mut Ui) {
         0 => {
             ui.label(tr("extrude.type"));
             type_picture(ui, s.kind);
-            egui::ComboBox::from_id_salt("extrude_docker_kind")
+            crate::ui::keynav::ComboBox::from_id_salt("extrude_docker_kind")
                 .selected_text(tr(kind_key(s.kind)))
                 .width(ui.available_width() - 8.0)
                 .show_ui(ui, |ui| {
@@ -575,7 +615,7 @@ pub fn extrude_docker(app: &mut App, ui: &mut Ui) {
             let vp = !s.kind.parallel();
             ui.label(tr("docker.vanishing_point"));
             ui.add_enabled_ui(vp, |ui| {
-                egui::ComboBox::from_id_salt("extrude_docker_locked")
+                crate::ui::keynav::ComboBox::from_id_salt("extrude_docker_locked")
                     .selected_text(tr(if s.on_object {
                         "extrude.locked_object"
                     } else {

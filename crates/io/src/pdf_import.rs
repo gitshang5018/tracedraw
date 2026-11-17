@@ -15,7 +15,7 @@ use lopdf::{Dictionary, Document as PdfDoc, Object, Stream};
 use std::collections::HashMap;
 use tracedraw_core::{
     document::{ParagraphStyle, Shape, ShapeKind, TextSpan},
-    geometry::{Affine, BezPath, Point, Rect, Shape as _, Size, Vec2},
+    geometry::{Affine, BezPath, PathEl, Point, Rect, Shape as _, Size, Vec2},
     id::IdSource,
     style::{Fountain, FountainKind, LineCap, LineJoin, Stop},
     Color, Fill, ShapeId, Stroke, TextAlign,
@@ -37,6 +37,26 @@ pub struct ImportedPdf {
     pub pages: Vec<ImportedPage>,
     pub warnings: Vec<String>,
     pub title: Option<String>,
+    /// The spot inks the pages' Separation colours name, numbered from 1
+    /// in the order they came; `Color::Spot` of the shapes refers to them.
+    pub inks: Vec<tracedraw_core::document::Ink>,
+    /// The pictures that came in smaller than the file holds them, past
+    /// [`ImportOptions::max_picture_pixels`] or when there was no memory
+    /// for them (#1835), for the caller to say so.
+    pub shrunk_pictures: Vec<ShrunkPicture>,
+}
+
+/// A picture read at a smaller size than the file holds it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ShrunkPicture {
+    /// The page it is on, from 0.
+    pub page: usize,
+    /// Its size in the file, in pixels.
+    pub width: u32,
+    pub height: u32,
+    /// Its size in the drawing.
+    pub new_width: u32,
+    pub new_height: u32,
 }
 
 /// Does the buffer hold a PDF, possibly after an AI/PostScript preamble?
@@ -75,16 +95,48 @@ impl From<String> for ImportError {
     }
 }
 
-/// Parse a PDF (or an AI file with embedded PDF) into pages of shapes.
 /// How a PDF is read in.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ImportOptions {
     /// Text drawn as curves from the fonts the file embeds, so it looks as
     /// it does in the file (text whose font is not embedded stays text,
     /// for the caller to turn into curves with the fonts it has, #386).
     pub text_as_curves: bool,
+    /// The most pixels of a picture as it comes into the drawing: a larger
+    /// one is shrunk by the smallest whole factor that brings it within,
+    /// and listed in [`ImportedPdf::shrunk_pictures`]. By default
+    /// [`FULL_PICTURE_PIXELS`], a memory guard: pictures come in at their
+    /// own size (#1835). [`REDUCED_PICTURE_PIXELS`] for devices with
+    /// less memory, or when the user asks for smaller pictures.
+    pub max_picture_pixels: u64,
+    /// Lines of text one under the other in the same font become
+    /// paragraph text frames, linked where the text goes on in the next
+    /// column or page (#2323); off, every line is a text of its own.
+    /// Not with `text_as_curves`.
+    pub text_as_paragraphs: bool,
 }
 
+impl Default for ImportOptions {
+    fn default() -> Self {
+        ImportOptions {
+            text_as_curves: false,
+            max_picture_pixels: FULL_PICTURE_PIXELS,
+            text_as_paragraphs: false,
+        }
+    }
+}
+
+/// Most pixels of a picture read at its own size: 1.5 GB of RGBA, a guard
+/// against running out of memory rather than a limit a picture is meant
+/// to meet (the 165 megapixel picture of #1804 comes in whole).
+pub const FULL_PICTURE_PIXELS: u64 = 375_000_000;
+
+/// Most pixels of a picture when pictures are reduced (the browser, Android,
+/// or the "Reduce very large pictures" choice): 320 MB of RGBA, no side
+/// longer than 20000 pixels.
+pub const REDUCED_PICTURE_PIXELS: u64 = 80_000_000;
+
+/// Parse a PDF (or an AI file with embedded PDF) into pages of shapes.
 pub fn parse(bytes: &[u8], ids: &mut IdSource) -> Result<ImportedPdf, String> {
     parse_with_password(bytes, ids, "").map_err(|e| e.to_string())
 }
@@ -122,22 +174,44 @@ pub fn parse_with_options(
     if pages.is_empty() {
         return Err(ImportError::Failed("PDF has no pages".into()));
     }
+    let mut tounicode_fixes = HashMap::new();
+    let mut line_widths = HashMap::new();
+    let mut char_xs = HashMap::new();
     for (index, page_id) in pages.iter().enumerate() {
         let mut imp = Importer {
             doc: &doc,
             ids,
+            tounicode_fixes: &mut tounicode_fixes,
             warnings: Vec::new(),
             shapes: Vec::new(),
+            open: None,
             fonts: HashMap::new(),
             ops: 0,
             curves: options.text_as_curves,
             actual: None,
+            inks: std::mem::take(&mut out.inks),
+            max_pixels: options.max_picture_pixels.max(1),
+            shrunk: Vec::new(),
+            in_mask: false,
+            line_widths: std::mem::take(&mut line_widths),
+            char_xs: std::mem::take(&mut char_xs),
         };
         let page = imp.import_page(*page_id, index);
+        line_widths = std::mem::take(&mut imp.line_widths);
+        char_xs = std::mem::take(&mut imp.char_xs);
+        out.inks = std::mem::take(&mut imp.inks);
+        out.shrunk_pictures.extend(
+            imp.shrunk
+                .into_iter()
+                .map(|p| ShrunkPicture { page: index, ..p }),
+        );
         out.warnings.extend(imp.warnings);
         out.pages.push(page);
     }
     out.warnings.dedup();
+    if options.text_as_paragraphs && !options.text_as_curves {
+        crate::pdf_paragraphs::make_paragraphs(&mut out.pages, &line_widths, &char_xs);
+    }
     Ok(out)
 }
 
@@ -245,7 +319,7 @@ fn decrypt_as_read(id: lopdf::ObjectId, object: &mut Object) -> Option<(lopdf::O
             if stream.content.is_empty() && stream.start_position.is_some() {
                 pass.late.push(id);
             } else if stream.dict.has_type(b"ObjStm") {
-                if let Ok(objects) = lopdf::ObjectStream::new(&mut stream.clone()) {
+                if let Ok(objects) = lopdf::ObjectStream::new(stream) {
                     pass.members = objects.objects.keys().copied().collect();
                 }
             }
@@ -263,12 +337,8 @@ fn load(bytes: &[u8], password: &str) -> Result<PdfDoc, ImportError> {
         return PdfDoc::load_mem(bytes).map_err(|e| ImportError::Failed(format!("PDF: {e}")));
     };
     let read = |filter: fn(lopdf::ObjectId, &mut Object) -> Option<(lopdf::ObjectId, Object)>| {
-        lopdf::Reader {
-            buffer: &hidden,
-            document: PdfDoc::new(),
-        }
-        .read(Some(filter))
-        .map_err(|e| ImportError::Failed(format!("PDF: {e}")))
+        PdfDoc::load_mem_with_options(&hidden, lopdf::LoadOptions::with_filter(filter))
+            .map_err(|e| ImportError::Failed(format!("PDF: {e}")))
     };
     let probe = read(dictionaries_only)?;
     let hidden_key = &HIDDEN_ENCRYPT[1..];
@@ -334,6 +404,7 @@ pub fn to_document(imp: ImportedPdf, title: &str) -> tracedraw_core::Document {
         .unwrap_or(tracedraw_core::document::paper::A4);
     let mut doc = tracedraw_core::Document::new(imp.title.as_deref().unwrap_or(title), first);
     doc.pages.clear();
+    doc.inks = imp.inks;
     for (i, p) in imp.pages.into_iter().enumerate() {
         let pid = doc.ids_mut().page();
         let lid = doc.ids_mut().layer();
@@ -378,7 +449,7 @@ struct GState {
     dash: Vec<f64>,
     fill_alpha: f64,
     stroke_alpha: f64,
-    clip: Option<BezPath>,
+    clip: Clip,
     // Text state.
     font: Option<std::rc::Rc<FontInfo>>,
     font_size: f64,
@@ -418,24 +489,276 @@ impl Default for GState {
     }
 }
 
+/// The clipping path in force, shared by every graphics state (and text
+/// run) it applies to: objects clipped by the same one go in one clip
+/// frame.
+type Clip = Option<std::rc::Rc<ClipPath>>;
+
+/// A clipping path in page space (mm): the intersection of every `W`,
+/// `W*` and form bounding box in force (ISO 32000-1, 8.5.4), as a path
+/// that covers the clipped area under the even-odd rule, which is how
+/// curves fill in TraceDraw.
+struct ClipPath {
+    path: BezPath,
+    bounds: Rect,
+    /// The path when it is an axis-aligned rectangle: an object inside it
+    /// is not changed by the clip and needs no frame.
+    rect: Option<Rect>,
+}
+
+impl ClipPath {
+    /// A clip from a path and the rule it is read with. Subpaths with no
+    /// segment (a lone `m` before `W n`, as some producers write) clip
+    /// nothing and are left out; `None` when nothing is left. A path read
+    /// with the nonzero rule becomes its nonzero area as an even-odd path
+    /// (a rectangle aside, which is the same under both), so a doubled
+    /// outline or the middle of a star does not read as a hole.
+    fn new(path: &BezPath, even_odd: bool) -> Option<ClipPath> {
+        let mut subs: Vec<BezPath> = Vec::new();
+        for el in path.elements() {
+            if matches!(el, PathEl::MoveTo(_)) || subs.is_empty() {
+                subs.push(BezPath::new());
+            }
+            if let Some(last) = subs.last_mut() {
+                last.push(*el);
+            }
+        }
+        subs.retain(|s| {
+            s.elements()
+                .iter()
+                .any(|e| !matches!(e, PathEl::MoveTo(_) | PathEl::ClosePath))
+        });
+        if subs.is_empty() {
+            return None;
+        }
+        let mut joined = BezPath::new();
+        for s in &subs {
+            joined.extend(s.elements().iter().copied());
+        }
+        let path = if !even_odd && axis_rect(&joined).is_none() {
+            tracedraw_core::shaping::simplify(&joined)
+        } else {
+            joined
+        };
+        Some(ClipPath::from_path(path))
+    }
+
+    fn from_path(path: BezPath) -> ClipPath {
+        let bounds = path.bounding_box();
+        let rect = axis_rect(&path);
+        ClipPath { path, bounds, rect }
+    }
+
+    fn from_rect(r: Rect) -> ClipPath {
+        ClipPath::from_path(r.to_path(0.01))
+    }
+
+    /// Nothing can show through: an empty intersection.
+    fn is_empty(&self) -> bool {
+        self.path.elements().is_empty() || self.bounds.width() <= 0.0 || self.bounds.height() <= 0.0
+    }
+
+    /// A box the clip leaves as it is (the clip is a rectangle round it).
+    fn leaves(&self, b: Rect) -> bool {
+        self.rect.is_some_and(|r| rect_contains(r, b))
+    }
+
+    /// The clip in force after clipping again with `path` (the current
+    /// clip intersected with it, 8.5.4). The same clip comes back when the
+    /// new path is a rectangle round it, so the objects before and after
+    /// stay in one frame; a rectangle inside a rectangle is their
+    /// overlap; anything else is the exact intersection of the two areas.
+    fn intersect(old: &Clip, path: &BezPath, even_odd: bool) -> Clip {
+        let Some(new) = ClipPath::new(path, even_odd) else {
+            return old.clone();
+        };
+        let Some(old) = old else {
+            return Some(std::rc::Rc::new(new));
+        };
+        if new.leaves(old.bounds) {
+            return Some(old.clone());
+        }
+        let next = if old.leaves(new.bounds) {
+            new
+        } else if let (Some(a), Some(b)) = (old.rect, new.rect) {
+            ClipPath::from_rect(a.intersect(b))
+        } else {
+            use tracedraw_core::shaping::{overlay, Op};
+            ClipPath::from_path(overlay(&old.path, &new.path, Op::Intersect))
+        };
+        Some(std::rc::Rc::new(next))
+    }
+}
+
+/// The box an object paints in: its outline's box grown by how far its
+/// stroke reaches past the path (half the width, a square cap's or a mitred
+/// corner's reach), so a thick stroke near a clip edge is judged by its ink.
+fn ink_bounds(shape: &Shape) -> Rect {
+    let b = shape.bounds();
+    let Some(st) = &shape.stroke else {
+        return b;
+    };
+    if !st.width.is_finite() || st.width <= 0.0 {
+        return b;
+    }
+    let mut reach: f64 = 1.0;
+    if st.cap == LineCap::Square {
+        reach = reach.max(std::f64::consts::SQRT_2);
+    }
+    if st.join == LineJoin::Miter {
+        reach = reach.max(st.miter_ratio());
+    }
+    b.inflate(0.5 * st.width * reach, 0.5 * st.width * reach)
+}
+
+fn rect_contains(r: Rect, b: Rect) -> bool {
+    const EPS: f64 = 1e-6;
+    r.x0 <= b.x0 + EPS && r.y0 <= b.y0 + EPS && r.x1 >= b.x1 - EPS && r.y1 >= b.y1 - EPS
+}
+
+/// The rectangle a path draws when it is one axis-aligned rectangle (`re`,
+/// or four lines round one).
+fn axis_rect(path: &BezPath) -> Option<Rect> {
+    let mut pts: Vec<Point> = Vec::new();
+    for (i, el) in path.elements().iter().enumerate() {
+        match el {
+            PathEl::MoveTo(p) if i == 0 => pts.push(*p),
+            PathEl::LineTo(p) if i > 0 => pts.push(*p),
+            PathEl::ClosePath if i > 0 => {}
+            _ => return None,
+        }
+    }
+    const EPS: f64 = 1e-7;
+    let same = |a: f64, b: f64| (a - b).abs() <= EPS;
+    if pts.len() == 5 && same(pts[0].x, pts[4].x) && same(pts[0].y, pts[4].y) {
+        pts.pop();
+    }
+    if pts.len() != 4 {
+        return None;
+    }
+    let (p0, p1, p2, p3) = (pts[0], pts[1], pts[2], pts[3]);
+    let along_x = same(p0.y, p1.y) && same(p1.x, p2.x) && same(p2.y, p3.y) && same(p3.x, p0.x);
+    let along_y = same(p0.x, p1.x) && same(p1.y, p2.y) && same(p2.x, p3.x) && same(p3.y, p0.y);
+    (along_x || along_y).then(|| Rect::from_points(p0, p2))
+}
+
+/// Objects under one clip, collected until the clip changes or an object
+/// the clip leaves alone comes: they become one clip frame.
+struct OpenFrame {
+    clip: std::rc::Rc<ClipPath>,
+    shapes: Vec<Shape>,
+}
+
+/// A colour space as colours are read in it (ISO 32000-1 section 8.6).
+/// ICC-based and CIE-based spaces go by their number of components.
 #[derive(Clone, Debug, PartialEq)]
 enum ColorSpace {
     Gray,
     Rgb,
     Cmyk,
-    /// Component count only (ICCBased, Lab, Separation...).
-    N(usize),
     Pattern,
+    /// A Separation space, or a DeviceN space with one colourant: one
+    /// tint, 0 = no ink, 1 = full ink.
+    Separation(Colorant),
+    /// A DeviceN space: one tint per colourant.
+    DeviceN(std::rc::Rc<[Colorant]>),
+    /// An Indexed space: one index into a table of base colours.
+    Indexed(std::rc::Rc<IndexedSpace>),
+}
+
+/// The table of an Indexed colour space.
+#[derive(Debug, PartialEq)]
+struct IndexedSpace {
+    base: ColorSpace,
+    /// The highest index.
+    hival: usize,
+    /// `hival + 1` entries of one byte per base component.
+    lookup: Vec<u8>,
+}
+
+/// The colourant of a Separation (or one of a DeviceN) colour space.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Colorant {
+    /// `All`: every separation, the registration colour.
+    All,
+    /// `None`: never marks.
+    None,
+    /// A process colourant (`Cyan`, `Magenta`, `Yellow`, `Black`): its
+    /// place in C, M, Y, K.
+    Process(usize),
+    /// A spot ink: its number among the import's inks and its process
+    /// stand-in at full tint.
+    Ink { id: u32, cmyk: [f32; 4] },
+}
+
+impl Colorant {
+    /// The colour at tint `t` (0 to 1); `None` for the `None` colourant.
+    fn color(self, t: f32) -> Option<Color> {
+        match self {
+            // Registration colour has no tint: a lighter one is the same
+            // share of every process ink.
+            Colorant::All if t >= 1.0 - 1e-4 => Some(Color::Registration),
+            Colorant::Ink { id, cmyk } => Some(Color::Spot {
+                ink: id,
+                tint: t,
+                c: cmyk[0],
+                m: cmyk[1],
+                y: cmyk[2],
+                k: cmyk[3],
+            }),
+            Colorant::None => None,
+            other => {
+                let [c, m, y, k] = other.cmyk(t);
+                Some(Color::Cmyk { c, m, y, k })
+            }
+        }
+    }
+
+    /// The process inks of tint `t`.
+    fn cmyk(self, t: f32) -> [f32; 4] {
+        match self {
+            Colorant::All => [t; 4],
+            Colorant::None => [0.0; 4],
+            Colorant::Process(i) => {
+                let mut v = [0.0; 4];
+                if let Some(x) = v.get_mut(i) {
+                    *x = t;
+                }
+                v
+            }
+            Colorant::Ink { cmyk, .. } => cmyk.map(|v| v * t),
+        }
+    }
 }
 
 impl ColorSpace {
     fn components(&self) -> usize {
         match self {
-            ColorSpace::Gray => 1,
+            ColorSpace::Gray | ColorSpace::Separation(_) | ColorSpace::Indexed(_) => 1,
             ColorSpace::Rgb => 3,
             ColorSpace::Cmyk => 4,
-            ColorSpace::N(n) => *n,
+            ColorSpace::DeviceN(c) => c.len(),
             ColorSpace::Pattern => 0,
+        }
+    }
+
+    /// The components of the colour `cs` and `CS` start with: full tint
+    /// in Separation and DeviceN spaces, black in the others (index 0 in
+    /// an Indexed space).
+    fn initial(&self) -> Vec<f64> {
+        match self {
+            ColorSpace::Separation(_) | ColorSpace::DeviceN(_) => vec![1.0; self.components()],
+            ColorSpace::Cmyk => vec![0.0, 0.0, 0.0, 1.0],
+            _ => vec![0.0; self.components()],
+        }
+    }
+
+    /// Paints nothing: the `None` colourant (ISO 32000-1 8.6.6.4).
+    fn never_marks(&self) -> bool {
+        match self {
+            ColorSpace::Separation(c) => *c == Colorant::None,
+            ColorSpace::DeviceN(cs) => cs.iter().all(|c| *c == Colorant::None),
+            _ => false,
         }
     }
 }
@@ -447,6 +770,9 @@ struct FontInfo {
     /// Two-byte codes (Type0).
     two_byte: bool,
     to_unicode: Option<HashMap<u32, String>>,
+    /// The ToUnicode map was scrambled and put right: its glyphs' texts
+    /// come in drawn order, one glyph at a time.
+    drawn_order: bool,
     one_byte: Option<[Option<char>; 256]>,
     widths: HashMap<u32, f64>,
     default_width: f64,
@@ -506,14 +832,37 @@ impl FontInfo {
 struct Importer<'a> {
     doc: &'a PdfDoc,
     ids: &'a mut IdSource,
+    /// The corrected ToUnicode entries of each two-byte font whose map
+    /// is scrambled (see [`unscramble_tounicode`]), worked out once for
+    /// the whole file.
+    tounicode_fixes: &'a mut HashMap<lopdf::ObjectId, HashMap<u32, String>>,
     warnings: Vec<String>,
     shapes: Vec<Shape>,
+    /// The clip frame being filled, behind the last of `shapes`.
+    open: Option<OpenFrame>,
     fonts: HashMap<(u32, u16), std::rc::Rc<FontInfo>>,
     ops: usize,
     /// Text as curves from the embedded fonts.
     curves: bool,
     /// The `ActualText` of the marked content being drawn.
     actual: Option<ActualText>,
+    /// The spot inks met so far (all pages).
+    inks: Vec<tracedraw_core::document::Ink>,
+    /// [`ImportOptions::max_picture_pixels`].
+    max_pixels: u64,
+    /// The pictures shrunk on this page.
+    shrunk: Vec<ShrunkPicture>,
+    /// A picture's soft mask is being read (its shrinking is the
+    /// picture's own).
+    in_mask: bool,
+    /// How long each text made of a run is along its baseline, mm, as
+    /// the file draws it: for [`crate::pdf_paragraphs`].
+    line_widths: HashMap<ShapeId, f64>,
+    /// Where each character of such a text starts along its baseline,
+    /// mm from the text's origin, as the file draws it: for the
+    /// underlines [`crate::pdf_paragraphs`] gives back to the letters
+    /// they are drawn under (#2569).
+    char_xs: HashMap<ShapeId, Vec<f64>>,
 }
 
 /// The text marked content gives its glyphs, shown in place of their own
@@ -541,7 +890,7 @@ struct TextRun {
     end_x: f64,
     fill: Option<Color>,
     alpha: f64,
-    clip: Option<BezPath>,
+    clip: Clip,
     /// A gap the producer left for a space: a space goes in before the
     /// next string unless that continues the syllable.
     space_pending: bool,
@@ -553,6 +902,12 @@ struct TextRun {
     typed: Vec<std::ops::Range<usize>>,
     /// The run holds a reph glyph (one glyph for र् with no advance).
     reph_glyph: bool,
+    /// Where each character of `text` starts along the baseline, in the
+    /// units of `end_x`; `None` once they no longer match.
+    xs: Option<Vec<f64>>,
+    /// Filled and outlined (render mode 2 or 6): the way a word processor
+    /// draws bold in a font that has no bold face (#2569).
+    stroked_bold: bool,
 }
 
 /// A Devanagari consonant (with the nukta forms).
@@ -643,6 +998,11 @@ pub(crate) fn devanagari_compose(text: &str) -> String {
     out.into_iter().collect()
 }
 
+#[cfg(test)]
+fn devanagari_logical_order(text: &str, reph_glyph: bool) -> String {
+    devanagari_typed_order(text, reph_glyph, false)
+}
+
 /// Devanagari text taken from a PDF in the order its glyphs are drawn,
 /// put back in the order it is typed (#585). A PDF draws the short i sign
 /// (ि) before the consonant cluster it follows when typed, and the reph
@@ -650,7 +1010,13 @@ pub(crate) fn devanagari_compose(text: &str) -> String {
 /// drawn order, so the signs went on the wrong letters. Only text that
 /// shows the drawn order is changed: an i sign at the start of a word or
 /// after another sign never happens in typed text.
-pub(crate) fn devanagari_logical_order(text: &str, reph_glyph: bool) -> String {
+///
+/// With `drawn` the font is known to give each glyph its own characters
+/// in drawn order (a ToUnicode map put right by [`unscramble_tounicode`]):
+/// there every short i sign before a consonant is drawn before it, also
+/// after another consonant (वि is drawn ि व), so it moves wherever it is
+/// (#1806).
+fn devanagari_typed_order(text: &str, reph_glyph: bool, drawn: bool) -> String {
     let chars: Vec<char> = text.chars().collect();
     let at = |i: Option<usize>| i.and_then(|i| chars.get(i)).copied();
     // A reph (र्) after a consonant or a sign at the end of a word, when
@@ -670,12 +1036,13 @@ pub(crate) fn devanagari_logical_order(text: &str, reph_glyph: bool) -> String {
             && before.is_some_and(|b| b != DEVA_VIRAMA && (deva_consonant(b) || deva_mark(b)))
             && !at(Some(j)).is_some_and(|n| deva_consonant(n) || deva_mark(n) || is_joiner(n))
     };
-    let visual = chars.iter().enumerate().any(|(i, &c)| {
-        (c == DEVA_SIGN_I
-            && at(Some(i + 1)).is_some_and(deva_consonant)
-            && !at(i.checked_sub(1)).is_some_and(|b| deva_consonant(b) || b == DEVA_NUKTA))
-            || final_reph(i)
-    });
+    let visual = drawn
+        || chars.iter().enumerate().any(|(i, &c)| {
+            (c == DEVA_SIGN_I
+                && at(Some(i + 1)).is_some_and(deva_consonant)
+                && !at(i.checked_sub(1)).is_some_and(|b| deva_consonant(b) || b == DEVA_NUKTA))
+                || final_reph(i)
+        });
     if !visual {
         return text.to_string();
     }
@@ -705,9 +1072,53 @@ pub(crate) fn devanagari_logical_order(text: &str, reph_glyph: bool) -> String {
     while i < chars.len() {
         let c = chars[i];
         if c == DEVA_SIGN_I && chars.get(i + 1).is_some_and(|n| deva_consonant(*n)) {
-            let end = cluster_end(i + 1);
-            out.extend_from_slice(&chars[i + 1..end]);
+            // One glyph for the short i sign with the reph or a nasal
+            // sign on it (drawn order, glyph by glyph: ि, then र्, then
+            // the nasal sign, all before the letter): the reph goes
+            // before the cluster, the i sign after it, the nasal sign
+            // last (र्किं).
+            let mut from = i + 1;
+            let reph = drawn
+                && chars.get(from) == Some(&DEVA_RA)
+                && chars.get(from + 1) == Some(&DEVA_VIRAMA)
+                && chars
+                    .get(from + 2)
+                    .is_some_and(|n| deva_consonant(*n) || matches!(n, '\u{0901}' | '\u{0902}'));
+            if reph {
+                from += 2;
+            }
+            let nasal = chars
+                .get(from)
+                .copied()
+                .filter(|n| drawn && matches!(n, '\u{0901}' | '\u{0902}'));
+            if nasal.is_some() {
+                from += 1;
+            }
+            if from == i + 1 || chars.get(from).is_some_and(|n| deva_consonant(*n)) {
+                let end = cluster_end(from);
+                if reph {
+                    out.extend([DEVA_RA, DEVA_VIRAMA]);
+                }
+                out.extend_from_slice(&chars[from..end]);
+                out.push(DEVA_SIGN_I);
+                out.extend(nasal);
+                i = end;
+                continue;
+            }
+        }
+        // The same with only a nasal sign between the i sign and its
+        // letter.
+        if drawn
+            && c == DEVA_SIGN_I
+            && chars
+                .get(i + 1)
+                .is_some_and(|n| matches!(n, '\u{0901}' | '\u{0902}'))
+            && chars.get(i + 2).is_some_and(|n| deva_consonant(*n))
+        {
+            let end = cluster_end(i + 2);
+            out.extend_from_slice(&chars[i + 2..end]);
             out.push(DEVA_SIGN_I);
+            out.push(chars[i + 1]);
             i = end;
             continue;
         }
@@ -719,9 +1130,13 @@ pub(crate) fn devanagari_logical_order(text: &str, reph_glyph: bool) -> String {
             && chars.get(i + 1) == Some(&DEVA_VIRAMA)
             && out.last() != Some(&DEVA_VIRAMA)
             && !chars.get(i + 2).is_some_and(|n| {
+                // (Glyph by glyph in drawn order, a reph also stands
+                // before the vowel sign drawn after its letter: र्वा is
+                // drawn व, the reph, ा. Typed text has no sign after a
+                // virama.)
                 *n == DEVA_VIRAMA
                     || is_joiner(*n)
-                    || (deva_mark(*n) && !matches!(n, '\u{0900}'..='\u{0902}'))
+                    || (!drawn && deva_mark(*n) && !matches!(n, '\u{0900}'..='\u{0902}'))
             })
         {
             let mut start = out.len();
@@ -745,6 +1160,354 @@ pub(crate) fn devanagari_logical_order(text: &str, reph_glyph: bool) -> String {
         i += 1;
     }
     out.into_iter().collect()
+}
+
+/// The order in which pieces of Devanagari text, given in the order
+/// their glyphs are drawn, are typed: `order[j]` is the drawn index of
+/// the `j`th typed piece. A piece is the text of one glyph: a short i
+/// sign (ि) goes after the consonant cluster it is drawn before (half
+/// forms, then one full consonant or conjunct), a reph (र्) before the
+/// syllable it is drawn after, as in [`devanagari_typed_order`].
+fn devanagari_piece_order(pieces: &[&str]) -> Vec<usize> {
+    let first = |p: &str| p.chars().next();
+    let consonant = |p: &str| first(p).is_some_and(deva_consonant) && p != "\u{0930}\u{094D}";
+    let half = |p: &str| consonant(p) && p.ends_with(DEVA_VIRAMA);
+    let mark = |p: &str| first(p).is_some_and(deva_mark);
+    let mut out: Vec<usize> = Vec::with_capacity(pieces.len());
+    let mut i = 0;
+    while i < pieces.len() {
+        let p = pieces[i];
+        if p == "\u{093F}" && pieces.get(i + 1).is_some_and(|n| consonant(n)) {
+            let mut j = i + 1;
+            while pieces.get(j).is_some_and(|n| half(n)) {
+                j += 1;
+            }
+            if pieces.get(j).is_some_and(|n| consonant(n)) {
+                j += 1;
+            }
+            while pieces.get(j) == Some(&"\u{093C}") {
+                j += 1;
+            }
+            out.extend(i + 1..j);
+            out.push(i);
+            i = j;
+            continue;
+        }
+        if p == "\u{0930}\u{094D}" {
+            let mut start = out.len();
+            while start > 0 && mark(pieces[out[start - 1]]) {
+                start -= 1;
+            }
+            if start > 0 && consonant(pieces[out[start - 1]]) && !half(pieces[out[start - 1]]) {
+                start -= 1;
+                while start > 0 && half(pieces[out[start - 1]]) {
+                    start -= 1;
+                }
+                out.insert(start, i);
+                i += 1;
+                continue;
+            }
+        }
+        out.push(i);
+        i += 1;
+    }
+    out
+}
+
+/// The syllables of typed Devanagari text, as char ranges: consonants
+/// joined by viramas (each with its nukta) and the signs on the last, or
+/// an independent vowel and its signs; any other character alone.
+fn devanagari_syllables(chars: &[char]) -> Vec<std::ops::Range<usize>> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        let start = i;
+        if deva_consonant(chars[i]) {
+            loop {
+                i += 1;
+                if chars.get(i) == Some(&DEVA_NUKTA) {
+                    i += 1;
+                }
+                if chars.get(i) == Some(&DEVA_VIRAMA)
+                    && chars.get(i + 1).is_some_and(|c| deva_consonant(*c))
+                {
+                    i += 1;
+                    continue;
+                }
+                break;
+            }
+        } else {
+            i += 1;
+        }
+        if !chars[start].is_whitespace() {
+            while chars.get(i).is_some_and(|c| deva_mark(*c) || is_joiner(*c)) {
+                i += 1;
+            }
+        }
+        out.push(start..i);
+    }
+    out
+}
+
+/// Pieces of text one glyph of a Devanagari font can stand for: a
+/// consonant cluster (consonants joined by viramas, with nuktas, maybe
+/// ending in a virama), an independent vowel, or one or two signs.
+fn devanagari_piece(p: &[char]) -> bool {
+    match p {
+        [] => false,
+        [a] => deva_mark(*a) || deva_consonant(*a) || ('\u{0904}'..='\u{0914}').contains(a),
+        [a, b] if deva_mark(*a) && deva_mark(*b) => true,
+        [first, ..] if deva_consonant(*first) => {
+            let mut i = 0;
+            loop {
+                if !p.get(i).is_some_and(|c| deva_consonant(*c)) {
+                    return false;
+                }
+                i += 1;
+                if p.get(i) == Some(&DEVA_NUKTA) {
+                    i += 1;
+                }
+                if i == p.len() {
+                    return true;
+                }
+                if p[i] != DEVA_VIRAMA {
+                    return false;
+                }
+                i += 1;
+                if i == p.len() {
+                    return true;
+                }
+            }
+        }
+        _ => false,
+    }
+}
+
+/// Correct a ToUnicode map that gives glyphs the characters of other
+/// glyphs of the syllable they first appear in (#1806). An office word
+/// processor's PDFs of Hindi in a font with a `cmap` were seen to map
+/// the glyphs of each syllable, taken in drawn order, to its characters
+/// in typed order: every glyph after the first to one character, the
+/// first to the rest. A glyph keeps the text of the first syllable it
+/// appears in. In उर्मिला, drawn उ ि म र् ल ा, the i sign glyph was
+/// mapped to र् and the reph glyph to ि; in वार्ड, drawn व ा ड र्, the
+/// letter ड was mapped to र्; in सम्प्रभुता the half म glyph to म्प्.
+///
+/// `nominal` gives the glyphs whose letter the font's `cmap` names, which
+/// are taken as they are, and `shaped` the glyphs whose text their
+/// outlines tell (see [`crate::pdf_indic_shapes`]), taken the same way;
+/// `marks` the glyphs with no advance (only they can be a reph); `units`
+/// the codes each text operator shows, in drawing order. Each other
+/// glyph gets, at its first appearance, the text that gives back the
+/// map's entries for the new glyphs of its unit under that rule, tried
+/// among the pieces of the text those entries spell, the short i sign
+/// and the reph (at most three such glyphs in one unit). Gives the codes
+/// whose text changes.
+fn unscramble_tounicode(
+    map: &HashMap<u32, String>,
+    nominal: &HashMap<u32, char>,
+    shaped: &HashMap<u32, String>,
+    marks: &std::collections::HashSet<u32>,
+    units: &[Vec<u32>],
+) -> HashMap<u32, String> {
+    let mut known: HashMap<u32, String> =
+        nominal.iter().map(|(k, c)| (*k, c.to_string())).collect();
+    known.extend(shaped.iter().map(|(k, t)| (*k, t.clone())));
+    let mut seen: std::collections::HashSet<u32> = std::collections::HashSet::new();
+    for unit in units {
+        // The first appearance of each code new in this unit.
+        let mut fresh: Vec<usize> = Vec::new();
+        for (j, code) in unit.iter().enumerate() {
+            if seen.insert(*code) {
+                fresh.push(j);
+            }
+        }
+        let mut unknown: Vec<u32> = fresh
+            .iter()
+            .map(|&j| unit[j])
+            .filter(|c| !known.contains_key(c) && map.contains_key(c))
+            .collect();
+        unknown.dedup();
+        if unknown.is_empty() || unknown.len() > 3 {
+            continue;
+        }
+        // The pieces of the text the entries of the unit's new glyphs
+        // spell (the others were given text elsewhere).
+        let spelled: Vec<char> = fresh
+            .iter()
+            .filter_map(|&j| map.get(&unit[j]))
+            .flat_map(|t| t.chars())
+            .collect();
+        let mut options: Vec<String> = Vec::new();
+        for a in 0..spelled.len() {
+            for b in a + 1..=(a + 8).min(spelled.len()) {
+                if devanagari_piece(&spelled[a..b]) {
+                    options.push(spelled[a..b].iter().collect());
+                }
+            }
+        }
+        for t in unknown.iter().filter_map(|c| map.get(c)) {
+            options.push(t.clone());
+            // A letter that has a glyph of its own: this one is likely
+            // its half form.
+            let mut c = t.chars();
+            if let (Some(l), None) = (c.next(), c.next()) {
+                if deva_consonant(l) && nominal.values().any(|n| *n == l) {
+                    options.push(format!("{l}{DEVA_VIRAMA}"));
+                }
+            }
+        }
+        // The short i sign and the reph, which the map often gives to
+        // another glyph of their syllable.
+        options.extend(["\u{093F}".to_string(), "\u{0930}\u{094D}".to_string()]);
+        options.sort_unstable();
+        options.dedup();
+        let Some(combos) = options
+            .len()
+            .checked_pow(unknown.len() as u32)
+            .filter(|n| (1..=20_000).contains(n))
+        else {
+            continue;
+        };
+        // Texts other glyphs already stand for: a glyph is seldom another
+        // glyph's letter or conjunct again (signs often have variants).
+        let taken: std::collections::HashSet<&str> = known
+            .values()
+            .map(String::as_str)
+            .filter(|t| !t.chars().next().is_some_and(deva_mark))
+            .collect();
+        // (no other glyph's text, own entry, starts with it, shortness)
+        type Score = (usize, usize, usize, usize);
+        let mut best: Option<(Score, Vec<usize>)> = None;
+        let mut tied = false;
+        for n in 0..combos {
+            let mut pick = Vec::with_capacity(unknown.len());
+            let mut k = n;
+            for _ in &unknown {
+                pick.push(k % options.len());
+                k /= options.len();
+            }
+            // Only a glyph with no advance is a reph.
+            if unknown
+                .iter()
+                .zip(&pick)
+                .any(|(u, p)| options[*p] == "\u{0930}\u{094D}" && !marks.contains(u))
+            {
+                continue;
+            }
+            let text = |code: u32| -> &str {
+                match unknown.iter().position(|u| *u == code) {
+                    Some(i) => options[pick[i]].as_str(),
+                    None => known
+                        .get(&code)
+                        .or_else(|| map.get(&code))
+                        .map_or("", String::as_str),
+                }
+            };
+            let pieces: Vec<&str> = unit.iter().map(|c| text(*c)).collect();
+            if !fits_scrambled(map, unit, &fresh, &pieces) {
+                continue;
+            }
+            // Prefer texts no other glyph stands for,
+            // then glyphs keeping their entry, then texts that start with
+            // it, then the shorter texts.
+            let plausible = pick
+                .iter()
+                .filter(|p| !taken.contains(options[**p].as_str()))
+                .count();
+            let own = unknown
+                .iter()
+                .zip(&pick)
+                .filter(|(u, p)| map.get(u) == Some(&options[**p]))
+                .count();
+            // Texts that start with the glyph's entry (its half form).
+            let related = unknown
+                .iter()
+                .zip(&pick)
+                .filter(|(u, p)| {
+                    map.get(u)
+                        .is_some_and(|t| options[**p].starts_with(t.as_str()))
+                })
+                .count();
+            let len: usize = pick.iter().map(|p| options[*p].chars().count()).sum();
+            let score = (plausible, own, related, usize::MAX - len);
+            match &best {
+                Some((b, _)) if score < *b => {}
+                Some((b, _)) if score == *b => tied = true,
+                _ => {
+                    best = Some((score, pick));
+                    tied = false;
+                }
+            }
+        }
+        // Two equally good readings: the file does not tell which.
+        if tied {
+            continue;
+        }
+        if let Some((_, pick)) = best {
+            for (code, p) in unknown.iter().zip(pick) {
+                known.insert(*code, options[p].clone());
+            }
+        }
+    }
+    known
+        .into_iter()
+        .filter(|(code, text)| map.get(code).is_some_and(|t| t != text))
+        .collect()
+}
+
+/// Whether glyphs standing for `pieces` (drawn order) would have been
+/// given the map's entries at the first appearances `fresh`, under the
+/// rule [`unscramble_tounicode`] describes.
+fn fits_scrambled(
+    map: &HashMap<u32, String>,
+    unit: &[u32],
+    fresh: &[usize],
+    pieces: &[&str],
+) -> bool {
+    let order = devanagari_piece_order(pieces);
+    // The typed text, and the char range each glyph's piece takes in it.
+    let mut chars: Vec<char> = Vec::new();
+    let mut span = vec![0..0; pieces.len()];
+    for &g in &order {
+        let start = chars.len();
+        chars.extend(pieces[g].chars());
+        span[g] = start..chars.len();
+    }
+    // Typed text has a vowel sign or a virama only after a consonant.
+    let sign = |c: char| {
+        matches!(c, '\u{093A}'..='\u{094F}' | '\u{0955}'..='\u{0957}' | '\u{0962}' | '\u{0963}')
+            && c != DEVA_NUKTA
+    };
+    if chars.iter().enumerate().any(|(i, &c)| {
+        sign(c) && !(i > 0 && (deva_consonant(chars[i - 1]) || chars[i - 1] == DEVA_NUKTA))
+    }) {
+        return false;
+    }
+    let syllables = devanagari_syllables(&chars);
+    // What each glyph of each syllable is given.
+    let mut given: Vec<Option<String>> = vec![None; pieces.len()];
+    for syl in &syllables {
+        let mut glyphs: Vec<usize> = (0..pieces.len())
+            .filter(|&g| !span[g].is_empty() && syl.contains(&span[g].start))
+            .collect();
+        glyphs.sort_unstable();
+        let (m, k) = (syl.len(), glyphs.len());
+        if k == 0 || m < k {
+            continue;
+        }
+        for (i, &g) in glyphs.iter().enumerate() {
+            let r = if i == 0 {
+                syl.start..syl.start + m - k + 1
+            } else {
+                syl.start + m - k + i..syl.start + m - k + i + 1
+            };
+            given[g] = Some(chars[r].iter().collect());
+        }
+    }
+    fresh
+        .iter()
+        .all(|&j| given[j].is_some() && given[j].as_ref() == map.get(&unit[j]))
 }
 
 impl<'a> Importer<'a> {
@@ -887,15 +1650,17 @@ impl<'a> Importer<'a> {
             .and_then(|o| self.dict_of(o))
             .cloned()
             .unwrap_or_default();
-        let content = self.doc.get_page_content(page_id).unwrap_or_default();
+        let content = self.doc.get_page_content(page_id);
         let mut gs = GState {
             ctm: base,
             ..GState::default()
         };
         self.shapes.clear();
+        self.open = None;
         self.run_content(&content, &resources, &mut gs, 0);
         // Annotations' appearance streams (stamps, form fields) are drawn too.
         self.import_annotations(page, base);
+        self.close_frame();
         ImportedPage {
             size: Size::new(w_pt * PT_MM, h_pt * PT_MM),
             shapes: std::mem::take(&mut self.shapes),
@@ -1069,14 +1834,25 @@ impl<'a> Importer<'a> {
                         path.move_to(gs.ctm * current);
                     }
                 }
+                // A segment before any start point (a damaged stream)
+                // starts its subpath where the segment starts: a path
+                // cannot take a segment first.
                 "l" => {
                     if operands.len() >= 2 {
+                        if path.elements().is_empty() {
+                            path.move_to(gs.ctm * current);
+                            start = current;
+                        }
                         current = Point::new(n(0), n(1));
                         path.line_to(gs.ctm * current);
                     }
                 }
                 "c" => {
                     if operands.len() >= 6 {
+                        if path.elements().is_empty() {
+                            path.move_to(gs.ctm * current);
+                            start = current;
+                        }
                         let p1 = Point::new(n(0), n(1));
                         let p2 = Point::new(n(2), n(3));
                         current = Point::new(n(4), n(5));
@@ -1085,6 +1861,10 @@ impl<'a> Importer<'a> {
                 }
                 "v" => {
                     if operands.len() >= 4 {
+                        if path.elements().is_empty() {
+                            path.move_to(gs.ctm * current);
+                            start = current;
+                        }
                         let p1 = current;
                         let p2 = Point::new(n(0), n(1));
                         current = Point::new(n(2), n(3));
@@ -1093,6 +1873,10 @@ impl<'a> Importer<'a> {
                 }
                 "y" => {
                     if operands.len() >= 4 {
+                        if path.elements().is_empty() {
+                            path.move_to(gs.ctm * current);
+                            start = current;
+                        }
                         let p1 = Point::new(n(0), n(1));
                         current = Point::new(n(2), n(3));
                         path.curve_to(gs.ctm * p1, gs.ctm * current, gs.ctm * current);
@@ -1134,12 +1918,11 @@ impl<'a> Importer<'a> {
                     if fill || stroke {
                         self.paint_path(&path, fill, stroke, even_odd, gs);
                     }
-                    if let Some(eo) = pending_clip.take() {
-                        let _ = eo;
-                        gs.clip = Some(match &gs.clip {
-                            Some(old) => intersect_clip(old, &path),
-                            None => path.clone(),
-                        });
+                    // The clip takes effect after the painting operator
+                    // (8.5.4), with the path's own rule: `W` nonzero,
+                    // `W*` even-odd.
+                    if let Some(even_odd) = pending_clip.take() {
+                        gs.clip = ClipPath::intersect(&gs.clip, &path, even_odd);
                     }
                     path = BezPath::new();
                 }
@@ -1175,23 +1958,18 @@ impl<'a> Importer<'a> {
                         .and_then(|o| o.as_name().ok())
                         .map(|name| self.color_space(resources, name))
                         .unwrap_or(ColorSpace::Gray);
-                    let initial = match cs {
-                        ColorSpace::Cmyk => Color::Cmyk {
-                            c: 0.0,
-                            m: 0.0,
-                            y: 0.0,
-                            k: 1.0,
-                        },
-                        ColorSpace::Pattern => Color::BLACK,
-                        _ => Color::BLACK,
+                    let initial = if cs.never_marks() {
+                        None
+                    } else {
+                        Some(color_from_components(&cs.initial(), &cs).unwrap_or(Color::BLACK))
                     };
                     if operator == "cs" {
                         gs.fill_cs = cs;
-                        gs.fill = Some(initial);
+                        gs.fill = initial;
                         gs.fill_pattern = None;
                     } else {
                         gs.stroke_cs = cs;
-                        gs.stroke = Some(initial);
+                        gs.stroke = initial;
                     }
                 }
                 "sc" | "scn" | "SC" | "SCN" => {
@@ -1200,7 +1978,7 @@ impl<'a> Importer<'a> {
                     let vals: Vec<f64> = operands.iter().filter_map(Self::num).collect();
                     if *cs == ColorSpace::Pattern {
                         if let Some(name) = operands.last().and_then(|o| o.as_name().ok()) {
-                            let pat = self.pattern_fill(resources, name, gs);
+                            let pat = self.pattern_fill(resources, name, gs, depth);
                             if is_fill {
                                 gs.fill_pattern = pat.clone();
                                 gs.fill = match pat {
@@ -1215,6 +1993,13 @@ impl<'a> Importer<'a> {
                                     _ => Some(Color::Gray { v: 0.5 }),
                                 };
                             }
+                        }
+                    } else if cs.never_marks() {
+                        if is_fill {
+                            gs.fill = None;
+                            gs.fill_pattern = None;
+                        } else {
+                            gs.stroke = None;
                         }
                     } else {
                         let c = color_from_components(&vals, cs);
@@ -1452,15 +2237,95 @@ impl<'a> Importer<'a> {
                     }
                     b"CalRGB" | b"Lab" => ColorSpace::Rgb,
                     b"CalGray" => ColorSpace::Gray,
-                    b"Indexed" | b"I" => ColorSpace::N(1),
-                    b"Separation" => ColorSpace::N(1),
+                    b"Indexed" | b"I" => {
+                        // [/Indexed base hival lookup]
+                        let base = a
+                            .get(1)
+                            .map(|b| self.color_space_object(b, depth + 1))
+                            .unwrap_or(ColorSpace::Rgb);
+                        let hival = a
+                            .get(2)
+                            .and_then(|h| Self::num(self.deref(h)))
+                            .filter(|h| h.is_finite())
+                            .unwrap_or(0.0)
+                            .clamp(0.0, 255.0) as usize;
+                        let lookup = match a.get(3).map(|l| self.deref(l)) {
+                            Some(Object::String(s, _)) => s.clone(),
+                            Some(Object::Stream(s)) => s
+                                .decompressed_content()
+                                .unwrap_or_else(|_| s.content.clone()),
+                            _ => Vec::new(),
+                        };
+                        ColorSpace::Indexed(std::rc::Rc::new(IndexedSpace {
+                            base,
+                            hival,
+                            lookup,
+                        }))
+                    }
+                    b"Separation" => {
+                        // [/Separation name alternateSpace tintTransform]
+                        let name = a
+                            .get(1)
+                            .and_then(|n| self.deref(n).as_name().ok())
+                            .unwrap_or(b"");
+                        ColorSpace::Separation(self.colorant(name, a.get(2), a.get(3), depth, true))
+                    }
                     b"DeviceN" => {
-                        let n = a
+                        // [/DeviceN names alternateSpace tintTransform attributes]
+                        let names: Vec<Vec<u8>> = a
                             .get(1)
                             .and_then(|names| self.deref(names).as_array().ok())
-                            .map(|v| v.len())
-                            .unwrap_or(1);
-                        ColorSpace::N(n)
+                            .map(|v| {
+                                v.iter()
+                                    .filter_map(|n| {
+                                        self.deref(n).as_name().ok().map(<[u8]>::to_vec)
+                                    })
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        if let [name] = names.as_slice() {
+                            return ColorSpace::Separation(self.colorant(
+                                name,
+                                a.get(2),
+                                a.get(3),
+                                depth,
+                                true,
+                            ));
+                        }
+                        // The colourants mix as their process inks: the
+                        // tint transform takes more than one input, and a
+                        // spot colourant's stand-in comes from the
+                        // Separation space the attributes give it.
+                        let described = a
+                            .get(4)
+                            .and_then(|at| self.dict_of(at))
+                            .and_then(|at| self.get(at, b"Colorants"))
+                            .and_then(|c| self.dict_of(c))
+                            .cloned();
+                        let colorants: Vec<Colorant> = names
+                            .iter()
+                            .map(|name| {
+                                if let Some(c) = Self::named_colorant(name) {
+                                    return c;
+                                }
+                                let sep = described.as_ref().and_then(|d| d.get(name).ok());
+                                let sep =
+                                    sep.map(|s| self.deref(s)).and_then(|s| s.as_array().ok());
+                                match sep {
+                                    Some(sep) => {
+                                        self.colorant(name, sep.get(2), sep.get(3), depth, false)
+                                    }
+                                    None => {
+                                        self.warn(format!(
+                                            "colourant {} has no process stand-in; shown as black",
+                                            String::from_utf8_lossy(name)
+                                        ));
+                                        Colorant::Process(3)
+                                    }
+                                }
+                            })
+                            .collect();
+                        ColorSpace::DeviceN(colorants.into())
                     }
                     b"Pattern" => ColorSpace::Pattern,
                     b"DeviceGray" => ColorSpace::Gray,
@@ -1471,12 +2336,83 @@ impl<'a> Importer<'a> {
                             "colour space family {} approximated",
                             String::from_utf8_lossy(family)
                         ));
-                        ColorSpace::N(1)
+                        ColorSpace::Gray
                     }
                 }
             }
             _ => ColorSpace::Gray,
         }
+    }
+
+    /// The colourants whose names the PDF reference reserves (ISO
+    /// 32000-1 8.6.6.4): `All`, `None` and the four process colourants.
+    fn named_colorant(name: &[u8]) -> Option<Colorant> {
+        Some(match name {
+            b"All" => Colorant::All,
+            b"None" => Colorant::None,
+            b"Cyan" => Colorant::Process(0),
+            b"Magenta" => Colorant::Process(1),
+            b"Yellow" => Colorant::Process(2),
+            b"Black" => Colorant::Process(3),
+            _ => return None,
+        })
+    }
+
+    /// The colourant `name` of a Separation space whose alternate space
+    /// and tint transform are `alternate` and `tint`. Any other name than
+    /// the reserved ones is a spot ink: with `register`, one of the
+    /// import's inks (the same name, the same ink), its process stand-in
+    /// being the alternate colour at full tint.
+    fn colorant(
+        &mut self,
+        name: &[u8],
+        alternate: Option<&Object>,
+        tint: Option<&Object>,
+        depth: usize,
+        register: bool,
+    ) -> Colorant {
+        if let Some(c) = Self::named_colorant(name) {
+            return c;
+        }
+        let name = String::from_utf8_lossy(name).into_owned();
+        if register {
+            if let Some(ink) = self.inks.iter().find(|i| i.name == name) {
+                return Colorant::Ink {
+                    id: ink.id,
+                    cmyk: ink.cmyk,
+                };
+            }
+        }
+        let alt = alternate
+            .map(|a| self.color_space_object(a, depth + 1))
+            .unwrap_or(ColorSpace::Cmyk);
+        let comps = match tint {
+            Some(f) => self.eval_function(f, 1.0, 0),
+            None => Vec::new(),
+        };
+        // A transform this reader cannot evaluate (a PostScript
+        // calculator) gives a number of components that does not fit.
+        let fits = comps.len() == alt.components();
+        let stand_in = fits
+            .then(|| color_from_components(&comps, &alt))
+            .flatten()
+            .map(|c| c.convert_to("CMYK"));
+        let cmyk = match stand_in {
+            Some(Color::Cmyk { c, m, y, k }) => [c, m, y, k],
+            _ => {
+                self.warn(format!(
+                    "spot colour {name}: no process stand-in; shown as black"
+                ));
+                [0.0, 0.0, 0.0, 1.0]
+            }
+        };
+        if !register {
+            return Colorant::Ink { id: 0, cmyk };
+        }
+        let id = self.inks.iter().map(|i| i.id).max().unwrap_or(0) + 1;
+        self.inks
+            .push(tracedraw_core::document::Ink { id, name, cmyk });
+        Colorant::Ink { id, cmyk }
     }
 
     fn apply_ext_gstate(&mut self, resources: &Dictionary, name: &[u8], gs: &mut GState) {
@@ -1505,7 +2441,7 @@ impl<'a> Importer<'a> {
             ) {
                 let key = (0u32, 0u16);
                 let _ = key;
-                gs.font = Some(std::rc::Rc::new(self.font_info(&fd)));
+                gs.font = Some(std::rc::Rc::new(self.font_info(&fd, None)));
                 gs.font_size = size;
             }
         }
@@ -1528,45 +2464,70 @@ impl<'a> Importer<'a> {
         Shape::new(id, kind)
     }
 
-    fn push(&mut self, mut shape: Shape, clip: &Option<BezPath>) {
-        if let Some(clip) = clip {
-            let cb = clip.bounding_box();
-            let sb = shape.bounds();
-            if cb.width() <= 0.0 || cb.height() <= 0.0 {
-                return; // everything clipped away
-            }
-            let inside = cb.x0 <= sb.x0 + 1e-6
-                && cb.y0 <= sb.y0 + 1e-6
-                && cb.x1 >= sb.x1 - 1e-6
-                && cb.y1 >= sb.y1 - 1e-6;
-            if !inside {
-                let visible = sb.intersect(cb).area();
-                if visible <= 0.0 {
-                    return;
-                }
-                // Text is laid out with substitute fonts, so its box may
-                // poke out of a clip that the original glyphs fitted; keep
-                // it unclipped while most of it is inside.
-                if matches!(shape.kind, ShapeKind::Text { .. }) && visible >= 0.6 * sb.area() {
-                    self.shapes.push(shape);
-                    return;
-                }
-                let mut frame = self.new_shape(ShapeKind::Path {
-                    path: clip.clone(),
-                    closed: true,
+    /// An object drawn under `clip`. An object the clip cuts goes in the
+    /// clip frame of that clip, the one open behind the last object or a
+    /// new one; an object outside it is dropped; one the clip leaves as
+    /// it is (a rectangle round it) goes on the page as it is.
+    fn push(&mut self, shape: Shape, clip: &Clip) {
+        let Some(clip) = clip else {
+            self.push_free(shape);
+            return;
+        };
+        if clip.is_empty() {
+            return; // everything clipped away
+        }
+        let (cb, sb) = (clip.bounds, ink_bounds(&shape));
+        if sb.x1 < cb.x0 || sb.x0 > cb.x1 || sb.y1 < cb.y0 || sb.y0 > cb.y1 {
+            return;
+        }
+        // Text is laid out with substitute fonts, so its box may poke out
+        // of a rectangle that the original glyphs fitted; keep it unclipped
+        // while most of it is inside.
+        let text_mostly_in = clip.rect.is_some()
+            && matches!(shape.kind, ShapeKind::Text { .. })
+            && sb.intersect(cb).area() >= 0.6 * sb.area();
+        if clip.leaves(sb) || text_mostly_in {
+            self.push_free(shape);
+            return;
+        }
+        match &mut self.open {
+            Some(open) if std::rc::Rc::ptr_eq(&open.clip, clip) => open.shapes.push(shape),
+            _ => {
+                self.close_frame();
+                self.open = Some(OpenFrame {
+                    clip: clip.clone(),
+                    shapes: vec![shape],
                 });
-                frame.fill = Fill::None;
-                frame.stroke = None;
-                let mut pc = self.new_shape(ShapeKind::ClipFrame {
-                    frame: Box::new(frame),
-                    contents: vec![shape],
-                });
-                pc.fill = Fill::None;
-                pc.stroke = None;
-                shape = pc;
             }
         }
+    }
+
+    /// An object on the page as it is, after the clip frame open before it.
+    fn push_free(&mut self, shape: Shape) {
+        self.close_frame();
         self.shapes.push(shape);
+    }
+
+    /// The open clip frame, if any, becomes a clip frame on the page: the
+    /// clipping path as its frame (no fill, no outline), the objects it
+    /// clips as its contents.
+    fn close_frame(&mut self) {
+        let Some(open) = self.open.take() else {
+            return;
+        };
+        let mut frame = self.new_shape(ShapeKind::Path {
+            path: open.clip.path.clone(),
+            closed: true,
+        });
+        frame.fill = Fill::None;
+        frame.stroke = None;
+        let mut pc = self.new_shape(ShapeKind::ClipFrame {
+            frame: Box::new(frame),
+            contents: open.shapes,
+        });
+        pc.fill = Fill::None;
+        pc.stroke = None;
+        self.shapes.push(pc);
     }
 
     fn paint_path(
@@ -1672,11 +2633,8 @@ impl<'a> Importer<'a> {
             .get(&stream.dict, b"BBox")
             .and_then(|o| self.rect_of(o))
         {
-            let clip = gs.ctm * b.to_path(0.01);
-            gs.clip = Some(match &gs.clip {
-                Some(old) => intersect_clip(old, &clip),
-                None => clip,
-            });
+            // The bounding box clips the form's content (8.10.1).
+            gs.clip = ClipPath::intersect(&gs.clip, &(gs.ctm * b.to_path(0.01)), true);
         }
         let resources = self
             .get(&stream.dict, b"Resources")
@@ -1721,15 +2679,56 @@ impl<'a> Importer<'a> {
         }
     }
 
-    /// Decode an image XObject to PNG (RGBA).
+    /// Decode an image XObject to PNG (RGBA). A picture comes in at its
+    /// own size (#1835); one past the importer's limit
+    /// ([`ImportOptions::max_picture_pixels`]), or one there is no memory
+    /// for, is shrunk by a whole factor, each pixel the mean of a block of
+    /// the picture's own (#1804), and listed as shrunk; only one past
+    /// [`MAX_SOURCE_SIDE`] or [`MAX_SOURCE_PIXELS`] is skipped.
     fn decode_image(&mut self, stream: &Stream) -> Option<(Vec<u8>, u32, u32)> {
+        let (rgba, w, h) = self.decode_pixels(stream)?;
+        Some((tracedraw_render_png(w, h, &rgba), w, h))
+    }
+
+    /// An image XObject's RGBA pixels and size, as [`Self::decode_image`]
+    /// gives them before they are put into a PNG.
+    fn decode_pixels(&mut self, stream: &Stream) -> Option<(Vec<u8>, u32, u32)> {
         let d = &stream.dict;
         let w = self.get(d, b"Width").and_then(Self::num)? as u32;
         let h = self.get(d, b"Height").and_then(Self::num)? as u32;
-        if w == 0 || h == 0 || w > 20_000 || h > 20_000 || (w as u64) * (h as u64) > 80_000_000 {
-            self.warn("image too large; skipped");
+        if w == 0
+            || h == 0
+            || w > MAX_SOURCE_SIDE
+            || h > MAX_SOURCE_SIDE
+            || (w as u64) * (h as u64) > MAX_SOURCE_PIXELS
+        {
+            self.warn(format!("image of {w} x {h} pixels too large; skipped"));
             return None;
         }
+        // The memory for the result is taken now: when there is none, the
+        // picture is shrunk further until there is.
+        let (mut shrink, f) =
+            shrink_within(w, h, shrink_factor(w, h, self.max_pixels), usize::MAX)?;
+        let (ow, oh) = (w.div_ceil(f), h.div_ceil(f));
+        if f > 1 {
+            self.warn(format!("image of {w} x {h} pixels shrunk to {ow} x {oh}"));
+            if !self.in_mask {
+                self.shrunk.push(ShrunkPicture {
+                    page: 0,
+                    width: w,
+                    height: h,
+                    new_width: ow,
+                    new_height: oh,
+                });
+            }
+        }
+        // The soft mask is read first, at the picture's size: its own
+        // pixels are gone before the picture's are filled in, so a large
+        // picture never has both in memory at once (#1835).
+        let alpha = match self.get(d, b"SMask").cloned() {
+            Some(Object::Stream(sm)) => self.decode_gray(&sm, ow, oh),
+            _ => None,
+        };
         let bpc = self
             .get(d, b"BitsPerComponent")
             .and_then(Self::num)
@@ -1746,10 +2745,15 @@ impl<'a> Importer<'a> {
         let last = filters.last().map(|f| f.as_slice()).unwrap_or(b"");
         let mut rgba: Vec<u8>;
         let cs_obj = d.get(b"ColorSpace").ok().cloned();
+        // A picture keeps its pixels: the spot inks it names do not come
+        // into the drawing.
+        let inks = self.inks.len();
         let cs = cs_obj
             .as_ref()
             .map(|o| self.color_space_object(o, 0))
             .unwrap_or(ColorSpace::Gray);
+        let palette = cs_obj.as_ref().and_then(|o| self.indexed_palette(o));
+        self.inks.truncate(inks);
         let decode_arr = self
             .get(d, b"Decode")
             .map(|o| self.nums(o))
@@ -1757,6 +2761,8 @@ impl<'a> Importer<'a> {
         let inverted = decode_arr.first().map(|v| *v == 1.0).unwrap_or(false);
         match last {
             b"DCTDecode" | b"DCT" | b"JPXDecode" => {
+                // The decoder takes its own memory.
+                drop(shrink);
                 // Strip the other filters first (Flate over JPEG is rare but legal).
                 let data = if filters.len() > 1 {
                     let mut tmp = stream.clone();
@@ -1776,7 +2782,7 @@ impl<'a> Importer<'a> {
                 };
                 if last == b"JPXDecode" {
                     self.warn("JPEG 2000 image replaced by a grey box");
-                    rgba = vec![160; (w * h * 4) as usize];
+                    rgba = vec![160; (ow as usize) * (oh as usize) * 4];
                     for px in rgba.chunks_exact_mut(4) {
                         px[3] = 255;
                     }
@@ -1791,50 +2797,140 @@ impl<'a> Importer<'a> {
                             return None;
                         }
                     };
-                    let is_cmyk_jpeg =
-                        img.color() == image::ColorType::Rgba8 && cs == ColorSpace::Cmyk;
-                    let _ = is_cmyk_jpeg;
-                    let rgb = img.to_rgba8();
-                    rgba = rgb.into_raw();
-                    if cs == ColorSpace::Cmyk && inverted {
+                    // A CMYK JPEG's samples are its inks as the Decode
+                    // array reads them, as for any other picture. The
+                    // image decoder makes RGB of them as if they were
+                    // stored inverted, and the result was turned over
+                    // again for a picture with an inverting Decode array,
+                    // the usual way such pictures are written: they came
+                    // in as negatives (#2322).
+                    rgba = match (cs == ColorSpace::Cmyk)
+                        .then(|| cmyk_jpeg_rgba(&data, &decode_arr))
+                        .flatten()
+                    {
+                        Some(px)
+                            if px.len() == img.width() as usize * img.height() as usize * 4 =>
+                        {
+                            px
+                        }
+                        _ => img.to_rgba8().into_raw(),
+                    };
+                    if let ColorSpace::Separation(_) = cs {
+                        // Grey samples are tints: 255 is full ink.
+                        let tints: Vec<[u8; 3]> = (0..=255u8)
+                            .map(|v| {
+                                let t = v as f64 / 255.0;
+                                let t = if inverted { 1.0 - t } else { t };
+                                color_from_components(&[t], &cs).map_or([255; 3], Color::to_rgb8)
+                            })
+                            .collect();
                         for px in rgba.chunks_exact_mut(4) {
-                            px[0] = 255 - px[0];
-                            px[1] = 255 - px[1];
-                            px[2] = 255 - px[2];
+                            if let Some(c) = tints.get(px[0] as usize) {
+                                px[..3].copy_from_slice(c);
+                            }
                         }
                     }
                     // Decoded JPEG size wins over the dictionary.
                     let (jw, jh) = (img.width(), img.height());
-                    if jw != w || jh != h {
-                        return Some((tracedraw_render_png(jw, jh, &rgba), jw, jh));
+                    let jf = if jw == w && jh == h {
+                        f
+                    } else {
+                        shrink_factor(jw, jh, self.max_pixels)
+                    };
+                    let (jw, jh, rgba_j) =
+                        match (jf > 1).then(|| Shrink::new_within(jw, jh, jf, usize::MAX)) {
+                            Some(Some(mut shrink)) => {
+                                for row in rgba.chunks_exact(jw as usize * 4) {
+                                    shrink.push_row(row);
+                                }
+                                (jw.div_ceil(jf), jh.div_ceil(jf), shrink.finish())
+                            }
+                            Some(None) => return None,
+                            None => (jw, jh, rgba),
+                        };
+                    rgba = rgba_j;
+                    if jw != ow || jh != oh {
+                        return Some((rgba, jw, jh));
                     }
                 }
             }
             _ => {
-                let data = if filters.is_empty() {
-                    stream.content.clone()
-                } else {
-                    match stream.decompressed_content() {
-                        Ok(d) => d,
-                        Err(e) => {
-                            self.warn(format!("image data not decoded: {e}"));
-                            return None;
-                        }
-                    }
-                };
                 let ncomp = if is_mask { 1 } else { cs.components().max(1) };
                 let row_bytes = ((w as usize) * ncomp * (bpc as usize)).div_ceil(8);
-                if data.len() < row_bytes * (h as usize) {
-                    self.warn("image data shorter than its size; skipped");
-                    return None;
-                }
-                // Indexed palettes.
-                let palette = cs_obj.as_ref().and_then(|o| self.indexed_palette(o));
-                rgba = Vec::with_capacity((w * h * 4) as usize);
+                // A picture compressed with Flate alone and without a
+                // predictor is inflated a row at a time, whether shrunk or
+                // not: its samples (500 MB for the picture of #1804) never
+                // sit in memory beside its pixels.
+                let streamed = filters.len() == 1
+                    && last == b"FlateDecode"
+                    && self.get(d, b"DecodeParms").is_none();
+                let mut source: Box<dyn std::io::Read + '_> = if streamed {
+                    Box::new(flate2::read::ZlibDecoder::new(stream.content.as_slice()))
+                } else {
+                    let data = if filters.is_empty() {
+                        stream.content.clone()
+                    } else {
+                        if (row_bytes as u64) * (h as u64) > MAX_BUFFERED_BYTES {
+                            self.warn(format!("image of {w} x {h} pixels too large; skipped"));
+                            return None;
+                        }
+                        match stream.decompressed_content() {
+                            Ok(d) => d,
+                            Err(e) => {
+                                self.warn(format!("image data not decoded: {e}"));
+                                return None;
+                            }
+                        }
+                    };
+                    if data.len() < row_bytes * (h as usize) {
+                        self.warn("image data shorter than its size; skipped");
+                        return None;
+                    }
+                    Box::new(std::io::Cursor::new(data))
+                };
+                let mut row = vec![0u8; row_bytes];
+                let mut px_row: Vec<u8> = Vec::with_capacity(w as usize * 4);
                 let max = ((1u32 << bpc) - 1) as f32;
-                for y in 0..h as usize {
-                    let row = &data[y * row_bytes..(y + 1) * row_bytes];
-                    let mut bits = BitReader::new(row);
+                // A Separation picture: the colour of each tint, 1 being
+                // full ink.
+                let tints: Vec<[u8; 3]> = match &cs {
+                    ColorSpace::Separation(_) if bpc <= 16 => (0..=max as u32)
+                        .map(|v| {
+                            let t = v as f64 / max as f64;
+                            let t = if inverted { 1.0 - t } else { t };
+                            color_from_components(&[t], &cs).map_or([255; 3], Color::to_rgb8)
+                        })
+                        .collect(),
+                    _ => Vec::new(),
+                };
+                for _ in 0..h {
+                    if source.read_exact(&mut row).is_err() {
+                        self.warn("image data shorter than its size; skipped");
+                        return None;
+                    }
+                    px_row.clear();
+                    // Plain 8-bit RGB or grey samples, the most common
+                    // and the largest pictures: no conversion per sample.
+                    if bpc == 8 && !is_mask && !inverted && palette.is_none() && tints.is_empty() {
+                        match cs {
+                            ColorSpace::Rgb => {
+                                for p in row.chunks_exact(3) {
+                                    px_row.extend_from_slice(&[p[0], p[1], p[2], 255]);
+                                }
+                                shrink.push_row(&px_row);
+                                continue;
+                            }
+                            ColorSpace::Gray => {
+                                for &g in &row {
+                                    px_row.extend_from_slice(&[g, g, g, 255]);
+                                }
+                                shrink.push_row(&px_row);
+                                continue;
+                            }
+                            _ => {}
+                        }
+                    }
+                    let mut bits = BitReader::new(&row);
                     for _ in 0..w {
                         let mut comps = [0f32; 4];
                         let mut raw0 = 0u32;
@@ -1852,10 +2948,12 @@ impl<'a> Importer<'a> {
                             // 1 = masked out (transparent) unless Decode [1 0].
                             let on = (raw0 == 0) != inverted;
                             let c = gs_fill_rgb(None);
-                            rgba.extend_from_slice(&[c[0], c[1], c[2], if on { 255 } else { 0 }]);
+                            px_row.extend_from_slice(&[c[0], c[1], c[2], if on { 255 } else { 0 }]);
                             continue;
                         }
-                        let (r, g, b) = if let Some(pal) = &palette {
+                        let (r, g, b) = if let Some([r, g, b]) = tints.get(raw0 as usize) {
+                            (*r, *g, *b)
+                        } else if let Some(pal) = &palette {
                             let i = (raw0 as usize) * 3;
                             (
                                 *pal.get(i).unwrap_or(&0),
@@ -1883,92 +2981,91 @@ impl<'a> Importer<'a> {
                                         to8((1.0 - yy) * (1.0 - k)),
                                     )
                                 }
+                                ColorSpace::DeviceN(_) => {
+                                    let n = cs.components();
+                                    let tints: Vec<f64> = comps
+                                        .iter()
+                                        .take(n)
+                                        .map(|v| if inverted { 1.0 - *v } else { *v } as f64)
+                                        .collect();
+                                    let [r, g, b] = color_from_components(&tints, &cs)
+                                        .map_or([255; 3], Color::to_rgb8);
+                                    (r, g, b)
+                                }
                                 _ => {
                                     let v = if inverted { 1.0 - comps[0] } else { comps[0] };
                                     (to8(v), to8(v), to8(v))
                                 }
                             }
                         };
-                        rgba.extend_from_slice(&[r, g, b, 255]);
+                        px_row.extend_from_slice(&[r, g, b, 255]);
                     }
+                    shrink.push_row(&px_row);
                 }
+                rgba = shrink.finish();
             }
         }
-        if rgba.len() != (w * h * 4) as usize {
+        if rgba.len() != (ow as usize) * (oh as usize) * 4 {
             return None;
         }
-        // Soft mask: alpha from a gray image of the same size.
-        if let Some(Object::Stream(sm)) = self.get(d, b"SMask").cloned() {
-            if let Some(alpha) = self.decode_gray(&sm, w, h) {
-                for (px, a) in rgba.chunks_exact_mut(4).zip(alpha) {
-                    px[3] = a;
-                }
+        // Soft mask: alpha from a gray image, resampled to the picture's
+        // size (a large one shrunk as the picture is).
+        if let Some(alpha) = alpha {
+            for (px, a) in rgba.chunks_exact_mut(4).zip(alpha) {
+                px[3] = a;
             }
         }
-        Some((tracedraw_render_png(w, h, &rgba), w, h))
+        Some((rgba, ow, oh))
     }
 
     /// An SMask as 8-bit alpha, resampled to `w` x `h` (nearest).
     fn decode_gray(&mut self, sm: &Stream, w: u32, h: u32) -> Option<Vec<u8>> {
-        let (png, sw, sh) = self.decode_image(sm)?;
-        let pm = tiny_skia::Pixmap::decode_png(&png).ok()?;
-        let px = pm.pixels();
+        let was = std::mem::replace(&mut self.in_mask, true);
+        let decoded = self.decode_pixels(sm);
+        self.in_mask = was;
+        let (px, sw, sh) = decoded?;
         let mut out = Vec::with_capacity((w * h) as usize);
         for y in 0..h {
             let sy = (y as u64 * sh as u64 / h as u64) as usize;
             for x in 0..w {
                 let sx = (x as u64 * sw as u64 / w as u64) as usize;
-                let p = px
-                    .get(sy * sw as usize + sx)
-                    .map(|p| p.demultiply().red())
-                    .unwrap_or(255);
+                let p = px.get((sy * sw as usize + sx) * 4).copied().unwrap_or(255);
                 out.push(p);
             }
         }
         Some(out)
     }
 
+    /// The RGB of each entry of an Indexed colour space's table.
     fn indexed_palette(&mut self, cs: &Object) -> Option<Vec<u8>> {
-        let Object::Array(a) = self.deref(cs) else {
+        let ColorSpace::Indexed(table) = self.color_space_object(cs, 0) else {
             return None;
         };
-        let family = a.first().and_then(|f| self.deref(f).as_name().ok())?;
-        if family != b"Indexed" && family != b"I" {
-            return None;
-        }
-        let base = self.color_space_object(a.get(1)?, 1);
-        let lookup: Vec<u8> = match self.deref(a.get(3)?) {
-            Object::String(s, _) => s.clone(),
-            Object::Stream(s) => s
-                .decompressed_content()
-                .unwrap_or_else(|_| s.content.clone()),
-            _ => return None,
-        };
-        let n = base.components().max(1);
-        let mut pal = Vec::with_capacity(lookup.len() / n * 3);
-        for e in lookup.chunks_exact(n) {
-            let (r, g, b) = match base {
-                ColorSpace::Rgb => (e[0], e[1], e[2]),
-                ColorSpace::Cmyk => {
-                    let f = |v: u8| v as f32 / 255.0;
-                    let k = f(e[3]);
-                    let to8 = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
-                    (
-                        to8((1.0 - f(e[0])) * (1.0 - k)),
-                        to8((1.0 - f(e[1])) * (1.0 - k)),
-                        to8((1.0 - f(e[2])) * (1.0 - k)),
-                    )
-                }
-                _ => (e[0], e[0], e[0]),
-            };
-            pal.extend_from_slice(&[r, g, b]);
+        let n = table.base.components().max(1);
+        let mut pal = Vec::with_capacity(table.lookup.len() / n * 3);
+        for e in table.lookup.chunks_exact(n).take(table.hival + 1) {
+            let comps: Vec<f64> = e.iter().map(|b| *b as f64 / 255.0).collect();
+            let c = color_from_components(&comps, &table.base).unwrap_or(Color::BLACK);
+            pal.extend_from_slice(&c.to_rgb8());
         }
         Some(pal)
     }
 
     // ----- shadings and patterns --------------------------------------------
 
-    fn pattern_fill(&mut self, resources: &Dictionary, name: &[u8], gs: &GState) -> Option<Fill> {
+    /// The fill a pattern resource gives: a fountain for a shading
+    /// pattern, a vector pattern of the tile's shapes for a tiling
+    /// pattern. `depth` is the nesting of the content stream asking, as
+    /// [`Self::run_content`] counts it: a tile is content too, and one
+    /// that paints with its own pattern (a damaged or hostile file) would
+    /// otherwise go round without end.
+    fn pattern_fill(
+        &mut self,
+        resources: &Dictionary,
+        name: &[u8],
+        gs: &GState,
+        depth: usize,
+    ) -> Option<Fill> {
         let pat = self
             .get(resources, b"Pattern")
             .and_then(|o| self.dict_of(o))
@@ -1993,6 +3090,10 @@ impl<'a> Importer<'a> {
         // Tiling pattern: the tile content is rendered into a vector
         // pattern fill when it is small enough, else its average colour.
         if let Object::Stream(tile) = self.deref(&pat).clone() {
+            if depth >= MAX_FORM_DEPTH {
+                self.warn("pattern tiles nested too deep; the pattern was left out");
+                return None;
+            }
             let bbox = self
                 .get(&tile.dict, b"BBox")
                 .and_then(|o| self.rect_of(o))?;
@@ -2004,6 +3105,9 @@ impl<'a> Importer<'a> {
                 .get(&tile.dict, b"YStep")
                 .and_then(Self::num)
                 .unwrap_or(bbox.height());
+            // The tile's content is collected apart from the page's, with
+            // the page's open clip frame set aside and taken up again after.
+            let saved_open = self.open.take();
             let saved = std::mem::take(&mut self.shapes);
             let m = gs.ctm * matrix;
             let scale = Self::scale_of(m);
@@ -2012,9 +3116,11 @@ impl<'a> Importer<'a> {
                 ..GState::default()
             };
             let before = self.ops;
-            self.draw_form(&tile, &mut inner, MAX_FORM_DEPTH - 2);
+            self.draw_form(&tile, &mut inner, depth + 1);
             self.ops = before + 1;
+            self.close_frame();
             let shapes = std::mem::replace(&mut self.shapes, saved);
+            self.open = saved_open;
             if shapes.is_empty() {
                 return None;
             }
@@ -2025,6 +3131,7 @@ impl<'a> Importer<'a> {
             return Some(Fill::Pattern(tracedraw_core::Pattern::Vector {
                 shapes,
                 tile: tile_size,
+                placement: Default::default(),
             }));
         }
         None
@@ -2042,7 +3149,7 @@ impl<'a> Importer<'a> {
         };
         // `sh` paints the whole clip region.
         let area = match &gs.clip {
-            Some(c) => c.clone(),
+            Some(c) => c.path.clone(),
             None => {
                 self.warn("shading without a clip painted over the page");
                 gs.ctm * Rect::new(-10_000.0, -10_000.0, 20_000.0, 20_000.0).to_path(0.01)
@@ -2058,7 +3165,7 @@ impl<'a> Importer<'a> {
         shape.fill = Fill::Fountain(f);
         shape.stroke = None;
         shape.opacity = gs.fill_alpha;
-        self.shapes.push(shape);
+        self.push_free(shape);
     }
 
     /// Axial and radial shadings as fountain fills; other types take the
@@ -2344,14 +3451,14 @@ impl<'a> Importer<'a> {
             }
         }
         let fd = self.dict_of(entry)?.clone();
-        let info = std::rc::Rc::new(self.font_info(&fd));
+        let info = std::rc::Rc::new(self.font_info(&fd, key));
         if let Some(k) = key {
             self.fonts.insert(k, info.clone());
         }
         Some(info)
     }
 
-    fn font_info(&mut self, fd: &Dictionary) -> FontInfo {
+    fn font_info(&mut self, fd: &Dictionary, key: Option<lopdf::ObjectId>) -> FontInfo {
         let subtype = self
             .get(fd, b"Subtype")
             .and_then(|o| o.as_name().ok())
@@ -2480,6 +3587,18 @@ impl<'a> Importer<'a> {
                 }
             }
         }
+        // A scrambled ToUnicode map put right (#1806).
+        let mut drawn_order = false;
+        let mut to_unicode = to_unicode;
+        if let (Some(map), Some(key), true) = (to_unicode.as_mut(), key, two_byte) {
+            let marks = map
+                .keys()
+                .copied()
+                .filter(|c| widths.get(c).copied().unwrap_or(default_width).abs() < 150.0)
+                .collect();
+            drawn_order =
+                self.fix_scrambled_tounicode(map, key, &desc_font, descriptor.as_ref(), &marks);
+        }
         let type3_matrix = if subtype == b"Type3" {
             self.get(fd, b"FontMatrix").and_then(|o| self.matrix_of(o))
         } else {
@@ -2506,6 +3625,7 @@ impl<'a> Importer<'a> {
             italic,
             two_byte,
             to_unicode,
+            drawn_order,
             one_byte,
             widths,
             default_width,
@@ -2556,6 +3676,317 @@ impl<'a> Importer<'a> {
             None
         };
         crate::pdf_glyphs::GlyphSource::new(data, cff, two_byte, cid_to_gid, encoding)
+    }
+
+    /// Correct a two-byte font's ToUnicode map that gives Indic glyphs
+    /// the characters of other glyphs (#1806; see
+    /// [`unscramble_tounicode`]). Only a map that contradicts the
+    /// embedded font's own `cmap` on a glyph of an Indic letter or sign
+    /// is touched. Whether it was.
+    fn fix_scrambled_tounicode(
+        &mut self,
+        map: &mut HashMap<u32, String>,
+        key: lopdf::ObjectId,
+        desc_font: &Dictionary,
+        descriptor: Option<&Dictionary>,
+        marks: &std::collections::HashSet<u32>,
+    ) -> bool {
+        if let Some(fixes) = self.tounicode_fixes.get(&key) {
+            map.extend(fixes.iter().map(|(k, v)| (*k, v.clone())));
+            return !fixes.is_empty();
+        }
+        let nominal = self.nominal_indic(desc_font, descriptor, map);
+        let scrambled = nominal
+            .iter()
+            .any(|(code, c)| map.get(code).is_some_and(|t| *t != c.to_string()));
+        let fixes = if scrambled {
+            let units = self.text_units(key, map);
+            // The glyphs whose text their own outlines tell (a letter
+            // with a sign, a half form, a longer short i sign).
+            let shaped = self.outline_indic(desc_font, descriptor, &units);
+            let mut fixes = unscramble_tounicode(map, &nominal, &shaped, marks, &units);
+            // The same font installed here says outright what each of its
+            // glyphs stands for; the map is worked out only for the
+            // others.
+            for (code, text) in self.installed_glyph_texts(map, desc_font, descriptor, &units) {
+                if map.get(&code) == Some(&text) {
+                    fixes.remove(&code);
+                } else {
+                    fixes.insert(code, text);
+                }
+            }
+            fixes
+        } else {
+            HashMap::new()
+        };
+        map.extend(fixes.iter().map(|(k, v)| (*k, v.clone())));
+        let fixed = !fixes.is_empty();
+        self.tounicode_fixes.insert(key, fixes);
+        fixed
+    }
+
+    /// The text of the codes `units` show in a two-byte TrueType font,
+    /// as the font of the same name installed on the system draws it
+    /// with those glyphs (see [`crate::pdf_indic`]); empty when that
+    /// font is not installed or is not the embedded one.
+    fn installed_glyph_texts(
+        &self,
+        map: &HashMap<u32, String>,
+        desc_font: &Dictionary,
+        descriptor: Option<&Dictionary>,
+        units: &[Vec<u32>],
+    ) -> HashMap<u32, String> {
+        let mut out = HashMap::new();
+        let Some(Object::Stream(s)) = descriptor.and_then(|d| self.get(d, b"FontFile2")) else {
+            return out;
+        };
+        let Some(data) = s.decompressed_content().ok() else {
+            return out;
+        };
+        let cid_to_gid: Option<Vec<u16>> = match self.get(desc_font, b"CIDToGIDMap") {
+            Some(Object::Stream(m)) => m.decompressed_content().ok().map(|b| {
+                b.chunks_exact(2)
+                    .map(|c| u16::from_be_bytes([c[0], c[1]]))
+                    .collect()
+            }),
+            _ => None,
+        };
+        let gid_of = |code: u32| match &cid_to_gid {
+            Some(m) => m.get(code as usize).copied(),
+            None => u16::try_from(code).ok(),
+        };
+        // The codes that show Devanagari, or nothing the map knows.
+        let mut codes: Vec<u32> = units
+            .iter()
+            .flatten()
+            .copied()
+            .filter(|c| {
+                map.get(c).is_none_or(|t| {
+                    t.is_empty() || t.chars().any(|c| ('\u{0900}'..='\u{097F}').contains(&c))
+                })
+            })
+            .collect();
+        codes.sort_unstable();
+        codes.dedup();
+        let used: Vec<u16> = codes.iter().filter_map(|c| gid_of(*c)).collect();
+        // The family the embedded font names itself, then the PDF's name
+        // for it without the subset's tag and the style.
+        let mut families: Vec<String> = Vec::new();
+        if let Ok(face) = ttf_parser::Face::parse(&data, 0) {
+            for id in [
+                ttf_parser::name_id::TYPOGRAPHIC_FAMILY,
+                ttf_parser::name_id::FAMILY,
+            ] {
+                families.extend(
+                    face.names()
+                        .into_iter()
+                        .filter(|n| n.name_id == id)
+                        .filter_map(|n| n.to_string()),
+                );
+            }
+        }
+        let base = descriptor
+            .and_then(|d| self.get(d, b"FontName"))
+            .or_else(|| self.get(desc_font, b"BaseFont"))
+            .and_then(|o| o.as_name().ok())
+            .map(|n| String::from_utf8_lossy(n).into_owned());
+        if let Some(base) = base {
+            let name = base.split_once('+').map_or(base.as_str(), |(_, n)| n);
+            let name = name.split([',', '-']).next().unwrap_or(name);
+            families.push(name.to_string());
+        }
+        families.retain(|f| !f.trim().is_empty());
+        families.dedup();
+        let texts = crate::pdf_indic::glyph_texts(&data, &families, &used);
+        for code in codes {
+            if let Some(t) = gid_of(code).and_then(|g| texts.get(&g)) {
+                out.insert(code, t.clone());
+            }
+        }
+        out
+    }
+
+    /// The text of the codes `units` show in a two-byte TrueType font
+    /// whose glyphs the font's `cmap` does not name, as far as their
+    /// outlines tell (see [`crate::pdf_indic_shapes`]).
+    fn outline_indic(
+        &self,
+        desc_font: &Dictionary,
+        descriptor: Option<&Dictionary>,
+        units: &[Vec<u32>],
+    ) -> HashMap<u32, String> {
+        let mut out = HashMap::new();
+        let Some(Object::Stream(s)) = descriptor.and_then(|d| self.get(d, b"FontFile2")) else {
+            return out;
+        };
+        let Some(data) = s.decompressed_content().ok() else {
+            return out;
+        };
+        let Ok(face) = ttf_parser::Face::parse(&data, 0) else {
+            return out;
+        };
+        let cid_to_gid: Option<Vec<u16>> = match self.get(desc_font, b"CIDToGIDMap") {
+            Some(Object::Stream(m)) => m.decompressed_content().ok().map(|b| {
+                b.chunks_exact(2)
+                    .map(|c| u16::from_be_bytes([c[0], c[1]]))
+                    .collect()
+            }),
+            _ => None,
+        };
+        let gid_of = |code: u32| match &cid_to_gid {
+            Some(m) => m.get(code as usize).copied(),
+            None => u16::try_from(code).ok(),
+        };
+        let mut codes: Vec<u32> = units.iter().flatten().copied().collect();
+        codes.sort_unstable();
+        codes.dedup();
+        let used: Vec<u16> = codes.iter().filter_map(|c| gid_of(*c)).collect();
+        let texts = crate::pdf_indic_shapes::glyph_texts(&face, &used);
+        for code in codes {
+            if let Some(t) = gid_of(code).and_then(|g| texts.get(&g)) {
+                out.insert(code, t.clone());
+            }
+        }
+        out
+    }
+
+    /// The codes of a two-byte TrueType font whose glyph the font's own
+    /// `cmap` gives to one Indic character (U+0900 to U+0DFF), with that
+    /// character, for the codes `map` lists.
+    fn nominal_indic(
+        &self,
+        desc_font: &Dictionary,
+        descriptor: Option<&Dictionary>,
+        map: &HashMap<u32, String>,
+    ) -> HashMap<u32, char> {
+        let mut out = HashMap::new();
+        let Some(Object::Stream(s)) = descriptor.and_then(|d| self.get(d, b"FontFile2")) else {
+            return out;
+        };
+        let Some(data) = s.decompressed_content().ok() else {
+            return out;
+        };
+        let Ok(face) = ttf_parser::Face::parse(&data, 0) else {
+            return out;
+        };
+        let cid_to_gid: Option<Vec<u16>> = match self.get(desc_font, b"CIDToGIDMap") {
+            Some(Object::Stream(m)) => m.decompressed_content().ok().map(|b| {
+                b.chunks_exact(2)
+                    .map(|c| u16::from_be_bytes([c[0], c[1]]))
+                    .collect()
+            }),
+            _ => None,
+        };
+        // Glyph to the characters the font maps to it.
+        let mut chars: HashMap<u16, Vec<char>> = HashMap::new();
+        if let Some(cmap) = face.tables().cmap {
+            for st in cmap.subtables {
+                if !st.is_unicode() {
+                    continue;
+                }
+                st.codepoints(|cp| {
+                    if let (Some(c), Some(g)) = (char::from_u32(cp), st.glyph_index(cp)) {
+                        let v = chars.entry(g.0).or_default();
+                        if !v.contains(&c) {
+                            v.push(c);
+                        }
+                    }
+                });
+            }
+        }
+        for &code in map.keys() {
+            let gid = match &cid_to_gid {
+                Some(m) => m.get(code as usize).copied(),
+                None => u16::try_from(code).ok(),
+            };
+            if let Some([c]) = gid.and_then(|g| chars.get(&g)).map(Vec::as_slice) {
+                if ('\u{0900}'..='\u{0DFF}').contains(c) {
+                    out.insert(code, *c);
+                }
+            }
+        }
+        out
+    }
+
+    /// The codes every text-showing operator of the file shows in font
+    /// `key`, page by page in drawing order: one list for each `Tj` or
+    /// `TJ`, split at spaces.
+    fn text_units(&self, key: lopdf::ObjectId, map: &HashMap<u32, String>) -> Vec<Vec<u32>> {
+        let mut units = Vec::new();
+        let mut ops = 0usize;
+        for page_id in self.doc.page_iter() {
+            let Ok(page) = self.doc.get_dictionary(page_id) else {
+                continue;
+            };
+            let Some(fonts) = self
+                .page_attr(page, b"Resources")
+                .and_then(|o| self.dict_of(o))
+                .and_then(|r| self.get(r, b"Font"))
+                .and_then(|o| self.dict_of(o))
+            else {
+                continue;
+            };
+            let names: Vec<Vec<u8>> = fonts
+                .iter()
+                .filter(|(_, v)| matches!(v, Object::Reference(id) if *id == key))
+                .map(|(k, _)| k.clone())
+                .collect();
+            if names.is_empty() {
+                continue;
+            }
+            let Ok(content) = Content::decode(&self.doc.get_page_content(page_id)) else {
+                continue;
+            };
+            let mut current = false;
+            for op in &content.operations {
+                ops += 1;
+                if ops > MAX_OPS {
+                    return units;
+                }
+                let strings: Vec<&Vec<u8>> = match op.operator.as_str() {
+                    "Tf" => {
+                        current = op
+                            .operands
+                            .first()
+                            .and_then(|o| o.as_name().ok())
+                            .is_some_and(|n| names.iter().any(|k| k == n));
+                        continue;
+                    }
+                    "Tj" | "'" | "\"" => match op.operands.last() {
+                        Some(Object::String(s, _)) => vec![s],
+                        _ => continue,
+                    },
+                    "TJ" => match op.operands.first() {
+                        Some(Object::Array(items)) => items
+                            .iter()
+                            .filter_map(|o| match o {
+                                Object::String(s, _) => Some(s),
+                                _ => None,
+                            })
+                            .collect(),
+                        _ => continue,
+                    },
+                    _ => continue,
+                };
+                if !current {
+                    continue;
+                }
+                let mut unit = Vec::new();
+                for s in strings {
+                    for c in s.chunks_exact(2) {
+                        let code = u32::from(u16::from_be_bytes([c[0], c[1]]));
+                        if map.get(&code).is_some_and(|t| t.trim().is_empty()) {
+                            units.push(std::mem::take(&mut unit));
+                        } else {
+                            unit.push(code);
+                        }
+                    }
+                }
+                units.push(unit);
+            }
+        }
+        units.retain(|u| !u.is_empty());
+        units
     }
 
     fn simple_encoding(
@@ -2657,7 +4088,14 @@ impl<'a> Importer<'a> {
             if !path.elements().is_empty() {
                 let mut shape = self.new_shape(ShapeKind::Path { path, closed: true });
                 shape.fill = Fill::Solid(gs.fill.unwrap_or(Color::BLACK));
-                shape.stroke = None;
+                // Filled and outlined text (bold made up for a font with
+                // no bold face) keeps its outline, so it stays bold.
+                shape.stroke = gs.stroke.filter(|_| fake_bold(gs)).map(|c| {
+                    let w = (gs.line_width * Self::scale_of(gs.ctm)).max(Stroke::HAIRLINE);
+                    let mut st = Stroke::new(c, w);
+                    st.join = LineJoin::Round;
+                    st
+                });
                 shape.opacity = gs.fill_alpha;
                 let clip = gs.clip.clone();
                 self.push(shape, &clip);
@@ -2718,6 +4156,7 @@ impl<'a> Importer<'a> {
         let same_run = match run {
             Some(r) => {
                 std::rc::Rc::ptr_eq(&r.font, &font)
+                    && r.stroked_bold == fake_bold(gs)
                     && (r.size_pt - size_pt).abs() < 1e-6
                     && r.fill == gs.fill
                     && (same_line(&r.matrix, &trm, r.end_x, gs.font_size)
@@ -2740,6 +4179,7 @@ impl<'a> Importer<'a> {
                     if let Some(a) = self.actual.as_mut() {
                         a.broken = true;
                         if let Some(at) = a.at {
+                            r.xs = None;
                             r.text.truncate(at);
                             r.text.push_str(&a.own);
                             r.typed.retain(|t| t.start < at);
@@ -2763,6 +4203,8 @@ impl<'a> Importer<'a> {
                     reach: 0.0,
                     typed: Vec::new(),
                     reph_glyph: false,
+                    xs: Some(Vec::new()),
+                    stroked_bold: fake_bold(gs),
                 });
             }
         } else if let (Some(r), Some((new_end, len))) = (run.as_mut(), along) {
@@ -2772,6 +4214,9 @@ impl<'a> Importer<'a> {
             let em = r.size_pt * PT_MM;
             if (gap > em * 0.18 || r.space_pending) && !joins && !r.text.ends_with(' ') {
                 r.text.push(' ');
+                if let Some(xs) = r.xs.as_mut() {
+                    xs.push(r.reach);
+                }
             }
             r.space_pending = false;
             r.end_x = new_end;
@@ -2796,11 +4241,19 @@ impl<'a> Importer<'a> {
                             a.at = Some(r.text.len());
                             let at = r.text.len();
                             r.text.push_str(&a.text);
+                            if let Some(xs) = r.xs.as_mut() {
+                                xs.extend(a.text.chars().map(|_| r.end_x + advance));
+                            }
                             r.typed.push(at..r.text.len());
                         }
                         a.own.push_str(&own);
                     }
-                    _ => r.text.push_str(&own),
+                    _ => {
+                        r.text.push_str(&own);
+                        if let Some(xs) = r.xs.as_mut() {
+                            xs.extend(own.chars().map(|_| r.end_x + advance));
+                        }
+                    }
                 }
             } else if let Some(a) = self.actual.as_mut().filter(|_| given.is_some()) {
                 a.shown = true;
@@ -2824,7 +4277,22 @@ impl<'a> Importer<'a> {
             return;
         }
         // Take the size out of the matrix: the span carries it in points.
-        let transform = r.matrix * Affine::scale(1.0 / scale);
+        let mut transform = r.matrix * Affine::scale(1.0 / scale);
+        // Upright text slanted forward by its matrix is italic made up for
+        // a font with no italic face: the span says italic and the slant
+        // goes, so the letters are not slanted twice (#2569).
+        let mut slanted = false;
+        {
+            let c = transform.as_coeffs();
+            let det = c[0] * c[3] - c[1] * c[2];
+            if c[1].abs() < 1e-6 && c[0] > 0.0 && c[3] > 0.0 && det > 0.0 {
+                let shear = c[2] / c[3];
+                if (0.1..0.5).contains(&shear) {
+                    slanted = true;
+                    transform = Affine::new([c[0], 0.0, 0.0, c[3], c[4], c[5]]);
+                }
+            }
+        }
         // Hindi and the other Devanagari languages: back from the order
         // the glyphs are drawn in to the order they are typed (#585).
         // Vowels drawn as two glyphs become one character again first.
@@ -2838,9 +4306,10 @@ impl<'a> Importer<'a> {
             .chain(std::iter::once(&(r.text.len()..r.text.len())))
         {
             if let Some(between) = r.text.get(from..part.start) {
-                text.push_str(&devanagari_logical_order(
+                text.push_str(&devanagari_typed_order(
                     &devanagari_compose(between),
                     r.reph_glyph,
+                    r.font.drawn_order,
                 ));
             }
             if let Some(given) = r.text.get(part.clone()) {
@@ -2848,9 +4317,15 @@ impl<'a> Importer<'a> {
             }
             from = part.end;
         }
+        // The characters' places hold only while the text is as drawn.
+        let text_chars = if text == r.text {
+            text.chars().count()
+        } else {
+            usize::MAX
+        };
         let span = TextSpan {
-            bold: r.font.bold,
-            italic: r.font.italic,
+            bold: r.font.bold || r.stroked_bold,
+            italic: r.font.italic || slanted,
             ..TextSpan::new(text, r.font.family.clone(), r.size_pt)
         };
         let mut shape = self.new_shape(ShapeKind::Text {
@@ -2869,8 +4344,19 @@ impl<'a> Importer<'a> {
         shape.stroke = None;
         shape.opacity = r.alpha;
         let _ = r.font.type3_matrix;
+        self.line_widths.insert(shape.id, r.reach * scale);
+        if let Some(xs) = r.xs.filter(|xs| xs.len() == text_chars) {
+            self.char_xs
+                .insert(shape.id, xs.iter().map(|x| x * scale).collect());
+        }
         self.push(shape, &r.clip);
     }
+}
+
+/// Text drawn filled and outlined (render mode 2, or 6 with clipping) with
+/// an outline: how bold is made up for a font with no bold face.
+fn fake_bold(gs: &GState) -> bool {
+    matches!(gs.render_mode, 2 | 6) && gs.stroke.is_some() && gs.line_width > 0.0
 }
 
 /// Same baseline and direction, continuing after the previous advance.
@@ -2966,32 +4452,58 @@ fn dedup_stops(mut stops: Vec<Stop>) -> Vec<Stop> {
 }
 
 fn color_from_components(v: &[f64], cs: &ColorSpace) -> Option<Color> {
-    let c = |i: usize| v.get(i).copied().unwrap_or(0.0).clamp(0.0, 1.0) as f32;
+    // A component that is not a number (a function's 0 times infinity)
+    // is no ink; `clamp` would keep it.
+    let c = |i: usize| {
+        let x = v.get(i).copied().unwrap_or(0.0);
+        if x.is_finite() {
+            x.clamp(0.0, 1.0) as f32
+        } else {
+            0.0
+        }
+    };
     match (cs, v.len()) {
-        (ColorSpace::Gray, 1) | (ColorSpace::N(1), 1) => Some(Color::Gray { v: c(0) }),
-        (ColorSpace::Rgb, 3) | (ColorSpace::N(3), 3) => Some(Color::Rgb {
+        (ColorSpace::Gray, 1) => Some(Color::Gray { v: c(0) }),
+        (ColorSpace::Rgb, 3) => Some(Color::Rgb {
             r: c(0),
             g: c(1),
             b: c(2),
         }),
-        (ColorSpace::Cmyk, 4) | (ColorSpace::N(4), 4) => Some(Color::Cmyk {
+        (ColorSpace::Cmyk, 4) => Some(Color::Cmyk {
             c: c(0),
             m: c(1),
             y: c(2),
             k: c(3),
         }),
-        (_, 1) => Some(Color::Gray { v: 1.0 - c(0) }), // Separation tint: 1 = full ink
-        (_, 3) => Some(Color::Rgb {
-            r: c(0),
-            g: c(1),
-            b: c(2),
-        }),
-        (_, 4) => Some(Color::Cmyk {
-            c: c(0),
-            m: c(1),
-            y: c(2),
-            k: c(3),
-        }),
+        // A tint: 1 is full ink.
+        (ColorSpace::Separation(colorant), 1) => colorant.color(c(0)),
+        (ColorSpace::DeviceN(colorants), n) if n == colorants.len() => {
+            let mut ink = [0.0f32; 4];
+            for (i, colorant) in colorants.iter().enumerate() {
+                for (sum, x) in ink.iter_mut().zip(colorant.cmyk(c(i))) {
+                    *sum += x;
+                }
+            }
+            let [c, m, y, k] = ink.map(|x| x.clamp(0.0, 1.0));
+            Some(Color::Cmyk { c, m, y, k })
+        }
+        (ColorSpace::Indexed(table), 1) => {
+            let x = v.first().copied().unwrap_or(0.0);
+            let index = if x.is_finite() {
+                x.round().clamp(0.0, table.hival as f64) as usize
+            } else {
+                0
+            };
+            let n = table.base.components();
+            let entry = table.lookup.get(index * n..(index + 1) * n)?;
+            let comps: Vec<f64> = entry.iter().map(|b| *b as f64 / 255.0).collect();
+            color_from_components(&comps, &table.base)
+        }
+        // A function giving another number of components than its
+        // device space has: read by their number.
+        (ColorSpace::Rgb | ColorSpace::Cmyk, 1) => color_from_components(v, &ColorSpace::Gray),
+        (ColorSpace::Gray | ColorSpace::Cmyk, 3) => color_from_components(v, &ColorSpace::Rgb),
+        (ColorSpace::Gray | ColorSpace::Rgb, 4) => color_from_components(v, &ColorSpace::Cmyk),
         _ => None,
     }
 }
@@ -3000,29 +4512,6 @@ fn gs_fill_rgb(c: Option<Color>) -> [u8; 3] {
     let c = c.unwrap_or(Color::BLACK);
     let [r, g, b] = c.to_rgb8();
     [r, g, b]
-}
-
-/// Intersection of two clip paths, approximated by the second when it lies
-/// inside the first's bounds and by the first otherwise.
-fn intersect_clip(old: &BezPath, new: &BezPath) -> BezPath {
-    let ob = old.bounding_box();
-    let nb = new.bounding_box();
-    if nb.x0 >= ob.x0 - 1e-6
-        && nb.y0 >= ob.y0 - 1e-6
-        && nb.x1 <= ob.x1 + 1e-6
-        && nb.y1 <= ob.y1 + 1e-6
-    {
-        new.clone()
-    } else if ob.x0 >= nb.x0 - 1e-6
-        && ob.y0 >= nb.y0 - 1e-6
-        && ob.x1 <= nb.x1 + 1e-6
-        && ob.y1 <= nb.y1 + 1e-6
-    {
-        old.clone()
-    } else {
-        // Neither contains the other: the rectangle both share.
-        ob.intersect(nb).to_path(0.01)
-    }
 }
 
 /// Inline image abbreviations to their full keys.
@@ -3062,8 +4551,22 @@ fn expand_inline_keys(d: &mut Dictionary) {
     }
 }
 
+/// A picture's RGBA pixels as a PNG, written straight from them: no
+/// premultiplied copy and no copy back, so a picture of 660 MB (#1835)
+/// takes its PNG beside it and nothing more.
 fn tracedraw_render_png(w: u32, h: u32, rgba: &[u8]) -> Vec<u8> {
-    crate::svg::encode_png(w, h, rgba)
+    use image::ImageEncoder;
+    let mut out = Vec::new();
+    let encoded = image::codecs::png::PngEncoder::new(&mut out).write_image(
+        rgba,
+        w,
+        h,
+        image::ExtendedColorType::Rgba8,
+    );
+    match encoded {
+        Ok(()) => out,
+        Err(_) => crate::svg::encode_png(w, h, rgba),
+    }
 }
 
 /// MSB-first bit reader for packed image samples.
@@ -3894,6 +5397,172 @@ fn glyph_name_to_char(name: &[u8]) -> Option<char> {
     table.iter().find(|(k, _)| *k == n).map(|(_, c)| *c)
 }
 
+/// Most pixels on a side of a picture as it comes into the drawing when
+/// pictures are reduced ([`REDUCED_PICTURE_PIXELS`] or less).
+const MAX_IMAGE_SIDE: u32 = 20_000;
+/// Most pixels on a side of a picture read at all.
+const MAX_SOURCE_SIDE: u32 = 400_000;
+/// Most pixels of a picture read at all: a 1.6 gigapixel picture
+/// shrinks by 5, past it a damaged size more likely than a picture.
+const MAX_SOURCE_PIXELS: u64 = 1_600_000_000;
+/// Most bytes of picture data inflated at once when it cannot be read a
+/// row at a time (filters other than Flate alone).
+const MAX_BUFFERED_BYTES: u64 = 1 << 30;
+
+/// The smallest whole factor that brings a `w` x `h` picture within
+/// `max_pixels` and, when that is [`REDUCED_PICTURE_PIXELS`] or less,
+/// [`MAX_IMAGE_SIDE`]: 1 for a picture that is already.
+fn shrink_factor(w: u32, h: u32, max_pixels: u64) -> u32 {
+    let side = if max_pixels <= REDUCED_PICTURE_PIXELS {
+        MAX_IMAGE_SIDE
+    } else {
+        u32::MAX
+    };
+    let fits = |f: u32| {
+        let (ow, oh) = (w.div_ceil(f), h.div_ceil(f));
+        ow <= side && oh <= side && (ow as u64) * (oh as u64) <= max_pixels
+    };
+    (1..=w.max(h).max(1))
+        .find(|&f| fits(f))
+        .unwrap_or(w.max(h).max(1))
+}
+
+/// A [`Shrink`] of a `w` x `h` picture by `f`, or by twice, four times
+/// ... `f` when there is no memory for the result (only `available`
+/// bytes, or less), with the factor it took. None when not even one
+/// pixel fits.
+fn shrink_within(w: u32, h: u32, f: u32, available: usize) -> Option<(Shrink, u32)> {
+    let mut f = f.max(1);
+    loop {
+        if let Some(s) = Shrink::new_within(w, h, f, available) {
+            return Some((s, f));
+        }
+        if w.div_ceil(f) <= 1 && h.div_ceil(f) <= 1 {
+            return None;
+        }
+        f = f.saturating_mul(2);
+    }
+}
+
+/// Shrinks RGBA rows by a whole factor `f`: each pixel of the result is
+/// the mean of an `f` x `f` block (smaller at the right and bottom
+/// edges). With `f` 1 the rows pass as they are.
+struct Shrink {
+    f: usize,
+    w: usize,
+    sums: Vec<u32>,
+    rows: usize,
+    out: Vec<u8>,
+}
+
+impl Shrink {
+    /// A shrink of a `w` x `h` picture by `f`, its result's memory taken
+    /// at once; None when there is no memory for it (`available` bytes at
+    /// most, else what the allocator gives).
+    fn new_within(w: u32, h: u32, f: u32, available: usize) -> Option<Self> {
+        let f = f.max(1) as usize;
+        let (ow, oh) = ((w as usize).div_ceil(f), (h as usize).div_ceil(f));
+        let bytes = ow.checked_mul(oh)?.checked_mul(4)?;
+        if bytes > available {
+            return None;
+        }
+        let mut out = Vec::new();
+        out.try_reserve_exact(bytes).ok()?;
+        Some(Shrink {
+            f,
+            w: w as usize,
+            sums: if f > 1 { vec![0; ow * 4] } else { Vec::new() },
+            rows: 0,
+            out,
+        })
+    }
+
+    /// One row of `w` RGBA pixels.
+    fn push_row(&mut self, row: &[u8]) {
+        if self.f == 1 {
+            self.out.extend_from_slice(row);
+            return;
+        }
+        for (x, px) in row.chunks_exact(4).take(self.w).enumerate() {
+            let o = x / self.f * 4;
+            for (s, c) in self.sums[o..o + 4].iter_mut().zip(px) {
+                *s += u32::from(*c);
+            }
+        }
+        self.rows += 1;
+        if self.rows == self.f {
+            self.flush();
+        }
+    }
+
+    fn flush(&mut self) {
+        if self.rows == 0 {
+            return;
+        }
+        for (ox, px) in self.sums.chunks_exact(4).enumerate() {
+            let bw = self.f.min(self.w - ox * self.f);
+            let n = (bw * self.rows) as u32;
+            for s in px {
+                self.out.push(((s + n / 2) / n) as u8);
+            }
+        }
+        self.sums.fill(0);
+        self.rows = 0;
+    }
+
+    /// The shrunk picture's RGBA pixels.
+    fn finish(mut self) -> Vec<u8> {
+        self.flush();
+        self.out
+    }
+}
+
+/// The RGBA pixels of a JPEG with four components (CMYK, or CMYK stored
+/// as YCCK) whose samples are the inks as `decode` reads them: a pair
+/// starting at 1 turns that ink over, as for any picture of a PDF. `None`
+/// when the JPEG has no four components or cannot be decoded.
+fn cmyk_jpeg_rgba(data: &[u8], decode: &[f64]) -> Option<Vec<u8>> {
+    use zune_jpeg::zune_core::{
+        bytestream::ZCursor, colorspace::ColorSpace as Zcs, options::DecoderOptions,
+    };
+    use zune_jpeg::JpegDecoder;
+    let mut probe = JpegDecoder::new(ZCursor::new(data));
+    probe.decode_headers().ok()?;
+    let input = probe.input_colorspace()?;
+    if !matches!(input, Zcs::CMYK | Zcs::YCCK) {
+        return None;
+    }
+    let options = DecoderOptions::default()
+        .jpeg_set_out_colorspace(input)
+        .set_max_width(usize::MAX)
+        .set_max_height(usize::MAX);
+    let mut dec = JpegDecoder::new_with_options(ZCursor::new(data), options);
+    let raw = dec.decode().ok()?;
+    let turn: [bool; 4] = std::array::from_fn(|i| decode.get(2 * i).is_some_and(|v| *v == 1.0));
+    let mut out = Vec::with_capacity(raw.len());
+    for px in raw.chunks_exact(4) {
+        let mut ink = [px[0], px[1], px[2], px[3]];
+        if input == Zcs::YCCK {
+            // The first three are a YCbCr colour whose components, turned
+            // over, are the cyan, magenta and yellow samples.
+            let (y, cb, cr) = (px[0] as f32, px[1] as f32 - 128.0, px[2] as f32 - 128.0);
+            let to8 = |v: f32| v.round().clamp(0.0, 255.0) as u8;
+            ink[0] = 255 - to8(y + 1.402 * cr);
+            ink[1] = 255 - to8(y - 0.344_136 * cb - 0.714_136 * cr);
+            ink[2] = 255 - to8(y + 1.772 * cb);
+        }
+        for (v, t) in ink.iter_mut().zip(turn) {
+            if t {
+                *v = 255 - *v;
+            }
+        }
+        let k = 255 - ink[3] as u32;
+        let rgb = |c: u8| (((255 - c as u32) * k + 127) / 255) as u8;
+        out.extend_from_slice(&[rgb(ink[0]), rgb(ink[1]), rgb(ink[2]), 255]);
+    }
+    Some(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4170,6 +5839,80 @@ mod tests {
         );
     }
 
+    /// A ToUnicode map scrambled as an office word processor's Hindi PDF
+    /// was (#1806): उर्मिला drawn उ ि म र् ल ा with the i sign glyph (2)
+    /// mapped to र् and the reph glyph (4) to ि, then वार्ड drawn व ा ड र्
+    /// with ड (7) mapped to र्. The font's cmap names 2 and 7; the reph
+    /// glyph, which has no advance, is worked out from the first word.
+    #[test]
+    fn a_scrambled_tounicode_map_is_put_right() {
+        let map: HashMap<u32, String> = [
+            (1, "\u{0909}"),
+            (2, "\u{0930}\u{094D}"),
+            (3, "\u{092E}"),
+            (4, "\u{093F}"),
+            (5, "\u{0932}"),
+            (6, "\u{093E}"),
+            (7, "\u{0930}\u{094D}"),
+            (8, "\u{0935}"),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k, v.to_string()))
+        .collect();
+        let nominal: HashMap<u32, char> = [
+            (1, '\u{0909}'),
+            (2, '\u{093F}'),
+            (3, '\u{092E}'),
+            (5, '\u{0932}'),
+            (6, '\u{093E}'),
+            (7, '\u{0921}'),
+            (8, '\u{0935}'),
+        ]
+        .into_iter()
+        .collect();
+        let marks = [4].into_iter().collect();
+        let fixes = unscramble_tounicode(
+            &map,
+            &nominal,
+            &HashMap::new(),
+            &marks,
+            &[vec![1, 2, 3, 4, 5, 6], vec![8, 6, 7, 4]],
+        );
+        let mut got: Vec<(u32, String)> = fixes.into_iter().collect();
+        got.sort();
+        assert_eq!(
+            got,
+            [
+                (2, "\u{093F}".to_string()),
+                (4, "\u{0930}\u{094D}".to_string()),
+                (7, "\u{0921}".to_string())
+            ]
+        );
+        // Those glyphs in drawn order give the words as typed.
+        assert_eq!(
+            devanagari_typed_order(
+                "\u{0909}\u{093F}\u{092E}\u{0930}\u{094D}\u{0932}\u{093E}",
+                true,
+                true
+            ),
+            "उर्मिला"
+        );
+        assert_eq!(
+            devanagari_typed_order("\u{0935}\u{093E}\u{0921}\u{0930}\u{094D}", true, true),
+            "वार्ड"
+        );
+        // A short i sign after a consonant moves only when the font is
+        // known to give drawn order.
+        assert_eq!(devanagari_typed_order("पिश्चम", false, true), "पश्चिम");
+        assert_eq!(devanagari_typed_order("पिश्चम", false, false), "पिश्चम");
+        // A map that agrees with the font is left alone.
+        let ok: HashMap<u32, String> = nominal.iter().map(|(k, c)| (*k, c.to_string())).collect();
+        assert!(
+            unscramble_tounicode(&ok, &nominal, &HashMap::new(), &marks, &[vec![1, 2, 3]])
+                .is_empty()
+        );
+    }
+
     /// The Devanagari test corpus written to PDF by an office suite
     /// (`testdata/devanagari-corpus.pdf`, a FreeMono subset embedded,
     /// one word a line) comes back word for word, each line one text
@@ -4389,6 +6132,233 @@ mod tests {
         }
     }
 
+    /// A circle as four curves, counter-clockwise from its right end, for
+    /// the content streams of the clip tests.
+    fn circle_ops(cx: f64, cy: f64, r: f64) -> String {
+        let k = 0.552_284_75 * r;
+        format!(
+            "{} {cy} m {} {} {} {} {cx} {} c {} {} {} {} {} {cy} c {} {} {} {} {cx} {} c {} {} {} {} {} {cy} c h",
+            cx + r,
+            cx + r, cy + k, cx + k, cy + r, cy + r,
+            cx - k, cy + r, cx - r, cy + k, cx - r,
+            cx - r, cy - k, cx - k, cy - r, cy - r,
+            cx + k, cy - r, cx + r, cy - k, cx + r,
+        )
+    }
+
+    /// The clip frames of a page, each with its frame's path and the
+    /// number of objects it holds.
+    fn clip_frames(p: &ImportedPage) -> Vec<(BezPath, usize)> {
+        p.shapes
+            .iter()
+            .filter_map(|s| match &s.kind {
+                ShapeKind::ClipFrame { frame, contents } => {
+                    Some((frame.page_path(), contents.len()))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Whether a point given in points falls in a path (mm) under the
+    /// even-odd rule, the way TraceDraw fills curves.
+    fn covers(path: &BezPath, x_pt: f64, y_pt: f64) -> bool {
+        path.winding(Point::new(x_pt * PT_MM, y_pt * PT_MM)) % 2 != 0
+    }
+
+    /// Lines clipped by a circle all go in one clip frame whose frame is
+    /// the circle, the ones inside the circle's square box but outside the
+    /// circle too (they were left unclipped, every other line had a frame
+    /// of its own, #1616); lines that miss the circle are dropped and an
+    /// object after the clip's `Q` stays outside.
+    #[test]
+    fn objects_under_one_clip_share_one_frame() {
+        let mut content = String::from("1 1 0 rg ");
+        content.push_str(&circle_ops(100.0, 50.0, 40.0));
+        content.push_str(" f q ");
+        content.push_str(&circle_ops(100.0, 50.0, 40.0));
+        content.push_str(" W n 0 G 6 w ");
+        for i in 0..6 {
+            let x = 50.0 + 20.0 * i as f64;
+            content.push_str(&format!(
+                "{x} 0 m {} 100 l S {} 0 m {x} 100 l S ",
+                x + 40.0,
+                x + 40.0
+            ));
+        }
+        // Inside the circle's box, outside the circle: its corner.
+        content.push_str("63 13 m 66 16 l S Q 0 0 1 rg 0 0 10 10 re f");
+        let bytes = one_page(&content, "<< >>", &[]);
+        let mut ids = IdSource::default();
+        let imp = parse(&bytes, &mut ids).expect("parse");
+        let p = &imp.pages[0];
+        let frames = clip_frames(p);
+        assert_eq!(frames.len(), 1, "{:?}", imp.warnings);
+        let (frame, n) = &frames[0];
+        // Ten lines cross the circle, the last two miss it, plus the
+        // corner line.
+        assert_eq!(*n, 11);
+        assert!(covers(frame, 100.0, 50.0) && covers(frame, 139.0, 50.0));
+        assert!(!covers(frame, 63.0, 13.0) && !covers(frame, 141.0, 50.0));
+        // The disc, the frame, the square after it.
+        assert_eq!(p.shapes.len(), 3);
+        assert!(matches!(p.shapes[2].kind, ShapeKind::Path { .. }));
+    }
+
+    /// A clip whose outline is drawn twice under the nonzero rule, ending
+    /// with a lone `m` (as one producer writes it), clips to the disc: read
+    /// even-odd the doubled outline cancelled out and nothing was clipped.
+    /// A nonzero star keeps its middle (#1616).
+    #[test]
+    fn nonzero_clips_keep_their_nonzero_area() {
+        let c = circle_ops(100.0, 50.0, 40.0);
+        let content = format!("q {c} {c} 140 50 m W n 0 G 6 w 40 0 m 160 100 l S Q");
+        let bytes = one_page(&content, "<< >>", &[]);
+        let mut ids = IdSource::default();
+        let imp = parse(&bytes, &mut ids).expect("parse");
+        let frames = clip_frames(&imp.pages[0]);
+        assert_eq!(frames.len(), 1, "{:?}", imp.warnings);
+        assert!(covers(&frames[0].0, 100.0, 50.0));
+        assert!(covers(&frames[0].0, 135.0, 50.0));
+        assert!(!covers(&frames[0].0, 145.0, 50.0));
+
+        // A five-pointed star drawn in one stroke: under `W` its middle
+        // is inside (winding 2), under `W*` it is a hole.
+        let pts: Vec<(f64, f64)> = (0..5)
+            .map(|i| {
+                let a = std::f64::consts::FRAC_PI_2 + i as f64 * 4.0 * std::f64::consts::PI / 5.0;
+                (100.0 + 45.0 * a.cos(), 50.0 + 45.0 * a.sin())
+            })
+            .collect();
+        let mut star = format!("{} {} m", pts[0].0, pts[0].1);
+        for (x, y) in &pts[1..] {
+            star.push_str(&format!(" {x} {y} l"));
+        }
+        star.push_str(" h");
+        for (op, middle) in [("W", true), ("W*", false)] {
+            let content = format!("q {star} {op} n 0 0 1 rg 0 0 200 100 re f Q");
+            let bytes = one_page(&content, "<< >>", &[]);
+            let imp = parse(&bytes, &mut ids).expect("parse");
+            let frames = clip_frames(&imp.pages[0]);
+            assert_eq!(frames.len(), 1, "{op} {:?}", imp.warnings);
+            assert_eq!(covers(&frames[0].0, 100.0, 50.0), middle, "{op}");
+            // A point of the star is inside either way.
+            assert!(covers(&frames[0].0, 100.0, 90.0), "{op}");
+        }
+    }
+
+    /// Clips nest: a second `W` inside a `q` clips to the overlap of both
+    /// (here two discs, their lens), `Q` brings the first one back, and a
+    /// clip that leaves nothing hides what is drawn under it.
+    #[test]
+    fn nested_clips_intersect_and_restore() {
+        let a = circle_ops(80.0, 50.0, 40.0);
+        let b = circle_ops(120.0, 50.0, 40.0);
+        let content = format!(
+            "q {a} W n q {b} W n 0 0 1 rg 0 0 200 100 re f Q 1 0 0 rg 0 0 200 100 re f Q \
+             q 0 0 20 20 re W n 180 80 20 20 re W n 0 g 0 0 200 100 re f Q"
+        );
+        let bytes = one_page(&content, "<< >>", &[]);
+        let mut ids = IdSource::default();
+        let imp = parse(&bytes, &mut ids).expect("parse");
+        let p = &imp.pages[0];
+        let frames = clip_frames(p);
+        assert_eq!(frames.len(), 2, "{:?}", imp.warnings);
+        assert_eq!(p.shapes.len(), 2);
+        let lens = &frames[0].0;
+        assert!(covers(lens, 100.0, 50.0));
+        assert!(!covers(lens, 50.0, 50.0) && !covers(lens, 150.0, 50.0));
+        let first = &frames[1].0;
+        assert!(covers(first, 50.0, 50.0) && !covers(first, 150.0, 50.0));
+    }
+
+    /// A rectangle clip round an object changes nothing and makes no frame,
+    /// unless the object's stroke reaches past it; an object outside the
+    /// clip is dropped, one whose stroke reaches in is kept.
+    #[test]
+    fn rectangle_clips_judge_objects_by_their_ink() {
+        let content = "q 10 10 180 80 re W n 0 G \
+             1 w 20 20 m 60 20 l S \
+             10 w 20 50 m 189 50 l S \
+             1 w 195 20 m 195 80 l S \
+             10 w 192 20 m 192 80 l S Q";
+        let bytes = one_page(content, "<< >>", &[]);
+        let mut ids = IdSource::default();
+        let imp = parse(&bytes, &mut ids).expect("parse");
+        let p = &imp.pages[0];
+        assert_eq!(p.shapes.len(), 2, "{:?}", imp.warnings);
+        assert!(matches!(p.shapes[0].kind, ShapeKind::Path { .. }));
+        match &p.shapes[1].kind {
+            ShapeKind::ClipFrame { contents, .. } => assert_eq!(contents.len(), 2),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// An object filled with a tiling pattern between two objects under
+    /// the same clip keeps the three in one frame: the tile's own content
+    /// does not close it.
+    #[test]
+    fn a_pattern_fill_does_not_split_a_clip_frame() {
+        let tile = stream(
+            "/Type /Pattern /PatternType 1 /PaintType 1 /TilingType 1 /BBox [0 0 10 10] /XStep 10 /YStep 10",
+            "0 0 1 rg 0 0 5 5 re f",
+        );
+        let c = circle_ops(100.0, 50.0, 40.0);
+        let content = format!(
+            "q {c} W n 1 0 0 rg 50 0 100 100 re f /Pattern cs /P scn 50 0 100 100 re f 0 g 50 0 100 100 re f Q"
+        );
+        let bytes = one_page(&content, "<< /Pattern << /P 5 0 R >> >>", &[tile]);
+        let mut ids = IdSource::default();
+        let imp = parse(&bytes, &mut ids).expect("parse");
+        let p = &imp.pages[0];
+        assert_eq!(p.shapes.len(), 1, "{:?}", imp.warnings);
+        assert_eq!(clip_frames(p)[0].1, 3);
+    }
+
+    /// A tiling pattern whose tile paints with the pattern itself (a
+    /// damaged or hostile file) is bounded like forms inside forms: the
+    /// tile was drawn with a fixed depth whatever asked for it, so the
+    /// pattern drew its tile, whose content asked for the pattern again,
+    /// without end, until the stack ran out and the program closed. The
+    /// tile's shapes still come through, once per level up to the bound.
+    #[test]
+    fn a_pattern_painting_with_itself_is_bounded() {
+        let tile = stream(
+            "/Type /Pattern /PatternType 1 /PaintType 1 /TilingType 1 /BBox [0 0 10 10] /XStep 10 /YStep 10 /Resources << /Pattern << /P 5 0 R >> >>",
+            "0 0 1 rg 0 0 5 5 re f /Pattern cs /P scn 0 0 10 10 re f",
+        );
+        let bytes = one_page(
+            "/Pattern cs /P scn 0 0 100 100 re f",
+            "<< /Pattern << /P 5 0 R >> >>",
+            &[tile],
+        );
+        let mut ids = IdSource::default();
+        let imp = parse(&bytes, &mut ids).expect("parse");
+        let p = &imp.pages[0];
+        assert_eq!(p.shapes.len(), 1, "{:?}", imp.warnings);
+        assert!(
+            matches!(p.shapes[0].fill, Fill::Pattern(_)),
+            "{:?}",
+            p.shapes[0].fill
+        );
+        assert!(imp.warnings.iter().any(|w| w.contains("nested too deep")));
+        // A pattern used from a form inside a form is still read.
+        let form = stream(
+            "/Type /XObject /Subtype /Form /BBox [0 0 100 100] /Resources << /Pattern << /P 6 0 R >> >>",
+            "/Pattern cs /P scn 0 0 100 100 re f",
+        );
+        let tile = stream(
+            "/Type /Pattern /PatternType 1 /PaintType 1 /TilingType 1 /BBox [0 0 10 10] /XStep 10 /YStep 10",
+            "0 0 1 rg 0 0 5 5 re f",
+        );
+        let bytes = one_page("/Fx Do", "<< /XObject << /Fx 5 0 R >> >>", &[form, tile]);
+        let imp = parse(&bytes, &mut ids).expect("parse");
+        let p = &imp.pages[0];
+        assert_eq!(p.shapes.len(), 1, "{:?}", imp.warnings);
+        assert!(matches!(p.shapes[0].fill, Fill::Pattern(_)));
+        assert!(imp.warnings.is_empty(), "{:?}", imp.warnings);
+    }
+
     #[test]
     fn axial_shading_pattern_becomes_a_fountain() {
         let bytes = one_page(
@@ -4415,6 +6385,455 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    /// A damaged file opens without taking the program down: a gradient
+    /// whose function gives no number (a negative exponent at 0 makes 0
+    /// times infinity) has its colours read as no ink, so every output
+    /// has a colour for them (the screen colour conversion went round
+    /// for ever on a component that is not a number); segments before
+    /// any start point begin their path where they start, instead of a
+    /// path that cannot hold them.
+    #[test]
+    fn a_damaged_file_opens_without_a_crash() {
+        let bytes = one_page(
+            "/Pattern cs /P1 scn 0 0 100 100 re f 1 0 0 RG 10 10 l 60 10 l 60 40 l S 20 20 30 30 40 40 c S 5 5 6 6 v 7 7 8 8 y S",
+            "<< /Pattern << /P1 << /PatternType 2 /Shading << /ShadingType 2 /ColorSpace /DeviceRGB /Coords [0 0 100 0] /Function << /FunctionType 2 /Domain [0 1] /C0 [1 0 0] /C1 [1 0 1] /N -1 >> >> >> >> >>",
+            &[],
+        );
+        let mut ids = IdSource::default();
+        let imp = parse(&bytes, &mut ids).expect("parse");
+        let page = &imp.pages[0];
+        assert!(page.shapes.len() >= 2, "{:?}", imp.warnings);
+        let Fill::Fountain(f) = &page.shapes[0].fill else {
+            panic!("{:?}", page.shapes[0].fill);
+        };
+        for stop in &f.stops {
+            let Color::Rgb { r, g, b } = stop.color else {
+                panic!("{:?}", stop.color);
+            };
+            assert!(
+                r.is_finite() && g.is_finite() && b.is_finite(),
+                "{:?}",
+                stop.color
+            );
+            let _ = stop.color.to_rgb8();
+        }
+        let doc = to_document(imp, "damaged");
+        let _ = crate::svg::page_to_svg(&doc, 0);
+        let _ = crate::pdf::document_to_pdf(&doc);
+    }
+
+    /// Separation, DeviceN and Indexed colours read as the PDF reference
+    /// gives them: a tint of 1 is full ink (the registration colour for
+    /// `All`, a process ink for its own name, the spot ink otherwise,
+    /// one ink per name), `None` paints nothing, an index picks its
+    /// table entry (#1703).
+    #[test]
+    fn separation_devicen_and_indexed_colors() {
+        let content = "/CS0 CS 1 SCN 10 10 m 50 10 l S \
+             /CS1 CS 1 SCN 10 20 m 50 20 l S \
+             /CS2 cs 0.4 scn 0 0 10 10 re f \
+             0 0 1 rg /CS3 CS 1 SCN 20 0 10 10 re B \
+             /CS4 cs 1 scn 40 0 10 10 re f \
+             /CS5 cs 0.5 1 scn 60 0 10 10 re f \
+             /CS6 cs 80 0 10 10 re f";
+        let resources = "<< /ColorSpace << \
+             /CS0 [/Separation /All /DeviceCMYK << /FunctionType 2 /Domain [0 1] /C0 [0 0 0 0] /C1 [1 1 1 1] /N 1 >>] \
+             /CS1 [/Separation /Cyan /DeviceCMYK << /FunctionType 2 /Domain [0 1] /C0 [0 0 0 0] /C1 [1 0 0 0] /N 1 >>] \
+             /CS2 [/Separation /Warm#20Red /DeviceRGB << /FunctionType 2 /Domain [0 1] /C0 [1 1 1] /C1 [1 0 0] /N 1 >>] \
+             /CS3 [/Separation /None /DeviceCMYK << /FunctionType 2 /Domain [0 1] /C0 [0 0 0 0] /C1 [0 0 0 1] /N 1 >>] \
+             /CS4 [/Indexed /DeviceRGB 1 <FF000000FF00>] \
+             /CS5 [/DeviceN [/Cyan /Black] /DeviceCMYK << /FunctionType 4 /Domain [0 1 0 1] /Range [0 1 0 1 0 1 0 1] >>] \
+             /CS6 [/DeviceN [/Warm#20Red] /DeviceRGB << /FunctionType 2 /Domain [0 1] /C0 [1 1 1] /C1 [1 0 0] /N 1 >>] \
+             >> >>";
+        let bytes = one_page(content, resources, &[]);
+        let mut ids = IdSource::default();
+        let imp = parse(&bytes, &mut ids).expect("parse");
+        let s = &imp.pages[0].shapes;
+        assert_eq!(s.len(), 7, "{:?}", imp.warnings);
+        let stroke = |i: usize| s[i].stroke.as_ref().map(|st| st.color);
+        let fill = |i: usize| match s[i].fill {
+            Fill::Solid(c) => Some(c),
+            _ => None,
+        };
+        assert_eq!(stroke(0), Some(Color::Registration));
+        assert_eq!(
+            stroke(1),
+            Some(Color::Cmyk {
+                c: 1.0,
+                m: 0.0,
+                y: 0.0,
+                k: 0.0
+            })
+        );
+        assert_eq!(imp.inks.len(), 1, "{:?}", imp.inks);
+        let ink = &imp.inks[0];
+        assert_eq!(ink.name, "Warm Red");
+        let red = Color::Rgb {
+            r: 1.0,
+            g: 0.0,
+            b: 0.0,
+        };
+        let Color::Cmyk { c, m, y, k } = red.convert_to("CMYK") else {
+            panic!("CMYK");
+        };
+        assert_eq!(ink.cmyk, [c, m, y, k]);
+        assert_eq!(fill(2), Some(ink.color(0.4)));
+        // `None` never marks: the stroke goes, the fill stays.
+        assert_eq!(stroke(3), None);
+        assert_eq!(
+            fill(3),
+            Some(Color::Rgb {
+                r: 0.0,
+                g: 0.0,
+                b: 1.0
+            })
+        );
+        assert_eq!(
+            fill(4),
+            Some(Color::Rgb {
+                r: 0.0,
+                g: 1.0,
+                b: 0.0
+            })
+        );
+        assert_eq!(
+            fill(5),
+            Some(Color::Cmyk {
+                c: 0.5,
+                m: 0.0,
+                y: 0.0,
+                k: 1.0
+            })
+        );
+        // A DeviceN space of one colourant is its Separation; `cs` starts
+        // at full tint.
+        assert_eq!(fill(6), Some(ink.color(1.0)));
+        // The ink comes into the document.
+        let doc = to_document(imp, "spots");
+        assert_eq!(doc.inks.len(), 1);
+        assert_eq!(doc.inks[0].name, "Warm Red");
+    }
+
+    /// A one-bit picture in a Separation space: 0 is no ink (white), 1
+    /// full ink, not the other way round (#1703); its ink stays out of the
+    /// drawing's inks, the picture keeping its pixels.
+    #[test]
+    fn separation_picture_tints_are_ink() {
+        // '@' = 0b0100_0000: the first pixel 0, the second 1.
+        let bytes = one_page(
+            "q 20 0 0 10 10 10 cm /Im1 Do Q",
+            "<< /XObject << /Im1 5 0 R >> >>",
+            &["<< /Type /XObject /Subtype /Image /Width 2 /Height 1 /ColorSpace [/Separation /Gold /DeviceCMYK << /FunctionType 2 /Domain [0 1] /C0 [0 0 0 0] /C1 [0 0.2 0.8 0.1] /N 1 >>] /BitsPerComponent 1 /Length 1 >>\nstream\n@\nendstream".to_string()],
+        );
+        let mut ids = IdSource::default();
+        let imp = parse(&bytes, &mut ids).expect("parse");
+        assert!(imp.inks.is_empty(), "{:?}", imp.inks);
+        let ShapeKind::Bitmap { png, .. } = &imp.pages[0].shapes[0].kind else {
+            panic!("{:?}", imp.pages[0].shapes[0].kind);
+        };
+        let pm = tiny_skia::Pixmap::decode_png(png).expect("png");
+        let px = pm.pixels();
+        assert_eq!((px[0].red(), px[0].green(), px[0].blue()), (255, 255, 255));
+        let gold = Color::Cmyk {
+            c: 0.0,
+            m: 0.2,
+            y: 0.8,
+            k: 0.1,
+        }
+        .to_rgb8();
+        assert_eq!([px[1].red(), px[1].green(), px[1].blue()], gold);
+    }
+
+    /// A one-page PDF drawing the CMYK JPEG `jpeg` (8 x 8 pixels) with
+    /// `decode` in its dictionary, and the first and last pixels of the
+    /// picture it imports as.
+    fn cmyk_jpeg_pixels(jpeg: &[u8], decode: &str) -> ([u8; 3], [u8; 3]) {
+        let mut image = format!(
+            "<< /Type /XObject /Subtype /Image /Width 8 /Height 8 /ColorSpace /DeviceCMYK /BitsPerComponent 8 /Filter /DCTDecode {decode} /Length {} >>\nstream\n",
+            jpeg.len()
+        )
+        .into_bytes();
+        image.extend_from_slice(jpeg);
+        image.extend_from_slice(b"\nendstream");
+        let bytes = pdf_bin(&[
+            b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents 4 0 R /Resources << /XObject << /Im1 5 0 R >> >> >>".to_vec(),
+            stream("", "q 80 0 0 80 10 10 cm /Im1 Do Q").into_bytes(),
+            image,
+        ]);
+        let mut ids = IdSource::default();
+        let imp = parse(&bytes, &mut ids).expect("parse");
+        let ShapeKind::Bitmap { png, .. } = &imp.pages[0].shapes[0].kind else {
+            panic!("{:?}", imp.pages[0].shapes[0].kind);
+        };
+        let pm = tiny_skia::Pixmap::decode_png(png).expect("png");
+        let px = pm.pixels();
+        let rgb = |p: &tiny_skia::PremultipliedColorU8| [p.red(), p.green(), p.blue()];
+        (rgb(&px[8 + 1]), rgb(&px[8 * 7 - 2]))
+    }
+
+    /// A CMYK JPEG stored with its inks turned over and drawn with an
+    /// inverting Decode array, the usual way such pictures are written,
+    /// comes in as it looks, not as a negative (#2322). Its left half is
+    /// full cyan, its right half half black.
+    #[test]
+    fn cmyk_jpeg_with_inverting_decode_is_not_a_negative() {
+        let jpeg = include_bytes!("../testdata/cmyk-inverted.jpg");
+        let (cyan, grey) = cmyk_jpeg_pixels(jpeg, "/Decode [1 0 1 0 1 0 1 0]");
+        assert!(cyan[0] < 30 && cyan[1] > 225 && cyan[2] > 225, "{cyan:?}");
+        assert!(grey.iter().all(|v| (110..=145).contains(v)), "{grey:?}");
+        // Without the Decode array the same samples are the inks as
+        // stored: no cyan and full black on the left, so near black.
+        let (left, _) = cmyk_jpeg_pixels(jpeg, "");
+        assert!(left.iter().all(|v| *v < 40), "{left:?}");
+    }
+
+    /// A one-page PDF whose objects may hold binary streams: each object
+    /// is its bytes between `n 0 obj` and `endobj`.
+    fn pdf_bin(objects: &[Vec<u8>]) -> Vec<u8> {
+        let mut out = b"%PDF-1.4\n".to_vec();
+        let mut offsets = Vec::new();
+        for (i, o) in objects.iter().enumerate() {
+            offsets.push(out.len());
+            out.extend_from_slice(format!("{} 0 obj\n", i + 1).as_bytes());
+            out.extend_from_slice(o);
+            out.extend_from_slice(b"\nendobj\n");
+        }
+        let xref = out.len();
+        out.extend_from_slice(
+            format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1).as_bytes(),
+        );
+        for o in offsets {
+            out.extend_from_slice(format!("{o:010} 00000 n \n").as_bytes());
+        }
+        out.extend_from_slice(
+            format!(
+                "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n",
+                objects.len() + 1
+            )
+            .as_bytes(),
+        );
+        out
+    }
+
+    /// A Flate image stream object of `w` x `h` pixels in `cs`.
+    fn flate_image(dict: &str, raw: &[u8]) -> Vec<u8> {
+        use std::io::Write as _;
+        let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
+        z.write_all(raw).expect("deflate");
+        let data = z.finish().expect("deflate");
+        let mut o = format!(
+            "<< /Type /XObject /Subtype /Image {dict} /BitsPerComponent 8 /Filter /FlateDecode /Length {} >>\nstream\n",
+            data.len()
+        )
+        .into_bytes();
+        o.extend_from_slice(&data);
+        o.extend_from_slice(b"\nendstream");
+        o
+    }
+
+    /// Pictures come in at their own size (#1835): the 11160 x 14794
+    /// pixel picture of #1804 (165 megapixels) and a 40000 pixel wide one
+    /// whole; only past the 1.5 GB memory guard is one shrunk. With
+    /// pictures reduced (the browser, Android, or the user's choice) a
+    /// picture past 80 megapixels or 20000 pixels a side is shrunk, not
+    /// skipped: #1804's by 2, the wide one by 2 as well, one of 20000 x
+    /// 20000 by 3.
+    #[test]
+    fn shrink_factor_brings_pictures_within_the_limits() {
+        let full = FULL_PICTURE_PIXELS;
+        assert_eq!(shrink_factor(11_160, 14_794, full), 1);
+        assert_eq!(shrink_factor(40_000, 2, full), 1);
+        assert_eq!(shrink_factor(20_000, 20_000, full), 2);
+        let reduced = REDUCED_PICTURE_PIXELS;
+        assert_eq!(shrink_factor(11_160, 14_794, reduced), 2);
+        assert_eq!(shrink_factor(40_000, 2, reduced), 2);
+        assert_eq!(shrink_factor(20_000, 20_000, reduced), 3);
+        assert_eq!(shrink_factor(8_000, 10_000, reduced), 1);
+        assert_eq!(shrink_factor(1, 1, reduced), 1);
+        // No memory for the whole picture: shrunk by 2, then 4, until
+        // its result fits (only 100 bytes here: 5 x 5 pixels).
+        let (_, f) = shrink_within(20, 20, 1, 100).expect("fits by 4");
+        assert_eq!(f, 4);
+        assert!(shrink_within(20, 20, 1, 3).is_none());
+        let (mut s, _) = shrink_within(3, 3, 2, usize::MAX).expect("memory");
+        for _ in 0..3 {
+            s.push_row(&[10, 20, 30, 255, 30, 40, 50, 0, 100, 100, 100, 255]);
+        }
+        // Blocks of 2 x 2, 1 x 2, 2 x 1 and 1 x 1 pixels.
+        assert_eq!(
+            s.finish(),
+            [20, 30, 40, 128, 100, 100, 100, 255, 20, 30, 40, 128, 100, 100, 100, 255]
+        );
+    }
+
+    /// An RGB picture with a soft mask 40000 pixels wide.
+    fn wide_picture_pdf() -> Vec<u8> {
+        let (w, h) = (40_000usize, 2usize);
+        let rgb: Vec<u8> = (0..w * h)
+            .flat_map(|i| if i % 2 == 0 { [255, 0, 0] } else { [0, 0, 255] })
+            .collect();
+        let alpha: Vec<u8> = (0..w * h)
+            .map(|i| if i % 2 == 0 { 255 } else { 0 })
+            .collect();
+        let content = "q 200 0 0 10 0 0 cm /Im1 Do Q";
+        pdf_bin(&[
+            b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] /Contents 4 0 R /Resources << /XObject << /Im1 5 0 R >> >> >>".to_vec(),
+            stream("", content).into_bytes(),
+            flate_image(
+                &format!("/Width {w} /Height {h} /ColorSpace /DeviceRGB /SMask 6 0 R"),
+                &rgb,
+            ),
+            flate_image(&format!("/Width {w} /Height {h} /ColorSpace /DeviceGray"), &alpha),
+        ])
+    }
+
+    /// With pictures reduced (the browser, Android, or the user's choice),
+    /// an RGB picture with a soft mask too wide for that (40000 pixels,
+    /// over the 20000 pixel side) comes in shrunk by 2: each pixel the
+    /// mean of a red and a blue one, its alpha the mean of the mask's
+    /// opaque and clear ones, and it is listed as shrunk (once, not again
+    /// for its mask). It used to be skipped, leaving only what was drawn
+    /// around it (#1804, a 11160 x 14794 picture).
+    #[test]
+    fn oversized_picture_is_shrunk_with_its_soft_mask() {
+        let bytes = wide_picture_pdf();
+        let mut ids = IdSource::default();
+        let options = ImportOptions {
+            max_picture_pixels: REDUCED_PICTURE_PIXELS,
+            ..ImportOptions::default()
+        };
+        let imp = parse_with_options(&bytes, &mut ids, "", options).expect("parse");
+        assert_eq!(
+            imp.shrunk_pictures,
+            [ShrunkPicture {
+                page: 0,
+                width: 40_000,
+                height: 2,
+                new_width: 20_000,
+                new_height: 1
+            }]
+        );
+        let shapes = &imp.pages[0].shapes;
+        assert_eq!(shapes.len(), 1, "{:?}", imp.warnings);
+        let ShapeKind::Bitmap {
+            width_px,
+            height_px,
+            png,
+            ..
+        } = &shapes[0].kind
+        else {
+            panic!("{:?}", shapes[0].kind);
+        };
+        assert_eq!((*width_px, *height_px), (20_000, 1));
+        let pm = tiny_skia::Pixmap::decode_png(png).expect("png");
+        assert_eq!((pm.width(), pm.height()), (20_000, 1));
+        for p in [pm.pixels()[0], pm.pixels()[19_999]] {
+            let c = p.demultiply();
+            assert_eq!(c.alpha(), 128);
+            assert!(c.red().abs_diff(128) <= 2 && c.green() == 0, "{c:?}");
+            assert!(c.blue().abs_diff(128) <= 2, "{c:?}");
+        }
+        // It still fills the unit square the content placed it in.
+        let b = shapes[0].bounds();
+        assert!((b.width() - 200.0 * PT_MM).abs() < 1e-6, "{b:?}");
+        assert!(
+            imp.warnings
+                .iter()
+                .any(|w| w.contains("shrunk to 20000 x 1")),
+            "{:?}",
+            imp.warnings
+        );
+    }
+
+    /// By default the same picture comes in at its own size, its mask
+    /// with it, and nothing is listed as shrunk (#1835). Past a limit (a
+    /// small one standing in for the memory guard) it is shrunk by the
+    /// smallest whole factor that brings it within, and listed.
+    #[test]
+    fn pictures_come_in_whole_unless_past_the_limit() {
+        let bytes = wide_picture_pdf();
+        let mut ids = IdSource::default();
+        let imp = parse(&bytes, &mut ids).expect("parse");
+        assert!(imp.shrunk_pictures.is_empty(), "{:?}", imp.shrunk_pictures);
+        let ShapeKind::Bitmap {
+            width_px,
+            height_px,
+            png,
+            ..
+        } = &imp.pages[0].shapes[0].kind
+        else {
+            panic!("{:?}", imp.pages[0].shapes[0].kind);
+        };
+        assert_eq!((*width_px, *height_px), (40_000, 2));
+        let pm = tiny_skia::Pixmap::decode_png(png).expect("png");
+        let (red, blue) = (pm.pixels()[0].demultiply(), pm.pixels()[1]);
+        assert_eq!((red.red(), red.blue(), red.alpha()), (255, 0, 255));
+        assert_eq!(blue.alpha(), 0, "the mask's clear pixel");
+        assert!(!imp.warnings.iter().any(|w| w.contains("shrunk")));
+        let options = ImportOptions {
+            max_picture_pixels: 9_000,
+            ..ImportOptions::default()
+        };
+        let imp = parse_with_options(&bytes, &mut ids, "", options).expect("parse");
+        assert_eq!(
+            imp.shrunk_pictures,
+            [ShrunkPicture {
+                page: 0,
+                width: 40_000,
+                height: 2,
+                new_width: 8_000,
+                new_height: 1
+            }]
+        );
+    }
+
+    /// The file of #1804 and #1835 (not committed; its path in
+    /// `TRACEDRAW_PDF_1804`, run with `--ignored`): its 11160 x 14794
+    /// picture comes in at that size, with its soft mask, and nothing is
+    /// listed as shrunk. With pictures reduced it comes in at half that.
+    #[test]
+    #[ignore]
+    fn the_picture_of_1804_comes_in_at_its_own_size() {
+        let Ok(path) = std::env::var("TRACEDRAW_PDF_1804") else {
+            return;
+        };
+        let bytes = std::fs::read(path).expect("the file");
+        let sizes = |options: ImportOptions| {
+            let imp =
+                parse_with_options(&bytes, &mut IdSource::default(), "", options).expect("parse");
+            let mut sizes = Vec::new();
+            fn walk(s: &[Shape], out: &mut Vec<(u32, u32)>) {
+                for s in s {
+                    match &s.kind {
+                        ShapeKind::Bitmap {
+                            width_px,
+                            height_px,
+                            ..
+                        } => out.push((*width_px, *height_px)),
+                        ShapeKind::Group { children } => walk(children, out),
+                        ShapeKind::ClipFrame { contents, .. } => walk(contents, out),
+                        _ => {}
+                    }
+                }
+            }
+            walk(&imp.pages[0].shapes, &mut sizes);
+            (sizes, imp.shrunk_pictures)
+        };
+        let (full, shrunk) = sizes(ImportOptions::default());
+        assert_eq!(full, [(11_160, 14_794)]);
+        assert!(shrunk.is_empty(), "{shrunk:?}");
+        let (reduced, shrunk) = sizes(ImportOptions {
+            max_picture_pixels: REDUCED_PICTURE_PIXELS,
+            ..ImportOptions::default()
+        });
+        assert_eq!(reduced, [(5_580, 7_397)]);
+        assert_eq!(shrunk.len(), 1);
     }
 
     #[test]
@@ -4505,6 +6924,36 @@ mod tests {
         assert!(parse(b"%PDF-1.4 garbage", &mut ids).is_err());
     }
 
+    /// A file nested far deeper than any real one (RUSTSEC-2026-0187: about
+    /// 10 000 levels took the whole program down with a stack overflow, which
+    /// cannot be caught) opens with an error or a document, never a crash. Each
+    /// way in is tried: an array and a dictionary in the catalog, an array in
+    /// the page's drawing and a string of nested parentheses.
+    #[test]
+    fn deeply_nested_objects_do_not_overflow_the_stack() {
+        const DEPTH: usize = 50_000;
+        let arrays = format!("{}{}", "[".repeat(DEPTH), "]".repeat(DEPTH));
+        let dicts = format!("{}{}", "<< /A ".repeat(DEPTH), ">>".repeat(DEPTH));
+        let parens = format!("({}{})", "(".repeat(DEPTH), ")".repeat(DEPTH));
+        let files = [
+            pdf(&[
+                format!("<< /Type /Catalog /Pages 2 0 R /X {arrays} >>"),
+                "<< /Type /Pages /Kids [] /Count 0 >>".to_string(),
+            ]),
+            pdf(&[
+                format!("<< /Type /Catalog /Pages 2 0 R /X {dicts} >>"),
+                "<< /Type /Pages /Kids [] /Count 0 >>".to_string(),
+            ]),
+            one_page(&format!("BT {arrays} TJ ET"), "<< >>", &[]),
+            one_page(&format!("BT {parens} Tj ET"), "<< >>", &[]),
+        ];
+        for bytes in files {
+            let mut ids = IdSource::default();
+            // Either answer is fine; reaching the next line is the test.
+            let _ = parse(&bytes, &mut ids);
+        }
+    }
+
     // ----- Protected files -----
 
     /// Repeatable bytes in place of randomness.
@@ -4516,6 +6965,48 @@ mod tests {
                 *b = n;
             }
         })
+    }
+
+    /// Bold and italic a word processor makes up for a font with no such
+    /// faces, text filled and outlined and text slanted by its matrix,
+    /// come in as bold and italic text, the slant taken out (#2569).
+    #[test]
+    fn made_up_bold_and_italic_are_bold_and_italic() {
+        let font =
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>";
+        let bytes = one_page(
+            "BT /F1 12 Tf 0.3 w 2 Tr 20 60 Td (Bold) Tj 0 Tr ET \
+             BT /F1 12 Tf 1 0 0.33 1 20 30 Tm (Slanted) Tj ET \
+             BT /F1 12 Tf 20 10 Td (Plain) Tj ET",
+            "<< /Font << /F1 5 0 R >> >>",
+            &[font.to_string()],
+        );
+        let mut ids = IdSource::default();
+        let imp = parse(&bytes, &mut ids).expect("parse");
+        let texts: Vec<(&str, bool, bool, f64)> = imp.pages[0]
+            .shapes
+            .iter()
+            .filter_map(|s| match &s.kind {
+                ShapeKind::Text { spans, .. } => Some((
+                    spans[0].text.as_str(),
+                    spans[0].bold,
+                    spans[0].italic,
+                    s.transform.as_coeffs()[2],
+                )),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(texts.len(), 3, "{texts:?}");
+        assert_eq!((texts[0].0, texts[0].1, texts[0].2), ("Bold", true, false));
+        assert_eq!(
+            (texts[1].0, texts[1].1, texts[1].2),
+            ("Slanted", false, true)
+        );
+        assert!(texts[1].3.abs() < 1e-9, "{texts:?}");
+        assert_eq!(
+            (texts[2].0, texts[2].1, texts[2].2),
+            ("Plain", false, false)
+        );
     }
 
     /// A one-page file with a rectangle, a text run and a title, as the
@@ -4851,5 +7342,139 @@ mod tests {
             b"<< /TDcrypt 5 0 R /EncryptMetadata false >> (/TDcrypt)/TDcrypt".to_vec()
         );
         assert!(hide_encryption(b"<< /EncryptMetadata true >>").is_none());
+    }
+
+    /// A PDF of a word processor's kind: a two-byte TrueType font (the
+    /// test font of [`crate::pdf_indic_shapes`]) shows `words` as glyph
+    /// numbers, with `map` as its ToUnicode map.
+    fn glyph_pdf(words: &[&[u16]], map: &[(u16, &str)]) -> Vec<u8> {
+        use crate::pdf_indic_shapes::tests::{deva_glyphs, tiny_font};
+        use lopdf::{dictionary, Object, Stream};
+        let glyphs = deva_glyphs();
+        let data = tiny_font(&glyphs);
+        let mut content = String::from("BT /F1 12 Tf\n");
+        for (i, w) in words.iter().enumerate() {
+            let hex: String = w.iter().map(|g| format!("{g:04X}")).collect();
+            let y = 800 - 20 * i as i32;
+            content.push_str(&format!("1 0 0 1 20 {y} Tm <{hex}> Tj\n"));
+        }
+        content.push_str("ET\n");
+        let utf16 = |s: &str| -> String { s.encode_utf16().map(|u| format!("{u:04X}")).collect() };
+        let entries: String = map
+            .iter()
+            .map(|(g, t)| format!("<{g:04X}> <{}>\n", utf16(t)))
+            .collect();
+        let cmap = format!(
+            "/CIDInit /ProcSet findresource begin 12 dict begin begincmap\n\
+             /CMapName /Adobe-Identity-UCS def /CMapType 2 def\n\
+             1 begincodespacerange <0000> <FFFF> endcodespacerange\n\
+             {} beginbfchar\n{entries}endbfchar\n\
+             endcmap CMapName currentdict /CMap defineresource pop end end",
+            map.len()
+        );
+        let widths: Vec<Object> = glyphs
+            .iter()
+            .enumerate()
+            .flat_map(|(g, glyph)| {
+                [
+                    Object::Integer(g as i64),
+                    Object::Array(vec![Object::Integer(i64::from(glyph.advance))]),
+                ]
+            })
+            .collect();
+        let mut doc = lopdf::Document::with_version("1.7");
+        let file = doc.add_object(Stream::new(dictionary! {}, data));
+        let descriptor = doc.add_object(dictionary! {
+            "Type" => "FontDescriptor", "FontName" => "ABCDEF+Tiny", "Flags" => 32,
+            "FontBBox" => vec![0.into(), (-300).into(), 1000.into(), 1000.into()],
+            "ItalicAngle" => 0, "Ascent" => 800, "Descent" => -200, "CapHeight" => 700,
+            "StemV" => 80, "FontFile2" => file,
+        });
+        let cid = doc.add_object(dictionary! {
+            "Type" => "Font", "Subtype" => "CIDFontType2", "BaseFont" => "ABCDEF+Tiny",
+            "CIDSystemInfo" => dictionary! { "Registry" => Object::string_literal("Adobe"),
+                "Ordering" => Object::string_literal("Identity"), "Supplement" => 0 },
+            "FontDescriptor" => descriptor, "CIDToGIDMap" => "Identity", "W" => widths,
+        });
+        let to_unicode = doc.add_object(Stream::new(dictionary! {}, cmap.into_bytes()));
+        let font = doc.add_object(dictionary! {
+            "Type" => "Font", "Subtype" => "Type0", "BaseFont" => "ABCDEF+Tiny",
+            "Encoding" => "Identity-H", "DescendantFonts" => vec![cid.into()],
+            "ToUnicode" => to_unicode,
+        });
+        let contents = doc.add_object(Stream::new(dictionary! {}, content.into_bytes()));
+        let pages_id = doc.new_object_id();
+        let page = doc.add_object(dictionary! {
+            "Type" => "Page", "Parent" => pages_id,
+            "MediaBox" => vec![0.into(), 0.into(), 595.into(), 842.into()],
+            "Contents" => contents,
+            "Resources" => dictionary! { "Font" => dictionary! { "F1" => font } },
+        });
+        doc.objects.insert(
+            pages_id,
+            Object::Dictionary(
+                dictionary! { "Type" => "Pages", "Kids" => vec![page.into()], "Count" => 1 },
+            ),
+        );
+        let catalog = doc.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages_id });
+        doc.trailer.set("Root", catalog);
+        let mut out = Vec::new();
+        doc.save_to(&mut out).expect("writes");
+        out
+    }
+
+    /// Glyphs the map holds the characters of nowhere, as in the second
+    /// file sent with #1806 (स्कूल came in as स्ूल, मुश्किल as मुक्किल,
+    /// विश्वास as विविास, उपयुक्त as उपयुति): the glyph of क with the uu
+    /// sign, the half form of श and a longer short i sign take their
+    /// text from their outlines, and the half form of क, which is drawn
+    /// unlike क, follows from the short i sign being known.
+    #[test]
+    fn glyphs_the_map_holds_nowhere_are_read_off_their_outlines() {
+        // Glyphs of the test font: 1 क, 2 श, 3 ू, 4 ि, 6 कू, 7 श्, 8 a long
+        // ि, 10 क् (its own shape), 12 स्, 13 ल, 14 म, 15 ु, 16 व, 17 ा,
+        // 18 स, 19 उ, 20 प, 21 य, 22 त. The map gives each syllable's
+        // characters in typed order to its glyphs in drawn order, the
+        // first glyph getting the rest; a glyph keeps its first text.
+        let words: [&[u16]; 5] = [
+            &[21, 15, 8, 10, 22],      // युक्ति, drawn य ु ि क् त
+            &[14, 15, 8, 7, 1, 13],    // मुश्किल, drawn म ु ि श् क ल
+            &[12, 6, 13],              // स्कूल, drawn स् कू ल
+            &[4, 16, 7, 16, 17, 18],   // विश्वास, drawn ि व श् व ा स
+            &[19, 20, 21, 15, 10, 22], // उपयुक्त
+        ];
+        let map = [
+            (21, "\u{092F}"),
+            (15, "\u{0941}"),
+            (8, "\u{0915}\u{094D}"),
+            (10, "\u{0924}"),
+            (22, "\u{093F}"),
+            (14, "\u{092E}"),
+            (7, "\u{0915}"),
+            (1, "\u{0915}"),
+            (13, "\u{0932}"),
+            (12, "\u{0938}\u{094D}\u{0915}"),
+            (6, "\u{0942}"),
+            (4, "\u{093F}"),
+            (16, "\u{0935}"),
+            (17, "\u{093E}"),
+            (18, "\u{0938}"),
+            (19, "\u{0909}"),
+            (20, "\u{092A}"),
+        ];
+        let bytes = glyph_pdf(&words, &map);
+        let mut ids = IdSource::default();
+        let imp = parse(&bytes, &mut ids).expect("parse");
+        let texts: Vec<String> = imp.pages[0]
+            .shapes
+            .iter()
+            .filter_map(|s| match &s.kind {
+                ShapeKind::Text { spans, .. } => {
+                    Some(spans.iter().map(|s| s.text.as_str()).collect())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(texts, ["युक्ति", "मुश्किल", "स्कूल", "विश्वास", "उपयुक्त"]);
     }
 }

@@ -7,7 +7,11 @@ versies.
 ## Nieuwe dingen in het programma zien {#in-the-program}
 
 - Kies [[menu.help > menu.help.whats_new]] om de nieuwspagina van het
-  welkomstscherm te openen, met het nieuws van deze versie.
+  welkomstscherm te openen. Die toont de laatste tien versies, de nieuwste
+  bovenaan, elk met datum en een korte titel. Klik op een versie voor een
+  korte samenvatting van wat er veranderd is; de nieuwste staat al open.
+  **Meer weten?** onder een samenvatting opent de pagina van die versie op
+  GitHub, met de volledige lijst van wijzigingen.
 - Zet [[menu.help > menu.help.highlight_whats_new]] aan om in de menu's te
   markeren wat nieuw is in deze versie: er verschijnt een kleine stip aan het
   eind van elke nieuwe opdracht, naast de pijl van een submenu dat ernaar
@@ -15,11 +19,40 @@ versies.
   verdwijnen als u de opdracht uitzet, en de opdracht staat weer uit als
   TraceDraw de volgende keer start.
 - De volledige lijst met wijzigingen van elke versie staat in het
-  [wijzigingslogboek](https://github.com/igtoth/tracedraw/blob/main/CHANGELOG.md)
+  [wijzigingslogboek](https://github.com/tracedraw/tracedraw/blob/main/CHANGELOG.md)
   van het project.
 
 ## Hoogtepunten van recente versies {#highlights}
 
+- **Extrusie, schaduwen en een reeks verbeteringen.** [[menu.effects > menu.effects.extrude]] houdt een in de ruimte gedraaid lichaam op zijn plaats, en schuine randen op tekst vouwen niet meer om; schaduwen houden de gaten van ringen en vallen van een geëxtrudeerd object samen met zijn lichaam; [[menu.edit > menu.edit.select_similar]] kijkt in groepen; [[menu.bitmaps > menu.bitmaps.convert_to_bitmap]] houdt de plek van de afbeelding in de stapel; [[menu.view > menu.view.navigator]] is een menuopdracht met de toets N; .cdr-bestanden openen met hun tabellen en Thaise bestandsnamen tonen hun letters.
+- **CNC-gereedschapsbanen, exporteren en selecteren.** [[menu.tools > menu.tools.tracecut]] maakt G-code voor een CNC-frees en tekent ringen, dozen met vingerverbindingen en gezette bakken; [[menu.file > menu.file.export]] vraagt eerst om het bestand en toont daarna de opties van het formaat, en [[menu.file > menu.file.export_with_options]] toont ze altijd; [[menu.edit > menu.edit.select_similar]] en [[menu.edit > menu.edit.invert_selection]] wijzigen de selectie; [[menu.object > menu.object.insert > menu.object.add_dimensions]] maat de selectie; procedurele vullingen, OpenType-knoppen en een Laotiaanse interface zijn nieuw.
+- **Tegenoverliggende pagina's en gekoppelde tekst.** [[menu.layout > menu.layout.facing_pages]] toont de pagina's naast elkaar als spreads; [[menu.text > menu.text.link_content]] koppelt teksten zodat typen in de ene de andere wijzigt; een PDF met meerdere pagina's vraagt welke pagina's te importeren; [[menu.edit > menu.edit.step_and_repeat]] kan een pagina met kopieën vullen.
+- **Aanraken en telefoons.** Shift-, Ctrl- en Alt-knoppen op de standaardbalk
+  blijven ingedrukt voor een vinger; op Android blijft de interface vrij van
+  de camera-uitsparing en de afgeronde hoeken; de Apple Pencil werkt in Safari
+  op de iPad.
+- **Bestanden.** .cdr-bestanden behouden de vulregel van overlappende curven
+  en openen met hun tabstops, tekst in meerdere kolommen, hulplijnen voor alle
+  pagina's en de objecten van de hoofdpagina.
+- **Afbeeldingen, afdrukken en werkruimte.** Pixels van de afbeelding
+  bijsnijden in het gereedschap Bijsnijden en
+  [[menu.bitmaps > menu.bitmaps.crop_to_frame]] snijden de pixels van een
+  afbeelding bij; afdrukken in grijstinten en in omgekeerde volgorde;
+  [[menu.view > menu.view.scrollbars]] verbergt de schuifbalken.
+- **TraceCut.** [[menu.tools > menu.tools.tracecut]] opent de gereedschappen
+  voor snijplotters: plotteruitvoer, snijlijnen, nesten en meten. Zie
+  [TraceCut](../objects/tracecut.md).
+- **Toetsenbord, telefoons en pennen.** Menu's en lijsten werken met het
+  toetsenbord. Op Android-telefoons past de interface op het scherm en tekent
+  een rustende hand niet meer terwijl een pen wordt gebruikt; een tabletpen
+  werkt op Linux met Wayland.
+- **Bestanden.** .cdr-bestanden openen met hun tabstops, hoofdpagina's,
+  kleurverlopen en vervormingen; afbeeldingen uit PDF's komen op volledige
+  resolutie binnen; JPEG en TIFF worden in CMYK geëxporteerd.
+- **Miniaturen van objecten.** Het paneel [[docker.objects]] toont elk
+  object klein getekend naast de naam; Ctrl+wiel boven de lijst of de
+  schuifregelaar onderaan stelt de grootte in. Zie
+  [Objecten en lagen ordenen](../objects/objects-and-layers.md#objects-docker).
 - **Help in uw taal.** Elke knop **?** en <kbd>F1</kbd> openen de pagina van
   deze Help over het dialoogvenster, paneel of gereedschap voor u, in de taal
   waarop TraceDraw is ingesteld.

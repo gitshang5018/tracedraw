@@ -15,44 +15,36 @@
 //! 2. [`riff`]: walk the chunk tree without interpreting it.
 //! 3. [`parse`]: turn chunks into a [`tracedraw_core::Document`] (best effort).
 //!
+//! The first two, with the embedded font and compound file readers, live
+//! in the `tracedraw-cdr-format` crate, which knows no document model;
+//! they are re-exported here under their old paths.
+//!
 //! Anything we do not understand is skipped with a logged warning, never a
 //! failure: opening a file must always yield a document.
 #![forbid(unsafe_code)]
 
+mod bitmap_effects;
+mod blend_record;
+pub mod check;
 pub mod cmx;
 pub mod container;
-pub mod eot;
 mod kept_blends;
-pub mod ole;
+mod kept_data;
+mod kept_effects;
 pub mod parse;
-pub mod riff;
+mod shadow_image;
 pub mod spot;
 mod text;
 pub mod wl;
 pub mod write;
 
 use std::path::Path;
+use std::sync::Arc;
 
 pub use container::{Container, Version};
 pub use parse::{parse_document, parse_document_with, ParseReport};
-
-#[derive(Debug, thiserror::Error)]
-pub enum Error {
-    #[error("not a CDR file")]
-    NotCdr,
-    #[error("not a CMX file")]
-    NotCmx,
-    #[error("unsupported container: {0}")]
-    UnsupportedContainer(String),
-    #[error("truncated data at offset {0}")]
-    Truncated(usize),
-    #[error("io error: {0}")]
-    Io(#[from] std::io::Error),
-    #[error("zip error: {0}")]
-    Zip(#[from] zip::result::ZipError),
-}
-
-pub type Result<T> = std::result::Result<T, Error>;
+pub use tracedraw_cdr_format::raw::{self, RawTable};
+pub use tracedraw_cdr_format::{eot, loda, ole, riff, Error, Result};
 
 /// Files list a radial or square gradient's colours from its edge to its
 /// centre (a sun drawn red in the middle stores yellow first); ours run
@@ -66,6 +58,34 @@ pub(crate) fn mirror_centred_stops(f: &mut tracedraw_core::Fountain) {
         }
         f.stops.reverse();
     }
+}
+
+/// Files measure a fountain fill's angle from its object's own x axis:
+/// the fill turns with the object (#1257); ours is an angle on the page.
+/// Turn `f` by `sign` times the angle the object's matrix `t` turns its x
+/// axis by (1 reading, -1 writing). The matrix's stretch and skew leave
+/// the angle as it is, as does a mirror (only where the x axis goes
+/// counts). A matrix that does not turn the x axis changes nothing.
+pub(crate) fn turn_fountain(
+    f: &mut tracedraw_core::Fountain,
+    t: tracedraw_core::Affine,
+    sign: f64,
+) {
+    let [a, b, ..] = t.as_coeffs();
+    let unturned = a > 0.0 && b.abs() <= 1e-12 * a;
+    if !(a.is_finite() && b.is_finite()) || unturned || a.hypot(b) < 1e-12 {
+        return;
+    }
+    let turned = f.angle + sign * b.atan2(a).to_degrees();
+    if !turned.is_finite() {
+        return;
+    }
+    // Kept within (-180, 180].
+    let mut angle = turned.rem_euclid(360.0);
+    if angle > 180.0 {
+        angle -= 360.0;
+    }
+    f.angle = angle;
 }
 
 /// Read a `.cdr` file into a document. The report lists what was skipped.
@@ -83,14 +103,26 @@ pub fn open(path: impl AsRef<Path>) -> Result<(tracedraw_core::Document, ParseRe
 /// Same as [`open`], from memory. CMX exchange files (RIFF form `CMX1`)
 /// are read as well, by [`cmx::open_bytes`].
 pub fn open_bytes(bytes: &[u8], title: &str) -> Result<(tracedraw_core::Document, ParseReport)> {
+    open_bytes_keeping(bytes, title).map(|(doc, report, _)| (doc, report))
+}
+
+/// [`open_bytes`] that also hands back the records the reader left
+/// uninterpreted (the chunks and `loda` arguments it does not read),
+/// keyed by object, as bytes shared with the file's streams. Empty for
+/// CMX and `WL` files. The writer does not use it yet; it is what a
+/// later save will put back untouched.
+pub fn open_bytes_keeping(
+    bytes: &[u8],
+    title: &str,
+) -> Result<(tracedraw_core::Document, ParseReport, RawTable)> {
     if cmx::is_cmx(bytes) {
-        return cmx::open_bytes(bytes, title);
+        return cmx::open_bytes(bytes, title).map(|(d, r)| (d, r, RawTable::default()));
     }
     if wl::is_wl(bytes) {
-        return wl::open_bytes(bytes, title);
+        return wl::open_bytes(bytes, title).map(|(d, r)| (d, r, RawTable::default()));
     }
     let container = container::detect(bytes)?;
-    let riff = container::riff_stream(bytes, &container)?;
+    let riff = Arc::new(container::riff_stream(bytes, &container)?);
     let externals = container::external_streams(bytes, &container);
     let root = riff::parse_with_externals(&riff, externals, container.version.0)?;
     let cmyk_profile = container::cmyk_profile(bytes, &container);
@@ -103,12 +135,32 @@ pub fn open_bytes(bytes: &[u8], title: &str) -> Result<(tracedraw_core::Document
     )
     .map(|b| kept_blends::decode(&b))
     .unwrap_or_default();
-    let mut doc_report = parse::parse_document_kept(
+    // Objects TraceDraw saved as what their effects and shadows draw open
+    // live again too (#1031).
+    let kept_effects = container::own_member(
+        bytes,
+        &container,
+        kept_effects::MEMBER,
+        kept_effects::MAX_MEMBER,
+    )
+    .map(|b| kept_effects::decode(&b))
+    .unwrap_or_default();
+    // Object data, a clone's link to its master among it (#2879).
+    let kept_data = container::own_member(
+        bytes,
+        &container,
+        kept_data::MEMBER,
+        kept_data::MAX_MEMBER,
+    )
+    .map(|b| kept_data::decode(&b))
+    .unwrap_or_default();
+    let mut doc_report = parse::parse_document_kept_data(
         &root,
         &riff,
         container.version,
         cmyk_profile.as_ref().map(|p| p.data.as_slice()),
-        &kept,
+        (&kept, &kept_effects),
+        &kept_data,
     );
     doc_report.0.title = title.to_string();
     doc_report.0.palette = container::document_palette(bytes, &container)
@@ -151,5 +203,10 @@ pub fn open_bytes(bytes: &[u8], title: &str) -> Result<(tracedraw_core::Document
     for n in notes {
         doc_report.1.warn(n);
     }
-    Ok(doc_report)
+    // What the reader left, by object: the records a later save can put
+    // back. The version the report settled on reads the argument tables.
+    let version = doc_report.1.version.unwrap_or(container.version).0;
+    let kept = raw::collect(&root, riff, version, &parse::known());
+    doc_report.1.unknown = kept.summary();
+    Ok((doc_report.0, doc_report.1, kept))
 }

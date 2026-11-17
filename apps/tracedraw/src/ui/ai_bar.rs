@@ -29,7 +29,7 @@ pub fn visible(app: &App) -> bool {
 fn state(app: &App) -> Option<(String, egui::Color32)> {
     match &app.ai.status {
         AiStatus::Idle => None,
-        AiStatus::Waiting => Some((tr("ai.waiting"), Tokens::text_dim())),
+        AiStatus::Waiting => Some((app.ai.waiting_text(), Tokens::text_dim())),
         AiStatus::Retrying => Some((tr("ai.retrying"), Tokens::text_dim())),
         AiStatus::Done(n) => Some((trf("ai.done", &[("n", &n.to_string())]), Tokens::text_dim())),
         AiStatus::Listed(n) => Some((
@@ -93,8 +93,9 @@ pub fn ai_bar(app: &mut App, ui: &mut Ui) {
 fn model_list(app: &mut App, ui: &mut Ui) {
     let current = app.settings.ai.model();
     let choices = app.ai_model_choices();
+    let hidden = app.ai_models_hidden();
     let mut fetch = false;
-    egui::ComboBox::from_id_salt("ai_bar_model")
+    crate::ui::keynav::ComboBox::from_id_salt("ai_bar_model")
         .selected_text(RichText::new(current.clone()).size(12.0))
         .width(MODEL_W)
         .show_ui(ui, |ui| {
@@ -104,6 +105,10 @@ fn model_list(app: &mut App, ui: &mut Ui) {
                 }
             }
             ui.separator();
+            // The models that cannot draw stay out unless asked for.
+            if hidden {
+                ui.checkbox(&mut app.ai.show_all_models, tr("ai.show_all_models"));
+            }
             if ui.button(tr("ai.refresh_models")).clicked() {
                 fetch = true;
             }
@@ -176,8 +181,9 @@ mod tests {
         // Fetching asks the models address and lists what came.
         app.ai.fake = Some(|req| {
             assert_eq!(req.method, "GET");
-            assert_eq!(req.url, "https://api.anthropic.com/v1/models");
+            assert_eq!(req.url, "https://api.anthropic.com/v1/models?limit=1000");
             Ok(HttpResponse {
+                retry_after: None,
                 status: 200,
                 body: r#"{"data":[{"id":"model-a"},{"id":"model-b"}],"has_more":false}"#.into(),
             })
@@ -210,6 +216,7 @@ mod tests {
         // Errors are shown.
         app.ai.fake = Some(|_| {
             Ok(HttpResponse {
+                retry_after: None,
                 status: 403,
                 body: r#"{"error":{"message":"no access"}}"#.into(),
             })

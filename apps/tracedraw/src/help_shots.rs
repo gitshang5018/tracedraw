@@ -8,152 +8,11 @@
 //! docs/behavior/help.md).
 
 use crate::app::{App, DockerTab};
+use crate::soft_canvas::{Canvas, Textures};
 use crate::ui::dialogs::{Dialog, OptionsPage};
-use egui::epaint::{Color32, Primitive, TextureId, Vertex};
-use std::collections::HashMap;
-
-/// A premultiplied RGBA canvas in 0..1.
-struct Canvas {
-    w: usize,
-    h: usize,
-    px: Vec<[f32; 4]>,
-}
-
-struct Texture {
-    w: usize,
-    h: usize,
-    px: Vec<Color32>,
-}
-
-#[derive(Default)]
-struct Textures(HashMap<TextureId, Texture>);
-
-impl Textures {
-    fn apply(&mut self, delta: &egui::TexturesDelta) {
-        for (id, ds) in &delta.set {
-            for d in ds.iter() {
-                let egui::ImageData::Color(img) = &d.image;
-                let [w, h] = img.size;
-                match d.pos {
-                    None => {
-                        self.0.insert(
-                            *id,
-                            Texture {
-                                w,
-                                h,
-                                px: img.pixels.clone(),
-                            },
-                        );
-                    }
-                    Some([x0, y0]) => {
-                        if let Some(t) = self.0.get_mut(id) {
-                            for y in 0..h {
-                                for x in 0..w {
-                                    if x0 + x < t.w && y0 + y < t.h {
-                                        t.px[(y0 + y) * t.w + x0 + x] = img.pixels[y * w + x];
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    fn sample(&self, id: TextureId, u: f32, v: f32) -> [f32; 4] {
-        let Some(t) = self.0.get(&id) else {
-            return [1.0; 4];
-        };
-        let fx = (u * t.w as f32 - 0.5).clamp(0.0, (t.w - 1) as f32);
-        let fy = (v * t.h as f32 - 0.5).clamp(0.0, (t.h - 1) as f32);
-        let (x0, y0) = (fx.floor() as usize, fy.floor() as usize);
-        let (x1, y1) = ((x0 + 1).min(t.w - 1), (y0 + 1).min(t.h - 1));
-        let (ax, ay) = (fx - x0 as f32, fy - y0 as f32);
-        let c = |x: usize, y: usize| t.px[y * t.w + x].to_array().map(|b| b as f32 / 255.0);
-        let (a, b, cc, d) = (c(x0, y0), c(x1, y0), c(x0, y1), c(x1, y1));
-        let mut out = [0.0; 4];
-        for i in 0..4 {
-            let top = a[i] + (b[i] - a[i]) * ax;
-            let bot = cc[i] + (d[i] - cc[i]) * ax;
-            out[i] = top + (bot - top) * ay;
-        }
-        out
-    }
-}
+use egui::epaint::Primitive;
 
 impl Canvas {
-    fn new(w: usize, h: usize) -> Self {
-        Canvas {
-            w,
-            h,
-            px: vec![[0.0; 4]; w * h],
-        }
-    }
-
-    fn triangle(&mut self, tex: &Textures, id: TextureId, v: [&Vertex; 3], clip: egui::Rect) {
-        let (p0, p1, p2) = (v[0].pos, v[1].pos, v[2].pos);
-        let area = (p1.x - p0.x) * (p2.y - p0.y) - (p2.x - p0.x) * (p1.y - p0.y);
-        if area.abs() < 1e-6 {
-            return;
-        }
-        let minx = p0.x.min(p1.x).min(p2.x).max(clip.min.x).max(0.0).floor() as i64;
-        let maxx =
-            p0.x.max(p1.x)
-                .max(p2.x)
-                .min(clip.max.x)
-                .min(self.w as f32)
-                .ceil() as i64;
-        let miny = p0.y.min(p1.y).min(p2.y).max(clip.min.y).max(0.0).floor() as i64;
-        let maxy =
-            p0.y.max(p1.y)
-                .max(p2.y)
-                .min(clip.max.y)
-                .min(self.h as f32)
-                .ceil() as i64;
-        let col = v.map(|x| x.color.to_array().map(|b| b as f32 / 255.0));
-        for y in miny..maxy {
-            for x in minx..maxx {
-                let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
-                if px < clip.min.x || px > clip.max.x || py < clip.min.y || py > clip.max.y {
-                    continue;
-                }
-                let w0 = ((p1.x - px) * (p2.y - py) - (p2.x - px) * (p1.y - py)) / area;
-                let w1 = ((p2.x - px) * (p0.y - py) - (p0.x - px) * (p2.y - py)) / area;
-                let w2 = 1.0 - w0 - w1;
-                if w0 < -1e-4 || w1 < -1e-4 || w2 < -1e-4 {
-                    continue;
-                }
-                let u = w0 * v[0].uv.x + w1 * v[1].uv.x + w2 * v[2].uv.x;
-                let vv = w0 * v[0].uv.y + w1 * v[1].uv.y + w2 * v[2].uv.y;
-                let t = tex.sample(id, u, vv);
-                let mut src = [0.0; 4];
-                for i in 0..4 {
-                    src[i] = (w0 * col[0][i] + w1 * col[1][i] + w2 * col[2][i]) * t[i];
-                }
-                let d = &mut self.px[y as usize * self.w + x as usize];
-                for i in 0..4 {
-                    d[i] = src[i] + d[i] * (1.0 - src[3]);
-                }
-            }
-        }
-    }
-
-    fn paint(&mut self, tex: &Textures, prims: &[egui::ClippedPrimitive]) {
-        for p in prims {
-            if let Primitive::Mesh(m) = &p.primitive {
-                for tri in m.indices.chunks_exact(3) {
-                    let v = [
-                        &m.vertices[tri[0] as usize],
-                        &m.vertices[tri[1] as usize],
-                        &m.vertices[tri[2] as usize],
-                    ];
-                    self.triangle(tex, m.texture_id, v, p.clip_rect);
-                }
-            }
-        }
-    }
-
     /// The box of the pixels drawn at all (a window and its shadow).
     fn drawn_box(&self) -> Option<(usize, usize, usize, usize)> {
         let (mut x0, mut y0, mut x1, mut y1) = (usize::MAX, usize::MAX, 0, 0);
@@ -220,6 +79,32 @@ impl Canvas {
             image::ExtendedColorType::Rgba8,
         )
         .unwrap();
+    }
+}
+
+/// A canvas overlay rasterised for a test: what `body` paints on a
+/// `w` x `h` point area at `ppp` device pixels per point, read back as
+/// 8-bit RGB over black.
+pub(crate) struct Raster {
+    canvas: Canvas,
+}
+
+impl Raster {
+    /// The device pixel at column `x`, row `y`.
+    pub(crate) fn rgb(&self, x: usize, y: usize) -> [u8; 3] {
+        let p = self.canvas.px[y * self.canvas.w + x];
+        [p[0], p[1], p[2]].map(|c| (c * 255.0).round().clamp(0.0, 255.0) as u8)
+    }
+
+    pub(crate) fn save(&self, path: &std::path::Path) {
+        self.canvas.save(path, (0, 0, self.canvas.w, self.canvas.h));
+    }
+}
+
+pub(crate) fn rasterise(w: usize, h: usize, ppp: f32, body: impl FnOnce(&egui::Painter)) -> Raster {
+    let ctx = egui::Context::default();
+    Raster {
+        canvas: crate::soft_canvas::rasterise(&ctx, w, h, ppp, body),
     }
 }
 
@@ -399,13 +284,57 @@ fn shots() -> Vec<(String, Shot, bool)> {
         ("menu.tools.border_and_grommet", false),
         ("menu.tools.color_management", false),
         ("menu.tools.font_manager", false),
+        ("menu.tools.tracecut", false),
         ("menu.tools.time_tracker", false),
-        ("menu.window.palette_editor", false),
         ("menu.help.about", false),
     ];
     for (k, bmp) in cmd {
         v.push((k.to_string(), Shot::Command(k), bmp));
     }
+    // The Palette Editor on a palette of the user's, several colours
+    // selected (#2138).
+    v.push((
+        name("color/palettes#palette-editor"),
+        Shot::Dialog(|app| {
+            let Some(i) = app.new_palette("Brand colors") else {
+                return Dialog::None;
+            };
+            if let Some(p) = app.palettes.get_mut(i) {
+                p.colors = (0..20u16)
+                    .map(|k| {
+                        let c = tracedraw_core::Color::rgb8(
+                            (30 + k * 11) as u8,
+                            (180 - k * 7) as u8,
+                            (90 + k * 37 % 160) as u8,
+                        );
+                        (format!("Color {}", k + 1), c)
+                    })
+                    .collect();
+            }
+            app.rebuild_palette();
+            let mut st = crate::ui::palette_editor::PaletteEditorState::on(i);
+            st.draft = app.palette_draft(i);
+            st.selected = vec![3, 4, 5, 9];
+            st.anchor = Some(3);
+            Dialog::PaletteEditor(st)
+        }),
+        false,
+    ));
+    // A picture dropped on a palette: how many of its colours (#2137).
+    v.push((
+        name("color/palettes#picture-colors"),
+        Shot::Dialog(|app| {
+            let Some(i) = app.new_palette("Brand colors") else {
+                return Dialog::None;
+            };
+            if app.open_picture_colors(crate::ui::picture_colors::PaletteTarget::Palette(i)) {
+                std::mem::replace(&mut app.dialog, Dialog::None)
+            } else {
+                Dialog::None
+            }
+        }),
+        true,
+    ));
     v.push((
         name("objects/objects-and-layers#rename"),
         Shot::Dialog(|app| match app.selection.first().copied() {
@@ -519,7 +448,7 @@ fn shots() -> Vec<(String, Shot, bool)> {
         Shot::Dialog(|_| Dialog::WebNotice),
         false,
     ));
-    // Text > Writing Tools > Autocorrect: the Autocorrect tab of
+    // Text > Proofing > Autocorrect: the Autocorrect tab of
     // Options > Text.
     v.push((
         name("text/writing-tools#autocorrect"),
@@ -655,6 +584,79 @@ fn help_shots() {
     let list = made.join("\n") + "\n";
     std::fs::write(dir.join("shots.txt"), list).unwrap();
     eprintln!("{} screenshots; not made: {missed:#?}", made.len());
+}
+
+/// Every tool icon on a toolbox-like panel, light and dark, at 1x and
+/// 2x pixels per point, into `$ICON_SHEET` (a check of the icon style
+/// by eye; see docs/behavior/icons.md).
+#[test]
+#[ignore]
+fn icon_sheet() {
+    let Some(dir) = std::env::var_os("ICON_SHEET") else {
+        return;
+    };
+    let dir = std::path::PathBuf::from(dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    use crate::tools::Tool;
+    let cols = 8;
+    let rows = Tool::ALL.len().div_ceil(cols);
+    let cell = 32.0;
+    let icon = 22.0;
+    for theme in [crate::theme::Theme::Light, crate::theme::Theme::Dark] {
+        crate::theme::set_theme(theme);
+        for ppp in [1.0f32, 2.0] {
+            let ctx = egui::Context::default();
+            ctx.set_pixels_per_point(ppp);
+            let w = (cols as f32 * cell) as usize;
+            let h = (rows as f32 * cell) as usize;
+            let mut tex = Textures::default();
+            let mut canvas = None;
+            for _ in 0..2 {
+                let input = egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(w as f32, h as f32),
+                    )),
+                    ..Default::default()
+                };
+                let mut out = ctx.run_ui(input, |ui| {
+                    let painter = ui.painter();
+                    let all =
+                        egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(w as f32, h as f32));
+                    painter.rect_filled(all, 0.0, crate::theme::Tokens::panel());
+                    for (i, t) in Tool::ALL.iter().enumerate() {
+                        let (c, r) = ((i % cols) as f32, (i / cols) as f32);
+                        let center = egui::pos2((c + 0.5) * cell, (r + 0.5) * cell);
+                        let rect = egui::Rect::from_center_size(center, egui::Vec2::splat(icon));
+                        crate::ui::icons::draw(painter, rect, *t, crate::theme::Tokens::icon());
+                    }
+                });
+                tex.apply(&out.textures_delta);
+                let shapes = std::mem::take(&mut out.shapes);
+                let mut prims = ctx.tessellate(shapes, out.pixels_per_point);
+                for p in &mut prims {
+                    p.clip_rect = egui::Rect::from_min_max(
+                        (p.clip_rect.min.to_vec2() * ppp).to_pos2(),
+                        (p.clip_rect.max.to_vec2() * ppp).to_pos2(),
+                    );
+                    if let Primitive::Mesh(m) = &mut p.primitive {
+                        for v in &mut m.vertices {
+                            v.pos = (v.pos.to_vec2() * ppp).to_pos2();
+                        }
+                    }
+                }
+                let (pw, ph) = ((w as f32 * ppp) as usize, (h as f32 * ppp) as usize);
+                let mut c = Canvas::new(pw, ph);
+                c.paint(&tex, &prims);
+                out.textures_delta.clear();
+                canvas = Some((c, pw, ph));
+            }
+            let (c, pw, ph) = canvas.unwrap();
+            let name = format!("icons_{}_{}x.png", theme.id(), ppp as u32);
+            c.save(&dir.join(name), (0, 0, pw, ph));
+        }
+    }
+    crate::theme::set_theme(crate::theme::Theme::Light);
 }
 
 #[test]

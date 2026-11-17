@@ -102,6 +102,30 @@ pub struct Candidate {
     pub kind: eframe::wgpu::DeviceType,
     /// Whether it can draw on the window.
     pub surface: bool,
+    /// The graphics API wgpu reaches it through.
+    pub backend: eframe::wgpu::Backend,
+}
+
+/// The order graphics APIs are preferred in for the same card. On
+/// Windows Direct3D 12 comes first: its swap chain is the system's own
+/// (DXGI flip model), which the desktop compositor takes over smoothly
+/// when another window, a menu or a dialog comes over the window or the
+/// window comes back to the front. A Vulkan swap chain on Windows is the
+/// graphics driver's, presented apart from the compositor, and the
+/// change between the two ways of presenting is what blinks the window
+/// on many Intel and NVIDIA drivers (#1579). Elsewhere every API ranks
+/// alike, the order wgpu lists them in deciding.
+fn backend_rank(b: eframe::wgpu::Backend, windows: bool) -> u8 {
+    use eframe::wgpu::Backend;
+    if !windows {
+        return 0;
+    }
+    match b {
+        Backend::Dx12 => 0,
+        Backend::Vulkan => 1,
+        Backend::Gl => 2,
+        _ => 3,
+    }
 }
 
 /// The adapter a start in `mode` draws with (an index into `list`), and
@@ -110,6 +134,17 @@ pub struct Candidate {
 /// mode never takes a software adapter: the start fails instead and the
 /// next renderer is tried (#616).
 pub fn choose(mode: Mode, wanted: &str, list: &[Candidate]) -> (Option<usize>, Vec<&'static str>) {
+    choose_on(mode, wanted, list, cfg!(target_os = "windows"))
+}
+
+/// [`choose`] on Windows (`windows`) or elsewhere.
+fn choose_on(
+    mode: Mode,
+    wanted: &str,
+    list: &[Candidate],
+    windows: bool,
+) -> (Option<usize>, Vec<&'static str>) {
+    let api = |c: &Candidate| backend_rank(c.backend, windows);
     let software = |c: &Candidate| c.kind == eframe::wgpu::DeviceType::Cpu;
     let fits = |c: &Candidate| {
         c.surface
@@ -119,13 +154,19 @@ pub fn choose(mode: Mode, wanted: &str, list: &[Candidate]) -> (Option<usize>, V
             }
     };
     let named = (!wanted.is_empty())
-        .then(|| list.iter().position(|c| fits(c) && c.name == wanted))
+        .then(|| {
+            list.iter()
+                .enumerate()
+                .filter(|(_, c)| fits(c) && c.name == wanted)
+                .min_by_key(|(_, c)| api(c))
+                .map(|(i, _)| i)
+        })
         .flatten();
     let pick = named.or_else(|| {
         list.iter()
             .enumerate()
             .filter(|(_, c)| fits(c))
-            .min_by_key(|(_, c)| rank(c.kind))
+            .min_by_key(|(_, c)| (rank(c.kind), api(c)))
             .map(|(i, _)| i)
     });
     let notes = list
@@ -266,11 +307,45 @@ pub fn next_renderer() -> Option<Mode> {
 
 /// Whether the window of this run opened (the app is being built): a
 /// panic before that is a renderer that failed to start, after it one of
-/// the app.
+/// the app. The start does not count as working yet: see `PRESENTED`.
 static OPENED: AtomicBool = AtomicBool::new(false);
 
 pub fn window_opened() -> bool {
     OPENED.load(Ordering::SeqCst)
+}
+
+/// Whether a frame of this run reached the screen: the renderer drew the
+/// first frame and handed it to the window, which only then shows. Until
+/// then the start has not worked, however far it got: a driver that hangs
+/// drawing or presenting the first frame leaves the window hidden for
+/// good (#1999), so the renderer stays noted as tried (`ATTEMPT_FILE`)
+/// and the watch goes on with the next one.
+static PRESENTED: AtomicBool = AtomicBool::new(false);
+
+pub fn frame_presented() -> bool {
+    PRESENTED.load(Ordering::SeqCst)
+}
+
+/// Whether a frame has reached the screen, judged in the root window's
+/// `ui` from the frames egui completed before this one: eframe draws and
+/// presents a frame right after its `ui` returns, so a second `ui` comes
+/// only once the first frame was presented (an extra layout pass within
+/// one frame does not count, it completes no frame).
+pub fn presented_before(completed_frames: u64) -> bool {
+    completed_frames >= 1
+}
+
+/// Called at the start of every frame of the root window: the first one
+/// asks for a second, whose start says the first reached the screen.
+pub fn note_frame(ctx: &egui::Context, mode: Mode) {
+    if frame_presented() {
+        return;
+    }
+    if presented_before(ctx.cumulative_frame_nr()) {
+        note_presented(mode);
+    } else {
+        ctx.request_repaint();
+    }
 }
 
 /// Whether this run handed the window over to a new start with another
@@ -287,16 +362,23 @@ fn handed_over() -> bool {
     HANDED_OVER.load(Ordering::SeqCst)
 }
 
-/// The window of this start opened, or a new start took its place.
+/// A frame of this start reached the screen, or a new start took its
+/// place. The window being created is not enough (#1999).
 fn start_settled() -> bool {
-    window_opened() || handed_over()
+    settled(frame_presented(), handed_over())
+}
+
+fn settled(presented: bool, handed_over: bool) -> bool {
+    presented || handed_over
 }
 
 /// The file that names the renderer a start is trying, written before
-/// the window is opened and removed as soon as it is. A start that finds
-/// it knows the last one never got a window with that renderer: the
-/// driver crashed the program or hung it, so nothing could hand over to
-/// the next renderer (#570).
+/// the window is opened and removed once a frame of it reached the screen
+/// (`PRESENTED`). A start that finds it knows the last one never showed a
+/// window with that renderer: the driver crashed the program or hung it,
+/// before the window was made (#570) or while it drew the first frame,
+/// with the window still hidden (#1999), so nothing could hand over to
+/// the next renderer.
 const ATTEMPT_FILE: &str = "renderer-attempt";
 
 fn attempt_path() -> Option<std::path::PathBuf> {
@@ -332,7 +414,7 @@ fn begin_attempt_at(path: &std::path::Path, mode: Mode) {
     }
 }
 
-/// The window opened: the attempt worked.
+/// A frame reached the screen: the attempt worked.
 fn end_attempt() {
     if let Some(path) = attempt_path() {
         end_attempt_at(&path);
@@ -343,12 +425,14 @@ fn end_attempt_at(path: &std::path::Path) {
     let _ = std::fs::remove_file(path);
 }
 
-/// How long a start waits for its window before it takes the renderer
-/// for hung (#570). Opening it takes a second or two, a software adapter
-/// on an old computer a few more.
+/// How long a start waits for its first frame to reach the screen before
+/// it takes the renderer for hung (#570, #1999). Opening the window and
+/// drawing a frame take a second or two, a software adapter on an old
+/// computer a few more.
 pub const WINDOW_WAIT: std::time::Duration = std::time::Duration::from_secs(20);
 
-/// What a start does once it has waited `waited` for its window.
+/// What a start does once it has waited `waited` for its first frame on
+/// the screen (`shown`).
 #[derive(Debug, PartialEq, Eq)]
 pub enum Watch {
     /// The window is open, or there is time left.
@@ -359,8 +443,8 @@ pub enum Watch {
     Last,
 }
 
-pub fn watch(opened: bool, waited: std::time::Duration, next: Option<Mode>) -> Watch {
-    if opened || waited < WINDOW_WAIT {
+pub fn watch(shown: bool, waited: std::time::Duration, next: Option<Mode>) -> Watch {
+    if shown || waited < WINDOW_WAIT {
         return Watch::Wait;
     }
     next.map_or(Watch::Last, Watch::Next)
@@ -368,7 +452,9 @@ pub fn watch(opened: bool, waited: std::time::Duration, next: Option<Mode>) -> W
 
 /// Watch this start: a renderer that hangs inside the graphics driver
 /// never returns to hand over to the next one, so after `WINDOW_WAIT`
-/// without a window the next renderer is started from here and this
+/// without a frame on the screen (no window, or a window that stays
+/// hidden because its first frame never got drawn, #1999) the next
+/// renderer is started from here and this
 /// process ends. `decline` makes this start refuse files from later starts
 /// first, so the new one opens its own window (#570).
 pub fn watch_start(
@@ -387,7 +473,7 @@ pub fn watch_start(
                     Watch::Wait => std::thread::sleep(std::time::Duration::from_millis(100)),
                     Watch::Last => {
                         log::warn!(
-                            "no window after {}s with {mode:?}, the last renderer; still waiting",
+                            "no frame on the screen after {}s with {mode:?}, the last renderer; still waiting",
                             WINDOW_WAIT.as_secs()
                         );
                         return;
@@ -395,7 +481,7 @@ pub fn watch_start(
                     Watch::Next(_) if start_settled() => return,
                     Watch::Next(n) => {
                         log::warn!(
-                            "no window after {}s with {mode:?}; starting again with {n:?}",
+                            "no frame on the screen after {}s with {mode:?}; starting again with {n:?}",
                             WINDOW_WAIT.as_secs()
                         );
                         if let Some(d) = &decline {
@@ -420,22 +506,72 @@ pub fn in_use() -> Option<&'static str> {
     IN_USE.get().map(String::as_str)
 }
 
-/// Note what the window was opened with; a renderer other than the
-/// first choice is remembered, so the next start goes straight to it.
-pub fn note_renderer(cc: &eframe::CreationContext<'_>, mode: Mode) {
-    OPENED.store(true, Ordering::SeqCst);
-    let _ = MODE_IN_USE.set(mode);
+/// What the settings remember as the renderer that works once `mode`
+/// showed a frame: nothing when it is the first choice anyway, so a start
+/// tries that first; else `mode`, which the next start goes straight to.
+pub fn remembered(mode: Mode, first: Mode) -> &'static str {
+    if mode == first {
+        ""
+    } else {
+        mode.name()
+    }
+}
+
+/// The first frame of this run reached the screen with `mode`: the start
+/// worked. The attempt note goes, and a renderer other than the first
+/// choice is remembered, so the next start goes straight to it.
+fn note_presented(mode: Mode) {
+    if PRESENTED.swap(true, Ordering::SeqCst) {
+        return;
+    }
     end_attempt();
-    crate::startup_log::quiet_panics(false);
     let mut s = crate::settings::Settings::load();
-    let first = Mode::first(&s);
-    let remember = if mode == first { "" } else { mode.name() };
+    let remember = remembered(mode, Mode::first(&s));
     if s.working_renderer != remember {
         s.working_renderer = remember.to_string();
         s.save();
     }
+    log::info!("the first frame reached the screen with {mode:?}");
+}
+
+/// Whether this start, in `mode`, stands in for a renderer that failed:
+/// the last start tried `last_failed` and never showed a frame with it
+/// (it hung or crashed, or handed over at once), and this one is not the
+/// renderer Options asks for (`first`). The status bar then says so once
+/// and offers Options (#1999).
+pub fn fell_back(mode: Mode, first: Mode, last_failed: Option<Mode>) -> bool {
+    mode != first && last_failed.is_some_and(|f| f != mode)
+}
+
+/// Set at start when `fell_back` holds, until the status bar said it.
+static FALLBACK_NOTE: AtomicBool = AtomicBool::new(false);
+
+pub fn note_fallback(on: bool) {
+    FALLBACK_NOTE.store(on, Ordering::SeqCst);
+}
+
+/// What draws the window, once, when this start stands in for a renderer
+/// that showed no window, as soon as a frame of it is on the screen.
+pub fn take_fallback_note() -> Option<&'static str> {
+    if !frame_presented() || !FALLBACK_NOTE.swap(false, Ordering::SeqCst) {
+        return None;
+    }
+    in_use()
+}
+
+/// Note what the window was opened with. The start counts as working
+/// only once a frame reached the screen (`note_frame`, #1999).
+pub fn note_renderer(cc: &eframe::CreationContext<'_>, mode: Mode) {
+    OPENED.store(true, Ordering::SeqCst);
+    let _ = MODE_IN_USE.set(mode);
+    crate::startup_log::quiet_panics(false);
     let what = match cc.wgpu_render_state.as_ref() {
         Some(rs) => {
+            // Shadows may be blurred on the card (Options > General), not
+            // on the software adapter, which is the CPU itself.
+            if mode == Mode::Hardware {
+                crate::gpu_fx::install(&rs.device, &rs.queue);
+            }
             let i = rs.adapter.get_info();
             format!("{} ({:?})", i.name, i.backend)
         }
@@ -453,15 +589,17 @@ pub fn note_renderer(cc: &eframe::CreationContext<'_>, mode: Mode) {
         .map(|p| unsafe { gl.get_parameter_string(p) });
         log::info!("OpenGL: {vendor}, {renderer}, version {version}, GLSL {glsl}");
     }
-    log::info!("the window opened with {mode:?}: {what}");
+    log::info!("the window was made with {mode:?}: {what}; waiting for its first frame");
     let _ = IN_USE.set(what);
 }
 
-/// The graphics adapters of this computer by name, software ones last;
-/// looked for once.
-pub fn adapters() -> &'static [String] {
-    static LIST: OnceLock<Vec<String>> = OnceLock::new();
-    LIST.get_or_init(|| {
+/// The graphics adapters of this computer with their rank (`rank`),
+/// best first; looked for once (it takes a moment: Options asks for it,
+/// and the hardware acceleration hint looks on a thread of its own).
+static FOUND: OnceLock<Vec<(u8, String)>> = OnceLock::new();
+
+fn found() -> &'static [(u8, String)] {
+    FOUND.get_or_init(|| {
         if cfg!(test) {
             return Vec::new();
         }
@@ -478,15 +616,58 @@ pub fn adapters() -> &'static [String] {
             })
             .collect();
         list.sort();
+        list
+    })
+}
+
+/// The graphics adapters of this computer by name, software ones last;
+/// looked for once.
+pub fn adapters() -> &'static [String] {
+    static LIST: OnceLock<Vec<String>> = OnceLock::new();
+    LIST.get_or_init(|| {
         let mut names: Vec<String> = Vec::new();
-        for (_, n) in list {
-            if !names.contains(&n) {
-                names.push(n);
+        for (_, n) in found() {
+            if !names.contains(n) {
+                names.push(n.clone());
             }
         }
         names
     })
 }
+
+/// The best graphics card among `list` (rank and name, best first): a
+/// separate or built-in card, never a virtual or software adapter.
+pub fn best_card(list: &[(u8, String)]) -> Option<&str> {
+    list.iter()
+        .find(|(r, n)| *r <= 1 && !is_software_name(n))
+        .map(|(_, n)| n.as_str())
+}
+
+/// The graphics card this computer has, without waiting: the first call
+/// starts looking on a thread of its own, and until it is done (or when
+/// there is none) the answer is None.
+pub fn card_found() -> Option<&'static str> {
+    static LOOKING: AtomicBool = AtomicBool::new(false);
+    if let Some(list) = FOUND.get() {
+        return best_card(list);
+    }
+    if !cfg!(test) && !LOOKING.swap(true, Ordering::SeqCst) {
+        let started = std::thread::Builder::new()
+            .name("gpu-adapters".into())
+            .spawn(|| {
+                let _ = found();
+            });
+        if let Err(e) = started {
+            log::warn!("the graphics cards are not looked for: {e}");
+        }
+    }
+    None
+}
+
+/// The one graphics API the Android app draws its window with: OpenGL
+/// ES (`android.rs`, `wgpu_options` says why it is never two).
+#[cfg(any(target_os = "android", test))]
+pub const ANDROID_BACKENDS: eframe::wgpu::Backends = eframe::wgpu::Backends::GL;
 
 /// The order adapters are preferred in: separate cards, built-in ones,
 /// virtual ones, others, then software.
@@ -695,6 +876,7 @@ pub fn options(
                     name: i.name,
                     kind: i.device_type,
                     surface: surface.is_none_or(|s| a.is_surface_supported(s)),
+                    backend: i.backend,
                 }
             })
             .collect();
@@ -753,8 +935,9 @@ pub fn restart_with(next: Mode, args: &[String]) -> bool {
         return false;
     };
     hand_over();
+    let args = crate::instance::with_files_opened_by_system(args);
     std::process::Command::new(exe)
-        .args(args_with(next, args))
+        .args(args_with(next, &args))
         .status()
         .is_ok()
 }
@@ -765,8 +948,9 @@ fn spawn_with(next: Mode, args: &[String]) -> bool {
     let Ok(exe) = std::env::current_exe() else {
         return false;
     };
+    let args = crate::instance::with_files_opened_by_system(args);
     std::process::Command::new(exe)
-        .args(args_with(next, args))
+        .args(args_with(next, &args))
         .spawn()
         .is_ok()
 }
@@ -786,6 +970,39 @@ mod eframe_fixed_function_geometry;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_hint_names_a_real_card_only() {
+        let list = |l: &[(u8, &str)]| -> Vec<(u8, String)> {
+            l.iter().map(|(r, n)| (*r, n.to_string())).collect()
+        };
+        let found = list(&[
+            (0, "NVIDIA GeForce RTX 3050"),
+            (1, "Intel(R) UHD Graphics"),
+            (4, "Microsoft Basic Render Driver"),
+        ]);
+        assert_eq!(best_card(&found), Some("NVIDIA GeForce RTX 3050"));
+        let built_in = list(&[(1, "Intel(R) UHD Graphics"), (4, "llvmpipe")]);
+        assert_eq!(best_card(&built_in), Some("Intel(R) UHD Graphics"));
+        // A virtual machine's adapter or a software one is no card.
+        let none = list(&[(2, "VMware SVGA 3D"), (4, "Microsoft Basic Render Driver")]);
+        assert_eq!(best_card(&none), None);
+        let named = list(&[(1, "llvmpipe (LLVM 15.0.7, 256 bits)")]);
+        assert_eq!(best_card(&named), None);
+        assert_eq!(card_found(), None);
+    }
+
+    /// The Android window is drawn with one graphics API, OpenGL ES, and
+    /// the Android entry asks for that one only.
+    #[test]
+    fn android_draws_with_one_graphics_api() {
+        assert_eq!(ANDROID_BACKENDS, eframe::wgpu::Backends::GL);
+        let entry = include_str!("android.rs");
+        assert!(
+            entry.contains("setup.instance_descriptor.backends = crate::gpu::ANDROID_BACKENDS;")
+        );
+        assert!(entry.contains("wgpu_options: wgpu_options(),"));
+    }
 
     /// The OpenGL renderer asks for a compatibility context of any version
     /// when OpenGL 3.3 core and OpenGL ES fail, so a card with OpenGL 2.1
@@ -1028,12 +1245,163 @@ mod tests {
         );
     }
 
+    /// #1999: the window was made with Vulkan on the separate card, but
+    /// the driver never drew or presented its first frame, so the window,
+    /// hidden until then, never showed. That start has not worked: its
+    /// watch goes on with OpenGL after `WINDOW_WAIT`, the attempt note
+    /// stays so a start after it was closed by hand goes on with OpenGL
+    /// too, and only a frame on the screen remembers the renderer.
+    #[test]
+    fn a_window_whose_first_frame_never_shows_goes_on_with_opengl() {
+        let s = crate::settings::Settings::default();
+        let args: Vec<String> = Vec::new();
+        let first = Mode::first(&s);
+        let mode = Mode::for_start(&args, &s, None);
+        assert_eq!(mode, Mode::Hardware);
+        let next = mode.next(first);
+        assert_eq!(next, Some(Mode::Gl));
+        // The window is made (the app is built) but no frame is shown:
+        // not settled, so the watch starts OpenGL in time.
+        assert!(!settled(false, false));
+        assert_eq!(
+            watch(settled(false, false), WINDOW_WAIT, next),
+            Watch::Next(Mode::Gl)
+        );
+        // Killed by hand instead: the note names Hardware, the next
+        // start takes OpenGL and says so once.
+        let again = Mode::for_start(&args, &s, Some(Mode::Hardware));
+        assert_eq!(again, Mode::Gl);
+        assert!(fell_back(again, first, Some(Mode::Hardware)));
+        // Its frame on the screen remembers OpenGL for later starts.
+        assert!(settled(true, false));
+        assert_eq!(
+            watch(true, WINDOW_WAIT * 2, Some(Mode::Software)),
+            Watch::Wait
+        );
+        assert_eq!(remembered(Mode::Gl, first), "gl");
+        assert_eq!(remembered(Mode::Hardware, first), "");
+        let mut later = s.clone();
+        later.working_renderer = remembered(Mode::Gl, first).into();
+        assert_eq!(Mode::for_start(&args, &later, None), Mode::Gl);
+        // A later start that uses the remembered renderer, with nothing
+        // failed, says nothing.
+        assert!(!fell_back(Mode::Gl, first, None));
+    }
+
+    /// A frame reached the screen once egui completed one before the
+    /// frame being built: eframe draws and presents it right after its
+    /// `ui` returns, so the next `ui` comes only after that (#1999).
+    #[test]
+    fn a_frame_counts_as_shown_once_the_next_one_begins() {
+        assert!(!presented_before(0));
+        assert!(presented_before(1));
+        assert!(presented_before(500));
+        // The root window's `ui` asks for it every frame, and the window
+        // being made no longer counts as a start that worked.
+        let lib = include_str!("lib.rs");
+        assert!(lib.contains("gpu::note_frame(ui.ctx(), mode);"));
+        let made = include_str!("gpu.rs")
+            .split("pub fn note_renderer(")
+            .nth(1)
+            .and_then(|b| b.split("\n}\n").next())
+            .expect("note_renderer");
+        assert!(!made.contains("end_attempt"));
+        assert!(!made.contains("working_renderer"));
+    }
+
+    /// The status bar says that this start stands in for a renderer that
+    /// showed nothing only when that is so: not for `--renderer=gl` typed
+    /// with nothing failed, not for the first choice, not for a renderer
+    /// that is the one that failed (#1999).
+    #[test]
+    fn the_fallback_is_said_only_after_a_failed_start() {
+        use Mode::*;
+        assert!(fell_back(Gl, Hardware, Some(Hardware)));
+        assert!(fell_back(Software, Hardware, Some(Gl)));
+        assert!(!fell_back(Gl, Hardware, None));
+        assert!(!fell_back(Hardware, Hardware, Some(Software)));
+        assert!(!fell_back(Gl, Hardware, Some(Gl)));
+        assert!(fell_back(Gl, Software, Some(Software)));
+    }
+
+    /// The reporter's adapters (#1999 log): wgpu offers the separate card
+    /// on Vulkan and Direct3D 12 (and its OpenGL) and the software
+    /// adapter, but not the built-in Intel HD 4600, which only the OpenGL
+    /// renderer reaches. Fastest available takes the Vulkan one; naming
+    /// the Direct3D 12 one in Options takes that.
+    #[test]
+    fn the_reporters_adapters_of_1999() {
+        use eframe::wgpu::DeviceType::*;
+        let list = [
+            adapter("GeForce GT 750M", DiscreteGpu, true),
+            adapter("NVIDIA GeForce GT 750M", DiscreteGpu, true),
+            adapter("Microsoft Basic Render Driver", Cpu, true),
+            adapter("GeForce GT 750M/PCIe/SSE2", Other, true),
+        ];
+        let (pick, notes) = choose(Mode::Hardware, "", &list);
+        assert_eq!(pick, Some(0));
+        assert_eq!(notes[1], "usable, not picked");
+        assert!(notes[2].starts_with("rejected: software adapter"));
+        assert_eq!(
+            choose(Mode::Hardware, "NVIDIA GeForce GT 750M", &list).0,
+            Some(1)
+        );
+        assert!(list.iter().all(|c| c.kind != IntegratedGpu));
+    }
+
     fn adapter(name: &str, kind: eframe::wgpu::DeviceType, surface: bool) -> Candidate {
         Candidate {
             name: name.into(),
             kind,
             surface,
+            backend: eframe::wgpu::Backend::Vulkan,
         }
+    }
+
+    fn on(c: Candidate, backend: eframe::wgpu::Backend) -> Candidate {
+        Candidate { backend, ..c }
+    }
+
+    /// On Windows the same card is taken through Direct3D 12 rather than
+    /// Vulkan, whichever wgpu lists first: a Vulkan swap chain there
+    /// blinks the window when another window or a dialog comes over it or
+    /// it comes back to the front, on Intel and NVIDIA drivers (#1579).
+    /// The faster card still wins over the API, a card named in Options
+    /// is taken through Direct3D 12 when it has both, and elsewhere the
+    /// order is wgpu's.
+    #[test]
+    fn windows_takes_a_card_through_direct3d_12() {
+        use eframe::wgpu::Backend::{Dx12, Gl, Vulkan};
+        use eframe::wgpu::DeviceType::*;
+        let list = [
+            on(
+                adapter("NVIDIA GeForce RTX 3050", DiscreteGpu, true),
+                Vulkan,
+            ),
+            on(adapter("Intel(R) Graphics", IntegratedGpu, true), Vulkan),
+            on(adapter("NVIDIA GeForce RTX 3050", DiscreteGpu, true), Dx12),
+            on(adapter("Intel(R) Graphics", IntegratedGpu, true), Dx12),
+            on(
+                adapter("NVIDIA GeForce RTX 3050/PCIe/SSE2", Other, true),
+                Gl,
+            ),
+            on(adapter("Microsoft Basic Render Driver", Cpu, true), Dx12),
+        ];
+        assert_eq!(choose_on(Mode::Hardware, "", &list, true).0, Some(2));
+        assert_eq!(choose_on(Mode::Hardware, "", &list, false).0, Some(0));
+        assert_eq!(
+            choose_on(Mode::Hardware, "Intel(R) Graphics", &list, true).0,
+            Some(3)
+        );
+        assert_eq!(
+            choose_on(Mode::Hardware, "Intel(R) Graphics", &list, false).0,
+            Some(1)
+        );
+        // A Direct3D 12 adapter that cannot draw on the window is left.
+        let mut no_surface = list.clone();
+        no_surface[2].surface = false;
+        assert_eq!(choose_on(Mode::Hardware, "", &no_surface, true).0, Some(0));
+        assert_eq!(choose_on(Mode::Software, "", &list, true).0, Some(5));
     }
 
     /// Hardware mode takes the card named in Options, else the fastest

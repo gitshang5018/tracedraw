@@ -27,6 +27,11 @@
 - [[options.full_screen_preview]]: [[options.show_page_border]].
 - [[options.wheel_default_action]]: [[options.wheel_zoom]] (по умолчанию) или
   [[options.wheel_scroll]].
+- [[options.open_view]]: [[options.open_view_page]] (по умолчанию),
+  [[options.open_view_objects]], [[options.open_view_width]],
+  [[options.open_view_height]], [[options.open_view_actual]], [[options.open_view_percent]] или
+  [[options.open_view_saved]] (страница, место и масштаб, запоминаемые при
+  каждом сохранении файла TraceDraw).
 - [[options.ruler_calibration]]: приложите линейку к экрану и меняйте
   [[options.screen_resolution]], пока деления не совпадут, чтобы масштаб 100%
   показывал реальные размеры. [[options.reset]] возвращает 96.
@@ -105,6 +110,7 @@
 - [[options.paragraph_text]]: [[menu.text.show_text_frames]],
   [[menu.text.use_hyphenation]] и [[options.hyphenation_patterns]]
   (встроенные или словарь переносов для вашего языка).
+  - [[options.default_tab_spacing]]: куда переходит <kbd>Tab</kbd> в абзаце без собственных позиций табуляции (12,7 мм, полдюйма).
 - [[docker.fonts]]: [[options.show_recent_fonts]] вверху списков шрифтов,
   [[options.recent_font_count]] (5, до 20) и
   [[options.font_sample_size]].
@@ -115,3 +121,13 @@
   [Словари](../text/writing-tools.md#dictionaries).
 - [[dialog.autocorrect]]: что исправляется при вводе; см.
   [Автозамена](../text/writing-tools.md#autocorrect).
+
+## [[benchmark.title]] {#benchmark}
+
+[[menu.help > menu.help.benchmark]]: [[menu.help.benchmark_tip]]
+
+[[benchmark.intro]]
+
+[[benchmark.compare_how]]
+
+[[options.light_zoom]]: [[options.light_zoom_tip]]

@@ -1,13 +1,99 @@
 //! Paragraph text frames with the Pick tool: scaling a paragraph text with
 //! the handles (or the property bar's size and scale) changes its frame and
 //! the text flows anew in it, the letters keeping their size; turning,
-//! slanting, mirroring and moving act on the whole text as before. Frames
-//! show as dashed lines (Text > Show Text Frames). See
-//! docs/behavior/text.md.
+//! slanting, mirroring and moving act on the whole text as before. While
+//! a handle is dragged the text flows anew in the frame it would get, so
+//! the outline shows the lines the release makes (#1327). Frames show as
+//! dashed lines (Text > Show Text Frames). See docs/behavior/text.md.
 
 use crate::app::App;
-use tracedraw_core::geometry::{Affine, Point, Rect, Size};
-use tracedraw_core::{Command, Shape, ShapeId, ShapeKind};
+use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
+use tracedraw_core::document::text_outline::TextRequest;
+use tracedraw_core::geometry::{Affine, BezPath, Point, Rect, Size};
+use tracedraw_core::{Command, Shape, ShapeId, ShapeKind, TextSpan};
+
+/// The longest a text's layout may take, in seconds, for it to flow anew
+/// in its frame on every frame of a drag: a quarter of a 60 Hz frame, so
+/// the drag keeps its pace with the rest of the frame's work. A text that
+/// takes longer three times in a row shows its frame only, and flows on
+/// release, until the drawing changes.
+pub const LIVE_REFLOW_BUDGET: f64 = 0.004;
+
+/// How many layouts in a row may take longer than the budget before a
+/// text stops flowing live.
+pub const LIVE_REFLOW_OVER: u32 = 3;
+
+/// The longest text (in bytes of UTF-8) whose glyphs a drag shapes to
+/// flow it live, when the text engine has not kept them: a few
+/// milliseconds of shaping.
+pub const LIVE_SHAPE_BYTES: usize = 4000;
+
+/// A paragraph text flowed in the frame a drag would give it.
+#[derive(Debug, Clone)]
+pub struct LiveFrame {
+    /// The frame laid out (the text's own space).
+    pub frame: Size,
+    /// The letters' outline, page space, as the release places them.
+    pub outline: BezPath,
+    /// The lines that show in the frame.
+    #[cfg(test)]
+    pub lines: usize,
+    /// The text does not fit (and has no frame to flow on into).
+    pub overflow: bool,
+}
+
+/// Live layouts of paragraph texts whose frames are being dragged: one
+/// layout per text and frame size (a frame draws them all from the same
+/// one, so there is at most one layout a frame), kept per document
+/// revision and font generation.
+#[derive(Debug)]
+pub struct LiveReflow {
+    key: (u64, u64),
+    /// [`LIVE_REFLOW_BUDGET`] (tests change it; below zero the live
+    /// reflow is off, the frame following alone as before).
+    pub budget: f64,
+    frames: HashMap<ShapeId, Rc<LiveFrame>>,
+    /// Layouts made per text: the first one shapes the glyphs, which the
+    /// text engine keeps, so it does not count against the budget.
+    layouts: HashMap<ShapeId, u32>,
+    /// Layouts in a row per text that took longer than the budget: one
+    /// alone may be the machine busy with something else.
+    over: HashMap<ShapeId, u32>,
+    /// Texts whose layout took longer than [`LIVE_REFLOW_BUDGET`].
+    slow: HashSet<ShapeId>,
+}
+
+impl Default for LiveReflow {
+    fn default() -> Self {
+        LiveReflow {
+            key: (0, 0),
+            budget: LIVE_REFLOW_BUDGET,
+            frames: HashMap::new(),
+            layouts: HashMap::new(),
+            over: HashMap::new(),
+            slow: HashSet::new(),
+        }
+    }
+}
+
+impl LiveReflow {
+    /// Layouts made so far for `id` in this revision (for tests).
+    #[cfg(test)]
+    pub fn layouts_of(&self, id: ShapeId) -> u32 {
+        self.layouts.get(&id).copied().unwrap_or(0)
+    }
+}
+
+/// The lines of a text's layout that show in its frame.
+#[cfg(test)]
+pub fn shown_lines(layout: &tracedraw_text::TextLayout) -> usize {
+    layout
+        .lines
+        .iter()
+        .filter(|l| l.start_char < layout.fitted_chars)
+        .count()
+}
 
 /// A paragraph text frame as shown on screen.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -15,6 +101,8 @@ pub struct ShownFrame {
     pub id: tracedraw_core::ShapeId,
     /// The frame flows into another (its tab shows a link).
     pub linked: bool,
+    /// Another frame flows into this one (its top tab shows a link).
+    pub receives: bool,
     /// Page-space corners, the frame's lower left first.
     pub corners: [Point; 4],
     /// The text is selected or being edited.
@@ -23,6 +111,9 @@ pub struct ShownFrame {
     pub editing: bool,
     /// The text does not fit (drawn red, with a tab below).
     pub overflow: bool,
+    /// The frame holds no text, none flows into it and it is not being
+    /// edited: the screen shows a hint in it (#2524).
+    pub empty_hint: bool,
 }
 
 /// The factors of an axis-aligned scale by positive amounts (with any
@@ -77,11 +168,199 @@ fn resized_kind(s: &Shape, t: Affine) -> Option<ShapeKind> {
     })
 }
 
+/// The table kind of `s` (a table whose transform is an axis-aligned
+/// scale) resized to the image of its page-space box under `t`: the rows
+/// and columns grow or shrink in proportion, and the cells' text keeps its
+/// size, spacing and margins, as paragraph text does (#2433).
+fn resized_table(s: &Shape, t: Affine) -> Option<ShapeKind> {
+    axis_scale(s.transform)?;
+    let ShapeKind::Table(table) = &s.kind else {
+        return None;
+    };
+    let w: f64 = table.col_widths.iter().sum();
+    let h: f64 = table.row_heights.iter().sum();
+    if !(w > 1e-9 && h > 1e-9) {
+        return None;
+    }
+    // The grid, local space: from the left edge, down from the top edge.
+    let grid = Rect::new(
+        table.rect.x0,
+        table.rect.y1 - h,
+        table.rect.x0 + w,
+        table.rect.y1,
+    );
+    let to_new = t * s.transform;
+    let page = Rect::from_points(
+        to_new * Point::new(grid.x0, grid.y0),
+        to_new * Point::new(grid.x1, grid.y1),
+    );
+    let back = s.transform.inverse();
+    let new = Rect::from_points(
+        back * Point::new(page.x0, page.y0),
+        back * Point::new(page.x1, page.y1),
+    );
+    let (kx, ky) = (new.width() / w, new.height() / h);
+    if !(kx.is_finite() && ky.is_finite() && kx > 0.0 && ky > 0.0) {
+        return None;
+    }
+    let mut table = table.clone();
+    for c in &mut table.col_widths {
+        *c = (*c * kx).max(0.1);
+    }
+    for r in &mut table.row_heights {
+        *r = (*r * ky).max(0.1);
+    }
+    let w: f64 = table.col_widths.iter().sum();
+    let h: f64 = table.row_heights.iter().sum();
+    table.rect = Rect::new(new.x0, new.y1 - h, new.x0 + w, new.y1);
+    Some(ShapeKind::Table(table))
+}
+
+/// The kind of `s` (a text fitted to a path) with its letters scaled by
+/// the scale `t` instead of the text and its path (#2962): the path stays
+/// where it is, so the text stays on the curve it was fitted to, bigger or
+/// smaller, as far from it in proportion. A side handle's scale is the
+/// letters' scale; a corner's (or any scale on both axes) gives the
+/// geometric mean of the two.
+fn resized_fitted_text(s: &Shape, t: Affine) -> Option<ShapeKind> {
+    let (sx, sy) = axis_scale(t)?;
+    let ShapeKind::Text {
+        spans,
+        origin,
+        frame,
+        align,
+        para,
+        on_path: Some(on_path),
+    } = &s.kind
+    else {
+        return None;
+    };
+    let k = if (sx - 1.0).abs() < 1e-9 {
+        sy
+    } else if (sy - 1.0).abs() < 1e-9 {
+        sx
+    } else {
+        (sx * sy).sqrt()
+    };
+    if !(k.is_finite() && k > 1e-6) || (k - 1.0).abs() < 1e-9 {
+        return None;
+    }
+    let mut on_path = on_path.clone();
+    on_path.distance *= k;
+    Some(ShapeKind::Text {
+        spans: scale_letters(spans, k, k),
+        origin: *origin,
+        frame: *frame,
+        align: *align,
+        para: para.clone(),
+        on_path: Some(on_path),
+    })
+}
+
+/// The kind `t` gives `s` in place of a scale: a paragraph text's new
+/// frame, a table's new rows and columns, or a fitted text's letters.
+fn resized_any(s: &Shape, t: Affine) -> Option<ShapeKind> {
+    resized_kind(s, t)
+        .or_else(|| resized_table(s, t))
+        .or_else(|| resized_fitted_text(s, t))
+}
+
+/// A drag of a side handle with Alt held: paragraph texts and tables
+/// take the scale in their letters as well as in their frames, so their
+/// lines stay as they are, stretched (#1553).
+pub fn glyph_scale_drag(d: &crate::app::Drag) -> bool {
+    matches!(d, crate::app::Drag::Scale { handle, mods, .. } if mods.free && !handle.is_corner())
+}
+
+/// `spans` with their letters scaled by `sx` across and `sy` up (#1553):
+/// the size and baseline shift by `sy`, the character width by the rest
+/// of `sx`.
+fn scale_letters(spans: &[TextSpan], sx: f64, sy: f64) -> Vec<TextSpan> {
+    spans
+        .iter()
+        .map(|sp| {
+            let mut sp = sp.clone();
+            sp.size_pt *= sy;
+            sp.baseline_shift_pt *= sy;
+            let w = sp.width_pct * sx / sy;
+            sp.width_pct = if w.is_finite() {
+                w.clamp(1.0, 1000.0)
+            } else {
+                sp.width_pct
+            };
+            sp
+        })
+        .collect()
+}
+
+/// `kind` (a paragraph text or table just resized by `t`) with its
+/// letters scaled by `t` too; line spacing set in points follows.
+fn with_scaled_letters(kind: ShapeKind, t: Affine) -> ShapeKind {
+    let Some((sx, sy)) = axis_scale(t) else {
+        return kind;
+    };
+    match kind {
+        ShapeKind::Text {
+            spans,
+            origin,
+            frame,
+            align,
+            mut para,
+            on_path,
+        } => {
+            if para.leading_unit == tracedraw_core::LeadingUnit::Points {
+                para.leading_pct *= sy;
+            }
+            ShapeKind::Text {
+                spans: scale_letters(&spans, sx, sy),
+                origin,
+                frame,
+                align,
+                para,
+                on_path,
+            }
+        }
+        ShapeKind::Table(mut table) => {
+            for c in &mut table.cells {
+                c.text = scale_letters(&c.text, sx, sy);
+            }
+            ShapeKind::Table(table)
+        }
+        other => other,
+    }
+}
+
 impl App {
+    /// `t` (page space) resizes table `id` instead of scaling it (see
+    /// [`resized_table`]): `t` an axis-aligned scale by positive amounts
+    /// that is not just a move.
+    pub fn resizes_table(&self, id: ShapeId, t: Affine) -> bool {
+        // While a side handle is dragged with Alt the letters stretch
+        // with the frame: it shows as a plain scale (#1553).
+        if glyph_scale_drag(&self.drag) {
+            return false;
+        }
+        let Some((sx, sy)) = axis_scale(t) else {
+            return false;
+        };
+        if (sx - 1.0).abs() < 1e-9 && (sy - 1.0).abs() < 1e-9 {
+            return false;
+        }
+        self.doc()
+            .shape(id)
+            .ok()
+            .is_some_and(|(_, s)| resized_table(s, t).is_some())
+    }
+
     /// `t` (page space) resizes the frame of `id` instead of scaling it: a
     /// paragraph text lying on a layer, neither turned nor slanted, and `t`
     /// an axis-aligned scale by positive amounts that is not just a move.
     pub fn resizes_text_frame(&self, id: ShapeId, t: Affine) -> bool {
+        // While a side handle is dragged with Alt the letters stretch
+        // with the frame: it shows as a plain scale (#1553).
+        if glyph_scale_drag(&self.drag) {
+            return false;
+        }
         let Some((sx, sy)) = axis_scale(t) else {
             return false;
         };
@@ -94,15 +373,45 @@ impl App {
             .is_some_and(|(_, s)| resized_kind(s, t).is_some())
     }
 
+    /// `t` (page space) scales the letters of text `id`, fitted to a path,
+    /// instead of the text and its path (#2962): `t` an axis-aligned
+    /// scale by positive amounts, and no other kind of object among
+    /// `shapes` (a curve scaled along with its text takes the text with
+    /// it, as before).
+    pub fn resizes_fitted_text(&self, id: ShapeId, t: Affine, shapes: &[ShapeId]) -> bool {
+        let fitted = |id: &ShapeId| {
+            self.doc().shape(*id).ok().is_some_and(|(_, s)| {
+                matches!(
+                    s.kind,
+                    ShapeKind::Text {
+                        on_path: Some(_),
+                        ..
+                    }
+                )
+            })
+        };
+        fitted(&id)
+            && shapes.iter().all(fitted)
+            && self
+                .doc()
+                .shape(id)
+                .ok()
+                .is_some_and(|(_, s)| resized_fitted_text(s, t).is_some())
+    }
+
     /// Apply `t` to the selection as one undo step: paragraph texts that
-    /// take it as a new frame get it so, the rest are transformed.
-    /// Returns false when no paragraph frame was involved (the caller
-    /// transforms as usual).
+    /// take it as a new frame get it so, texts fitted to a path take it in
+    /// their letters, the rest are transformed. Returns false when none of
+    /// these was involved (the caller transforms as usual).
     pub(crate) fn transform_with_frames(&mut self, shapes: &[ShapeId], t: Affine) -> bool {
         let frames: Vec<ShapeId> = shapes
             .iter()
             .copied()
-            .filter(|id| self.resizes_text_frame(*id, t))
+            .filter(|id| {
+                self.resizes_text_frame(*id, t)
+                    || self.resizes_table(*id, t)
+                    || self.resizes_fitted_text(*id, t, shapes)
+            })
             .collect();
         if frames.is_empty() {
             return false;
@@ -123,7 +432,19 @@ impl App {
             let Ok((_, s)) = self.doc().shape(*id) else {
                 continue;
             };
-            if let Some(kind) = resized_kind(s, t) {
+            let fitted = matches!(
+                s.kind,
+                ShapeKind::Text {
+                    on_path: Some(_),
+                    ..
+                }
+            );
+            if let Some(kind) = resized_any(s, t) {
+                let kind = if self.glyph_scale && !fitted {
+                    with_scaled_letters(kind, t)
+                } else {
+                    kind
+                };
                 cmds.push(Command::SetShapeKind { shape: *id, kind });
             }
             // A frame's symmetry goes with it, as an object's does in a
@@ -146,6 +467,123 @@ impl App {
             self.status = e.to_string();
         }
         true
+    }
+
+    /// The text of paragraph frame `id` flowed anew in the frame `t`
+    /// gives it while a handle is dragged, laid out at most once per frame
+    /// size; `None` when `t` does not resize its frame, or when its layout
+    /// is too slow for a frame ([`LIVE_REFLOW_BUDGET`]): then the frame
+    /// follows alone and the text flows on release, as before (#1327).
+    pub fn live_frame(&self, id: ShapeId, t: Affine) -> Option<Rc<LiveFrame>> {
+        if !self.resizes_text_frame(id, t) {
+            return None;
+        }
+        let s = self.doc().find_shape(id)?;
+        let kind = resized_kind(s, t)?;
+        let ShapeKind::Text {
+            spans,
+            origin,
+            frame: Some(frame),
+            align,
+            para,
+            ..
+        } = &kind
+        else {
+            return None;
+        };
+        let key = (self.engine.revision(), tracedraw_text::fonts().generation());
+        let mut live = self.live_reflow.borrow_mut();
+        if live.key != key {
+            *live = LiveReflow {
+                key,
+                budget: live.budget,
+                ..Default::default()
+            };
+        }
+        if live.budget < 0.0 || live.slow.contains(&id) {
+            return None;
+        }
+        if let Some(f) = live.frames.get(&id).filter(|f| f.frame == *frame) {
+            return Some(f.clone());
+        }
+        // A frame of a linked chain keeps what fits of its text and of
+        // the frames after it, as the release flows it (a copy dragged
+        // off with a right click is not linked).
+        let next = self.next_frame(id).filter(|_| !self.drag_copy);
+        let flowing: Vec<TextSpan>;
+        let spans = if next.is_some() {
+            let chain = self.chain_of(id);
+            let at = chain.iter().position(|c| *c == id).unwrap_or(0);
+            flowing = spans
+                .iter()
+                .cloned()
+                .chain(chain.iter().skip(at + 1).flat_map(|c| {
+                    match self.doc().find_shape(*c).map(|s| &s.kind) {
+                        Some(ShapeKind::Text { spans, .. }) => spans.clone(),
+                        _ => Vec::new(),
+                    }
+                }))
+                .collect();
+            &flowing
+        } else {
+            spans
+        };
+        let req = TextRequest {
+            spans,
+            frame: Some(*frame),
+            align: *align,
+            para,
+            on_path: None,
+        };
+        let fonts = tracedraw_text::fonts();
+        // Shaping a long text anew would hold the drag up at its start:
+        // only a short one is shaped here (the page's picture shaped the
+        // text when it was drawn, and the text engine keeps that).
+        if live.layouts.get(&id).is_none()
+            && !fonts.is_shaped(&req)
+            && spans.iter().map(|s| s.text.len()).sum::<usize>() > LIVE_SHAPE_BYTES
+        {
+            live.slow.insert(id);
+            return None;
+        }
+        let started = web_time::Instant::now();
+        let layout = fonts.layout_fitted(&req);
+        let took = started.elapsed().as_secs_f64();
+        let count = {
+            let n = live.layouts.entry(id).or_insert(0);
+            *n += 1;
+            *n
+        };
+        let over = if count > 1 && took > live.budget {
+            let n = live.over.entry(id).or_insert(0);
+            *n += 1;
+            *n
+        } else {
+            live.over.remove(&id);
+            0
+        };
+        if over >= LIVE_REFLOW_OVER {
+            log::debug!("text {id:?} takes {took:.4} s to lay out: it flows on release");
+            live.slow.insert(id);
+            live.frames.remove(&id);
+            return None;
+        }
+        let place = s.transform
+            * tracedraw_core::document::text_layout_shift(
+                *origin,
+                Some(*frame),
+                false,
+                para.columns_from_right(),
+            );
+        let f = Rc::new(LiveFrame {
+            frame: *frame,
+            #[cfg(test)]
+            lines: shown_lines(&layout),
+            overflow: layout.overflow && next.is_none(),
+            outline: place * layout.path,
+        });
+        live.frames.insert(id, f.clone());
+        Some(f)
     }
 
     /// Paragraph text `s` does not fit its frame (the last frame of a
@@ -213,22 +651,31 @@ impl App {
             if !(self.settings.show_text_frames || chosen) {
                 continue;
             }
+            // A frame being resized tells whether its text fits as it
+            // flows in it now.
+            let mut live = None;
             if let Some(t) = preview.filter(|t| selected && self.resizes_text_frame(s.id, *t)) {
                 if let Some(kind) = resized_kind(s, t) {
                     let mut moved = s.clone();
                     moved.kind = kind;
                     c = moved.text_frame_corners().unwrap_or(c);
                 }
+                live = self.live_frame(s.id, t);
             } else if let Some(t) = preview.filter(|_| selected) {
                 c = c.map(|p| t * p);
             }
+            let receives = self.prev_frame(s.id).is_some();
+            let empty = matches!(&s.kind, ShapeKind::Text { spans, .. }
+                if spans.iter().all(|sp| sp.text.is_empty()));
             out.push(ShownFrame {
                 id: s.id,
                 linked: self.next_frame(s.id).is_some(),
+                receives,
+                empty_hint: empty && !receives && editing != Some(s.id),
                 corners: c,
                 chosen,
                 editing: editing == Some(s.id),
-                overflow: self.text_overflows(s),
+                overflow: live.map_or_else(|| self.text_overflows(s), |l| l.overflow),
             });
         }
         out
@@ -252,6 +699,43 @@ mod tests {
         id
     }
 
+    /// An empty paragraph text frame shows a hint on screen, until it
+    /// holds text or is being edited; a frame with text shows none
+    /// (#2524).
+    #[test]
+    fn an_empty_frame_shows_a_hint_until_it_has_text() {
+        let mut app = App::headless();
+        let shape = app
+            .new_shape(ShapeKind::Rect {
+                rect: kurbo::Rect::new(10.0, 10.0, 90.0, 50.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("shape");
+        app.select(vec![shape]);
+        app.object_to_text_frame();
+        let empty = app.selection[0];
+        let hint = |app: &App, id: ShapeId| {
+            app.shown_text_frames(None)
+                .into_iter()
+                .find(|f| f.id == id)
+                .expect("frame shown")
+                .empty_hint
+        };
+        assert!(hint(&app, empty), "an empty frame");
+        // Not picked either: Show Text Frames is on at first.
+        app.select(Vec::new());
+        assert!(hint(&app, empty), "an empty frame not selected");
+        let full = paragraph(&mut app);
+        assert!(!hint(&app, full), "a frame with text");
+        assert!(hint(&app, empty));
+        // The hint has words in every language.
+        assert_ne!(
+            crate::i18n::tr("canvas.empty_text_frame_hint"),
+            "canvas.empty_text_frame_hint"
+        );
+    }
+
     fn frame_of(app: &App, id: ShapeId) -> (Point, Size) {
         match app.doc().shape(id).map(|(_, s)| s.kind.clone()) {
             Ok(ShapeKind::Text {
@@ -261,6 +745,44 @@ mod tests {
             }) => (origin, f),
             other => panic!("not paragraph text: {other:?}"),
         }
+    }
+
+    /// A table scaled with the Pick tool (handles, or the property bar's
+    /// size) gets wider and taller rows and columns; its transform stays
+    /// as it was, so the cells' text keeps its size, spacing and margins
+    /// (#2433).
+    #[test]
+    fn scaling_a_table_resizes_its_cells_and_keeps_the_text() {
+        let mut app = App::headless();
+        let mut t = tracedraw_core::Table::new(Rect::new(10.0, 10.0, 130.0, 40.0), 3, 4, None);
+        t.col_widths = vec![20.0, 40.0, 30.0, 30.0];
+        t.cells[0].text = vec![TextSpan::new("Cell", "Arial", 10.0)];
+        let id = app.new_shape(ShapeKind::Table(t.clone())).expect("table");
+        app.select(vec![id]);
+        // Twice as wide and half as tall again, from the lower left.
+        let t2 = Affine::translate((10.0, 10.0))
+            * Affine::scale_non_uniform(2.0, 1.5)
+            * Affine::translate((-10.0, -10.0));
+        app.transform_selection(t2);
+        let s = app.doc().shape(id).expect("shape").1.clone();
+        assert_eq!(s.transform, Affine::IDENTITY);
+        let ShapeKind::Table(n) = &s.kind else {
+            panic!("table");
+        };
+        assert_eq!(n.col_widths, vec![40.0, 80.0, 60.0, 60.0]);
+        assert_eq!(n.row_heights, vec![15.0, 15.0, 15.0]);
+        assert_eq!(n.rect, Rect::new(10.0, 10.0, 250.0, 55.0));
+        assert_eq!(n.cells[0].text[0].size_pt, 10.0);
+        assert_eq!(n.cell_margins(), t.cell_margins());
+        // One undo step back to the table as it was.
+        app.undo();
+        let s = app.doc().shape(id).expect("shape").1.clone();
+        assert_eq!(s.kind, ShapeKind::Table(t));
+        // A turn still turns the whole table.
+        let turn = Affine::rotate(0.5);
+        app.transform_selection(turn);
+        let s = app.doc().shape(id).expect("shape").1.clone();
+        assert_eq!(s.transform, turn);
     }
 
     #[test]
@@ -303,6 +825,204 @@ mod tests {
         assert_eq!(s.transform, turn);
         // Once turned, a scale scales the text as a whole.
         assert!(!app.resizes_text_frame(id, Affine::scale(2.0)));
+    }
+
+    /// A side handle dragged with Alt stretches a paragraph text's
+    /// letters with its frame (#1553): across, the character width takes
+    /// the scale; up and down, the size does, the width giving it back so
+    /// the letters keep their width. The lines stay as they were. A table
+    /// does the same to its cells' text. While dragging, the frame shows
+    /// as a plain scale.
+    #[test]
+    fn alt_on_a_side_handle_stretches_the_letters_with_the_frame() {
+        let mut app = App::headless();
+        let id = paragraph(&mut app);
+        let spans = |app: &App| match app.doc().shape(id).map(|(_, s)| s.kind.clone()) {
+            Ok(ShapeKind::Text { spans, .. }) => spans,
+            _ => panic!("text"),
+        };
+        let size = spans(&app)[0].size_pt;
+        let lines = |app: &App| match app.doc().find_shape(id).map(|s| &s.kind) {
+            Some(ShapeKind::Text {
+                spans,
+                frame: Some(f),
+                align,
+                para,
+                ..
+            }) => tracedraw_text::fonts()
+                .layout(&TextRequest {
+                    spans,
+                    frame: Some(*f),
+                    align: *align,
+                    para,
+                    on_path: None,
+                })
+                .lines
+                .len(),
+            _ => panic!("paragraph text"),
+        };
+        let lines_before = lines(&app);
+        let b = app.selection_bounds().expect("bounds");
+        // The drag, Alt held on the right side: shown as a scale.
+        let drag = crate::app::Drag::Scale {
+            handle: crate::app::Handle::E,
+            anchor: Point::new(b.x0, b.center().y),
+            start_bounds: b,
+            current: Point::new(b.x0 + 2.0 * b.width(), b.center().y),
+            grab: tracedraw_core::geometry::Vec2::ZERO,
+            mods: crate::app::HandleMods {
+                from_center: false,
+                steps: false,
+                free: true,
+            },
+            snapped: (false, false),
+        };
+        assert!(glyph_scale_drag(&drag));
+        let t = app.preview_transform_of(&drag).expect("a scale");
+        app.drag = drag;
+        assert!(!app.resizes_text_frame(id, t));
+        app.drag = crate::app::Drag::None;
+        assert!(app.resizes_text_frame(id, t));
+        // Released: the frame and the letters twice as wide.
+        app.glyph_scale = true;
+        app.transform_selection(t);
+        app.glyph_scale = false;
+        let (_, f) = frame_of(&app, id);
+        assert!((f.width - 120.0).abs() < 1e-6, "{f:?}");
+        let sp = spans(&app);
+        assert!(sp.iter().all(|s| (s.width_pct - 200.0).abs() < 1e-9));
+        assert!(sp.iter().all(|s| s.size_pt == size));
+        assert_eq!(lines(&app), lines_before);
+        // Half as tall from the top: the size halves, the width doubles
+        // back up so the letters keep their width.
+        app.select(vec![id]);
+        let b = app.selection_bounds().expect("bounds");
+        let t = Affine::translate((0.0, b.y0))
+            * Affine::scale_non_uniform(1.0, 0.5)
+            * Affine::translate((0.0, -b.y0));
+        app.glyph_scale = true;
+        app.transform_selection(t);
+        app.glyph_scale = false;
+        let sp = spans(&app);
+        assert!(sp.iter().all(|s| (s.size_pt - size / 2.0).abs() < 1e-9));
+        assert!(sp.iter().all(|s| (s.width_pct - 400.0).abs() < 1e-9));
+        assert!((frame_of(&app, id).1.height - 15.0).abs() < 1e-6);
+        // A table's cells.
+        let mut table = tracedraw_core::Table::new(Rect::new(10.0, 10.0, 130.0, 40.0), 2, 2, None);
+        table.cells[0].text = vec![TextSpan::new("Cell", "Arial", 10.0)];
+        let tid = app.new_shape(ShapeKind::Table(table)).expect("table");
+        app.select(vec![tid]);
+        let t = Affine::translate((10.0, 0.0))
+            * Affine::scale_non_uniform(0.5, 1.0)
+            * Affine::translate((-10.0, 0.0));
+        app.glyph_scale = true;
+        app.transform_selection(t);
+        app.glyph_scale = false;
+        let Ok(ShapeKind::Table(n)) = app.doc().shape(tid).map(|(_, s)| s.kind.clone()) else {
+            panic!("table");
+        };
+        assert!((n.cells[0].text[0].width_pct - 50.0).abs() < 1e-9);
+        assert_eq!(n.cells[0].text[0].size_pt, 10.0);
+        // Without Alt the letters stay as they were.
+        app.transform_selection(t);
+        let Ok(ShapeKind::Table(n)) = app.doc().shape(tid).map(|(_, s)| s.kind.clone()) else {
+            panic!("table");
+        };
+        assert!((n.cells[0].text[0].width_pct - 50.0).abs() < 1e-9);
+    }
+
+    /// A frame being resized lays its text out once per frame size (the
+    /// canvas asks for it twice a frame), and a text whose layout takes
+    /// longer than the budget goes back to flowing on release (#1327).
+    #[test]
+    fn the_live_reflow_lays_out_once_per_size_and_gives_way_to_a_slow_text() {
+        let mut app = App::headless();
+        let id = paragraph(&mut app);
+        let narrow = |k: f64| {
+            Affine::translate((20.0, 0.0))
+                * Affine::scale_non_uniform(k, 1.0)
+                * Affine::translate((-20.0, 0.0))
+        };
+        let a = app.live_frame(id, narrow(0.5)).expect("flowed");
+        let again = app.live_frame(id, narrow(0.5)).expect("flowed");
+        assert!(Rc::ptr_eq(&a, &again));
+        assert_eq!(app.live_reflow.borrow().layouts_of(id), 1);
+        assert!(app.shown_text_frames(Some(narrow(0.5)))[0].chosen);
+        assert_eq!(app.live_reflow.borrow().layouts_of(id), 1, "one a size");
+        let wide = app.live_frame(id, narrow(2.0)).expect("flowed");
+        assert!(wide.lines < a.lines, "{} {}", wide.lines, a.lines);
+        assert_eq!(app.live_reflow.borrow().layouts_of(id), 2);
+        // A move or a turn is no frame resize.
+        assert!(app.live_frame(id, Affine::translate((5.0, 0.0))).is_none());
+        // Slower than the budget: the frame follows alone from then on.
+        app.live_reflow.borrow_mut().budget = 0.0;
+        assert!(
+            app.live_frame(id, narrow(0.7)).is_some(),
+            "once may be chance"
+        );
+        assert!(app.live_frame(id, narrow(0.6)).is_some());
+        assert!(app.live_frame(id, narrow(0.8)).is_none());
+        assert!(app.live_frame(id, narrow(0.5)).is_none());
+        // The drawing changed: tried again.
+        app.live_reflow.borrow_mut().budget = 1.0;
+        app.transform_selection(narrow(0.9));
+        assert!(app.live_frame(id, narrow(0.5)).is_some());
+    }
+
+    /// A frame of a linked chain flowed live takes the text of the frames
+    /// after it that fits, as the release flows it, and does not show
+    /// red for the rest, which flows on.
+    #[test]
+    fn a_linked_frame_flows_live_with_the_text_after_it() {
+        let mut app = App::headless();
+        tracedraw_text::install();
+        let mk = |app: &mut App, text: &str, y: f64| {
+            app.new_shape(ShapeKind::Text {
+                spans: vec![tracedraw_core::TextSpan::new(text, "DejaVu Sans", 12.0)],
+                origin: Point::new(20.0, y),
+                frame: Some(Size::new(40.0, 12.0)),
+                align: tracedraw_core::TextAlign::Left,
+                para: Default::default(),
+                on_path: None,
+            })
+            .expect("frame")
+        };
+        let a = mk(
+            &mut app,
+            "one two three four five six seven eight nine ten eleven twelve",
+            100.0,
+        );
+        let b = mk(&mut app, "", 50.0);
+        assert!(app.link_frames(a, b));
+        assert_eq!(app.next_frame(a), Some(b), "{}", app.status);
+        app.select(vec![a]);
+        // Twice as tall from the top: more lines of the chain's text.
+        let t = Affine::translate((0.0, 100.0))
+            * Affine::scale_non_uniform(1.0, 2.0)
+            * Affine::translate((0.0, -100.0));
+        let live = app.live_frame(a, t).expect("flowed");
+        assert!(!live.overflow);
+        app.transform_selection(t);
+        let s = app.doc().find_shape(a).expect("a").clone();
+        let ShapeKind::Text {
+            spans,
+            frame,
+            align,
+            para,
+            ..
+        } = &s.kind
+        else {
+            panic!("text");
+        };
+        let after = tracedraw_text::fonts().layout(&TextRequest {
+            spans,
+            frame: *frame,
+            align: *align,
+            para,
+            on_path: None,
+        });
+        assert_eq!(live.lines, shown_lines(&after));
+        assert_eq!(live.outline, s.page_path());
     }
 
     #[test]

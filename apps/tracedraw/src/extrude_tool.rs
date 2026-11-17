@@ -5,7 +5,10 @@
 //! the others run toward the point the drag ends on (their vanishing
 //! point) by the bar's depth. A drag that starts on the handle of a
 //! selected extrusion (its vanishing point, or the middle of a parallel
-//! body's copy) moves that handle. Each drag is one undo step.
+//! body's copy) moves that handle. A body toward or away from a vanishing
+//! point also has a depth slider on that line, where its far face is: a
+//! drag of it along the line sets the depth (#1280). Each drag is one undo
+//! step.
 //!
 //! The bar and the panel show the selected object's extrusion and edit
 //! the selected extrusions live; the vanishing point is shown and typed
@@ -280,6 +283,43 @@ pub struct ExtrudeDrag {
     /// `anchor` (the object's middle).
     pub handle: bool,
     pub anchor: Point,
+    /// The drag took the line from `anchor` to the handle (not the handle
+    /// itself), pressed at `press`: the handle moves by the pointer's way
+    /// from there, so the line keeps its length and angle.
+    pub line: bool,
+    pub press: Point,
+    /// The drag took the depth slider on the line (#1280).
+    pub depth: bool,
+}
+
+/// The depth slider of an extrusion toward or away from a vanishing
+/// point: where its far face's middle is, between the object's middle and
+/// the vanishing point (Small) or beyond the middle (Big).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DepthSlider {
+    pub id: ShapeId,
+    /// The slider, page space.
+    pub at: Point,
+    /// The object's middle and the vanishing point.
+    pub mid: Point,
+    pub vanishing: Point,
+    /// The far face goes away from the vanishing point (Big).
+    pub away: bool,
+}
+
+impl DepthSlider {
+    /// The depth (percent, 1 to 99) for the pointer at `p`: its place
+    /// along the line, measured from the middle.
+    pub fn depth_at(&self, p: Point) -> f64 {
+        let u = self.vanishing - self.mid;
+        let l2 = u.hypot2();
+        if l2 < 1e-12 {
+            return 1.0;
+        }
+        let t = (p - self.mid).dot(u) / l2;
+        let t = if self.away { -t } else { t };
+        fin(t * 100.0, 1.0, 99.0, 1.0)
+    }
 }
 
 fn is_extrude(e: &Effect) -> bool {
@@ -349,7 +389,23 @@ impl App {
             let Some((local, parent)) = self.extrude_frames(s.id) else {
                 continue;
             };
-            let effects = with_extrusion(&s.effects, Some(self.extrude.effect(local, parent)));
+            // A body without a vanishing point (parallel) given one: the
+            // settings hold none of its own (0,0 or another object's), so
+            // it starts beside the object (#2699).
+            let mut settings = self.extrude;
+            let had_point = s.effects.iter().any(|e| {
+                matches!(
+                    e,
+                    Effect::Extrude {
+                        vanishing: Some(_),
+                        ..
+                    }
+                )
+            });
+            if !settings.kind.parallel() && !had_point {
+                settings.vanishing = self.vanishing_beside(&s);
+            }
+            let effects = with_extrusion(&s.effects, Some(settings.effect(local, parent)));
             if effects == s.effects {
                 continue;
             }
@@ -393,8 +449,7 @@ impl App {
             };
             let mut settings = self.extrude.clamped();
             if !settings.kind.parallel() && settings.vanishing == Point::ZERO {
-                let b = self.visual_bounds(&s);
-                settings.vanishing = Point::new(b.x1 + b.width(), b.y1 + b.height());
+                settings.vanishing = self.vanishing_beside(&s);
             }
             cmds.push(Command::SetEffects {
                 shape: s.id,
@@ -407,6 +462,18 @@ impl App {
         if let Err(e) = self.engine.run_batch("Extrude", &cmds) {
             self.status = e.to_string();
         }
+    }
+
+    /// Where a new vanishing point starts: up and to the right of the
+    /// object, one object's size away (page space; the object alone,
+    /// not a body it already has).
+    fn vanishing_beside(&self, s: &tracedraw_core::Shape) -> Point {
+        let b = self
+            .doc()
+            .shape_on_page(s.id)
+            .map(|p| p.bounds())
+            .unwrap_or_else(|| self.visual_bounds(s));
+        Point::new(b.x1 + b.width(), b.y1 + b.height())
     }
 
     /// Clear Extrude.
@@ -458,19 +525,117 @@ impl App {
         out
     }
 
+    /// The depth slider of each selected extrusion with a vanishing point
+    /// (#1280).
+    pub fn extrusion_depth_sliders(&self) -> Vec<DepthSlider> {
+        let mut out = Vec::new();
+        for (id, vanishing, mid) in self.extrusion_handles() {
+            let Some(e) = self
+                .doc()
+                .find_shape(id)
+                .and_then(|s| s.effects.iter().find(|e| is_extrude(e)).cloned())
+            else {
+                continue;
+            };
+            let Effect::Extrude {
+                kind: Some(kind),
+                amount,
+                vanishing: Some(_),
+                ..
+            } = e
+            else {
+                continue;
+            };
+            if kind.parallel() || (vanishing - mid).hypot() < 1e-9 {
+                continue;
+            }
+            let away = matches!(kind, ExtrudeKind::BigBack | ExtrudeKind::BigFront);
+            let d = amount.clamp(0.01, 0.99);
+            let at = if away {
+                mid + (mid - vanishing) * d
+            } else {
+                mid + (vanishing - mid) * d
+            };
+            out.push(DepthSlider {
+                id,
+                at,
+                mid,
+                vanishing,
+                away,
+            });
+        }
+        out
+    }
+
+    /// The selected extrusion whose line (from the object's middle to its
+    /// handle) passes within the pick distance of `p`, away from the
+    /// handle: its object, handle and middle.
+    pub fn extrusion_line_at(&self, p: Point) -> Option<(ShapeId, Point, Point)> {
+        let tol = self.line_pick_tol();
+        let handles = self.extrusion_handles();
+        if handles.iter().any(|(_, h, _)| (*h - p).hypot() <= tol)
+            || self
+                .extrusion_depth_sliders()
+                .iter()
+                .any(|d| (d.at - p).hypot() <= tol)
+        {
+            return None;
+        }
+        handles
+            .into_iter()
+            .find(|(_, h, mid)| crate::effect_line::near_segment(*mid, *h, p, tol))
+    }
+
     /// Start a drag at `at` (page space). False when nothing is there.
+    /// On the handle it takes the handle; elsewhere on the line to it, the
+    /// whole line, which the drag moves; else a new extrusion of the
+    /// object pressed. Each drag is one undo step.
     pub fn begin_extrude(&mut self, at: Point) -> bool {
-        let tol = 6.0 / self.view.zoom.max(1e-6) as f64;
+        let tol = self.line_pick_tol();
+        if let Some(d) = self
+            .extrusion_depth_sliders()
+            .into_iter()
+            .find(|d| (d.at - at).hypot() <= tol)
+        {
+            self.effect_edit_step = None;
+            self.extrude_drag = Some(ExtrudeDrag {
+                id: d.id,
+                start: d.at,
+                handle: true,
+                anchor: d.mid,
+                line: false,
+                press: at,
+                depth: true,
+            });
+            return true;
+        }
         if let Some((id, h, anchor)) = self
             .extrusion_handles()
             .into_iter()
             .find(|(_, h, _)| (*h - at).hypot() <= tol)
         {
+            self.effect_edit_step = None;
             self.extrude_drag = Some(ExtrudeDrag {
                 id,
                 start: h,
                 handle: true,
                 anchor,
+                line: false,
+                press: at,
+                depth: false,
+            });
+            return true;
+        }
+        if let Some((id, h, anchor)) = self.extrusion_line_at(at) {
+            self.effect_edit_step = None;
+            self.extrude_drag = Some(ExtrudeDrag {
+                id,
+                start: h,
+                handle: true,
+                anchor,
+                line: true,
+                press: at,
+                depth: false,
             });
             return true;
         }
@@ -490,14 +655,30 @@ impl App {
             start: at,
             handle: false,
             anchor: at,
+            line: false,
+            press: at,
+            depth: false,
         });
         true
     }
 
     /// The pointer moved to `p` during a drag.
+    #[cfg(test)]
     pub fn drag_extrude(&mut self, p: Point) {
+        self.drag_extrude_to(p, false);
+    }
+
+    /// The pointer moved to `p` during a drag; a drag of the line keeps
+    /// its move horizontal or vertical with `ctrl`.
+    pub fn drag_extrude_to(&mut self, p: Point, ctrl: bool) {
         let Some(dd) = self.extrude_drag else {
             return;
+        };
+        // The line: its handle goes by the pointer's way from the press.
+        let p = if dd.line {
+            dd.start + crate::effect_line::constrain_move(p - dd.press, ctrl)
+        } else {
+            p
         };
         let Some((local, parent)) = self.extrude_frames(dd.id) else {
             self.extrude_drag = None;
@@ -509,7 +690,18 @@ impl App {
         if dd.handle {
             self.sync_extrude_settings();
         }
-        if self.extrude.kind.parallel() {
+        if dd.depth {
+            // Along the line to the vanishing point; the point itself
+            // stays.
+            let Some(slider) = self
+                .extrusion_depth_sliders()
+                .into_iter()
+                .find(|d| d.id == dd.id)
+            else {
+                return;
+            };
+            self.extrude.depth = slider.depth_at(p);
+        } else if self.extrude.kind.parallel() {
             // From where the drag started, or (the handle at the copy's
             // middle) from the object's middle.
             let from = if dd.handle { dd.anchor } else { dd.start };
@@ -533,7 +725,10 @@ impl App {
             self.begin_extrude(origin);
         }
         if response.dragged_by(PointerButton::Primary) && self.extrude_drag.is_some() {
-            self.drag_extrude(p);
+            let ctrl = response
+                .ctx
+                .input(|i| i.modifiers.ctrl || i.modifiers.command);
+            self.drag_extrude_to(p, ctrl);
         }
         if response.drag_stopped() {
             self.extrude_drag = None;
@@ -578,6 +773,118 @@ mod tests {
             fill: Fill::Solid(Color::rgb8(220, 40, 40)),
         });
         id
+    }
+
+    /// #1281: Area Fill in a side of a front body takes the whole side:
+    /// the object behind it is hidden and its outline cuts nothing. An
+    /// object without a fill shows its wire frame, and every line counts.
+    #[test]
+    fn area_fill_takes_what_shows_of_a_side() {
+        let mut app = App::headless();
+        let id = square(&mut app);
+        let set = |app: &mut App| {
+            app.run(Command::SetEffects {
+                shape: id,
+                effects: vec![Effect::Extrude {
+                    depth: Vec2::new(-10.0, -10.0),
+                    vanishing: None,
+                    amount: 0.0,
+                    shade_from: None,
+                    shade_to: None,
+                    light_angle: 135.0,
+                    light_intensity: 50.0,
+                    bevel: 0.0,
+                    kind: Some(ExtrudeKind::FrontParallel),
+                    on_object: false,
+                    solid: None,
+                    space: Default::default(),
+                }],
+            });
+        };
+        set(&mut app);
+        let area_at = |app: &mut App, p: Point| -> f64 {
+            app.select(Vec::new());
+            app.area_fill_at(p);
+            let sel = app.selection.clone();
+            assert_eq!(sel.len(), 1, "an area at {p:?}");
+            let s = app.doc().find_shape(sel[0]).cloned().expect("area");
+            assert_eq!(s.name.as_deref(), Some("Area Fill"));
+            let a = tracedraw_core::geometry::Shape::area(&s.page_path()).abs();
+            app.run(Command::DeleteShapes { shapes: sel });
+            a
+        };
+        // The side over the edge x = 20 runs from it to the near face's
+        // edge x = 10: a parallelogram of 10 by 20, over the corner of the
+        // object behind.
+        let a = area_at(&mut app, Point::new(17.0, 8.0));
+        assert!((a - 200.0).abs() < 0.5, "{a}");
+        // Without a fill the square behind shows through and its top
+        // edge cuts the side: what is left below it, 150.
+        app.run(Command::SetFill {
+            shapes: vec![id],
+            fill: Fill::None,
+        });
+        let a = area_at(&mut app, Point::new(17.0, 8.0));
+        assert!((a - 150.0).abs() < 0.5, "{a}");
+    }
+
+    /// #1281: Area Fill fills the curved side of a circle extruded
+    /// backwards (a cylinder with a Back ending) from a click anywhere in
+    /// it: the outlines cut by the filled circle meet on the grid the
+    /// area is found on, so the side does not leak.
+    #[test]
+    fn area_fill_takes_the_side_of_a_back_cylinder() {
+        let mut app = App::headless();
+        let id = app
+            .new_shape(ShapeKind::Ellipse {
+                rect: Rect::new(0.0, 0.0, 20.0, 20.0),
+                arc: None,
+            })
+            .expect("circle");
+        app.run(Command::SetFill {
+            shapes: vec![id],
+            fill: Fill::Solid(Color::rgb8(220, 40, 40)),
+        });
+        let vanishing = Point::new(60.0, 60.0);
+        app.run(Command::SetEffects {
+            shape: id,
+            effects: vec![Effect::Extrude {
+                depth: Vec2::new(0.0, 0.0),
+                vanishing: Some(vanishing),
+                amount: 0.25,
+                shade_from: None,
+                shade_to: None,
+                light_angle: 135.0,
+                light_intensity: 50.0,
+                bevel: 0.0,
+                kind: Some(ExtrudeKind::SmallBack),
+                on_object: false,
+                solid: None,
+                space: Default::default(),
+            }],
+        });
+        // Clicks across the side: half way from a point of the circle
+        // facing the vanishing point to its copy.
+        let mut areas = Vec::new();
+        for deg in [20.0f64, 45.0, 70.0] {
+            let t = deg.to_radians();
+            let p = Point::new(10.0 + 10.0 * t.cos(), 10.0 + 10.0 * t.sin());
+            let q = p + (vanishing - p) * 0.25;
+            app.select(Vec::new());
+            app.area_fill_at(p.midpoint(q));
+            let sel = app.selection.clone();
+            assert_eq!(sel.len(), 1, "an area at {deg} degrees");
+            let s = app.doc().find_shape(sel[0]).cloned().expect("area");
+            assert_eq!(s.name.as_deref(), Some("Area Fill"));
+            areas.push(tracedraw_core::geometry::Shape::area(&s.page_path()).abs());
+            app.run(Command::DeleteShapes { shapes: sel });
+        }
+        // The one side, whole, from every click.
+        assert!(
+            areas.iter().all(|a| (a - areas[0]).abs() < 0.5),
+            "{areas:?}"
+        );
+        assert!(areas[0] > 200.0 && areas[0] < 300.0, "{areas:?}");
     }
 
     fn extrusion(app: &App, id: ShapeId) -> Option<Effect> {
@@ -642,10 +949,72 @@ mod tests {
         };
         assert_eq!(kind, Some(ExtrudeKind::BackParallel));
         assert!((depth - Vec2::new(8.0, 4.0)).hypot() < 1e-9);
-        // The body is drawn: two faces and the far face behind the object.
+        // The body is drawn: the far face, hidden behind the filled
+        // square, and two faces, one object each (#1281).
         let s = app.doc().find_shape(id).cloned().expect("square");
         let ev = tracedraw_core::live::evaluate(&s);
         assert_eq!(ev.below.iter().filter(|s| s.fill != Fill::None).count(), 3);
+        assert_eq!(ev.below.len(), 3);
+    }
+
+    /// #1280: the depth slider sits where the far face is, on the line
+    /// to the vanishing point (beyond the middle for a Big body), and a
+    /// drag of it sets the depth from the pointer's place along the line
+    /// in one undo step, the vanishing point staying.
+    #[test]
+    fn the_depth_slider_sets_the_depth_along_the_line() {
+        let mut app = App::headless();
+        app.tool = Tool::Extrude;
+        let id = square(&mut app);
+        // Small back toward (60, 10): the middle is (10, 10).
+        assert!(app.begin_extrude(Point::new(10.0, 10.0)));
+        app.drag_extrude(Point::new(60.0, 10.0));
+        app.extrude_drag = None;
+        let sliders = app.extrusion_depth_sliders();
+        assert_eq!(sliders.len(), 1);
+        let d = sliders[0];
+        assert!(!d.away);
+        assert!((d.at - Point::new(20.0, 10.0)).hypot() < 1e-9, "{:?}", d.at);
+        let steps = app.engine.history_labels().0.len();
+        // Pressed on it, dragged to halfway (off the line counts by its
+        // place along it).
+        assert!(app.begin_extrude(d.at));
+        assert!(app.extrude_drag.is_some_and(|x| x.depth));
+        app.drag_extrude(Point::new(30.0, 14.0));
+        app.drag_extrude(Point::new(35.0, 13.0));
+        app.extrude_drag = None;
+        assert_eq!(app.engine.history_labels().0.len(), steps + 1);
+        let Some(Effect::Extrude {
+            amount, vanishing, ..
+        }) = extrusion(&app, id)
+        else {
+            panic!("an extrusion");
+        };
+        assert!((amount - 0.5).abs() < 1e-9, "{amount}");
+        assert_eq!(vanishing, Some(Point::new(60.0, 10.0)));
+        // Past either end it stops at 1 and 99 %.
+        let d = app.extrusion_depth_sliders()[0];
+        assert!(app.begin_extrude(d.at));
+        app.drag_extrude(Point::new(-40.0, 10.0));
+        app.extrude_drag = None;
+        app.sync_extrude_settings();
+        assert!((app.extrude.depth - 1.0).abs() < 1e-9);
+        // A Big body: the slider is on the far side of the middle.
+        app.extrude.kind = ExtrudeKind::BigBack;
+        app.extrude.depth = 30.0;
+        app.apply_extrude_settings();
+        let d = app.extrusion_depth_sliders()[0];
+        assert!(d.away);
+        assert!((d.at - Point::new(-5.0, 10.0)).hypot() < 1e-9, "{:?}", d.at);
+        assert!(app.begin_extrude(d.at));
+        app.drag_extrude(Point::new(-15.0, 10.0));
+        app.extrude_drag = None;
+        app.sync_extrude_settings();
+        assert!((app.extrude.depth - 50.0).abs() < 1e-9);
+        // A parallel body has none.
+        app.extrude.kind = ExtrudeKind::BackParallel;
+        app.apply_extrude_settings();
+        assert!(app.extrusion_depth_sliders().is_empty());
     }
 
     #[test]
@@ -691,6 +1060,54 @@ mod tests {
         assert!(ev.below.is_empty() && !ev.above.is_empty());
         app.clear_extrusion();
         assert!(extrusion(&app, id).is_none());
+    }
+
+    /// #2699: a parallel body turned into one with a vanishing point
+    /// gets its point beside the object, not at the page's 0,0 corner
+    /// (the settings kept no point, or another object's), and the
+    /// handle then moves and scales with the object.
+    #[test]
+    fn a_parallel_body_turned_to_a_vanishing_point_stays_by_the_object() {
+        let mut app = App::headless();
+        let id = square(&mut app);
+        app.run(Command::TransformShapes {
+            shapes: vec![id],
+            transform: Affine::translate((100.0, 100.0)),
+        });
+        app.select(vec![id]);
+        app.extrude.kind = ExtrudeKind::BackParallel;
+        // Another object's point left in the settings.
+        app.extrude.vanishing = Point::new(-500.0, 3.0);
+        app.add_extrusion();
+        app.sync_extrude_settings();
+        app.extrude.kind = ExtrudeKind::SmallBack;
+        app.apply_extrude_settings();
+        app.sync_extrude_settings();
+        let h = app.extrusion_handles();
+        assert_eq!(h.len(), 1);
+        assert!((h[0].1 - Point::new(140.0, 140.0)).hypot() < 1e-9, "{h:?}");
+        // Moved and scaled, the handle goes along.
+        app.run(Command::TransformShapes {
+            shapes: vec![id],
+            transform: Affine::translate((30.0, -10.0)),
+        });
+        let h = app.extrusion_handles();
+        assert!((h[0].1 - Point::new(170.0, 130.0)).hypot() < 1e-9, "{h:?}");
+        let c = Point::new(140.0, 100.0);
+        app.run(Command::TransformShapes {
+            shapes: vec![id],
+            transform: Affine::translate(c.to_vec2())
+                * Affine::scale(0.5)
+                * Affine::translate(-c.to_vec2()),
+        });
+        let h = app.extrusion_handles();
+        assert!((h[0].1 - Point::new(155.0, 115.0)).hypot() < 1e-9, "{h:?}");
+        // A type change keeps the point where it is.
+        app.sync_extrude_settings();
+        app.extrude.kind = ExtrudeKind::BigBack;
+        app.apply_extrude_settings();
+        let h = app.extrusion_handles();
+        assert!((h[0].1 - Point::new(155.0, 115.0)).hypot() < 1e-9, "{h:?}");
     }
 
     #[test]

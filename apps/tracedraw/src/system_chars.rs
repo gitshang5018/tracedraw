@@ -40,8 +40,45 @@ pub struct CharTracker {
     key: Option<u16>,
     /// The first half of a character outside the basic plane.
     high: Option<u16>,
+    /// Ctrl and Alt held, as their key presses and releases tell: both
+    /// at once are AltGr, whose characters the windowing layer drops as
+    /// the side effects of a Ctrl shortcut (#1271).
+    ctrl: bool,
+    alt: bool,
     /// Characters the windowing layer loses, in the order typed.
     pub lost: String,
+    /// Editing keys (Backspace, Delete, Enter, the arrows, Home, End)
+    /// pressed since the last hand-over: input methods that change a
+    /// letter delete it with Backspace and type the new one, so the kept
+    /// characters must stay in their place among these keys.
+    pub edit_keys: usize,
+}
+
+/// The virtual keys of the editing keys the windowing layer delivers as
+/// key presses (see [`editing_key`]).
+fn editing_vkey(vk: u16) -> bool {
+    matches!(vk, 0x08 | 0x0D | 0x23..=0x28 | 0x2E)
+}
+
+/// The same keys as the frame's key presses.
+fn editing_key(e: &egui::Event) -> bool {
+    use egui::Key;
+    matches!(
+        e,
+        egui::Event::Key {
+            key: Key::Backspace
+                | Key::Delete
+                | Key::Enter
+                | Key::ArrowLeft
+                | Key::ArrowRight
+                | Key::ArrowUp
+                | Key::ArrowDown
+                | Key::Home
+                | Key::End,
+            pressed: true,
+            ..
+        }
+    )
 }
 
 impl CharTracker {
@@ -51,10 +88,20 @@ impl CharTracker {
     pub fn message(&mut self, msg: u32, wparam: usize) {
         match msg {
             WM_KEYDOWN | WM_SYSKEYDOWN => {
-                self.key = Some((wparam & 0xFFFF) as u16);
+                let vk = (wparam & 0xFFFF) as u16;
+                self.held(vk, true);
+                self.key = Some(vk);
+                self.high = None;
+                if msg == WM_KEYDOWN && editing_vkey(vk) {
+                    self.edit_keys += 1;
+                }
+            }
+            WM_KEYUP | WM_SYSKEYUP => {
+                self.held((wparam & 0xFFFF) as u16, false);
+                self.key = None;
                 self.high = None;
             }
-            WM_KEYUP | WM_SYSKEYUP | WM_DEADCHAR | WM_SYSDEADCHAR => {
+            WM_DEADCHAR | WM_SYSDEADCHAR => {
                 self.key = None;
                 self.high = None;
             }
@@ -66,7 +113,10 @@ impl CharTracker {
                 // frame later than the message: their scripts are not
                 // taken from a processed key, or they would type twice.
                 let processed = self.key == Some(VK_PROCESSKEY);
-                let lost = self.key.is_none() || processed;
+                // A character of AltGr (Ctrl and Alt held): Polish ą ę ł
+                // ś ż, German @ € { } and many more are dropped too.
+                let altgr = self.ctrl && self.alt;
+                let lost = self.key.is_none() || processed || altgr;
                 let unit = (wparam & 0xFFFF) as u16;
                 let ch = match unit {
                     0xD800..=0xDBFF => {
@@ -97,6 +147,24 @@ impl CharTracker {
     }
 }
 
+impl CharTracker {
+    /// Follow Ctrl and Alt (either side) going down or up.
+    fn held(&mut self, vk: u16, down: bool) {
+        match vk {
+            VK_CONTROL | VK_LCONTROL | VK_RCONTROL => self.ctrl = down,
+            VK_MENU | VK_LMENU | VK_RMENU => self.alt = down,
+            _ => {}
+        }
+    }
+}
+
+pub const VK_CONTROL: u16 = 0x11;
+pub const VK_MENU: u16 = 0x12;
+pub const VK_LCONTROL: u16 = 0xA2;
+pub const VK_RCONTROL: u16 = 0xA3;
+pub const VK_LMENU: u16 = 0xA4;
+pub const VK_RMENU: u16 = 0xA5;
+
 /// A character of the scripts typed with a composing input method
 /// (Chinese, Japanese, Korean, and their full-width forms), which comes
 /// through the input method's commit.
@@ -116,18 +184,47 @@ fn composed_script(c: char) -> bool {
 }
 
 /// A character that types (as the windowing layer filters them): no
-/// control characters, nothing of the private use areas.
+/// control characters but those of 0x80 to 0x9F, which fonts with the
+/// letters of a script at the places of Latin ones (older Tamil fonts)
+/// draw (#1358), nothing of the private use areas.
 fn typed_char(c: char) -> bool {
     let private = ('\u{e000}'..='\u{f8ff}').contains(&c)
         || ('\u{f0000}'..='\u{ffffd}').contains(&c)
         || ('\u{100000}'..='\u{10fffd}').contains(&c);
-    !c.is_control() && !private
+    (!c.is_control() || ('\u{80}'..='\u{9f}').contains(&c)) && !private
 }
 
-/// Add the `lost` characters to a frame's `events` as typed text, less
-/// those the frame already has as text or as an input method's commit.
-pub fn merge(lost: &str, events: &mut Vec<egui::Event>) {
-    if lost.is_empty() {
+/// Characters kept for the next frame, each run with the number of
+/// editing keys pressed before it since the last frame.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Kept {
+    pub runs: Vec<(usize, String)>,
+    edit_keys: usize,
+}
+
+impl Kept {
+    /// Take over what `tracker` saw since it was last asked.
+    pub fn take_from(&mut self, tracker: &mut CharTracker) {
+        self.edit_keys += std::mem::take(&mut tracker.edit_keys);
+        if tracker.lost.is_empty() {
+            return;
+        }
+        let lost = std::mem::take(&mut tracker.lost);
+        match self.runs.last_mut() {
+            Some((n, run)) if *n == self.edit_keys => run.push_str(&lost),
+            _ => self.runs.push((self.edit_keys, lost)),
+        }
+    }
+}
+
+/// Add kept characters to a frame's `events` as typed text, less those
+/// the frame already has as text or as an input method's commit. A run
+/// kept after `n` editing keys goes before the frame's editing key press
+/// `n + 1`, so that an input method that deletes a letter and types its
+/// new form (a consonant taking a vowel sign) gets them in that order
+/// even when the keys come faster than the frames (#1271).
+pub fn merge_runs(runs: &[(usize, String)], events: &mut Vec<egui::Event>) {
+    if runs.iter().all(|(_, r)| r.is_empty()) {
         return;
     }
     let mut arrived: Vec<char> = events
@@ -139,21 +236,45 @@ pub fn merge(lost: &str, events: &mut Vec<egui::Event>) {
         })
         .flat_map(str::chars)
         .collect();
-    let mut add = String::new();
-    for c in lost.chars() {
-        if let Some(i) = arrived.iter().position(|a| *a == c) {
-            arrived.remove(i);
-        } else {
-            add.push(c);
+    let runs: Vec<(usize, String)> = runs
+        .iter()
+        .map(|(n, lost)| {
+            let mut add = String::new();
+            for c in lost.chars() {
+                if let Some(i) = arrived.iter().position(|a| *a == c) {
+                    arrived.remove(i);
+                } else {
+                    add.push(c);
+                }
+            }
+            (*n, add)
+        })
+        .filter(|(_, add)| !add.is_empty())
+        .collect();
+    if runs.is_empty() {
+        return;
+    }
+    let mut out = Vec::with_capacity(events.len() + runs.len());
+    let mut runs = runs.into_iter().peekable();
+    let mut seen = 0usize;
+    for e in events.drain(..) {
+        if editing_key(&e) {
+            while let Some((_, add)) = runs.next_if(|(n, _)| *n <= seen) {
+                out.push(egui::Event::Text(add));
+            }
+            seen += 1;
         }
+        out.push(e);
     }
-    if !add.is_empty() {
-        events.push(egui::Event::Text(add));
-    }
+    out.extend(runs.map(|(_, add)| egui::Event::Text(add)));
+    *events = out;
 }
 
 /// The characters the hook kept for the next frame.
-static LOST: Mutex<String> = Mutex::new(String::new());
+static LOST: Mutex<Kept> = Mutex::new(Kept {
+    runs: Vec::new(),
+    edit_keys: 0,
+});
 /// The window's context, to ask for a frame when a character is kept
 /// (nothing else wakes the window for it).
 static CONTEXT: std::sync::OnceLock<egui::Context> = std::sync::OnceLock::new();
@@ -165,24 +286,29 @@ pub fn set_context(ctx: &egui::Context) {
 
 /// Add the characters kept since the last frame to its input.
 pub fn take_into(raw: &mut egui::RawInput) {
-    let lost = match LOST.lock() {
+    let kept = match LOST.lock() {
         Ok(mut l) => std::mem::take(&mut *l),
         Err(_) => return,
     };
-    merge(&lost, &mut raw.events);
+    merge_runs(&kept.runs, &mut raw.events);
 }
 
-/// Keep what `tracker` found lost and ask for a frame to type it.
+/// Keep what `tracker` found lost (and where among the editing keys) and
+/// ask for a frame to type it.
 pub(crate) fn hand_over(tracker: &mut CharTracker) {
-    if tracker.lost.is_empty() {
+    if tracker.lost.is_empty() && tracker.edit_keys == 0 {
         return;
     }
+    let lost = !tracker.lost.is_empty();
     if let Ok(mut l) = LOST.lock() {
-        l.push_str(&tracker.lost);
+        l.take_from(tracker);
     }
     tracker.lost.clear();
-    if let Some(ctx) = CONTEXT.get() {
-        ctx.request_repaint();
+    tracker.edit_keys = 0;
+    if lost {
+        if let Some(ctx) = CONTEXT.get() {
+            ctx.request_repaint();
+        }
     }
 }
 
@@ -299,6 +425,41 @@ mod tests {
         assert_eq!(lost, "");
     }
 
+    /// #1271: the characters of AltGr (Windows holds Ctrl and Alt for
+    /// it) are kept, since the windowing layer drops the text of keys
+    /// pressed with Ctrl; once AltGr is let go, keys type as before.
+    #[test]
+    fn characters_typed_with_altgr_are_kept() {
+        let lost = feed(&[
+            // AltGr down: Ctrl, then the right Alt.
+            (WM_KEYDOWN, VK_CONTROL as usize),
+            (WM_KEYDOWN, VK_MENU as usize),
+            // Polish: AltGr+A, AltGr+L, AltGr+Z.
+            (WM_KEYDOWN, 0x41),
+            (WM_CHAR, ch('ą')),
+            (WM_KEYUP, 0x41),
+            (WM_KEYDOWN, 0x4C),
+            (WM_CHAR, ch('ł')),
+            (WM_KEYUP, 0x4C),
+            (WM_KEYDOWN, 0x5A),
+            (WM_CHAR, ch('ż')),
+            (WM_KEYUP, 0x5A),
+            (WM_KEYUP, VK_MENU as usize),
+            (WM_KEYUP, VK_CONTROL as usize),
+            // A plain key after it arrives by itself.
+            (WM_KEYDOWN, 0x42),
+            (WM_CHAR, ch('b')),
+            (WM_KEYUP, 0x42),
+            // Ctrl alone: a shortcut's control character is not kept.
+            (WM_KEYDOWN, VK_CONTROL as usize),
+            (WM_KEYDOWN, 0x53),
+            (WM_CHAR, 0x13),
+            (WM_KEYUP, 0x53),
+            (WM_KEYUP, VK_CONTROL as usize),
+        ]);
+        assert_eq!(lost, "ąłż");
+    }
+
     #[test]
     fn a_character_outside_the_basic_plane_comes_in_two_halves() {
         let mut units = [0u16; 2];
@@ -307,6 +468,77 @@ mod tests {
         assert_eq!(lost, "𑌕");
         // A second half alone is no character.
         assert_eq!(feed(&[(WM_CHAR, units[1] as usize)]), "");
+    }
+
+    /// An input method that changes a letter deletes it with Backspace
+    /// and sends the new form: when the keys come faster than the frames
+    /// the kept characters stay in their place among the editing keys, so
+    /// no letter before them is deleted (#1271).
+    #[test]
+    fn kept_characters_keep_their_place_among_editing_keys() {
+        let mut t = CharTracker::default();
+        let mut kept = Kept::default();
+        let mut msg = |t: &mut CharTracker, m: u32, w: usize| {
+            t.message(m, w);
+            kept.take_from(t);
+        };
+        // "k": the consonant with the pulli, posted.
+        msg(&mut t, WM_CHAR, ch('க'));
+        msg(&mut t, WM_CHAR, ch('\u{0BCD}'));
+        // "i": Backspace takes the pulli, the vowel sign is posted.
+        msg(&mut t, WM_KEYDOWN, 0x08);
+        msg(&mut t, WM_CHAR, 0x08);
+        msg(&mut t, WM_KEYUP, 0x08);
+        msg(&mut t, WM_CHAR, ch('\u{0BBF}'));
+        assert_eq!(
+            kept.runs,
+            vec![(0, "க\u{0BCD}".to_string()), (1, "\u{0BBF}".to_string())]
+        );
+        let key = |pressed| egui::Event::Key {
+            key: egui::Key::Backspace,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let mut events = vec![key(true), key(false)];
+        merge_runs(&kept.runs, &mut events);
+        assert_eq!(
+            events,
+            vec![
+                egui::Event::Text("க\u{0BCD}".into()),
+                key(true),
+                key(false),
+                egui::Event::Text("\u{0BBF}".into()),
+            ]
+        );
+        // Typed in a text, they give the letter, nothing deleted before.
+        let mut app = crate::app::App::headless();
+        app.settings.autocorrect.enabled = false;
+        app.start_text(tracedraw_core::geometry::Point::new(0.0, 0.0), None);
+        app.text_insert("அ");
+        let ctx = crate::theme::ui_context();
+        let mut out = ctx.run_ui(
+            egui::RawInput {
+                events,
+                ..Default::default()
+            },
+            |ui| app.text_keyboard(ui.ctx()),
+        );
+        out.textures_delta.clear();
+        assert_eq!(app.edit_text(), "அகி");
+    }
+
+    /// Fonts that set a script's letters at the places of Latin ones
+    /// draw some at 0x80 to 0x9F: those characters type (#1358).
+    #[test]
+    fn characters_of_0x80_to_0x9f_are_kept() {
+        assert_eq!(feed(&[(WM_CHAR, 0x81), (WM_CHAR, 0x9D)]), "\u{81}\u{9d}");
+    }
+
+    /// `lost` kept with no editing key before it.
+    fn merge(lost: &str, events: &mut Vec<egui::Event>) {
+        merge_runs(&[(0, lost.to_string())], events);
     }
 
     #[test]
