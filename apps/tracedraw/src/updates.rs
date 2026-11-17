@@ -37,6 +37,13 @@ pub const STORE_PAGE: &str = "https://play.google.com/store/apps/details?id=dev.
 /// How often the check at start runs, seconds.
 pub const DAILY: u64 = 24 * 60 * 60;
 
+/// The version this build reports: the release tag it was built from
+/// or the development build of a commit, which the packaging scripts
+/// pass in through build.rs. Without them it is the crate version.
+pub fn version() -> &'static str {
+    option_env!("TRACEDRAW_BUILD_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"))
+}
+
 /// A release newer than this version.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Release {

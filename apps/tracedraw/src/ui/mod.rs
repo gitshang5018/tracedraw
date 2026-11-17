@@ -545,7 +545,7 @@ fn root_frame(app: &mut App, ui: &mut Ui) {
 }
 
 fn desktop(app: &mut App, ui: &mut Ui, ctx: &egui::Context) {
-    let ctx = ctx.clone();
+    let menu_bar = Panel::top("menu_bar")
         .frame(
             Frame::new()
                 .fill(Tokens::menu_bar())
