@@ -2495,6 +2495,7 @@ impl App {
             zoom,
             origin_x: -target_bounds.x0 * zoom,
             origin_y: target_bounds.y1 * zoom,
+            stretch_y: 1.0,
         };
 
         let opts = tracedraw_render::RenderOptions {

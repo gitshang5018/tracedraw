@@ -1255,6 +1255,27 @@ impl NodePrefs {
         let head = f64::from(self.control_head());
         self.pick_px().max(head * 1.25f64.sqrt() + 1.0)
     }
+
+    /// Length of a control handle's arrow head, screen pixels: the node
+    /// size's, scaled by the handle size (#1643, #3003).
+    pub fn control_head(&self) -> f32 {
+        self.size.handle_head() * self.handles.head_scale()
+    }
+
+    /// The object click distance in screen pixels, kept sensible
+    /// (#1679).
+    pub fn object_pick_px(&self) -> f64 {
+        let set = if self.object_pick_distance.is_finite() {
+            f64::from(self.object_pick_distance.clamp(0.0, 20.0))
+        } else {
+            3.0
+        };
+        if crate::ui::mobile::phone() {
+            set * 2.5
+        } else {
+            set
+        }
+    }
 }
 
 /// When new clip frame content is centred in its frame.

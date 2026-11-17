@@ -624,7 +624,7 @@ impl App {
                 return true;
             }
         }
-        let Some(index) = self.pick_guide_at(p) else {
+        let Some(index) = self.guide_at(p) else {
             return false;
         };
         let Some(g) = self.page_guides().get(index).copied() else {
@@ -664,7 +664,7 @@ impl App {
         if !extend && self.guide_pivot_at(p) {
             return true;
         }
-        let Some(index) = self.pick_guide_at(p) else {
+        let Some(index) = self.guide_at(p) else {
             return false;
         };
         if !self.selection.is_empty() {
@@ -1224,7 +1224,7 @@ mod tests {
             (p.x - 30.4).abs() < 1e-9,
             "not snapped to a hidden one: {p:?}"
         );
-        assert_eq!(app.pick_guide_at(Point::new(30.0, 10.0)), None);
+        assert_eq!(app.guide_at(Point::new(30.0, 10.0)), None);
         assert_eq!(app.guide_at(Point::new(10.0, 50.0)), Some(0));
         // The page's own eye too: nothing left on page 1, page 2 not
         // touched.

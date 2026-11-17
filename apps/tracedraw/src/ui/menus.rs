@@ -1066,7 +1066,7 @@ fn sub_row<R>(ui: &mut Ui, key: &str, add: impl FnOnce(&mut Ui) -> R) -> Option<
                 let _ = add(ui);
             });
         }
-        return;
+        return Some(resp);
     }
     let (resp, slot) = menu_row(ui, &tr(key), "", true, Mark::Submenu);
     row_picture(ui, resp.rect, key, true);

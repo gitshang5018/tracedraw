@@ -1050,6 +1050,7 @@ pub fn vectorize(img: &RgbaImage, options: &VectorizeOptions) -> Vec<crate::trac
                 path: sanitized,
                 color: Color::rgb8(rgb[0], rgb[1], rgb[2]),
                 closed: true,
+                blend: None,
             });
         }
     }

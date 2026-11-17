@@ -281,7 +281,7 @@ fn phone_start(app: &mut App, ui: &mut Ui, m3: &crate::ui::mobile::M3) {
     if phone_action(
         ui,
         m3,
-        icons::Action::Welcome,
+        icons::Action::Template,
         &tr("welcome.new_from_template"),
         false,
     )
