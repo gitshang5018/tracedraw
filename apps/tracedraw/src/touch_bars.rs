@@ -546,14 +546,14 @@ mod tests {
         app.select(vec![a, b]);
         // CenterH aligns horizontal centers (X centers match)
         BarCommand::Align(Align::CenterH).run(&mut app, egui::Pos2::ZERO);
-        let b_a = app.align_box(&app.doc().find_shape(a).unwrap());
-        let b_b = app.align_box(&app.doc().find_shape(b).unwrap());
+        let b_a = app.doc().find_shape(a).unwrap().bounds();
+        let b_b = app.doc().find_shape(b).unwrap().bounds();
         assert!((b_a.center().x - b_b.center().x).abs() < 1e-6);
 
         // CenterV aligns vertical centers (Y centers match)
         BarCommand::Align(Align::CenterV).run(&mut app, egui::Pos2::ZERO);
-        let b_a = app.align_box(&app.doc().find_shape(a).unwrap());
-        let b_b = app.align_box(&app.doc().find_shape(b).unwrap());
+        let b_a = app.doc().find_shape(a).unwrap().bounds();
+        let b_b = app.doc().find_shape(b).unwrap().bounds();
         assert!((b_a.center().y - b_b.center().y).abs() < 1e-6);
         BarCommand::Menu.run(&mut app, egui::pos2(5.0, 6.0));
         assert_eq!(app.context_menu.map(|(s, _)| s), Some(egui::pos2(5.0, 6.0)));
