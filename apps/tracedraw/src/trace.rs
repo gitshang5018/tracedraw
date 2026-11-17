@@ -4645,6 +4645,495 @@ pub fn blend_fill(
     tracedraw_core::Fill::Fountain(f)
 }
 
+/// Boundary rings of a binary mask (pixel-edge following). Outer rings are
+/// counter-clockwise and holes clockwise, so even-odd filling is right.
+pub fn contours(mask: &[bool], w: usize, h: usize) -> Vec<Vec<Point>> {
+    use std::collections::HashMap;
+    let at = |x: i64, y: i64| -> bool {
+        if x < 0 || y < 0 || x >= w as i64 || y >= h as i64 {
+            false
+        } else {
+            mask[y as usize * w + x as usize]
+        }
+    };
+    let mut edges: HashMap<(i64, i64), Vec<(i64, i64)>> = HashMap::new();
+    let mut push = |a: (i64, i64), b: (i64, i64)| edges.entry(a).or_default().push(b);
+    for y in 0..h as i64 {
+        for x in 0..w as i64 {
+            if !at(x, y) {
+                continue;
+            }
+            if !at(x, y - 1) {
+                push((x, y), (x + 1, y));
+            }
+            if !at(x + 1, y) {
+                push((x + 1, y), (x + 1, y + 1));
+            }
+            if !at(x, y + 1) {
+                push((x + 1, y + 1), (x, y + 1));
+            }
+            if !at(x - 1, y) {
+                push((x, y + 1), (x, y));
+            }
+        }
+    }
+    let mut rings = Vec::new();
+    let mut keys: Vec<(i64, i64)> = edges.keys().copied().collect();
+    keys.sort_unstable();
+    for start in keys {
+        while let Some(first) = edges.get_mut(&start).and_then(|v| v.pop()) {
+            let mut ring = vec![Point::new(start.0 as f64, start.1 as f64)];
+            let mut cur = first;
+            let mut prev = start;
+            let mut guard = 0;
+            while cur != start && guard < w * h * 4 {
+                ring.push(Point::new(cur.0 as f64, cur.1 as f64));
+                let Some(nexts) = edges.get_mut(&cur) else {
+                    break;
+                };
+                if nexts.is_empty() {
+                    break;
+                }
+                let dir = (cur.0 - prev.0, cur.1 - prev.1);
+                let right = (-dir.1, dir.0);
+                let pick = nexts
+                    .iter()
+                    .position(|n| (n.0 - cur.0, n.1 - cur.1) == right)
+                    .or_else(|| nexts.iter().position(|n| (n.0 - cur.0, n.1 - cur.1) == dir))
+                    .unwrap_or(0);
+                let next = nexts.remove(pick);
+                prev = cur;
+                cur = next;
+                guard += 1;
+            }
+            let mut compact: Vec<Point> = Vec::new();
+            for p in ring {
+                let n = compact.len();
+                if n >= 2 {
+                    let a = compact[n - 2];
+                    let b = compact[n - 1];
+                    if (b.x - a.x) * (p.y - b.y) - (b.y - a.y) * (p.x - b.x) == 0.0 {
+                        compact.pop();
+                    }
+                }
+                compact.push(p);
+            }
+            if compact.len() >= 3 {
+                rings.push(compact);
+            }
+        }
+    }
+    rings
+}
+
+fn polyline_closed(pts: &[Point]) -> BezPath {
+    let mut p = BezPath::new();
+    if let Some(f) = pts.first() {
+        p.move_to(*f);
+        for q in &pts[1..] {
+            p.line_to(*q);
+        }
+        p.close_path();
+    }
+    p
+}
+
+fn fit_ring(ring: &[Point], s: &Settings) -> BezPath {
+    let mut pts: Vec<Point> = Vec::new();
+    let mut starts: Vec<Point> = Vec::new();
+    let n = ring.len();
+    for i in 0..n {
+        let (a, b) = (ring[i], ring[(i + 1) % n]);
+        let steps = (b - a).hypot().round().max(1.0) as usize;
+        for k in 0..steps {
+            starts.push(a.lerp(b, k as f64 / steps as f64));
+            pts.push(a.lerp(b, (k as f64 + 0.5) / steps as f64));
+        }
+    }
+    let n = pts.len();
+    if n < 4 {
+        return polyline_closed(&pts);
+    }
+    let reach = 3usize.min(n / 4).max(1);
+    let threshold = (60.0 + s.corner_smoothness.clamp(0.0, 100.0) * 0.8).to_radians();
+    let at = |i: isize| pts[i.rem_euclid(n as isize) as usize];
+    let turn: Vec<f64> = (0..n as isize)
+        .map(|i| {
+            let (a, b, c) = (at(i - reach as isize), at(i), at(i + reach as isize));
+            let (u, v) = (b - a, c - b);
+            u.cross(v).atan2(u.dot(v)).abs()
+        })
+        .collect();
+    let mut corners: Vec<usize> = (0..n)
+        .filter(|&i| {
+            turn[i] > threshold
+                && (1..=reach as isize).all(|d| {
+                    let before = turn[(i as isize - d).rem_euclid(n as isize) as usize];
+                    let after = turn[(i as isize + d).rem_euclid(n as isize) as usize];
+                    turn[i] >= before && turn[i] > after
+                })
+        })
+        .collect();
+    let mut is_corner = vec![false; n];
+    for &c in &corners {
+        is_corner[c] = true;
+        let mid = pts[(c + n - 1) % n].midpoint(pts[(c + 1) % n]);
+        let (a, b) = (starts[c], starts[(c + 1) % n]);
+        pts[c] = if (a - mid).hypot() > (b - mid).hypot() {
+            a
+        } else {
+            b
+        };
+    }
+    let passes = (1.0 + s.smoothing.clamp(0.0, 100.0) / 100.0 * 12.0).round() as usize;
+    for _ in 0..passes {
+        let prev = pts.clone();
+        for i in 0..n {
+            if is_corner[i] {
+                continue;
+            }
+            let a = prev[(i + n - 1) % n];
+            let c = prev[(i + 1) % n];
+            pts[i] = Point::new(
+                (a.x + 2.0 * prev[i].x + c.x) / 4.0,
+                (a.y + 2.0 * prev[i].y + c.y) / 4.0,
+            );
+        }
+    }
+    let tolerance = 0.2 + (100.0 - s.detail.clamp(0.0, 100.0)) / 100.0;
+    let mut out = BezPath::new();
+    if corners.is_empty() {
+        let tangent = |i: usize| unit(pts[(i + reach) % n] - pts[(i + n - reach) % n]);
+        let cuts: Vec<usize> = (0..4).map(|k| k * n / 4).collect();
+        out.move_to(pts[0]);
+        for k in 0..4 {
+            let (a, b) = (cuts[k], cuts[(k + 1) % 4]);
+            let mut piece: Vec<Point> = if b > a {
+                pts[a..=b].to_vec()
+            } else {
+                pts[a..].to_vec()
+            };
+            if b <= a {
+                piece.push(pts[0]);
+            }
+            fit_cubics(&piece, tangent(a), -tangent(b), tolerance, &mut out);
+        }
+        out.close_path();
+        return out;
+    }
+    corners.sort_unstable();
+    out.move_to(pts[corners[0]]);
+    for k in 0..corners.len() {
+        let a = corners[k];
+        let b = corners[(k + 1) % corners.len()];
+        let mut piece: Vec<Point> = Vec::new();
+        let mut i = a;
+        loop {
+            piece.push(pts[i]);
+            if i == b && piece.len() > 1 {
+                break;
+            }
+            i = (i + 1) % n;
+            if piece.len() > n + 1 {
+                break;
+            }
+        }
+        if piece.len() < 2 {
+            continue;
+        }
+        let m = piece.len();
+        let far = TANGENT_REACH.min(m - 1);
+        let t1 = unit(piece[far] - piece[0]);
+        let t2 = unit(piece[m - 1 - far] - piece[m - 1]);
+        fit_cubics(&piece, t1, t2, tolerance, &mut out);
+    }
+    out.close_path();
+    out
+}
+
+const COLOUR_TOLERANCE: u32 = 25;
+
+fn border_colour(img: &RgbaImage) -> [u8; 3] {
+    let (w, h) = (img.width(), img.height());
+    let mut bins: std::collections::HashMap<(u8, u8, u8), (u64, u64, u64, u64)> =
+        std::collections::HashMap::new();
+    {
+        let mut count = |x: u32, y: u32| {
+            let p = img.get_pixel(x, y);
+            let key = (p[0] & 0xf8, p[1] & 0xf8, p[2] & 0xf8);
+            let e = bins.entry(key).or_insert((0, 0, 0, 0));
+            e.0 += p[0] as u64;
+            e.1 += p[1] as u64;
+            e.2 += p[2] as u64;
+            e.3 += 1;
+        };
+        for x in 0..w {
+            count(x, 0);
+            if h > 1 {
+                count(x, h - 1);
+            }
+        }
+        for y in 0..h {
+            count(0, y);
+            if w > 1 {
+                count(w - 1, y);
+            }
+        }
+    }
+    bins.into_values()
+        .max_by_key(|e| e.3)
+        .map(|(r, g, b, n)| [(r / n) as u8, (g / n) as u8, (b / n) as u8])
+        .unwrap_or([255, 255, 255])
+}
+
+fn brightness(p: &image::Rgba<u8>) -> u8 {
+    ((p[0] as u32 * 299 + p[1] as u32 * 587 + p[2] as u32 * 114) / 1000) as u8
+}
+
+fn corner_mask(img: &RgbaImage) -> Vec<bool> {
+    let (w, h) = (img.width(), img.height());
+    let corners = [
+        img.get_pixel(0, 0),
+        img.get_pixel(w.saturating_sub(1), 0),
+        img.get_pixel(0, h.saturating_sub(1)),
+        img.get_pixel(w.saturating_sub(1), h.saturating_sub(1)),
+    ];
+    img.pixels()
+        .map(|p| {
+            let c = [p[0], p[1], p[2]];
+            corners
+                .iter()
+                .all(|q| distance2(c, [q[0], q[1], q[2]]) > 60 * 60)
+        })
+        .collect()
+}
+
+fn brightness_mask(img: &RgbaImage) -> Vec<bool> {
+    let (w, h) = (img.width(), img.height());
+    let total = w as u64 * h as u64;
+    if total == 0 {
+        return Vec::new();
+    }
+    let mut hist = [0u64; 256];
+    for p in img.pixels() {
+        hist[brightness(p) as usize] += 1;
+    }
+    let sum: f64 = (0..256).map(|i| i as f64 * hist[i] as f64).sum();
+    let (mut seen, mut seen_sum, mut best, mut at) = (0u64, 0.0f64, -1.0f64, 128u8);
+    for t in 0..256 {
+        seen += hist[t];
+        if seen == 0 {
+            continue;
+        }
+        let left = total - seen;
+        if left == 0 {
+            break;
+        }
+        seen_sum += t as f64 * hist[t] as f64;
+        let below = seen_sum / seen as f64;
+        let above = (sum - seen_sum) / left as f64;
+        let between = seen as f64 * left as f64 * (below - above) * (below - above);
+        if between > best {
+            best = between;
+            at = t as u8;
+        }
+    }
+    let (mut dark, mut light) = (0u32, 0u32);
+    {
+        let mut tally = |x: u32, y: u32| {
+            if brightness(img.get_pixel(x, y)) <= at {
+                dark += 1;
+            } else {
+                light += 1;
+            }
+        };
+        for x in 0..w {
+            tally(x, 0);
+            if h > 1 {
+                tally(x, h - 1);
+            }
+        }
+        for y in 0..h {
+            tally(0, y);
+            if w > 1 {
+                tally(w - 1, y);
+            }
+        }
+    }
+    let paper_is_dark = dark > light;
+    let ink = |p: &image::Rgba<u8>| {
+        let l = brightness(p);
+        if paper_is_dark {
+            l > at
+        } else {
+            l <= at
+        }
+    };
+    let mut mask: Vec<bool> = img.pixels().map(ink).collect();
+    let marked = mask.iter().filter(|m| **m).count() as u64;
+    if marked == 0 || marked * 50 > total * 49 {
+        mask = corner_mask(img);
+    }
+    mask
+}
+
+fn subject_mask(img: &RgbaImage) -> Vec<bool> {
+    let (w, h) = (img.width(), img.height());
+    if img.pixels().any(|p| p[3] < 250) {
+        return img.pixels().map(|p| p[3] >= 128).collect();
+    }
+    let total = w as u64 * h as u64;
+    if total == 0 {
+        return Vec::new();
+    }
+    let background = border_colour(img);
+    let far = COLOUR_TOLERANCE * COLOUR_TOLERANCE;
+    let mut mask: Vec<bool> = img
+        .pixels()
+        .map(|p| distance2([p[0], p[1], p[2]], background) > far)
+        .collect();
+    let marked = mask.iter().filter(|m| **m).count() as u64;
+    if marked * 50 > total * 49 {
+        mask = brightness_mask(img);
+    }
+    mask
+}
+
+fn cross(f: &[f64], a: usize, b: usize) -> f64 {
+    let (a, b) = (a as f64, b as f64);
+    ((f[b as usize] + b * b) - (f[a as usize] + a * a)) / (2.0 * b - 2.0 * a)
+}
+
+fn distance_1d(f: &[f64], far: f64) -> Vec<f64> {
+    let n = f.len();
+    let mut d = vec![far; n];
+    if n == 0 {
+        return d;
+    }
+    let mut v = vec![0usize; n];
+    let mut z = vec![0.0f64; n + 1];
+    let mut k = 0usize;
+    v[0] = 0;
+    z[0] = f64::NEG_INFINITY;
+    z[1] = f64::INFINITY;
+    for q in 1..n {
+        let mut s = cross(f, v[k], q);
+        while k > 0 && s <= z[k] {
+            k -= 1;
+            s = cross(f, v[k], q);
+        }
+        k += 1;
+        v[k] = q;
+        z[k] = s;
+        z[k + 1] = f64::INFINITY;
+    }
+    k = 0;
+    for q in 0..n {
+        while z[k + 1] < q as f64 {
+            k += 1;
+        }
+        let dq = q as f64 - v[k] as f64;
+        d[q] = dq * dq + f[v[k]];
+    }
+    d
+}
+
+fn dilate(mask: &[bool], w: usize, h: usize, r: usize) -> Vec<bool> {
+    if mask.len() != w * h {
+        return vec![false; w * h];
+    }
+    if r == 0 {
+        return mask.to_vec();
+    }
+    let far = ((w.max(h) * w.max(h)) as f64) + 1.0;
+    let mut grid = vec![far; w * h];
+    let mut line = vec![0.0f64; w.max(h)];
+    for y in 0..h {
+        for x in 0..w {
+            line[x] = if mask[y * w + x] { 0.0 } else { far };
+        }
+        let d = distance_1d(&line[..w], far);
+        grid[y * w..(y + 1) * w].copy_from_slice(&d);
+    }
+    for x in 0..w {
+        for y in 0..h {
+            line[y] = grid[y * w + x];
+        }
+        let d = distance_1d(&line[..h], far);
+        for y in 0..h {
+            grid[y * w + x] = d[y];
+        }
+    }
+    let rr = (r * r) as f64;
+    let mut out = vec![false; w * h];
+    for i in 0..w * h {
+        out[i] = grid[i] <= rr;
+    }
+    out
+}
+
+pub fn contour_paths(img: &RgbaImage, expand: f64, detail: f64, smoothing: f64) -> Vec<BezPath> {
+    let (w, h) = (img.width() as usize, img.height() as usize);
+    if w == 0 || h == 0 {
+        return Vec::new();
+    }
+    let r = expand.abs().round() as usize;
+    let pad = if expand > 0.0 && r > 0 { r + 2 } else { 0 };
+    let (pw, ph) = (w + 2 * pad, h + 2 * pad);
+    let mut mask = if pad == 0 {
+        subject_mask(img)
+    } else {
+        let inner = subject_mask(img);
+        let mut room = vec![false; pw * ph];
+        for y in 0..h {
+            for x in 0..w {
+                if inner[y * w + x] {
+                    room[(y + pad) * pw + (x + pad)] = true;
+                }
+            }
+        }
+        room
+    };
+    if !mask.iter().any(|m| *m) {
+        return Vec::new();
+    }
+    if r > 0 && r < w.min(h) {
+        if expand > 0.0 {
+            mask = dilate(&mask, pw, ph, r);
+        } else {
+            let inverted: Vec<bool> = mask.iter().map(|m| !m).collect();
+            let grown = dilate(&inverted, pw, ph, r);
+            mask = grown.iter().map(|m| !m).collect();
+        }
+    }
+    let keep = detail.clamp(0.0, 100.0);
+    let epsilon = 0.5 + (100.0 - keep) / 100.0 * 1.25;
+    let mut settings = Preset::Logo.settings();
+    settings.detail = detail;
+    settings.smoothing = smoothing;
+    settings.corner_smoothness = smoothing;
+    contours(&mask, pw, ph)
+        .into_iter()
+        .map(|ring| {
+            let ring: Vec<Point> = if pad > 0 {
+                ring.into_iter()
+                    .map(|p| Point::new(p.x - pad as f64, p.y - pad as f64))
+                    .collect()
+            } else {
+                ring
+            };
+            let steps = tracedraw_core::geometry::simplify(&ring, epsilon);
+            if steps.len() < 3 {
+                return fit_ring(&ring, &settings);
+            }
+            if smoothing <= 0.0 {
+                return polyline_closed(&steps);
+            }
+            fit_ring(&steps, &settings)
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

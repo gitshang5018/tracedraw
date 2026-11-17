@@ -1818,7 +1818,7 @@ impl App {
             if self.rotate_mode {
                 ROTATE_HANDLE_PX * 2.2
             } else {
-                HANDLE_PX * 2.5
+                self.handle_reach() * 2.5
             }
         } else if self.rotate_mode {
             ROTATE_HANDLE_PX

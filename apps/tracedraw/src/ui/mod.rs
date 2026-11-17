@@ -379,6 +379,36 @@ pub(crate) fn clear_focus_on_outside_click(ctx: &egui::Context) {
     ctx.memory_mut(|m| m.stop_text_input());
 }
 
+/// widget (a field of the bars), which then took the keys typed after
+/// the tab (#1667). That move is called off before any widget is drawn.
+/// A dialog keeps its own Tab order (`chrome::keep_tab_in`), and a
+/// focused field passes the focus on as usual.
+fn keep_tab_on_the_drawing(app: &App, ctx: &egui::Context) {
+    if app.show_welcome
+        || !matches!(app.dialog, crate::ui::dialogs::Dialog::None)
+        || app.macros.modal()
+        || ctx.memory(|m| m.focused()).is_some()
+    {
+        return;
+    }
+    let tab = ctx.input(|i| {
+        i.raw.events.iter().any(|e| {
+            matches!(
+                e,
+                egui::Event::Key {
+                    key: egui::Key::Tab,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } if !modifiers.any() || modifiers.shift_only()
+            )
+        })
+    });
+    if tab {
+        ctx.memory_mut(|m| m.move_focus(egui::FocusDirection::None));
+    }
+}
+
 fn root_frame(app: &mut App, ui: &mut Ui) {
     clear_focus_on_outside_click(ui.ctx());
     // The rest of a notch a number field took scrolls nothing (#783).
@@ -1028,6 +1058,11 @@ fn canvas_window(app: &mut App, ui: &mut Ui, full: egui::Rect, bare: bool) {
         0.0
     };
     let sb = if bare { 0.0 } else { window_bars::BAR };
+    let vbar = if !bare && app.settings.show_scrollbars {
+        sb
+    } else {
+        0.0
+    };
     let canvas_rect = egui::Rect::from_min_max(
         full.min + egui::vec2(ruler, ruler),
         full.max - egui::vec2(vbar, sb),

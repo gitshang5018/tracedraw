@@ -1039,42 +1039,6 @@ pub struct TextShown {
     pub strikethrough: Option<bool>,
 }
 
-/// What the page shows while nodes are dragged (see
-/// [`App::node_drag_shown`]): the drawing's revision before the drag.
-#[derive(Debug, Clone, Copy)]
-pub struct NodeDragShown {
-    pub revision: u64,
-}
-
-impl App {
-    /// A step of a node, handle, segment or node transform drag is about
-    /// to change the drawing: the page keeps showing the drawing as it
-    /// was before the drag until the button is released (#1259).
-    /// `begun`: a step of this drag was recorded before (its first step
-    /// takes the revision to show).
-    pub(crate) fn note_node_drag_step(&mut self, begun: bool) {
-        if begun && self.node_drag_shown.is_some() {
-            return;
-        }
-        self.node_drag_shown = Some(NodeDragShown {
-            revision: self.engine.revision(),
-        });
-    }
-
-    /// The revision of the drawing the page shows: during a node drag
-    /// the one before the drag; `None` when no such drag is under way.
-    pub fn node_drag_revision(&self) -> Option<u64> {
-        let dragging = matches!(
-            self.drag,
-            Drag::NodeMove { begun: true, .. }
-                | Drag::SegmentBend { begun: true, .. }
-                | Drag::NodeTransform { begun: true, .. }
-                | Drag::Handle { .. }
-        );
-        self.node_drag_shown.filter(|_| dragging).map(|s| s.revision)
-    }
-}
-
 pub struct App {
     pub engine: Engine,
     pub page: PageId,

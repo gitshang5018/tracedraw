@@ -1313,7 +1313,7 @@ fn grid_row(app: &App, ui: &mut Ui, act: &mut Actions) {
 fn object_rows(app: &App, ui: &mut Ui, s: &Shape, depth: usize, act: &mut Actions) {
     let selected = app.selection.contains(&s.id);
     act.row_order.push(s.id);
-    let height = (act.thumb_size + 6.0).max(ROW_H);
+    let height = (act.thumb_size + 6.0).max(row_h());
     let (rect, resp) = row_of(ui, Look::Object { selected }, height);
     if act.scroll_to == Some(s.id) {
         ui.scroll_to_rect(rect, None);

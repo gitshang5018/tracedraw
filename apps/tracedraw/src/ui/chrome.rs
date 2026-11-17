@@ -1028,6 +1028,32 @@ pub fn message_box_check(
     )
 }
 
+const WARNING_RED: egui::Color32 = egui::Color32::from_rgb(0xD9, 0x1E, 0x18);
+
+/// `text` laid out for a message box: the parts between `**` marks red
+/// and underlined, the rest in the text colour.
+fn message_job(ui: &Ui, text: &str) -> egui::text::LayoutJob {
+    let font = egui::FontId::proportional(13.5);
+    let normal = egui::TextFormat::simple(font.clone(), ui.visuals().text_color());
+    let marked = egui::TextFormat {
+        color: WARNING_RED,
+        underline: egui::Stroke::new(1.0, WARNING_RED),
+        ..egui::TextFormat::simple(font, WARNING_RED)
+    };
+    let mut job = egui::text::LayoutJob::default();
+    for (i, part) in text.split("**").enumerate() {
+        if !part.is_empty() {
+            let format = if i % 2 == 1 {
+                marked.clone()
+            } else {
+                normal.clone()
+            };
+            job.append(part, 0.0, format);
+        }
+    }
+    job
+}
+
 fn message_box_with(
     ctx: &Context,
     icon: MessageIcon,

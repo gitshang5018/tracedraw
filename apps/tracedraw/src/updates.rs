@@ -1915,6 +1915,11 @@ pub(crate) fn download(url: &str) -> Result<Box<dyn std::io::Read + Send>, Strin
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn open_stream(url: &str) -> Result<Box<dyn std::io::Read + Send>, String> {
+    download(url)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn fetch() -> Result<String, String> {
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_global(Some(std::time::Duration::from_secs(20)))
