@@ -10,7 +10,7 @@ mod tests {
         include_str!("../../../packaging/android/java/dev/tracedraw/app/TraceDrawActivity.java");
     const BUILD: &str = include_str!("../../../scripts/android/build.sh");
     const CARGO: &str = include_str!("../Cargo.toml");
-    const CI: &str = include_str!("../../../.github/workflows/build.yml");
+    const CI: &str = include_str!("../../../.github/workflows/build.yml.disabled");
     const BRIDGE: &str = include_str!("android.rs");
     const TEXT_VIEW: &str =
         include_str!("../../../packaging/android/java/dev/tracedraw/app/TextInputView.java");

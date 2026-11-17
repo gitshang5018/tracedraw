@@ -6674,7 +6674,7 @@ mod tests {
         assert_eq!(lines_of(&app, Row::Main), 1);
         let clock = std::cell::Cell::new(0.0);
         // One frame of the dialog with `events`; each text drawn and where.
-        let mut frame = |app: &mut App, events: Vec<egui::Event>| {
+        let frame = |app: &mut App, events: Vec<egui::Event>| {
             clock.set(clock.get() + 0.1);
             let input = egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(

@@ -1166,7 +1166,7 @@ mod tests {
     #[test]
     fn a_palette_colour_goes_to_cells_chosen_with_the_pick_or_shape_tool() {
         use tracedraw_core::Color;
-        let (mut app, id) = app_with_table();
+        let (mut app, _id) = app_with_table();
         let filled = |app: &App| -> Vec<(u32, u32, Option<Fill>)> {
             let t = table(app);
             let mut v: Vec<_> = t

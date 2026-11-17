@@ -2110,7 +2110,7 @@ mod tests {
     /// on any Windows, recommending the x86_64 setup on 64-bit Windows.
     #[test]
     fn the_release_builds_the_32_bit_windows_files() {
-        let ci = include_str!("../../../.github/workflows/build.yml");
+        let ci = include_str!("../../../.github/workflows/build.yml.disabled");
         let iss = include_str!("../../../packaging/windows/tracedraw.iss");
         let cargo = include_str!("../../../.cargo/config.toml");
         assert!(ci.contains("target: i686-pc-windows-msvc"));

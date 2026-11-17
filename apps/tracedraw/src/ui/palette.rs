@@ -2699,7 +2699,7 @@ mod tests {
         App::setup_context(&ctx);
         let clock = std::cell::Cell::new(0.0);
         // One frame with `events`; the place of each text drawn.
-        let mut frame = |app: &mut App, events: Vec<egui::Event>| -> Vec<(String, egui::Rect)> {
+        let frame = |app: &mut App, events: Vec<egui::Event>| -> Vec<(String, egui::Rect)> {
             clock.set(clock.get() + 0.1);
             let input = egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
