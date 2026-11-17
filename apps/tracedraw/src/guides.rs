@@ -34,8 +34,6 @@ fn handle_pick_px() -> f64 {
     }
 }
 
-/// Which preset guidelines Document Options > Guidelines > Presets adds.
-
 /// Which preset guidelines Document Setup > Guidelines > Presets adds.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum GuidePreset {

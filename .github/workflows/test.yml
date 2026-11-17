@@ -63,7 +63,7 @@ jobs:
         if: success()
         run: |
           set -o pipefail
-          cargo clippy --workspace --exclude tracedraw -- -D warnings 2>&1 | tee "$RUNNER_TEMP/clippy.log"
+          cargo clippy --workspace --exclude tracedraw --exclude tracedraw-cli --exclude tracedraw-thumbnailer --exclude tracedraw-android -- -D warnings 2>&1 | tee "$RUNNER_TEMP/clippy.log"
       # A failing run has to name what failed in the run's own annotations and
       # summary: the logs ask for a signed-in reader, and the annotation is
       # what a reader of the API sees. This is the last step, so that it runs

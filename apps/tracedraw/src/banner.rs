@@ -12,7 +12,7 @@
 
 use crate::app::App;
 use tracedraw_core::{
-    document::{text_outline::TextRequest, ParagraphStyle, Shape, ShapeKind, TextAlign, TextSpan, VerticalAlign},
+    document::{text_outline::TextRequest, ParagraphStyle, Shape, ShapeKind, TextAlign, TextSpan},
     geometry::{Affine, Point, Rect, Size},
     Color, Command, Fill, Stroke,
 };

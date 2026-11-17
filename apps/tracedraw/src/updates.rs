@@ -1022,6 +1022,30 @@ impl Installer {
     }
 }
 
+/// Remove files left behind by an update of a Windows copy: the running
+/// program cannot be replaced on Windows, so the old executable was moved
+/// aside to `.tracedraw*.old` and left for the next start to clean up.
+pub fn clean_leftovers() {
+    if !cfg!(windows) {
+        return;
+    }
+    let Some(dir) = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(std::path::Path::to_path_buf))
+    else {
+        return;
+    };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.starts_with(".tracedraw") && name.ends_with(".old") {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 pub fn download(url: &str) -> Result<Box<dyn std::io::Read + Send>, String> {
     // The proxy first, since a network that needs it is the one that

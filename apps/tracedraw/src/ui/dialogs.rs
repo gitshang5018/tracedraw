@@ -8076,7 +8076,7 @@ fn paragraph_dialog(app: &mut App, ctx: &Context, which: &Dialog, close: &mut bo
         match which {
             Dialog::TextTabs => {
                 let mobile = crate::ui::mobile::phone();
-                use tracedraw_core::{TabKind, TabStop};
+                use tracedraw_core::TabKind;
                 ui.label(tr("dialog.tab_stops"));
                 if p.tabs.is_empty() {
                     ui.label(

@@ -2406,7 +2406,7 @@ fn subpaths(path: &BezPath) -> Vec<BezPath> {
 /// A ring inside a bigger one is that one's hole; a ring inside nothing is
 /// an outline of its own.
 fn ring_bodies(rings: &[BezPath]) -> Vec<Vec<usize>> {
-    let flats: Vec<Vec<(f64, f64)>> = rings.iter().map(|r| flatten_ring(r)).collect();
+    let flats: Vec<Vec<(f64, f64)>> = rings.iter().map(flatten_ring).collect();
     let areas: Vec<f64> = flats.iter().map(|p| ring_area(p).abs()).collect();
     let n = rings.len();
     let mut outline_of: Vec<Option<usize>> = vec![None; n];
@@ -2438,8 +2438,8 @@ fn ring_bodies(rings: &[BezPath]) -> Vec<Vec<usize>> {
             continue;
         }
         let mut body = vec![i];
-        for k in 0..n {
-            if outline_of[k] == Some(i) {
+        for (k, &parent) in outline_of.iter().enumerate() {
+            if parent == Some(i) {
                 body.push(k);
             }
         }

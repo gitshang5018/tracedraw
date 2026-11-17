@@ -785,7 +785,7 @@ fn visible_page_rect(opts: &RenderOptions) -> Rect {
 /// nodes of a variable width are counted on their own).
 const OUTLINE_REACH: f64 = 12.0;
 
-/// Paths drawn on this thread, for tests.
+// Paths drawn on this thread, for tests.
 #[cfg(test)]
 thread_local! {
     static PATHS_DRAWN: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
@@ -5738,7 +5738,7 @@ mod tests {
         let mut eng = Engine::new(doc);
         let about =
             |a: Affine| Affine::translate((50.0, 50.0)) * a * Affine::translate((-50.0, -50.0));
-        let mut turn = |eng: &mut Engine, t: Affine| {
+        let turn = |eng: &mut Engine, t: Affine| {
             eng.run(&Command::TransformShapes {
                 shapes: vec![tracedraw_core::ShapeId(1)],
                 transform: about(t),
