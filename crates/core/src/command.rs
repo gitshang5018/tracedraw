@@ -4174,6 +4174,7 @@ mod tests {
             .map(|s| matches!(s.kind, ShapeKind::Path { closed: true, .. }))
             .collect();
         assert_eq!(closed, vec![false, false, true]);
+    }
 
     /// A ring for `SplitBodies`: four corners, closed.
     fn add_ring(path: &mut BezPath, x: f64, y: f64, side: f64) {
