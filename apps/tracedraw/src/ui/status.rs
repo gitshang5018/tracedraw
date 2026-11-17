@@ -968,7 +968,7 @@ mod tests {
         let mut app = App::headless();
         app.show_welcome = false;
         app.settings.status_info = StatusInfo::ToolHints;
-        let mut has_tip = |app: &mut App, width: f32| {
+        let has_tip = |app: &mut App, width: f32| {
             let mut out = ctx.run_ui(
                 egui::RawInput {
                     screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(width, 60.0))),

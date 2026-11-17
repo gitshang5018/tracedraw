@@ -4996,7 +4996,6 @@ pub(crate) mod text_tests {
     /// it stays text.
     #[test]
     fn embedded_text_reads_back_as_curves() {
-        use tracedraw_core::geometry::Shape as _;
         let doc = doc_with(
             vec![TextSpan::new("Hello PDF", "Quicksand", 24.0)],
             black(),

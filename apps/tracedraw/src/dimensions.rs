@@ -3293,7 +3293,7 @@ mod tests {
             dims.push(app.selection[0]);
         }
         app.bake_dimensions();
-        let mut time = |app: &mut App| {
+        let time = |app: &mut App| {
             let start = web_time::Instant::now();
             for _ in 0..100 {
                 app.text_insert("x");
@@ -3317,7 +3317,7 @@ mod tests {
     #[test]
     #[ignore]
     fn frame_times_dragging_an_object_with_dimensions() {
-        let mut page = |place: fn(i: f64) -> (Point, Point)| {
+        let page = |place: fn(i: f64) -> (Point, Point)| {
             let mut app = App::headless();
             app.view.zoom = 1.0;
             for i in 0..400 {
@@ -3667,10 +3667,13 @@ mod tests {
     #[test]
     fn clear_all_dimensions_removes_dimensions_and_supports_undo() {
         let mut app = App::headless();
-        let rect = app.new_shape(ShapeKind::Rect {
-            rect: Rect::from_origin_size((0.0, 0.0), (100.0, 50.0)),
-            radii: [0.0; 4],
-        });
+        let rect = app
+            .new_shape(ShapeKind::Rect {
+                rect: Rect::from_origin_size((0.0, 0.0), (100.0, 50.0)),
+                radius: 0.0,
+                corners: None,
+            })
+            .unwrap();
         app.select(vec![rect]);
         app.auto_dimension_selection();
 

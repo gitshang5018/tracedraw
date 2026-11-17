@@ -1017,7 +1017,7 @@ mod tests {
             length_mode: LengthMode::Fixed,
             ..Banner::default()
         };
-        let (w, _h, size_pt, scale) = banner.calculate_size(&banner.slogans[0]);
+        let (w, _h, _size_pt, _scale) = banner.calculate_size(&banner.slogans[0]);
         let (_, _, shapes) = banner.build_single(&banner.slogans[0], 0.0, 0.0);
         let sign_shape = shapes.iter().find(|(kind, _, _, _)| {
             if let ShapeKind::Text { spans, .. } = kind {

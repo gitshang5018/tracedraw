@@ -9689,11 +9689,9 @@ pub(crate) mod tests {
         let release = Release {
             version: "9.0.0".into(),
             page: "https://example.org/r".into(),
-            notes: "The notes of the release.".into(),
             download: None,
             installer: Some(Package {
                 url: "https://example.org/a.AppImage".into(),
-                mirror: None,
                 sha256: "0".repeat(64),
                 size: 3 << 20,
             }),

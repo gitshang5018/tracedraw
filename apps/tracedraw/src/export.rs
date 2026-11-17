@@ -3231,10 +3231,13 @@ mod tests {
     #[test]
     fn render_proof_image_outputs_valid_png_and_respects_bounds() {
         let mut app = App::headless();
-        let rect = app.new_shape(ShapeKind::Rect {
-            rect: Rect::from_origin_size((0.0, 0.0), (200.0, 100.0)),
-            radii: [0.0; 4],
-        });
+        let rect = app
+            .new_shape(ShapeKind::Rect {
+                rect: Rect::from_origin_size((0.0, 0.0), (200.0, 100.0)),
+                radius: 0.0,
+                corners: None,
+            })
+            .unwrap();
         app.select(vec![rect]);
         app.auto_dimension_selection();
 
@@ -5404,7 +5407,7 @@ mod tests {
         app.set_facing_pages(true, tracedraw_core::spreads::PageSide::Right);
         app.page = app.doc().pages[1].id;
         let size = app.doc().pages[1].size;
-        let id = app
+        let _id = app
             .new_shape(ShapeKind::Rect {
                 rect: Rect::new(size.width - 20.0, 10.0, size.width + 30.0, 40.0),
                 radius: 0.0,

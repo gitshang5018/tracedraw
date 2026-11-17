@@ -2230,7 +2230,7 @@ mod smoke_tests {
     fn splitting_a_compound_makes_one_object_per_letter() {
         let mut app = App::headless();
         let mut path = BezPath::new();
-        let mut ring = |p: &mut BezPath, x: f64, y: f64, s: f64| {
+        let ring = |p: &mut BezPath, x: f64, y: f64, s: f64| {
             p.move_to((x, y));
             p.line_to((x + s, y));
             p.line_to((x + s, y + s));
@@ -2273,7 +2273,7 @@ mod smoke_tests {
     fn back_minus_front_with_a_group_keeps_each_objects_colours() {
         use tracedraw_core::{Color, Fill};
         let mut app = App::headless();
-        let mut square = |app: &mut App, r: Rect, c: Color| {
+        let square = |app: &mut App, r: Rect, c: Color| {
             let id = app
                 .new_shape(ShapeKind::Rect {
                     rect: r,
