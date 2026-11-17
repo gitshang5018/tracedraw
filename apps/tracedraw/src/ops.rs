@@ -129,10 +129,10 @@ impl App {
                 match how {
                     Align::Left => Vec2::new(gx(b.x0) - b.x0, 0.0),
                     Align::Right => Vec2::new(gx(b.x1) - b.x1, 0.0),
-                    Align::CenterV => Vec2::new(gx(b.center().x) - b.center().x, 0.0),
+                    Align::CenterH => Vec2::new(gx(b.center().x) - b.center().x, 0.0),
                     Align::Top => Vec2::new(0.0, gy(b.y1) - b.y1),
                     Align::Bottom => Vec2::new(0.0, gy(b.y0) - b.y0),
-                    Align::CenterH => Vec2::new(0.0, gy(b.center().y) - b.center().y),
+                    Align::CenterV => Vec2::new(0.0, gy(b.center().y) - b.center().y),
                     Align::CenterPage => Vec2::ZERO,
                 }
             } else {
@@ -141,8 +141,8 @@ impl App {
                     Align::Right => Vec2::new(target.x1 - b.x1, 0.0),
                     Align::Top => Vec2::new(0.0, target.y1 - b.y1),
                     Align::Bottom => Vec2::new(0.0, target.y0 - b.y0),
-                    Align::CenterH => Vec2::new(0.0, target.center().y - b.center().y),
-                    Align::CenterV => Vec2::new(target.center().x - b.center().x, 0.0),
+                    Align::CenterH => Vec2::new(target.center().x - b.center().x, 0.0),
+                    Align::CenterV => Vec2::new(0.0, target.center().y - b.center().y),
                     Align::CenterPage => target.center() - b.center(),
                 }
             };

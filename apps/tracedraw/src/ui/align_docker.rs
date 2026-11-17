@@ -198,10 +198,10 @@ fn paint(p: &Painter, r: Rect, icon: Icon, color: Color32) {
     match icon {
         Icon::Align(a) => match a {
             Align::Left => align_picture(&pen(false), 0),
-            Align::CenterV => align_picture(&pen(false), 1),
+            Align::CenterH => align_picture(&pen(false), 1),
             Align::Right => align_picture(&pen(false), 2),
             Align::Top => align_picture(&pen(true), 0),
-            Align::CenterH => align_picture(&pen(true), 1),
+            Align::CenterV => align_picture(&pen(true), 1),
             Align::Bottom | Align::CenterPage => align_picture(&pen(true), 2),
         },
         Icon::Distribute(d) => match d {
@@ -546,10 +546,10 @@ pub fn align_distribute(app: &mut App, ui: &mut Ui) {
         ui.spacing_mut().item_spacing.x = 2.0;
         for (i, (key, a)) in [
             ("menu.object.align_left", Align::Left),
-            ("menu.object.align_centers_v", Align::CenterV),
+            ("menu.object.align_centers_h", Align::CenterH),
             ("menu.object.align_right", Align::Right),
             ("menu.object.align_top", Align::Top),
-            ("menu.object.align_centers_h", Align::CenterH),
+            ("menu.object.align_centers_v", Align::CenterV),
             ("menu.object.align_bottom", Align::Bottom),
         ]
         .into_iter()
@@ -696,10 +696,10 @@ pub fn align_part(app: &mut App, ui: &mut Ui) {
     gap(ui);
     for (i, (key, a)) in [
         ("menu.object.align_left", Align::Left),
-        ("menu.object.align_centers_v", Align::CenterV),
+        ("menu.object.align_centers_h", Align::CenterH),
         ("menu.object.align_right", Align::Right),
         ("menu.object.align_top", Align::Top),
-        ("menu.object.align_centers_h", Align::CenterH),
+        ("menu.object.align_centers_v", Align::CenterV),
         ("menu.object.align_bottom", Align::Bottom),
     ]
     .into_iter()
@@ -834,9 +834,12 @@ mod tests {
             let k = (bounds(&app, id).x0 - o) / g.spacing_x;
             assert!(near(k, k.round()), "{k}");
         }
-        // Centres on a vertical line share x.
-        app.align_with(Align::CenterV, AlignTo::ActiveObject);
+        // Centres horizontally share x.
+        app.align_with(Align::CenterH, AlignTo::ActiveObject);
         assert!(near(bounds(&app, a).center().x, bounds(&app, b).center().x));
+        // Centres vertically share y.
+        app.align_with(Align::CenterV, AlignTo::ActiveObject);
+        assert!(near(bounds(&app, a).center().y, bounds(&app, b).center().y));
     }
 
     #[test]

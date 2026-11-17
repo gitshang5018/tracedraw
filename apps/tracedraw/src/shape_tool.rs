@@ -1348,8 +1348,8 @@ impl App {
             Align::Right => Point::new(x1, p.y),
             Align::Top => Point::new(p.x, y1),
             Align::Bottom => Point::new(p.x, y0),
-            Align::CenterV => Point::new((x0 + x1) / 2.0, p.y),
-            Align::CenterH => Point::new(p.x, (y0 + y1) / 2.0),
+            Align::CenterH => Point::new((x0 + x1) / 2.0, p.y),
+            Align::CenterV => Point::new(p.x, (y0 + y1) / 2.0),
             Align::CenterPage => p,
         };
         let mut paths: std::collections::BTreeMap<ShapeId, (BezPath, bool)> = Default::default();

@@ -231,6 +231,34 @@ fn frame(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
         });
 }
 
+/// Capsule frame for the multi-selection floating bar over the drawing.
+fn frame_capsule(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
+    let (fill, border) = if crate::ui::mobile::phone() {
+        let m3 = crate::ui::mobile::m3_tokens(ui.ctx());
+        (m3.container, m3.outline.gamma_multiply(0.4))
+    } else {
+        (
+            crate::theme::Tokens::panel(),
+            crate::theme::Tokens::control_border(),
+        )
+    };
+    egui::Frame::new()
+        .fill(fill)
+        .stroke(egui::Stroke::new(1.0, border))
+        .corner_radius(21.0)
+        .shadow(crate::theme::shadow(egui::epaint::Shadow {
+            offset: [0, 3],
+            blur: 10,
+            spread: 0,
+            color: egui::Color32::from_black_alpha(50),
+        }))
+        .inner_margin(egui::Margin::symmetric(8, 3))
+        .show(ui, |ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(2.0, 2.0);
+            add(ui)
+        });
+}
+
 /// The column beside the selection and, with two objects or more, the
 /// bar over the top of the drawing `canvas` (#1691).
 pub fn bars_on_drawing(app: &mut App, ui: &mut egui::Ui, canvas: egui::Rect) {
@@ -263,41 +291,28 @@ pub fn bars_on_drawing(app: &mut App, ui: &mut egui::Ui, canvas: egui::Rect) {
     if app.selection.len() < 2 {
         return;
     }
-    let all = (BarCommand::SHAPING.len() + BarCommand::ALIGN.len()) as f32;
-    let wide = canvas.width() >= all * (BUTTON + 2.0) + 40.0;
     egui::Area::new(egui::Id::new("touch_selection_top"))
         .order(egui::Order::Middle)
         .pivot(egui::Align2::CENTER_TOP)
         .fixed_pos(egui::pos2(canvas.center().x, canvas.top() + 6.0))
         .constrain_to(canvas)
         .show(&ctx, |ui| {
-            frame(ui, |ui| {
-                let shaping = |ui: &mut egui::Ui, app: &mut App| {
-                    ui.horizontal(|ui| {
-                        for cmd in BarCommand::SHAPING {
-                            button(ui, app, cmd);
-                        }
+            frame_capsule(ui, |ui| {
+                let max_w = (canvas.width() - 20.0).max(60.0);
+                egui::ScrollArea::horizontal()
+                    .max_width(max_w)
+                    .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            for cmd in BarCommand::SHAPING {
+                                button(ui, app, cmd);
+                            }
+                            ui.separator();
+                            for cmd in BarCommand::ALIGN {
+                                button(ui, app, cmd);
+                            }
+                        });
                     });
-                };
-                let align = |ui: &mut egui::Ui, app: &mut App| {
-                    ui.horizontal(|ui| {
-                        for cmd in BarCommand::ALIGN {
-                            button(ui, app, cmd);
-                        }
-                    });
-                };
-                if wide {
-                    ui.horizontal(|ui| {
-                        shaping(ui, app);
-                        ui.separator();
-                        align(ui, app);
-                    });
-                } else {
-                    ui.vertical(|ui| {
-                        shaping(ui, app);
-                        align(ui, app);
-                    });
-                }
             });
         });
 }
@@ -520,6 +535,26 @@ mod tests {
         app.select(vec![a, app.selection[0]]);
         BarCommand::Align(Align::Left).run(&mut app, egui::Pos2::ZERO);
         assert!(BarCommand::Combine.enabled(&app));
+
+        let b = app
+            .new_shape(tracedraw_core::ShapeKind::Rect {
+                rect: tracedraw_core::geometry::Rect::new(50.0, 30.0, 90.0, 70.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("rect");
+        app.select(vec![a, b]);
+        // CenterH aligns horizontal centers (X centers match)
+        BarCommand::Align(Align::CenterH).run(&mut app, egui::Pos2::ZERO);
+        let b_a = app.align_box(&app.doc().find_shape(a).unwrap());
+        let b_b = app.align_box(&app.doc().find_shape(b).unwrap());
+        assert!((b_a.center().x - b_b.center().x).abs() < 1e-6);
+
+        // CenterV aligns vertical centers (Y centers match)
+        BarCommand::Align(Align::CenterV).run(&mut app, egui::Pos2::ZERO);
+        let b_a = app.align_box(&app.doc().find_shape(a).unwrap());
+        let b_b = app.align_box(&app.doc().find_shape(b).unwrap());
+        assert!((b_a.center().y - b_b.center().y).abs() < 1e-6);
         BarCommand::Menu.run(&mut app, egui::pos2(5.0, 6.0));
         assert_eq!(app.context_menu.map(|(s, _)| s), Some(egui::pos2(5.0, 6.0)));
         app.context_menu = None;
