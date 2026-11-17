@@ -2722,9 +2722,8 @@ pub fn show(app: &mut App, ctx: &Context) {
                             _ => {}
                         }
                         ui.horizontal(|ui| {
-                            let package = r.installer.clone().or_else(|| r.package.clone());
                             if let Some((package, target)) =
-                                package.zip(crate::updates::install_target())
+                                r.package.clone().zip(crate::updates::install_target())
                             {
                                 if ui.button(tr("updates.install")).clicked() {
                                     act = Some(Act::Install(
@@ -9748,6 +9747,7 @@ pub(crate) mod tests {
         let ctx = crate::theme::ui_context();
         let package = Package {
             url: "https://example.org/a.AppImage".into(),
+            mirror: None,
             sha256: "0".repeat(64),
             size: 3 << 20,
         };
@@ -9756,7 +9756,6 @@ pub(crate) mod tests {
             page: "https://example.org/r".into(),
             notes: "The notes of the release.".into(),
             download: None,
-            installer: Some(package.clone()),
             package: Some(package),
         };
         let checks = [
@@ -9850,6 +9849,7 @@ pub(crate) mod tests {
         let ctx = crate::theme::ui_context();
         let package = Package {
             url: "https://example.org/a.AppImage".into(),
+            mirror: None,
             sha256: "0".repeat(64),
             size: 3 << 20,
         };
@@ -9858,7 +9858,6 @@ pub(crate) mod tests {
             page: "https://example.org/r".into(),
             notes: "The notes of the release.".into(),
             download: None,
-            installer: Some(package.clone()),
             package: Some(package),
         };
         *app.updates.state.lock().expect("lock") = UpdateState::Available(release);

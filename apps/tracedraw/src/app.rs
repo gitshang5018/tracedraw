@@ -9056,7 +9056,22 @@ impl App {
             && self.updates.get() == crate::updates::UpdateState::Idle
         {
             self.settings.last_update_check = now;
+            self.update_quiet = true;
             self.updates.start(ctx);
+        }
+        if self.update_quiet {
+            match self.updates.get() {
+                crate::updates::UpdateState::Checking => {}
+                crate::updates::UpdateState::Available(r)
+                    if r.version != self.settings.skipped_update
+                        && matches!(self.dialog, crate::ui::dialogs::Dialog::None) =>
+                {
+                    self.update_quiet = false;
+                    self.dialog = crate::ui::dialogs::Dialog::Updates;
+                }
+                crate::updates::UpdateState::Available(_) => {}
+                _ => self.update_quiet = false,
+            }
         }
     }
 
